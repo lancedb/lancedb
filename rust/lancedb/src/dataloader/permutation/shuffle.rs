@@ -18,12 +18,12 @@ use lance_io::{
     scheduler::{ScanScheduler, SchedulerConfig},
     utils::CachedFileSize,
 };
-use rand::{seq::SliceRandom, Rng, RngCore};
+use rand::{Rng, RngCore, seq::SliceRandom};
 
 use crate::{
-    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
-    dataloader::permutation::util::{non_crypto_rng, TemporaryDirectory},
     Error, Result,
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
+    dataloader::permutation::util::{TemporaryDirectory, non_crypto_rng},
 };
 
 #[derive(Debug, Clone)]
@@ -171,7 +171,7 @@ impl Shuffler {
             // This is kind of an annoying limitation but if we allow runt clumps from batches then
             // clumps will get unaligned and we will mess up the clumps when we do the in-memory
             // shuffle step.  If this is a problem we can probably figure out a better way to do this.
-            if !is_last && batch.num_rows() as u64 % clump_size != 0 {
+            if !is_last && !(batch.num_rows() as u64).is_multiple_of(clump_size) {
                 return Err(Error::Runtime {
                     message: format!(
                         "Expected batch size ({}) to be divisible by clump size ({})",
@@ -240,7 +240,7 @@ impl Shuffler {
                     .await?;
                     // Need to read the entire file in a single batch for in-memory shuffling
                     let batch = reader.read_record_batch(0, reader.num_rows()).await?;
-                    let mut rng = rng.lock().unwrap();
+                    let mut rng = rng.lock().unwrap_or_else(|e| e.into_inner());
                     Self::shuffle_batch(&batch, &mut rng, clump_size)
                 }
             })
@@ -281,7 +281,7 @@ mod tests {
     use datafusion_expr::col;
     use futures::TryStreamExt;
     use lance_datagen::{BatchCount, BatchGeneratorBuilder, ByteCount, RowCount, Seed};
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     fn test_gen() -> BatchGeneratorBuilder {
         lance_datagen::gen_batch()

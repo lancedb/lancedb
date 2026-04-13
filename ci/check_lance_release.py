@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -26,6 +27,7 @@ SEMVER_RE = re.compile(
 )
 
 
+@functools.total_ordering
 @dataclass(frozen=True)
 class SemVer:
     major: int
@@ -156,7 +158,9 @@ def read_current_version(repo_root: Path) -> str:
 
 
 def determine_latest_tag(tags: Iterable[TagInfo]) -> TagInfo:
-    return max(tags, key=lambda tag: tag.semver)
+    # Stable releases (no prerelease) are always preferred over pre-releases.
+    # Within each group, standard semver ordering applies.
+    return max(tags, key=lambda tag: (not tag.semver.prerelease, tag.semver))
 
 
 def write_outputs(args: argparse.Namespace, payload: dict) -> None:

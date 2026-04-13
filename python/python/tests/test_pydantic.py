@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-import sys
 from datetime import date, datetime
+from enum import Enum
 from typing import List, Optional, Tuple
 
 import pyarrow as pa
@@ -20,10 +20,6 @@ from pydantic import BaseModel
 from pydantic import Field
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_pydantic_to_arrow():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -83,10 +79,6 @@ def test_pydantic_to_arrow():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using | type syntax requires python3.10 or higher",
-)
 def test_optional_types_py310():
     class TestModel(pydantic.BaseModel):
         a: str | None
@@ -105,10 +97,233 @@ def test_optional_types_py310():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info > (3, 8),
-    reason="using native type alias requires python3.9 or higher",
-)
+def test_optional_structs():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        split: SplitInfo | None = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "split",
+                pa.struct(
+                    [
+                        pa.field("start_frame", pa.int64(), False),
+                        pa.field("end_frame", pa.int64(), False),
+                    ]
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_optional_struct_list_py310():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo] | None = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: Optional[list[SplitInfo]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_items():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[Optional[SplitInfo]]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_container_and_items():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: Optional[list[Optional[SplitInfo]]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_items_pep604():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo | None]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
 def test_pydantic_to_arrow_py38():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -459,3 +674,29 @@ async def test_aliases_in_lance_model_async(mem_db_async):
     assert hasattr(model, "name")
     assert hasattr(model, "distance")
     assert model.distance < 0.01
+
+
+def test_enum_types():
+    """Enum fields should map to the Arrow type of their value (issue #1846)."""
+
+    class StrStatus(str, Enum):
+        PENDING = "pending"
+        RUNNING = "running"
+        DONE = "done"
+
+    class IntPriority(int, Enum):
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+
+    class TestModel(pydantic.BaseModel):
+        status: StrStatus
+        priority: IntPriority
+        opt_status: Optional[StrStatus] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("priority").type == pa.int64()
+    assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("opt_status").nullable

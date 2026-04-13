@@ -6,7 +6,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any
+from typing import Dict, Optional, Union, Any, List
 import warnings
 
 __version__ = importlib.metadata.version("lancedb")
@@ -15,9 +15,9 @@ from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
-from .io import StorageOptionsProvider
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
+from .expr import Expr, col, lit, func
 from .schema import vector
 from .table import AsyncTable, Table
 from ._lancedb import Session
@@ -63,7 +63,7 @@ def _check_s3_bucket_with_dots(
 
 
 def connect(
-    uri: URI,
+    uri: Optional[URI] = None,
     *,
     api_key: Optional[str] = None,
     region: str = "us-east-1",
@@ -73,14 +73,18 @@ def connect(
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    namespace_client_impl: Optional[str] = None,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
     Parameters
     ----------
-    uri: str or Path
-        The uri of the database.
+    uri: str or Path, optional
+        The uri of the database. When ``namespace_client_impl`` is provided you may
+        omit ``uri`` and connect through a namespace client instead.
     api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
@@ -113,6 +117,18 @@ def connect(
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    namespace_client_impl : str, optional
+        When provided along with ``namespace_client_properties``, ``connect``
+        returns a namespace-backed connection by delegating to
+        :func:`connect_namespace`. The value identifies which namespace
+        implementation to load (e.g., ``"dir"`` or ``"rest"``).
+    namespace_client_properties : dict, optional
+        Configuration to pass to the namespace client implementation. Required
+        when ``namespace_client_impl`` is set.
+    namespace_client_pushdown_operations : list[str], optional
+        Only used when ``namespace_client_properties`` is provided. Forwards to
+        :func:`connect_namespace` to control which operations are executed on the
+        namespace service (e.g., ``["QueryTable", "CreateTable"]``).
 
     Examples
     --------
@@ -132,11 +148,42 @@ def connect(
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
     ...                      client_config={"retry_config": {"retries": 5}})
 
+    Connect to a namespace-backed database:
+
+    >>> db = lancedb.connect(namespace_client_impl="dir",
+    ...                      namespace_client_properties={"root": "/tmp/ns"})
+
     Returns
     -------
     conn : DBConnection
         A connection to a LanceDB database.
     """
+    if namespace_client_impl is not None or namespace_client_properties is not None:
+        if namespace_client_impl is None or namespace_client_properties is None:
+            raise ValueError(
+                "Both namespace_client_impl and "
+                "namespace_client_properties must be provided"
+            )
+        if kwargs:
+            raise ValueError(f"Unknown keyword arguments: {kwargs}")
+        return connect_namespace(
+            namespace_client_impl,
+            namespace_client_properties,
+            read_consistency_interval=read_consistency_interval,
+            storage_options=storage_options,
+            session=session,
+            namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        )
+
+    if namespace_client_pushdown_operations is not None:
+        raise ValueError(
+            "namespace_client_pushdown_operations is only valid when "
+            "connecting through a namespace"
+        )
+    if uri is None:
+        raise ValueError(
+            "uri is required when not connecting through a namespace client"
+        )
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -166,6 +213,85 @@ def connect(
         storage_options=storage_options,
         session=session,
     )
+
+
+WORKER_PROPERTY_PREFIX = "_lancedb_worker_"
+
+
+def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
+    """Apply worker property overrides.
+
+    Any key starting with ``_lancedb_worker_`` is extracted, the prefix
+    is stripped, and the resulting key-value pair is put back into the
+    map (overriding the existing value if present).  The original
+    prefixed key is removed.
+    """
+    worker_keys = [k for k in props if k.startswith(WORKER_PROPERTY_PREFIX)]
+    if not worker_keys:
+        return props
+    result = dict(props)
+    for key in worker_keys:
+        value = result.pop(key)
+        real_key = key[len(WORKER_PROPERTY_PREFIX) :]
+        result[real_key] = value
+    return result
+
+
+def deserialize_conn(
+    data: str,
+    *,
+    for_worker: bool = False,
+) -> DBConnection:
+    """Reconstruct a DBConnection from a serialized string.
+
+    The string must have been produced by
+    :meth:`DBConnection.serialize`.
+
+    Parameters
+    ----------
+    data : str
+        String produced by ``serialize()``.
+    for_worker : bool, default False
+        When ``True``, any namespace client property whose key starts
+        with ``_lancedb_worker_`` has that prefix stripped and the
+        value overrides the corresponding property.  For example,
+        ``_lancedb_worker_uri`` replaces ``uri``.
+
+    Returns
+    -------
+    DBConnection
+        A new connection matching the serialized state.
+    """
+    import json
+
+    parsed = json.loads(data)
+    connection_type = parsed.get("connection_type")
+
+    rci_secs = parsed.get("read_consistency_interval_seconds")
+    rci = timedelta(seconds=rci_secs) if rci_secs is not None else None
+    storage_options = parsed.get("storage_options")
+
+    if connection_type == "namespace":
+        props = dict(parsed.get("namespace_client_properties") or {})
+        if for_worker:
+            props = _apply_worker_overrides(props)
+        return connect_namespace(
+            namespace_client_impl=parsed["namespace_client_impl"],
+            namespace_client_properties=props,
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+            namespace_client_pushdown_operations=parsed.get(
+                "namespace_client_pushdown_operations"
+            ),
+        )
+    elif connection_type == "local":
+        return LanceDBConnection(
+            parsed["uri"],
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+        )
+    else:
+        raise ValueError(f"Unknown connection_type: {connection_type}")
 
 
 async def connect_async(
@@ -271,6 +397,10 @@ __all__ = [
     "AsyncConnection",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "col",
+    "Expr",
+    "func",
+    "lit",
     "URI",
     "sanitize_uri",
     "vector",
@@ -279,7 +409,6 @@ __all__ = [
     "LanceNamespaceDBConnection",
     "RemoteDBConnection",
     "Session",
-    "StorageOptionsProvider",
     "Table",
     "__version__",
 ]

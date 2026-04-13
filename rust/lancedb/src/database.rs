@@ -18,22 +18,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::RecordBatchReader;
-use async_trait::async_trait;
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::stream;
 use lance::dataset::ReadParams;
-use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
     ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
-use lance_namespace::LanceNamespace;
 
-use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
+use crate::data::scannable::Scannable;
 use crate::error::Result;
-use crate::table::{BaseTable, TableDefinition, WriteOptions};
+use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
 pub mod namespace;
@@ -45,8 +40,8 @@ pub trait DatabaseOptions {
 /// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
-    /// The namespace to list tables in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to list tables in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     /// If present, only return names that come lexicographically after the supplied
     /// value.
     ///
@@ -61,8 +56,8 @@ pub struct TableNamesRequest {
 #[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
-    /// The namespace to open the table from. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to open the table from. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
     /// Optional custom location for the table. If not provided, the database will
@@ -71,17 +66,22 @@ pub struct OpenTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// Whether managed versioning is enabled for this table.
+    /// When Some(true), the table will use namespace-managed commits instead of local commits.
+    /// When None and namespace_client is provided, the value will be fetched from the namespace.
+    pub managed_versioning: Option<bool>,
 }
 
 impl std::fmt::Debug for OpenTableRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenTableRequest")
             .field("name", &self.name)
-            .field("namespace", &self.namespace)
+            .field("namespace_path", &self.namespace_path)
             .field("index_cache_size", &self.index_cache_size)
             .field("lance_read_params", &self.lance_read_params)
             .field("location", &self.location)
             .field("namespace_client", &self.namespace_client)
+            .field("managed_versioning", &self.managed_versioning)
             .finish()
     }
 }
@@ -90,8 +90,10 @@ pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableReq
 
 /// Describes what happens when creating a table and a table with
 /// the same name already exists
+#[derive(Default)]
 pub enum CreateTableMode {
     /// If the table already exists, an error is returned
+    #[default]
     Create,
     /// If the table already exists, it is opened.  Any provided data is
     /// ignored.  The function will be passed an OpenTableBuilder to customize
@@ -109,57 +111,14 @@ impl CreateTableMode {
     }
 }
 
-impl Default for CreateTableMode {
-    fn default() -> Self {
-        Self::Create
-    }
-}
-
-/// The data to start a table or a schema to create an empty table
-pub enum CreateTableData {
-    /// Creates a table using an iterator of data, the schema will be obtained from the data
-    Data(Box<dyn RecordBatchReader + Send>),
-    /// Creates a table using a stream of data, the schema will be obtained from the data
-    StreamingData(SendableRecordBatchStream),
-    /// Creates an empty table, the definition / schema must be provided separately
-    Empty(TableDefinition),
-}
-
-impl CreateTableData {
-    pub fn schema(&self) -> Arc<arrow_schema::Schema> {
-        match self {
-            Self::Data(reader) => reader.schema(),
-            Self::StreamingData(stream) => stream.schema(),
-            Self::Empty(definition) => definition.schema.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl StreamingWriteSource for CreateTableData {
-    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
-        self.schema()
-    }
-    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
-        match self {
-            Self::Data(reader) => reader.into_stream(),
-            Self::StreamingData(stream) => stream.into_df_stream(),
-            Self::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
-            }
-        }
-    }
-}
-
 /// A request to create a table
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
-    /// The namespace to create the table in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
-    /// Initial data to write to the table, can be None to create an empty table
-    pub data: CreateTableData,
+    /// The namespace path to create the table in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
+    /// Initial data to write to the table, can be empty.
+    pub data: Box<dyn Scannable>,
     /// The mode to use when creating the table
     pub mode: CreateTableMode,
     /// Options to use when writing data (only used if `data` is not None)
@@ -173,10 +132,10 @@ pub struct CreateTableRequest {
 }
 
 impl CreateTableRequest {
-    pub fn new(name: String, data: CreateTableData) -> Self {
+    pub fn new(name: String, data: Box<dyn Scannable>) -> Self {
         Self {
             name,
-            namespace: vec![],
+            namespace_path: vec![],
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
@@ -196,8 +155,8 @@ impl CreateTableRequest {
 pub struct CloneTableRequest {
     /// The name of the target table to create
     pub target_table_name: String,
-    /// The namespace for the target table. Empty list represents root namespace.
-    pub target_namespace: Vec<String>,
+    /// The namespace path for the target table. Empty list represents root namespace.
+    pub target_namespace_path: Vec<String>,
     /// The URI of the source table to clone from.
     pub source_uri: String,
     /// Optional version of the source table to clone.
@@ -207,17 +166,21 @@ pub struct CloneTableRequest {
     /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
     /// Currently only shallow clone is supported.
     pub is_shallow: bool,
+    /// Optional namespace client for managed versioning support.
+    /// When set, enables the commit handler to track table versions through the namespace.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
             target_table_name,
-            target_namespace: vec![],
+            target_namespace_path: vec![],
             source_uri,
             source_version: None,
             source_tag: None,
             is_shallow: true,
+            namespace_client: None,
         }
     }
 }
@@ -288,13 +251,13 @@ pub trait Database:
         &self,
         cur_name: &str,
         new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()>;
     /// Drop a table in the database
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()>;
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()>;
     /// Drop all tables in the database
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Get the equivalent namespace client of this database
@@ -302,4 +265,13 @@ pub trait Database:
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    ///
+    /// This is useful for Python bindings where we want to return a Python
+    /// namespace object rather than a Rust trait object.
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)>;
 }

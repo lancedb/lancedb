@@ -15,8 +15,10 @@ from lancedb.table import (
     _cast_to_target_schema,
     _handle_bad_vectors,
     _into_pyarrow_reader,
-    _sanitize_data,
     _infer_target_schema,
+    _merge_metadata,
+    _sanitize_data,
+    sanitize_create_table,
 )
 import pyarrow as pa
 import pandas as pd
@@ -119,6 +121,32 @@ def test_value_to_sql_string(tmp_path):
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
+
+
+def test_value_to_sql_dict():
+    # Simple flat struct
+    assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
+
+    # Nested struct
+    assert (
+        value_to_sql({"outer": {"inner": 1}})
+        == "named_struct('outer', named_struct('inner', 1))"
+    )
+
+    # List inside struct
+    assert value_to_sql({"a": [1, 2]}) == "named_struct('a', [1, 2])"
+
+    # Mixed types
+    assert (
+        value_to_sql({"name": "test", "count": 42, "rate": 3.14, "active": True})
+        == "named_struct('name', 'test', 'count', 42, 'rate', 3.14, 'active', TRUE)"
+    )
+
+    # Null value inside struct
+    assert value_to_sql({"a": None}) == "named_struct('a', NULL)"
+
+    # Empty dict
+    assert value_to_sql({}) == "named_struct()"
 
 
 def test_append_vector_columns():
@@ -278,6 +306,117 @@ def test_handle_bad_vectors_noop():
     assert output["vector"] == vector
 
 
+def test_handle_bad_vectors_updates_reader_schema_for_target_schema():
+    data = pa.table({"vector": [[1, 2, 3, 4]]})
+    target_schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 4))])
+
+    output = _handle_bad_vectors(
+        data.to_reader(),
+        on_bad_vectors="drop",
+        target_schema=target_schema,
+    )
+
+    assert output.schema == pa.schema([pa.field("vector", pa.list_(pa.float32()))])
+    assert output.read_all()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+def test_sanitize_data_keeps_target_field_metadata():
+    source_field = pa.field(
+        "vector",
+        pa.list_(pa.float32(), 2),
+        metadata={b"source": b"drop-me"},
+    )
+    target_field = pa.field(
+        "vector",
+        pa.list_(pa.float32(), 2),
+        metadata={b"target": b"keep-me"},
+    )
+    data = pa.table(
+        {"vector": pa.array([[1.0, 2.0]], type=pa.list_(pa.float32(), 2))},
+        schema=pa.schema([source_field]),
+    )
+
+    output = _sanitize_data(
+        data,
+        target_schema=pa.schema([target_field]),
+        on_bad_vectors="drop",
+    ).read_all()
+
+    assert output.schema.field("vector").metadata == {b"target": b"keep-me"}
+
+
+def test_sanitize_data_uses_separate_embedding_metadata_for_bad_vectors():
+    registry = EmbeddingFunctionRegistry.get_instance()
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="custom_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    metadata = registry.get_table_metadata([conf])
+    schema = pa.schema(
+        {
+            "text": pa.string(),
+            "custom_vector": pa.list_(pa.float32(), 10),
+        },
+        metadata={b"note": b"keep-me"},
+    )
+    data = pa.table(
+        {
+            "text": ["bad", "good"],
+            "custom_vector": [[1.0] * 9, [2.0] * 10],
+        }
+    )
+
+    output = _sanitize_data(
+        data,
+        target_schema=schema,
+        metadata=metadata,
+        on_bad_vectors="drop",
+    ).read_all()
+
+    assert output["text"].to_pylist() == ["good"]
+    assert output.schema.metadata[b"note"] == b"keep-me"
+    assert b"embedding_functions" in output.schema.metadata
+
+
+def test_sanitize_create_table_merges_and_overrides_embedding_metadata():
+    registry = EmbeddingFunctionRegistry.get_instance()
+    old_conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="old_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    new_conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="custom_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    metadata = registry.get_table_metadata([new_conf])
+    schema = pa.schema(
+        {
+            "text": pa.string(),
+            "custom_vector": pa.list_(pa.float32(), 10),
+        },
+        metadata=_merge_metadata(
+            {b"note": b"keep-me"},
+            registry.get_table_metadata([old_conf]),
+        ),
+    )
+
+    data, schema = sanitize_create_table(
+        pa.table({"text": ["good"]}),
+        schema,
+        metadata=metadata,
+        on_bad_vectors="drop",
+    )
+
+    assert schema.metadata[b"note"] == b"keep-me"
+    assert b"embedding_functions" in schema.metadata
+    assert data.schema.metadata[b"note"] == b"keep-me"
+    funcs = EmbeddingFunctionRegistry.get_instance().parse_functions(schema.metadata)
+    assert set(funcs.keys()) == {"custom_vector"}
+
+
 class TestModel(lancedb.pydantic.LanceModel):
     a: Optional[int]
     b: Optional[int]
@@ -292,18 +431,14 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            )
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
         ),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            ).scanner()
-        ),
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
+        ).scanner(),
         lambda: pd.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.LazyFrame({"a": [1], "b": [2]}),

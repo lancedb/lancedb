@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 # Token limits for different VoyageAI models
 VOYAGE_TOTAL_TOKEN_LIMITS = {
+    "voyage-4": 320_000,
+    "voyage-4-lite": 1_000_000,
+    "voyage-4-large": 120_000,
     "voyage-context-3": 32_000,
     "voyage-3.5-lite": 1_000_000,
     "voyage-3.5": 320_000,
@@ -61,7 +64,7 @@ def is_video_path(path: Path) -> bool:
 
 
 def transform_input(input_data: Union[str, bytes, Path]):
-    PIL = attempt_import_or_raise("PIL", "pillow")
+    PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
     if isinstance(input_data, str):
         if is_valid_url(input_data):
             if is_video_url(input_data):
@@ -70,7 +73,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
                 content = {"type": "image_url", "image_url": input_data}
         else:
             content = {"type": "text", "text": input_data}
-    elif isinstance(input_data, PIL.Image.Image):
+    elif isinstance(input_data, PIL_Image.Image):
         buffered = BytesIO()
         input_data.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -79,7 +82,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
             "image_base64": "data:image/jpeg;base64," + img_str,
         }
     elif isinstance(input_data, bytes):
-        img = PIL.Image.open(BytesIO(input_data))
+        img = PIL_Image.open(BytesIO(input_data))
         buffered = BytesIO()
         img.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -98,7 +101,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
                 "video_base64": video_str,
             }
         else:
-            img = PIL.Image.open(input_data)
+            img = PIL_Image.open(input_data)
             buffered = BytesIO()
             img.save(buffered, format="JPEG")
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -116,8 +119,8 @@ def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     """
     Sanitize the input to the embedding function.
     """
-    PIL = attempt_import_or_raise("PIL", "pillow")
-    if isinstance(inputs, (str, bytes, Path, PIL.Image.Image)):
+    PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+    if isinstance(inputs, (str, bytes, Path, PIL_Image.Image)):
         inputs = [inputs]
     elif isinstance(inputs, list):
         pass  # Already a list, use as-is
@@ -130,7 +133,7 @@ def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
             f"Input type {type(inputs)} not allowed with multimodal model."
         )
 
-    if not all(isinstance(x, (str, bytes, Path, PIL.Image.Image)) for x in inputs):
+    if not all(isinstance(x, (str, bytes, Path, PIL_Image.Image)) for x in inputs):
         raise ValueError("Each input should be either str, bytes, Path or Image.")
 
     return [transform_input(i) for i in inputs]
@@ -167,6 +170,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
         The name of the model to use. List of acceptable models:
 
+            * voyage-4 (1024 dims, general-purpose and multilingual retrieval)
+            * voyage-4-lite (1024 dims, optimized for latency and cost)
+            * voyage-4-large (1024 dims, best retrieval quality)
             * voyage-context-3
             * voyage-3.5
             * voyage-3.5-lite
@@ -215,6 +221,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     _FLEXIBLE_DIM_MODELS: ClassVar[list] = ["voyage-multimodal-3.5"]
     _VALID_DIMENSIONS: ClassVar[list] = [256, 512, 1024, 2048]
     text_embedding_models: list = [
+        "voyage-4",
+        "voyage-4-lite",
+        "voyage-4-large",
         "voyage-3.5",
         "voyage-3.5-lite",
         "voyage-3",
@@ -252,6 +261,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
+            "voyage-4",
+            "voyage-4-lite",
+            "voyage-4-large",
             "voyage-context-3",
             "voyage-3.5",
             "voyage-3.5-lite",

@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{
-    iter,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc,
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
@@ -15,22 +12,25 @@ use datafusion_common::hash_utils::create_hashes;
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
 
+use lance_core::ROW_ID;
+
 use crate::{
+    Error, Result,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     dataloader::{
         permutation::shuffle::{Shuffler, ShufflerConfig},
         permutation::util::TemporaryDirectory,
     },
     query::{Query, QueryBase, Select},
-    Error, Result,
 };
 
 pub const SPLIT_ID_COLUMN: &str = "split_id";
 
 /// Strategy for assigning rows to splits
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SplitStrategy {
     /// All rows will have split id 0
+    #[default]
     NoSplit,
     /// Rows will be randomly assigned to splits
     ///
@@ -72,15 +72,6 @@ pub enum SplitStrategy {
     ///
     /// If this strategy is used then the counts/percentages in the SplitSizes are ignored.
     Calculated { calculation: String },
-}
-
-// The default is not to split the data
-//
-// All data will be assigned to a single split.
-impl Default for SplitStrategy {
-    fn default() -> Self {
-        Self::NoSplit
-    }
 }
 
 impl SplitStrategy {
@@ -158,7 +149,7 @@ impl Splitter {
                 remaining_in_split
             };
 
-            split_ids.extend(iter::repeat(split_id as u64).take(rows_to_add as usize));
+            split_ids.extend(std::iter::repeat_n(split_id as u64, rows_to_add as usize));
             if done {
                 // Quit early if we've run out of splits
                 break;
@@ -363,11 +354,15 @@ impl Splitter {
 
     pub fn project(&self, query: Query) -> Query {
         match &self.strategy {
-            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![(
-                SPLIT_ID_COLUMN.to_string(),
-                calculation.clone(),
-            )])),
-            SplitStrategy::Hash { columns, .. } => query.select(Select::Columns(columns.clone())),
+            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![
+                (SPLIT_ID_COLUMN.to_string(), calculation.clone()),
+                (ROW_ID.to_string(), ROW_ID.to_string()),
+            ])),
+            SplitStrategy::Hash { columns, .. } => {
+                let mut cols = columns.clone();
+                cols.push(ROW_ID.to_string());
+                query.select(Select::Columns(cols))
+            }
             _ => query,
         }
     }
@@ -662,7 +657,7 @@ mod tests {
         assert_eq!(split_batch.num_rows(), total_split_sizes as usize);
         let mut expected = Vec::with_capacity(total_split_sizes as usize);
         for (i, size) in expected_split_sizes.iter().enumerate() {
-            expected.extend(iter::repeat(i as u64).take(*size as usize));
+            expected.extend(std::iter::repeat_n(i as u64, *size as usize));
         }
         let expected = Arc::new(UInt64Array::from(expected)) as Arc<dyn Array>;
 

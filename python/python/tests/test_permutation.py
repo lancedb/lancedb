@@ -438,11 +438,15 @@ def test_filter_with_splits(mem_db):
     row_count = permutation_tbl.count_rows()
     assert row_count == 67
 
-    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    # Verify the permutation table only contains row_id and split_id
+    assert set(permutation_tbl.schema.names) == {"row_id", "split_id"}
+
+    row_ids = permutation_tbl.search(None).to_arrow().to_pydict()["row_id"]
+    data = tbl.take_row_ids(row_ids).to_arrow().to_pydict()
     categories = data["category"]
 
     # All categories should be A or B
-    assert all(cat in ["A", "B"] for cat in categories)
+    assert all(cat in ("A", "B") for cat in categories)
 
 
 def test_filter_with_shuffle(mem_db):
@@ -516,6 +520,50 @@ def test_no_split_names(some_table: Table):
     assert permutations.split_dict == {}
     assert permutations[0].num_rows == 500
     assert permutations[1].num_rows == 500
+
+
+def test_permutations_metadata_without_split_names_key(mem_db: DBConnection):
+    """Regression: schema metadata present but missing split_names key must not crash.
+
+    Previously, `.get(b"split_names", None).decode()` was called unconditionally,
+    so any permutation table whose metadata dict had other keys but no split_names
+    raised AttributeError: 'NoneType' has no attribute 'decode'.
+    """
+    base = mem_db.create_table("base_nosplit", pa.table({"x": range(10)}))
+
+    # Build a permutation-like table that carries some metadata but NOT split_names.
+    raw = pa.table(
+        {
+            "row_id": pa.array(range(10), type=pa.uint64()),
+            "split_id": pa.array([0] * 10, type=pa.uint32()),
+        }
+    ).replace_schema_metadata({b"other_key": b"other_value"})
+    perm_tbl = mem_db.create_table("perm_nosplit", raw)
+
+    permutations = Permutations(base, perm_tbl)
+    assert permutations.split_names == []
+    assert permutations.split_dict == {}
+
+
+def test_from_tables_string_split_missing_names_key(mem_db: DBConnection):
+    """Regression: from_tables() with a string split must raise ValueError, not
+    AttributeError.
+
+    Previously, `.get(b"split_names", None).decode()` crashed with AttributeError
+    when the metadata dict existed but had no split_names key.
+    """
+    base = mem_db.create_table("base_strsplit", pa.table({"x": range(10)}))
+
+    raw = pa.table(
+        {
+            "row_id": pa.array(range(10), type=pa.uint64()),
+            "split_id": pa.array([0] * 10, type=pa.uint32()),
+        }
+    ).replace_schema_metadata({b"other_key": b"other_value"})
+    perm_tbl = mem_db.create_table("perm_strsplit", raw)
+
+    with pytest.raises(ValueError, match="no split names are defined"):
+        Permutation.from_tables(base, perm_tbl, split="train")
 
 
 @pytest.fixture
@@ -660,23 +708,20 @@ def test_iter_basic(some_permutation: Permutation):
     expected_batches = (950 + batch_size - 1) // batch_size  # ceiling division
     assert len(batches) == expected_batches
 
-    # Check that all batches are dicts (default python format)
-    assert all(isinstance(batch, dict) for batch in batches)
+    # Check that all batches are lists of dicts (default python format)
+    assert all(isinstance(batch, list) for batch in batches)
 
     # Check that batches have the correct structure
     for batch in batches:
-        assert "id" in batch
-        assert "value" in batch
-        assert isinstance(batch["id"], list)
-        assert isinstance(batch["value"], list)
+        assert "id" in batch[0]
+        assert "value" in batch[0]
 
     # Check that all batches except the last have the correct size
     for batch in batches[:-1]:
-        assert len(batch["id"]) == batch_size
-        assert len(batch["value"]) == batch_size
+        assert len(batch) == batch_size
 
     # Last batch might be smaller
-    assert len(batches[-1]["id"]) <= batch_size
+    assert len(batches[-1]) <= batch_size
 
 
 def test_iter_skip_last_batch(some_permutation: Permutation):
@@ -695,11 +740,11 @@ def test_iter_skip_last_batch(some_permutation: Permutation):
     if 950 % batch_size != 0:
         assert len(batches_without_skip) == num_full_batches + 1
         # Last batch should be smaller
-        assert len(batches_without_skip[-1]["id"]) == 950 % batch_size
+        assert len(batches_without_skip[-1]) == 950 % batch_size
 
     # All batches with skip_last_batch should be full size
     for batch in batches_with_skip:
-        assert len(batch["id"]) == batch_size
+        assert len(batch) == batch_size
 
 
 def test_iter_different_batch_sizes(some_permutation: Permutation):
@@ -716,12 +761,12 @@ def test_iter_different_batch_sizes(some_permutation: Permutation):
     # Test with batch size equal to total rows
     single_batch = list(some_permutation.iter(950, skip_last_batch=False))
     assert len(single_batch) == 1
-    assert len(single_batch[0]["id"]) == 950
+    assert len(single_batch[0]) == 950
 
     # Test with batch size larger than total rows
     oversized_batch = list(some_permutation.iter(10000, skip_last_batch=False))
     assert len(oversized_batch) == 1
-    assert len(oversized_batch[0]["id"]) == 950
+    assert len(oversized_batch[0]) == 950
 
 
 def test_dunder_iter(some_permutation: Permutation):
@@ -734,15 +779,13 @@ def test_dunder_iter(some_permutation: Permutation):
 
     # All batches should be full size
     for batch in batches:
-        assert len(batch["id"]) == 100
-        assert len(batch["value"]) == 100
+        assert len(batch) == 100
 
     some_permutation = some_permutation.with_batch_size(400)
     batches = list(some_permutation)
     assert len(batches) == 2  # floor(950 / 400) since skip_last_batch=True
     for batch in batches:
-        assert len(batch["id"]) == 400
-        assert len(batch["value"]) == 400
+        assert len(batch) == 400
 
 
 def test_iter_with_different_formats(some_permutation: Permutation):
@@ -757,7 +800,7 @@ def test_iter_with_different_formats(some_permutation: Permutation):
     # Test with python format (default)
     python_perm = some_permutation.with_format("python")
     python_batches = list(python_perm.iter(batch_size, skip_last_batch=False))
-    assert all(isinstance(batch, dict) for batch in python_batches)
+    assert all(isinstance(batch, list) for batch in python_batches)
 
     # Test with pandas format
     pandas_perm = some_permutation.with_format("pandas")
@@ -776,8 +819,8 @@ def test_iter_with_column_selection(some_permutation: Permutation):
 
     # Check that batches only contain the id column
     for batch in batches:
-        assert "id" in batch
-        assert "value" not in batch
+        assert "id" in batch[0]
+        assert "value" not in batch[0]
 
 
 def test_iter_with_column_rename(some_permutation: Permutation):
@@ -787,9 +830,9 @@ def test_iter_with_column_rename(some_permutation: Permutation):
 
     # Check that batches have the renamed column
     for batch in batches:
-        assert "id" in batch
-        assert "data" in batch
-        assert "value" not in batch
+        assert "id" in batch[0]
+        assert "data" in batch[0]
+        assert "value" not in batch[0]
 
 
 def test_iter_with_limit_offset(some_permutation: Permutation):
@@ -808,14 +851,14 @@ def test_iter_with_limit_offset(some_permutation: Permutation):
     assert len(limit_batches) == 5
 
     no_skip = some_permutation.iter(101, skip_last_batch=False)
-    row_100 = next(no_skip)["id"][100]
+    row_100 = next(no_skip)[100]["id"]
 
     # Test with both limit and offset
     limited_perm = some_permutation.with_skip(100).with_take(300)
     limited_batches = list(limited_perm.iter(100, skip_last_batch=False))
     # Should have 3 batches (300 / 100)
     assert len(limited_batches) == 3
-    assert limited_batches[0]["id"][0] == row_100
+    assert limited_batches[0][0]["id"] == row_100
 
 
 def test_iter_empty_permutation(mem_db):
@@ -838,7 +881,7 @@ def test_iter_single_row(mem_db):
     # With skip_last_batch=False, should get one batch
     batches = list(perm.iter(10, skip_last_batch=False))
     assert len(batches) == 1
-    assert len(batches[0]["id"]) == 1
+    assert len(batches[0]) == 1
 
     # With skip_last_batch=True, should skip the single row (since it's < batch_size)
     batches_skip = list(perm.iter(10, skip_last_batch=True))
@@ -856,8 +899,7 @@ def test_identity_permutation(mem_db):
 
     batches = list(permutation.iter(10, skip_last_batch=False))
     assert len(batches) == 1
-    assert len(batches[0]["id"]) == 10
-    assert len(batches[0]["value"]) == 10
+    assert len(batches[0]) == 10
 
     permutation = permutation.remove_columns(["value"])
     assert permutation.num_columns == 1
@@ -900,10 +942,10 @@ def test_transform_fn(mem_db):
     py_result = list(permutation.with_format("python").iter(10, skip_last_batch=False))[
         0
     ]
-    assert len(py_result) == 2
-    assert len(py_result["id"]) == 10
-    assert len(py_result["value"]) == 10
-    assert isinstance(py_result, dict)
+    assert len(py_result) == 10
+    assert "id" in py_result[0]
+    assert "value" in py_result[0]
+    assert isinstance(py_result, list)
 
     try:
         import torch
@@ -911,9 +953,11 @@ def test_transform_fn(mem_db):
         torch_result = list(
             permutation.with_format("torch").iter(10, skip_last_batch=False)
         )[0]
-        assert torch_result.shape == (2, 10)
-        assert torch_result.dtype == torch.int64
-        assert isinstance(torch_result, torch.Tensor)
+        assert isinstance(torch_result, list)
+        assert len(torch_result) == 10
+        assert isinstance(torch_result[0], torch.Tensor)
+        assert torch_result[0].shape == (2,)
+        assert torch_result[0].dtype == torch.int64
     except ImportError:
         # Skip check if torch is not installed
         pass
@@ -941,3 +985,113 @@ def test_custom_transform(mem_db):
     batch = batches[0]
 
     assert batch == pa.record_batch([range(10)], ["id"])
+
+
+def test_getitems_basic(some_permutation: Permutation):
+    """Test __getitems__ returns correct rows by offset."""
+    result = some_permutation.__getitems__([0, 1, 2])
+    assert isinstance(result, list)
+    assert "id" in result[0]
+    assert "value" in result[0]
+    assert len(result) == 3
+
+
+def test_getitems_single_index(some_permutation: Permutation):
+    """Test __getitems__ with a single index."""
+    result = some_permutation.__getitems__([0])
+    assert len(result) == 1
+
+
+def test_getitems_preserves_order(some_permutation: Permutation):
+    """Test __getitems__ returns rows in the requested order."""
+    # Get rows in forward order
+    forward = some_permutation.__getitems__([0, 1, 2, 3, 4])
+    # Get the same rows in reverse order
+    reverse = some_permutation.__getitems__([4, 3, 2, 1, 0])
+
+    assert [r["id"] for r in forward] == list(reversed([r["id"] for r in reverse]))
+    assert [r["value"] for r in forward] == list(
+        reversed([r["value"] for r in reverse])
+    )
+
+
+def test_getitems_non_contiguous(some_permutation: Permutation):
+    """Test __getitems__ with non-contiguous indices."""
+    result = some_permutation.__getitems__([0, 10, 50, 100, 500])
+    assert len(result) == 5
+
+    # Each id/value pair should match what we'd get individually
+    for i, offset in enumerate([0, 10, 50, 100, 500]):
+        single = some_permutation.__getitems__([offset])
+        assert result[i]["id"] == single[0]["id"]
+        assert result[i]["value"] == single[0]["value"]
+
+
+def test_getitems_with_column_selection(some_permutation: Permutation):
+    """Test __getitems__ respects column selection."""
+    id_only = some_permutation.select_columns(["id"])
+    result = id_only.__getitems__([0, 1, 2])
+    assert "id" in result[0]
+    assert "value" not in result[0]
+    assert len(result) == 3
+
+
+def test_getitems_with_column_rename(some_permutation: Permutation):
+    """Test __getitems__ respects column renames."""
+    renamed = some_permutation.rename_column("value", "data")
+    result = renamed.__getitems__([0, 1])
+    assert "data" in result[0]
+    assert "value" not in result[0]
+    assert len(result) == 2
+
+
+def test_getitems_with_format(some_permutation: Permutation):
+    """Test __getitems__ applies the transform function."""
+    arrow_perm = some_permutation.with_format("arrow")
+    result = arrow_perm.__getitems__([0, 1, 2])
+    assert isinstance(result, pa.RecordBatch)
+    assert result.num_rows == 3
+
+
+def test_getitems_with_custom_transform(some_permutation: Permutation):
+    """Test __getitems__ with a custom transform."""
+
+    def transform(batch: pa.RecordBatch) -> list:
+        return batch.column("id").to_pylist()
+
+    custom = some_permutation.with_transform(transform)
+    result = custom.__getitems__([0, 1, 2])
+    assert isinstance(result, list)
+    assert len(result) == 3
+
+
+def test_getitems_identity_permutation(mem_db):
+    """Test __getitems__ on an identity permutation."""
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    perm = Permutation.identity(tbl)
+
+    result = perm.__getitems__([0, 5, 9])
+    assert [r["id"] for r in result] == [0, 5, 9]
+    assert [r["value"] for r in result] == [0, 5, 9]
+
+
+def test_getitems_with_limit_offset(some_permutation: Permutation):
+    """Test __getitems__ on a permutation with skip/take applied."""
+    limited = some_permutation.with_skip(100).with_take(200)
+
+    # Should be able to access offsets within the limited range
+    result = limited.__getitems__([0, 1, 199])
+    assert len(result) == 3
+
+    # The first item of the limited permutation should match offset 100 of original
+    full_result = some_permutation.__getitems__([100])
+    limited_result = limited.__getitems__([0])
+    assert limited_result[0]["id"] == full_result[0]["id"]
+
+
+def test_getitems_invalid_offset(some_permutation: Permutation):
+    """Test __getitems__ with an out-of-range offset raises an error."""
+    with pytest.raises(Exception):
+        some_permutation.__getitems__([999999])

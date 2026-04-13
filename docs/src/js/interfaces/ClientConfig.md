@@ -53,3 +53,18 @@ optional tlsConfig: TlsConfig;
 ```ts
 optional userAgent: string;
 ```
+
+***
+
+### userId?
+
+```ts
+optional userId: string;
+```
+
+User identifier for tracking purposes.
+
+This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
+Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
+variable that contains the user ID value.

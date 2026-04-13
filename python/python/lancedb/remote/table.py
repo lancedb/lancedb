@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import logging
+from functools import cached_property
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union, Literal
 import warnings
 from datetime import timedelta
-from functools import cached_property
-from typing import Dict, Iterable, List, Literal, Optional, Union
 
 import pyarrow as pa
 
@@ -35,6 +35,7 @@ from lancedb.remote.db import LOOP
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.merge import LanceMergeInsertBuilder
+from lancedb.table import _normalize_progress
 
 from ..query import (
     FullTextQuery,
@@ -224,8 +225,6 @@ class RemoteTable(Table):
         train: bool = True,
     ):
         """Create an index on the table.
-        Currently, the only parameters that matter are
-        the metric and the vector column name.
 
         Parameters
         ----------
@@ -256,11 +255,6 @@ class RemoteTable(Table):
         >>> table.create_index("l2", "vector") # doctest: +SKIP
         """
 
-        if num_sub_vectors is not None:
-            logging.warning(
-                "num_sub_vectors is not supported on LanceDB cloud."
-                "This parameter will be tuned automatically."
-            )
         if accelerator is not None:
             logging.warning(
                 "GPU accelerator is not yet supported on LanceDB cloud."
@@ -321,6 +315,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -343,17 +338,29 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        return LOOP.run(
-            self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def search(
         self,
@@ -662,6 +669,45 @@ class RemoteTable(Table):
 
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
+
+    def prewarm_index(self, name: str) -> None:
+        """Prewarm an index in the table.
+
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to prewarm
+        """
+        return LOOP.run(self._table.prewarm_index(name))
+
+    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """Prewarm data for the table.
+
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        return LOOP.run(self._table.prewarm_data(columns))
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)

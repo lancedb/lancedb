@@ -5,7 +5,7 @@ use arrow::compute::{
     kernels::numeric::{div, sub},
     max, min,
 };
-use arrow_array::{cast::downcast_array, Float32Array, RecordBatch};
+use arrow_array::{Float32Array, RecordBatch, cast::downcast_array};
 use arrow_schema::{DataType, Field, Schema, SortOptions};
 use lance::dataset::ROW_ID;
 use lance_index::{scalar::inverted::SCORE_COL, vector::DIST_COL};
@@ -253,7 +253,10 @@ mod test {
         let result = rank(batch.clone(), "bad_col", None);
         match result {
             Err(Error::InvalidInput { message }) => {
-                assert_eq!("expected column bad_col not found in rank. found columns [\"name\", \"score\"]", message);
+                assert_eq!(
+                    "expected column bad_col not found in rank. found columns [\"name\", \"score\"]",
+                    message
+                );
             }
             _ => {
                 panic!("expected invalid input error, received {:?}", result)

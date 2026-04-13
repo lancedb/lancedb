@@ -4,7 +4,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    iter::repeat,
     sync::Arc,
 };
 
@@ -16,11 +15,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use lancedb::{
-    arrow::IntoArrow,
-    connect,
+    Error, Result, connect,
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
     query::ExecutableQuery,
-    Error, Result,
 };
 
 #[tokio::test]
@@ -254,7 +251,7 @@ async fn test_no_func_in_registry_on_add() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<impl IntoArrow> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 2;
 
     let schema = Arc::new(Schema::new(vec![
@@ -264,16 +261,19 @@ fn create_some_records() -> Result<impl IntoArrow> {
 
     // Create a RecordBatch stream.
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter(
-                    repeat(Some("hello world".to_string())).take(TOTAL),
-                )),
-            ],
-        )
-        .unwrap()]
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(StringArray::from_iter(std::iter::repeat_n(
+                        Some("hello world".to_string()),
+                        TOTAL,
+                    ))),
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),

@@ -3,12 +3,12 @@
 
 use std::sync::Mutex;
 
+use lancedb::index::Index as LanceDbIndex;
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
 };
-use lancedb::index::Index as LanceDbIndex;
 use napi_derive::napi;
 
 use crate::util::parse_distance_type;

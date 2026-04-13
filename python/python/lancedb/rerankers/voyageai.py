@@ -52,6 +52,9 @@ class VoyageAIReranker(Reranker):
         self.api_key = api_key
         self.truncation = truncation
 
+    def __str__(self):
+        return f"VoyageAIReranker(model_name={self.model_name})"
+
     @cached_property
     def _client(self):
         voyageai = attempt_import_or_raise("voyageai")

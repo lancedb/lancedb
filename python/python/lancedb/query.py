@@ -38,6 +38,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
+from .expr import Expr
 from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
@@ -70,7 +71,7 @@ def ensure_vector_query(
 ) -> Union[List[float], List[List[float]], pa.Array, List[pa.Array]]:
     if isinstance(val, list):
         if len(val) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         sample = val[0]
     else:
         if isinstance(val, float):
@@ -83,7 +84,7 @@ def ensure_vector_query(
         return val
     if isinstance(sample, list):
         if len(sample) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         if isinstance(sample[0], float):
             # val is list of list of floats
             return val
@@ -449,8 +450,8 @@ class Query(pydantic.BaseModel):
         ensure_vector_query,
     ] = None
 
-    # sql filter to refine the query with
-    filter: Optional[str] = None
+    # sql filter or type-safe Expr to refine the query with
+    filter: Optional[Union[str, Expr]] = None
 
     # if True then apply the filter after vector search
     postfilter: Optional[bool] = None
@@ -464,8 +465,8 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
-    # which columns to return in the results
-    columns: Optional[Union[List[str], Dict[str, str]]] = None
+    # which columns to return in the results (dict values may be str or Expr)
+    columns: Optional[Union[List[str], Dict[str, Union[str, Expr]]]] = None
 
     # minimum number of IVF partitions to search
     #
@@ -606,6 +607,7 @@ class LanceQueryBuilder(ABC):
                 query,
                 ordering_field_name=ordering_field_name,
                 fts_columns=fts_columns,
+                fast_search=fast_search,
             )
 
         if isinstance(query, list):
@@ -855,14 +857,15 @@ class LanceQueryBuilder(ABC):
             self._offset = offset
         return self
 
-    def select(self, columns: Union[list[str], dict[str, str]]) -> Self:
+    def select(self, columns: Union[list[str], dict[str, Union[str, Expr]]]) -> Self:
         """Set the columns to return.
 
         Parameters
         ----------
-        columns: list of str, or dict of str to str default None
+        columns: list of str, or dict of str to str or Expr
             List of column names to be fetched.
-            Or a dictionary of column names to SQL expressions.
+            Or a dictionary of column names to SQL expressions or
+            :class:`~lancedb.expr.Expr` objects.
             All columns are fetched if None or unspecified.
 
         Returns
@@ -876,15 +879,15 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = True) -> Self:
+    def where(self, where: Union[str, Expr], prefilter: bool = True) -> Self:
         """Set the where clause.
 
         Parameters
         ----------
-        where: str
-            The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
-            for valid SQL expressions.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition.  Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
@@ -961,22 +964,27 @@ class LanceQueryBuilder(ABC):
         >>> query = [100, 100]
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        AnalyzeExec verbose=true, metrics=[], cumulative_cpu=...
-          TracedExec, metrics=[], cumulative_cpu=...
-            ProjectionExec: expr=[...], metrics=[...], cumulative_cpu=...
-              GlobalLimitExec: skip=0, fetch=10, metrics=[...], cumulative_cpu=...
-                FilterExec: _distance@2 IS NOT NULL,
-                metrics=[output_rows=..., elapsed_compute=...], cumulative_cpu=...
-                  SortExec: TopK(fetch=10), expr=[...],
+        AnalyzeExec verbose=true, elapsed=..., metrics=...
+          TracedExec, elapsed=..., metrics=...
+            ProjectionExec: elapsed=..., expr=[...],
+            metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
+              GlobalLimitExec: elapsed=..., skip=0, fetch=10,
+              metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
+                FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
+                  SortExec: elapsed=..., TopK(fetch=10), expr=[...],
                   preserve_partitioning=[...],
-                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...],
-                  cumulative_cpu=...
-                    KNNVectorDistance: metric=l2,
-                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...],
-                    cumulative_cpu=...
-                      LanceRead: uri=..., projection=[vector], ...
-                      metrics=[output_rows=..., elapsed_compute=...,
-                      bytes_read=..., iops=..., requests=...], cumulative_cpu=...
+                  metrics=[output_rows=..., elapsed_compute=...,
+                  output_bytes=..., row_replacements=...]
+                    KNNVectorDistance: elapsed=..., metric=l2,
+                    metrics=[output_rows=..., elapsed_compute=...,
+                    output_bytes=..., output_batches=...]
+                      LanceRead: elapsed=..., uri=..., projection=[vector],
+                      num_fragments=..., range_before=None, range_after=None,
+                      row_id=true, row_addr=false,
+                      full_filter=--, refine_filter=--,
+                      metrics=[output_rows=..., elapsed_compute=..., output_bytes=...,
+                      fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
+                      bytes_read=..., iops=..., requests=..., task_wait_time=...]
 
         Returns
         -------
@@ -1349,15 +1357,17 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = None) -> LanceVectorQueryBuilder:
+    def where(
+        self, where: Union[str, Expr], prefilter: bool = None
+    ) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
         ----------
-        where: str
-            The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
-            for valid SQL expressions.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition.  Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
@@ -1428,6 +1438,19 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._bypass_vector_index = True
         return self
 
+    def fast_search(self) -> LanceVectorQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceVectorQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
@@ -1438,12 +1461,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str | FullTextQuery,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = None,
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        self._fast_search = fast_search
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
@@ -1465,6 +1490,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._phrase_query = phrase_query
         return self
 
+    def fast_search(self) -> LanceFtsQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
@@ -1476,6 +1514,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 query=self._query, columns=self._fts_columns
             ),
             offset=self._offset,
+            fast_search=self._fast_search,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -1763,6 +1802,26 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
+
+        # If both result sets are empty (e.g. after hard filtering),
+        # return early to avoid errors in reranking or score restoration.
+        if vector_results.num_rows == 0 and fts_results.num_rows == 0:
+            # Build a minimal empty table with the _relevance_score column
+            combined_schema = pa.unify_schemas(
+                [vector_results.schema, fts_results.schema],
+            )
+            empty = pa.table(
+                {
+                    col: pa.array([], type=combined_schema.field(col).type)
+                    for col in combined_schema.names
+                }
+            )
+            empty = empty.append_column(
+                "_relevance_score", pa.array([], type=pa.float32())
+            )
+            if not with_row_ids and "_rowid" in empty.column_names:
+                empty = empty.drop(["_rowid"])
+            return empty
 
         original_distances = None
         original_scores = None
@@ -2100,19 +2159,17 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """  # noqa: E501
         self._create_query_builders()
 
-        results = ["Vector Search Plan:"]
-        results.append(
-            self._table._explain_plan(
-                self._vector_query.to_query_object(), verbose=verbose
-            )
+        reranker_label = str(self._reranker) if self._reranker else "No reranker"
+        vector_plan = self._table._explain_plan(
+            self._vector_query.to_query_object(), verbose=verbose
         )
-        results.append("FTS Search Plan:")
-        results.append(
-            self._table._explain_plan(
-                self._fts_query.to_query_object(), verbose=verbose
-            )
+        fts_plan = self._table._explain_plan(
+            self._fts_query.to_query_object(), verbose=verbose
         )
-        return "\n".join(results)
+        # Indent sub-plans under the reranker
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
+        return f"{reranker_label}\n  {indented_vector}\n  {indented_fts}"
 
     def analyze_plan(self):
         """Execute the query and display with runtime metrics.
@@ -2152,8 +2209,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
         if self._where:
-            self._vector_query.where(self._where, self._postfilter)
-            self._fts_query.where(self._where, self._postfilter)
+            self._vector_query.where(self._where, not self._postfilter)
+            self._fts_query.where(self._where, not self._postfilter)
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
@@ -2233,10 +2290,20 @@ class AsyncQueryBase(object):
         """
         if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
             self._inner.select_columns(columns)
-        elif isinstance(columns, dict) and all(
-            isinstance(k, str) and isinstance(v, str) for k, v in columns.items()
-        ):
-            self._inner.select(list(columns.items()))
+        elif isinstance(columns, dict) and all(isinstance(k, str) for k in columns):
+            if any(isinstance(v, Expr) for v in columns.values()):
+                # At least one value is an Expr — use the type-safe path.
+                from .expr import _coerce
+
+                pairs = [(k, _coerce(v)._inner) for k, v in columns.items()]
+                self._inner.select_expr(pairs)
+            elif all(isinstance(v, str) for v in columns.values()):
+                self._inner.select(list(columns.items()))
+            else:
+                raise TypeError(
+                    "dict values must be str or Expr, got "
+                    + str({k: type(v) for k, v in columns.items()})
+                )
         else:
             raise TypeError("columns must be a list of column names or a dict")
         return self
@@ -2476,11 +2543,13 @@ class AsyncStandardQuery(AsyncQueryBase):
         """
         super().__init__(inner)
 
-    def where(self, predicate: str) -> Self:
+    def where(self, predicate: Union[str, Expr]) -> Self:
         """
         Only return rows matching the given predicate
 
-        The predicate should be supplied as an SQL query string.
+        The predicate can be a SQL string or a type-safe
+        :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+        and :func:`~lancedb.expr.lit`.
 
         Examples
         --------
@@ -2492,7 +2561,10 @@ class AsyncStandardQuery(AsyncQueryBase):
         Filtering performance can often be improved by creating a scalar index
         on the filter column(s).
         """
-        self._inner.where(predicate)
+        if isinstance(predicate, Expr):
+            self._inner.where_expr(predicate._inner)
+        else:
+            self._inner.where(predicate)
         return self
 
     def limit(self, limit: int) -> Self:
@@ -3146,23 +3218,20 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ...     plan = await table.query().nearest_to([1.0, 2.0]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        Vector Search Plan:
-        ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
-          Take: columns="vector, _rowid, _distance, (text)"
-            CoalesceBatchesExec: target_batch_size=1024
-              GlobalLimitExec: skip=0, fetch=10
-                FilterExec: _distance@2 IS NOT NULL
-                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
-                    KNNVectorDistance: metric=l2
-                      LanceRead: uri=..., projection=[vector], ...
-        <BLANKLINE>
-        FTS Search Plan:
-        ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
-          Take: columns="_rowid, _score, (vector), (text)"
-            CoalesceBatchesExec: target_batch_size=1024
-              GlobalLimitExec: skip=0, fetch=10
-                MatchQuery: column=text, query=hello
-        <BLANKLINE>
+        RRFReranker(K=60)
+            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+              Take: columns="vector, _rowid, _distance, (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    FilterExec: _distance@2 IS NOT NULL
+                      SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                        KNNVectorDistance: metric=l2
+                          LanceRead: uri=..., projection=[vector], ...
+            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+              Take: columns="_rowid, _score, (vector), (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    MatchQuery: column=text, query=hello
 
         Parameters
         ----------
@@ -3174,12 +3243,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        results = ["Vector Search Plan:"]
-        results.append(await self._inner.to_vector_query().explain_plan(verbose))
-        results.append("FTS Search Plan:")
-        results.append(await self._inner.to_fts_query().explain_plan(verbose))
-
-        return "\n".join(results)
+        vector_plan = await self._inner.to_vector_query().explain_plan(verbose)
+        fts_plan = await self._inner.to_fts_query().explain_plan(verbose)
+        # Indent sub-plans under the reranker
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
+        return f"{self._reranker}\n  {indented_vector}\n  {indented_fts}"
 
     async def analyze_plan(self):
         """

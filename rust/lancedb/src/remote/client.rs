@@ -4,8 +4,8 @@
 use http::HeaderName;
 use log::debug;
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
     Body, Request, RequestBuilder, Response,
+    header::{HeaderMap, HeaderValue},
 };
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
@@ -52,6 +52,13 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// Provider for custom headers to be added to each request
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// User identifier for tracking purposes.
+    ///
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
+    /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
+    /// variable that contains the user ID value.
+    pub user_id: Option<String>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -67,6 +74,7 @@ impl std::fmt::Debug for ClientConfig {
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
+            .field("user_id", &self.user_id)
             .finish()
     }
 }
@@ -81,7 +89,38 @@ impl Default for ClientConfig {
             id_delimiter: None,
             tls_config: None,
             header_provider: None,
+            user_id: None,
         }
+    }
+}
+
+impl ClientConfig {
+    /// Resolve the user ID from the config or environment variables.
+    ///
+    /// Resolution order:
+    /// 1. If `user_id` is set in the config, use that value
+    /// 2. If `LANCEDB_USER_ID` environment variable is set, use that value
+    /// 3. If `LANCEDB_USER_ID_ENV_KEY` is set, read the env var it points to
+    /// 4. Otherwise, return None
+    pub fn resolve_user_id(&self) -> Option<String> {
+        if self.user_id.is_some() {
+            return self.user_id.clone();
+        }
+
+        if let Ok(user_id) = std::env::var("LANCEDB_USER_ID")
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        if let Ok(env_key) = std::env::var("LANCEDB_USER_ID_ENV_KEY")
+            && let Ok(user_id) = std::env::var(&env_key)
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        None
     }
 }
 
@@ -426,14 +465,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 })?,
             );
         }
-        if db_prefix.is_some() {
+        if let Some(prefix) = db_prefix {
             headers.insert(
                 HeaderName::from_static("x-lancedb-database-prefix"),
-                HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
-                    message: format!(
-                        "non-ascii database prefix '{}' provided",
-                        db_prefix.unwrap()
-                    ),
+                HeaderValue::from_str(prefix).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii database prefix '{}' provided", prefix),
                 })?,
             );
         }
@@ -467,6 +503,15 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
+        if let Some(user_id) = config.resolve_user_id() {
+            headers.insert(
+                HeaderName::from_static("x-lancedb-user-id"),
+                HeaderValue::from_str(&user_id).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii user_id '{}' provided", user_id),
+                })?,
+            );
+        }
+
         Ok(headers)
     }
 
@@ -491,7 +536,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 
     /// Apply dynamic headers from the header provider if configured
-    async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
         if let Some(ref provider) = self.header_provider {
             let headers = provider.get_headers().await?;
             let request_headers = request.headers_mut();
@@ -555,7 +600,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             message: "Attempted to retry a request that cannot be cloned".to_string(),
         })?;
         let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
         let request_id = self.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
@@ -571,7 +618,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             }
 
             let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
             self.set_request_id(&mut request, &request_id.clone());
 
             // Apply dynamic headers before each retry attempt
@@ -621,7 +670,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
@@ -646,14 +695,13 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn extract_request_id(&self, request: &mut Request) -> String {
         // Set a request id.
         // TODO: allow the user to supply this, through middleware?
-        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+        if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
             request_id.to_str().unwrap().to_string()
         } else {
             let request_id = uuid::Uuid::new_v4().to_string();
             self.set_request_id(request, &request_id);
             request_id
-        };
-        request_id
+        }
     }
 
     /// Set the request ID header
@@ -720,12 +768,58 @@ pub mod test_utils {
         }
     }
 
+    /// Consume a reqwest body into bytes, returning an error if the body
+    /// stream fails. This is used by MockSender to materialize streaming
+    /// bodies so that data pipeline errors (e.g. NaN rejection) are triggered
+    /// during mock sends just as they would be during a real HTTP upload.
+    pub async fn try_collect_body(body: reqwest::Body) -> std::result::Result<Vec<u8>, String> {
+        use http_body::Body;
+        use std::pin::Pin;
+
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        while let Some(frame) = futures::StreamExt::next(&mut futures::stream::poll_fn(|cx| {
+            body_pin.as_mut().poll_frame(cx)
+        }))
+        .await
+        {
+            match frame {
+                Ok(frame) => {
+                    if let Some(bytes) = frame.data_ref() {
+                        data.extend_from_slice(bytes);
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(data)
+    }
+
     impl HttpSend for MockSender {
         async fn send(
             &self,
             _client: &reqwest::Client,
-            request: reqwest::Request,
+            mut request: reqwest::Request,
         ) -> reqwest::Result<reqwest::Response> {
+            // Consume any streaming body to materialize it into bytes.
+            // This triggers data pipeline errors (e.g. NaN rejection) that
+            // would otherwise only fire when a real HTTP client reads the body.
+            if let Some(body) = request.body_mut().take() {
+                match try_collect_body(body).await {
+                    Ok(bytes) => {
+                        *request.body_mut() = Some(reqwest::Body::from(bytes));
+                    }
+                    Err(msg) => {
+                        // Simulate a failed request by returning a 500 response.
+                        return Ok(http::Response::builder()
+                            .status(500)
+                            .body(msg)
+                            .unwrap()
+                            .into());
+                    }
+                }
+            }
             let response = (self.f)(request);
             Ok(response)
         }
@@ -1024,6 +1118,93 @@ mod tests {
                 assert_eq!(message, "Failed to get headers");
             }
             _ => panic!("Expected Runtime error"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_direct_value() {
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_user_id_none() {
+        let config = ClientConfig::default();
+        // Clear env vars that might be set from other tests
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        assert_eq!(config.resolve_user_id(), None);
+    }
+
+    #[test]
+    fn test_resolve_user_id_from_env() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), Some("env-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_from_env_key() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::set_var("LANCEDB_USER_ID_ENV_KEY", "MY_CUSTOM_USER_ID");
+            std::env::set_var("MY_CUSTOM_USER_ID", "custom-env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(
+            config.resolve_user_id(),
+            Some("custom-env-user-id".to_string())
+        );
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+            std::env::remove_var("MY_CUSTOM_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_direct_takes_precedence() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_empty_env_ignored() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), None);
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
         }
     }
 }

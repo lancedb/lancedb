@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
 use crate::error::{Error, Result};
-use crate::rerankers::{Reranker, RELEVANCE_SCORE};
+use crate::rerankers::{RELEVANCE_SCORE, Reranker};
 
 /// Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
 /// on the scores of vector and FTS search.

@@ -13,6 +13,7 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -30,7 +31,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset
 import pyarrow.fs as pa_fs
-
+from lancedb.scannable import _register_optional_converters, to_scannable
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
 
@@ -275,15 +276,17 @@ def _sanitize_data(
         reader,
         on_bad_vectors=on_bad_vectors,
         fill_value=fill_value,
+        target_schema=target_schema,
+        metadata=metadata,
     )
 
     if target_schema is None:
         target_schema, reader = _infer_target_schema(reader)
 
     if metadata:
-        new_metadata = target_schema.metadata or {}
-        new_metadata = new_metadata.update(metadata)
-        target_schema = target_schema.with_metadata(new_metadata)
+        target_schema = target_schema.with_metadata(
+            _merge_metadata(target_schema.metadata, metadata)
+        )
 
     _validate_schema(target_schema)
     reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
@@ -299,7 +302,7 @@ def _cast_to_target_schema(
     # pa.Table.cast expects field order not to be changed.
     # Lance doesn't care about field order, so we don't need to rearrange fields
     # to match the target schema. We just need to correctly cast the fields.
-    if reader.schema == target_schema:
+    if reader.schema.equals(target_schema, check_metadata=True):
         # Fast path when the schemas are already the same
         return reader
 
@@ -319,7 +322,13 @@ def _cast_to_target_schema(
     def gen():
         for batch in reader:
             # Table but not RecordBatch has cast.
-            yield pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()[0]
+            cast_batches = (
+                pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
+            )
+            if cast_batches:
+                yield pa.RecordBatch.from_arrays(
+                    cast_batches[0].columns, schema=reordered_schema
+                )
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
@@ -337,37 +346,51 @@ def _align_field_types(
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
         if pa.types.is_struct(target_field.type):
-            new_type = pa.struct(
-                _align_field_types(
-                    field.type.fields,
-                    target_field.type.fields,
+            if pa.types.is_struct(field.type):
+                new_type = pa.struct(
+                    _align_field_types(
+                        field.type.fields,
+                        target_field.type.fields,
+                    )
                 )
-            )
+            else:
+                new_type = target_field.type
         elif pa.types.is_list(target_field.type):
-            new_type = pa.list_(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0]
-            )
+            if _is_list_like(field.type):
+                new_type = pa.list_(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0]
+                )
+            else:
+                new_type = target_field.type
         elif pa.types.is_large_list(target_field.type):
-            new_type = pa.large_list(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0]
-            )
+            if _is_list_like(field.type):
+                new_type = pa.large_list(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0]
+                )
+            else:
+                new_type = target_field.type
         elif pa.types.is_fixed_size_list(target_field.type):
-            new_type = pa.list_(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0],
-                target_field.type.list_size,
-            )
+            if _is_list_like(field.type):
+                new_type = pa.list_(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0],
+                    target_field.type.list_size,
+                )
+            else:
+                new_type = target_field.type
         else:
             new_type = target_field.type
-        new_fields.append(pa.field(field.name, new_type, field.nullable))
+        new_fields.append(
+            pa.field(field.name, new_type, field.nullable, target_field.metadata)
+        )
     return new_fields
 
 
@@ -445,6 +468,7 @@ def sanitize_create_table(
             schema = data.schema
 
     if metadata:
+        metadata = _merge_metadata(schema.metadata, metadata)
         schema = schema.with_metadata(metadata)
         # Need to apply metadata to the data as well
         if isinstance(data, pa.Table):
@@ -497,9 +521,9 @@ def _append_vector_columns(
     vector columns to the table.
     """
     if schema is None:
-        metadata = metadata or {}
+        metadata = _merge_metadata(metadata)
     else:
-        metadata = schema.metadata or metadata or {}
+        metadata = _merge_metadata(schema.metadata, metadata)
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
 
     if not functions:
@@ -559,6 +583,21 @@ def _table_path(base: str, table_name: str) -> str:
 
 def _table_uri(base: str, table_name: str) -> str:
     return join_uri(base, f"{table_name}.lance")
+
+
+def _normalize_progress(progress):
+    """Normalize a ``progress`` parameter for :meth:`Table.add`.
+
+    Returns ``(progress_obj, owns)`` where *owns* is True when we created a
+    tqdm bar that the caller must close.
+    """
+    if progress is True:
+        from tqdm.auto import tqdm
+
+        return tqdm(unit=" rows"), True
+    if progress is False or progress is None:
+        return None, False
+    return progress, False
 
 
 class Table(ABC):
@@ -911,7 +950,9 @@ class Table(ABC):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
-            can be only str if use_tantivy=True for now.
+            If ``use_tantivy`` is False (default), only a single field name
+            (str) is supported. To index multiple fields, create a separate
+            FTS index for each field.
         replace: bool, default False
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
@@ -977,6 +1018,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -998,6 +1040,29 @@ class Table(ABC):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            Progress reporting during the add operation. Can be:
+
+            - ``True`` to automatically create and display a tqdm progress
+              bar (requires ``tqdm`` to be installed)::
+
+                table.add(data, progress=True)
+
+            - A **callable** that receives a dict with keys ``output_rows``,
+              ``output_bytes``, ``total_rows``, ``elapsed_seconds``,
+              ``active_tasks``, ``total_tasks``, and ``done``::
+
+                def on_progress(p):
+                    print(f"{p['output_rows']}/{p['total_rows']} rows, "
+                          f"{p['active_tasks']}/{p['total_tasks']} workers")
+                table.add(data, progress=on_progress)
+
+            - A **tqdm-compatible** progress bar whose ``total`` and
+              ``update()`` will be called automatically. The postfix shows
+              write throughput (MB/s) and active worker count::
+
+                with tqdm() as pbar:
+                    table.add(data, progress=pbar)
 
         Returns
         -------
@@ -1334,7 +1399,7 @@ class Table(ABC):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -1348,7 +1413,7 @@ class Table(ABC):
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -1509,22 +1574,17 @@ class Table(ABC):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -1744,29 +1804,34 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
+        pushdown_operations: Optional[set] = None,
         _async: AsyncTable = None,
     ):
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         self._conn = connection
-        self._namespace = namespace
+        self._namespace_path = namespace_path
         self._location = location  # Store location for use in _dataset_path
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
         if _async is not None:
             self._table = _async
         else:
             self._table = LOOP.run(
                 connection._conn.open_table(
                     name,
-                    namespace=namespace,
+                    namespace_path=namespace_path,
                     storage_options=storage_options,
-                    storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
                     location=location,
+                    namespace_client=namespace_client,
+                    managed_versioning=managed_versioning,
                 )
             )
 
@@ -1777,13 +1842,13 @@ class LanceTable(Table):
     @property
     def namespace(self) -> List[str]:
         """Return the namespace path of the table."""
-        return self._namespace
+        return self._namespace_path
 
     @property
     def id(self) -> str:
         """Return the full identifier of the table (namespace$name)."""
-        if self._namespace:
-            return "$".join(self._namespace + [self.name])
+        if self._namespace_path:
+            return "$".join(self._namespace_path + [self.name])
         return self.name
 
     @classmethod
@@ -1804,22 +1869,26 @@ class LanceTable(Table):
         db,
         name,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
+        pushdown_operations: Optional[set] = None,
     ):
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         tbl = cls(
             db,
             name,
-            namespace=namespace,
+            namespace_path=namespace_path,
             storage_options=storage_options,
-            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
+            namespace_client=namespace_client,
+            managed_versioning=managed_versioning,
+            pushdown_operations=pushdown_operations,
         )
 
         # check the dataset exists
@@ -1849,6 +1918,16 @@ class LanceTable(Table):
             raise ImportError(
                 "The lance library is required to use this function. "
                 "Please install with `pip install pylance`."
+            )
+
+        if self._namespace_client is not None:
+            table_id = self._namespace_path + [self.name]
+            return lance.dataset(
+                version=self.version,
+                storage_options=self._conn.storage_options,
+                namespace_client=self._namespace_client,
+                table_id=table_id,
+                **kwargs,
             )
 
         return lance.dataset(
@@ -2203,12 +2282,18 @@ class LanceTable(Table):
 
     def prewarm_index(self, name: str) -> None:
         """
-        Prewarms an index in the table
+        Prewarm an index in the table.
 
-        This loads the entire index into memory
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
 
-        If the index does not fit into the available cache this call
-        may be wasteful
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
 
         Parameters
         ----------
@@ -2216,6 +2301,29 @@ class LanceTable(Table):
             The name of the index to prewarm
         """
         return LOOP.run(self._table.prewarm_index(name))
+
+    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data for the table.
+
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        return LOOP.run(self._table.prewarm_data(columns))
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -2228,6 +2336,37 @@ class LanceTable(Table):
     @property
     def uri(self) -> str:
         return LOOP.run(self._table.uri())
+
+    def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.initial_storage_options())
+
+    def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.latest_storage_options())
 
     def create_scalar_index(
         self,
@@ -2274,7 +2413,11 @@ class LanceTable(Table):
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
-                raise ValueError("field_names must be a string when use_tantivy=False")
+                raise ValueError(
+                    "Native FTS indexes can only be created on a single field "
+                    "at a time. To search over multiple text fields, create a "
+                    "separate FTS index for each field."
+                )
 
             if tokenizer_name is None:
                 tokenizer_configs = {
@@ -2417,6 +2560,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2435,17 +2579,29 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
         int
             The number of vectors in the table.
         """
-        return LOOP.run(
-            self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def merge(
         self,
@@ -2676,12 +2832,13 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str | bool]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
     ):
         """
         Create a new table.
@@ -2736,12 +2893,14 @@ class LanceTable(Table):
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
         """
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         self = cls.__new__(cls)
         self._conn = db
-        self._namespace = namespace
+        self._namespace_path = namespace_path
         self._location = location
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2774,9 +2933,8 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
-                namespace=namespace,
+                namespace_path=namespace_path,
                 storage_options=storage_options,
-                storage_options_provider=storage_options_provider,
                 location=location,
             )
         )
@@ -2845,6 +3003,15 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        if (
+            "QueryTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_query
+
+            table_id = self._namespace_path + [self.name]
+            return _execute_server_side_query(self._namespace_client, table_id, query)
+
         async_iter = LOOP.run(
             self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
         )
@@ -2966,22 +3133,17 @@ class LanceTable(Table):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -3079,43 +3241,157 @@ def _handle_bad_vectors(
     reader: pa.RecordBatchReader,
     on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
     fill_value: float = 0.0,
+    target_schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None,
 ) -> pa.RecordBatchReader:
-    vector_columns = []
+    vector_columns = _find_vector_columns(reader.schema, target_schema, metadata)
+    if not vector_columns:
+        return reader
 
-    for field in reader.schema:
-        # They can provide a 'vector' column that isn't yet a FSL
-        named_vector_col = (
-            (
-                pa.types.is_list(field.type)
-                or pa.types.is_large_list(field.type)
-                or pa.types.is_fixed_size_list(field.type)
-            )
-            and pa.types.is_floating(field.type.value_type)
-            and field.name == VECTOR_COLUMN_NAME
-        )
-        # TODO: we're making an assumption that fixed size list of 10 or more
-        # is a vector column. This is definitely a bit hacky.
-        likely_vector_col = (
-            pa.types.is_fixed_size_list(field.type)
-            and pa.types.is_floating(field.type.value_type)
-            and (field.type.list_size >= 10)
-        )
-
-        if named_vector_col or likely_vector_col:
-            vector_columns.append(field.name)
+    output_schema = _vector_output_schema(reader.schema, vector_columns)
 
     def gen():
         for batch in reader:
-            for name in vector_columns:
+            pending_dims = []
+            for vector_column in vector_columns:
+                dim = vector_column["expected_dim"]
+                if target_schema is not None and dim is None:
+                    dim = _infer_vector_dim(batch[vector_column["name"]])
+                    pending_dims.append(vector_column)
                 batch = _handle_bad_vector_column(
                     batch,
-                    vector_column_name=name,
+                    vector_column_name=vector_column["name"],
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
+                    expected_dim=dim,
+                    expected_value_type=vector_column["expected_value_type"],
                 )
-            yield batch
+            for vector_column in pending_dims:
+                if vector_column["expected_dim"] is None:
+                    vector_column["expected_dim"] = _infer_vector_dim(
+                        batch[vector_column["name"]]
+                    )
+            if batch.schema.equals(output_schema, check_metadata=True):
+                yield batch
+                continue
 
-    return pa.RecordBatchReader.from_batches(reader.schema, gen())
+            cast_batches = (
+                pa.Table.from_batches([batch]).cast(output_schema).to_batches()
+            )
+            if cast_batches:
+                yield pa.RecordBatch.from_arrays(
+                    cast_batches[0].columns,
+                    schema=output_schema,
+                )
+
+    return pa.RecordBatchReader.from_batches(output_schema, gen())
+
+
+def _find_vector_columns(
+    reader_schema: pa.Schema,
+    target_schema: Optional[pa.Schema],
+    metadata: Optional[dict],
+) -> List[dict]:
+    if target_schema is None:
+        vector_columns = []
+        for field in reader_schema:
+            named_vector_col = (
+                _is_list_like(field.type)
+                and pa.types.is_floating(field.type.value_type)
+                and field.name == VECTOR_COLUMN_NAME
+            )
+            likely_vector_col = (
+                pa.types.is_fixed_size_list(field.type)
+                and pa.types.is_floating(field.type.value_type)
+                and (field.type.list_size >= 10)
+            )
+            if named_vector_col or likely_vector_col:
+                vector_columns.append(
+                    {
+                        "name": field.name,
+                        "expected_dim": None,
+                        "expected_value_type": None,
+                    }
+                )
+        return vector_columns
+
+    reader_column_names = set(reader_schema.names)
+    active_metadata = _merge_metadata(target_schema.metadata, metadata)
+    embedding_function_columns = set(
+        EmbeddingFunctionRegistry.get_instance().parse_functions(active_metadata).keys()
+    )
+    vector_columns = []
+    for field in target_schema:
+        if field.name not in reader_column_names:
+            continue
+        if not _is_list_like(field.type) or not pa.types.is_floating(
+            field.type.value_type
+        ):
+            continue
+
+        reader_field = reader_schema.field(field.name)
+        named_vector_col = (
+            field.name in embedding_function_columns
+            or field.name == VECTOR_COLUMN_NAME
+            or (field.name == "embedding" and pa.types.is_fixed_size_list(field.type))
+        )
+        typed_fixed_vector_col = (
+            pa.types.is_fixed_size_list(reader_field.type)
+            and pa.types.is_floating(reader_field.type.value_type)
+            and reader_field.type.list_size >= 10
+        )
+
+        if named_vector_col or typed_fixed_vector_col:
+            vector_columns.append(
+                {
+                    "name": field.name,
+                    "expected_dim": (
+                        field.type.list_size
+                        if pa.types.is_fixed_size_list(field.type)
+                        else None
+                    ),
+                    "expected_value_type": field.type.value_type,
+                }
+            )
+
+    return vector_columns
+
+
+def _vector_output_schema(
+    reader_schema: pa.Schema,
+    vector_columns: List[dict],
+) -> pa.Schema:
+    columns_by_name = {column["name"]: column for column in vector_columns}
+    fields = []
+    for field in reader_schema:
+        column = columns_by_name.get(field.name)
+        if column is None:
+            output_type = field.type
+        else:
+            output_type = _vector_output_type(field, column)
+        fields.append(pa.field(field.name, output_type, field.nullable, field.metadata))
+    return pa.schema(fields, metadata=reader_schema.metadata)
+
+
+def _vector_output_type(field: pa.Field, vector_column: dict) -> pa.DataType:
+    if not _is_list_like(field.type):
+        return field.type
+
+    if vector_column["expected_value_type"] is not None and (
+        pa.types.is_null(field.type.value_type)
+        or pa.types.is_integer(field.type.value_type)
+        or pa.types.is_unsigned_integer(field.type.value_type)
+    ):
+        return pa.list_(vector_column["expected_value_type"])
+
+    if (
+        vector_column["expected_dim"] is not None
+        and pa.types.is_fixed_size_list(field.type)
+        and field.type.list_size != vector_column["expected_dim"]
+    ):
+        return pa.list_(field.type.value_type)
+
+    return field.type
 
 
 def _handle_bad_vector_column(
@@ -3123,6 +3399,8 @@ def _handle_bad_vector_column(
     vector_column_name: str,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
+    expected_dim: Optional[int] = None,
+    expected_value_type: Optional[pa.DataType] = None,
 ) -> pa.RecordBatch:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
@@ -3139,14 +3417,39 @@ def _handle_bad_vector_column(
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
+    position = data.column_names.index(vector_column_name)
     vec_arr = data[vector_column_name]
+    if not _is_list_like(vec_arr.type):
+        return data
 
-    has_nan = has_nan_values(vec_arr)
+    if (
+        expected_dim is not None
+        and pa.types.is_fixed_size_list(vec_arr.type)
+        and vec_arr.type.list_size != expected_dim
+    ):
+        vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(vec_arr.type.value_type))
+        data = data.set_column(position, vector_column_name, vec_arr)
 
-    if pa.types.is_fixed_size_list(vec_arr.type):
+    if expected_value_type is not None and (
+        pa.types.is_integer(vec_arr.type.value_type)
+        or pa.types.is_unsigned_integer(vec_arr.type.value_type)
+    ):
+        vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(expected_value_type))
+        data = data.set_column(position, vector_column_name, vec_arr)
+
+    if pa.types.is_floating(vec_arr.type.value_type):
+        has_nan = has_nan_values(vec_arr)
+    else:
+        has_nan = pa.array([False] * len(vec_arr))
+
+    if expected_dim is not None:
+        dim = expected_dim
+    elif pa.types.is_fixed_size_list(vec_arr.type):
         dim = vec_arr.type.list_size
     else:
-        dim = _modal_list_size(vec_arr)
+        dim = _infer_vector_dim(vec_arr)
+        if dim is None:
+            return data
     has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
@@ -3184,13 +3487,12 @@ def _handle_bad_vector_column(
                 )
             vec_arr = pc.if_else(
                 is_bad,
-                pa.scalar([fill_value] * dim),
+                pa.scalar([fill_value] * dim, type=vec_arr.type),
                 vec_arr,
             )
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
-    position = data.column_names.index(vector_column_name)
     return data.set_column(position, vector_column_name, vec_arr)
 
 
@@ -3209,6 +3511,28 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
+
+
+def _is_list_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    )
+
+
+def _merge_metadata(*metadata_dicts: Optional[dict]) -> dict:
+    merged = {}
+    for metadata in metadata_dicts:
+        if metadata is None:
+            continue
+        for key, value in metadata.items():
+            if isinstance(key, str):
+                key = key.encode("utf-8")
+            if isinstance(value, str):
+                value = value.encode("utf-8")
+            merged[key] = value
+    return merged
 
 
 def _name_suggests_vector_column(field_name: str) -> bool:
@@ -3276,6 +3600,16 @@ def _infer_target_schema(
 def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
     # Use the most common length of the list as the dimensions
     return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+
+
+def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:
+    if not _is_list_like(arr.type):
+        return None
+    lengths = pc.list_value_length(arr)
+    lengths = pc.filter(lengths, pc.greater(lengths, 0))
+    if len(lengths) == 0:
+        return None
+    return pc.mode(lengths)[0].as_py()["mode"]
 
 
 def _validate_schema(schema: pa.Schema):
@@ -3582,18 +3916,46 @@ class AsyncTable:
         """
         Prewarm an index in the table.
 
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
+
         Parameters
         ----------
         name: str
             The name of the index to prewarm
-
-        Notes
-        -----
-        This will load the index into memory.  This may reduce the cold-start time for
-        future queries.  If the index does not fit in the cache then this call may be
-        wasteful.
         """
         await self._inner.prewarm_index(name)
+
+    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data for the table.
+
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        await self._inner.prewarm_data(columns)
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -3632,6 +3994,37 @@ class AsyncTable:
         """
         return await self._inner.uri()
 
+    async def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.initial_storage_options()
+
+    async def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.latest_storage_options()
+
     async def add(
         self,
         data: DATA,
@@ -3639,6 +4032,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3660,6 +4054,9 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: callable or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         """
         schema = await self.schema()
@@ -3667,18 +4064,41 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data = _sanitize_data(
-            data,
-            schema,
-            metadata=schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            allow_subschema=True,
-        )
-        if isinstance(data, pa.Table):
-            data = data.to_reader()
 
-        return await self._inner.add(data, mode or "append")
+        # _santitize_data is an old code path, but we will use it until the
+        # new code path is ready.
+        if mode == "overwrite":
+            # For overwrite, apply the same preprocessing as create_table
+            # so vector columns are inferred as FixedSizeList.
+            data, _ = sanitize_create_table(
+                data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            )
+        elif on_bad_vectors != "error" or (
+            schema.metadata is not None and b"embedding_functions" in schema.metadata
+        ):
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=schema.metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                allow_subschema=True,
+            )
+        _register_optional_converters()
+        data = to_scannable(data)
+        progress, owns = _normalize_progress(progress)
+        try:
+            return await self._inner.add(data, mode or "append", progress=progress)
+        except RuntimeError as e:
+            if "Cast error" in str(e):
+                raise ValueError(e)
+            elif "Vector column contains NaN" in str(e):
+                raise ValueError(e)
+            else:
+                raise
+        finally:
+            if owns:
+                progress.close()
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -4001,7 +4421,7 @@ class AsyncTable:
             async_query = async_query.offset(query.offset)
         if query.columns:
             async_query = async_query.select(query.columns)
-        if query.filter:
+        if query.filter is not None:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
@@ -4140,7 +4560,7 @@ class AsyncTable:
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -4154,7 +4574,7 @@ class AsyncTable:
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -4477,22 +4897,17 @@ class AsyncTable:
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -4613,7 +5028,16 @@ class IndexStatistics:
     num_indexed_rows: int
     num_unindexed_rows: int
     index_type: Literal[
-        "IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "FTS", "BTREE", "BITMAP", "LABEL_LIST"
+        "IVF_FLAT",
+        "IVF_SQ",
+        "IVF_PQ",
+        "IVF_RQ",
+        "IVF_HNSW_SQ",
+        "IVF_HNSW_PQ",
+        "FTS",
+        "BTREE",
+        "BITMAP",
+        "LABEL_LIST",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

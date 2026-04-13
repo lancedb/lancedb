@@ -63,6 +63,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       tableFromIPC,
       DataType,
       Dictionary,
+      Uint8: ArrowUint8,
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     } = <any>arrow;
     type Schema = ApacheArrow["Schema"];
@@ -360,6 +361,38 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(
           table.getChild("fp64")?.type.children[0].type.toString(),
         ).toEqual(new Float64().toString());
+      });
+
+      it("will infer FixedSizeList<Float32> from Float32Array values", async function () {
+        const table = makeArrowTable([
+          { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
+          { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
+        ]);
+
+        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+          true,
+        );
+        const vectorType = table.getChild("vector")?.type;
+        expect(vectorType.listSize).toBe(3);
+        expect(vectorType.children[0].type.toString()).toEqual(
+          new Float32().toString(),
+        );
+      });
+
+      it("will infer FixedSizeList<Uint8> from Uint8Array values", async function () {
+        const table = makeArrowTable([
+          { id: "a", vector: new Uint8Array([1, 2, 3]) },
+          { id: "b", vector: new Uint8Array([4, 5, 6]) },
+        ]);
+
+        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+          true,
+        );
+        const vectorType = table.getChild("vector")?.type;
+        expect(vectorType.listSize).toBe(3);
+        expect(vectorType.children[0].type.toString()).toEqual(
+          new ArrowUint8().toString(),
+        );
       });
 
       it("will use dictionary encoded strings if asked", async function () {

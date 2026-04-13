@@ -517,19 +517,36 @@ def test_ollama_embedding(tmp_path):
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-def test_voyageai_embedding_function():
-    voyageai = get_registry().get("voyageai").create(name="voyage-3", max_retries=0)
+@pytest.mark.parametrize(
+    "model_name,expected_dims",
+    [
+        ("voyage-3", 1024),
+        ("voyage-4", 1024),
+        ("voyage-4-lite", 1024),
+        ("voyage-4-large", 1024),
+    ],
+)
+def test_voyageai_embedding_function(model_name, expected_dims, tmp_path):
+    """Integration test for VoyageAI text embedding models with real API calls."""
+    voyageai = get_registry().get("voyageai").create(name=model_name, max_retries=0)
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()
         vector: Vector(voyageai.ndims()) = voyageai.VectorField()
 
     df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect("~/lancedb")
+    db = lancedb.connect(tmp_path)
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == expected_dims, (
+        f"{model_name} should have {expected_dims} dimensions"
+    )
+
+    # Test search functionality
+    result = tbl.search("hello").limit(1).to_pandas()
+    assert result["text"][0] == "hello world"
 
 
 @pytest.mark.slow

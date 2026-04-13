@@ -1,27 +1,27 @@
-#Simple base dockerfile that supports basic dependencies required to run lance with FTS and Hybrid Search
-#Usage docker build -t lancedb:latest -f Dockerfile .
-FROM python:3.10-slim-buster
+# Simple base dockerfile that supports basic dependencies required to run lance with FTS and Hybrid Search
+# Usage: docker build -t lancedb:latest -f Dockerfile .
+FROM python:3.12-slim-bookworm
 
-# Install Rust
-RUN apt-get update && apt-get install -y curl build-essential && \
-  curl https://sh.rustup.rs -sSf | sh -s -- -y
-
-# Set the environment variable for Rust
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install protobuf compiler
-RUN apt-get install -y protobuf-compiler && \
+# Install build dependencies in a single layer
+RUN apt-get update && \
+  apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    protobuf-compiler \
+    git \
+    ca-certificates && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
-RUN apt-get -y update &&\
-  apt-get -y upgrade && \
-  apt-get -y install git
+# Install Rust (pinned installer, non-interactive)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 
+# Set the environment variable for Rust
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Verify installations
 RUN python --version && \
   rustc --version && \
   protoc --version
 
-RUN pip install tantivy lancedb
+RUN pip install --no-cache-dir tantivy lancedb

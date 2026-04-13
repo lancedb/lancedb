@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use lancedb::{ObjectStoreRegistry, Session as LanceSession};
-use pyo3::{pyclass, pymethods, PyResult};
+use pyo3::{PyResult, pyclass, pymethods};
 
 /// A session for managing caches and object stores across LanceDB operations.
 ///

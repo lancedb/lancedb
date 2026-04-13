@@ -273,7 +273,9 @@ export async function connect(
   let nativeProvider: NativeJsHeaderProvider | undefined;
   if (finalHeaderProvider) {
     if (typeof finalHeaderProvider === "function") {
-      nativeProvider = new NativeJsHeaderProvider(finalHeaderProvider);
+      nativeProvider = new NativeJsHeaderProvider(async () =>
+        finalHeaderProvider(),
+      );
     } else if (
       finalHeaderProvider &&
       typeof finalHeaderProvider.getHeaders === "function"

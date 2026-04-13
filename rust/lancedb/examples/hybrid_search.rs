@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use arrow_array::{RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
-use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::index::Index;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::{
-    arrow::IntoArrow,
-    connect,
+    Result, Table, connect,
     embeddings::{
-        sentence_transformers::SentenceTransformersEmbeddings, EmbeddingDefinition,
-        EmbeddingFunction,
+        EmbeddingDefinition, EmbeddingFunction,
+        sentence_transformers::SentenceTransformersEmbeddings,
     },
     query::{QueryBase, QueryExecutionOptions},
-    Result, Table,
 };
 use std::{iter::once, sync::Arc};
 
@@ -70,7 +68,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn make_data() -> impl IntoArrow {
+fn make_data() -> RecordBatch {
     let schema = Schema::new(vec![Field::new("facts", DataType::Utf8, false)]);
 
     let facts = StringArray::from_iter_values(vec![
@@ -101,8 +99,7 @@ fn make_data() -> impl IntoArrow {
         "The first chatbot was ELIZA, created in the 1960s.",
     ]);
     let schema = Arc::new(schema);
-    let rb = RecordBatch::try_new(schema.clone(), vec![Arc::new(facts)]).unwrap();
-    Box::new(RecordBatchIterator::new(vec![Ok(rb)], schema))
+    RecordBatch::try_new(schema.clone(), vec![Arc::new(facts)]).unwrap()
 }
 
 async fn create_index(table: &Table) -> Result<()> {

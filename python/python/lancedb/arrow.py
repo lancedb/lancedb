@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from functools import singledispatch
 from typing import List, Optional, Tuple, Union
 
+from lancedb.pydantic import LanceModel, model_to_dict
 import pyarrow as pa
 
 from ._lancedb import RecordBatchStream
@@ -80,3 +82,32 @@ def peek_reader(
         yield from reader
 
     return batch, pa.RecordBatchReader.from_batches(batch.schema, all_batches())
+
+
+@singledispatch
+def to_arrow(data) -> pa.Table:
+    """Convert a single data object to a pa.Table."""
+    raise NotImplementedError(f"to_arrow not implemented for type {type(data)}")
+
+
+@to_arrow.register(pa.RecordBatch)
+def _arrow_from_batch(data: pa.RecordBatch) -> pa.Table:
+    return pa.Table.from_batches([data])
+
+
+@to_arrow.register(pa.Table)
+def _arrow_from_table(data: pa.Table) -> pa.Table:
+    return data
+
+
+@to_arrow.register(list)
+def _arrow_from_list(data: list) -> pa.Table:
+    if not data:
+        raise ValueError("Cannot create table from empty list without a schema")
+
+    if isinstance(data[0], LanceModel):
+        schema = data[0].__class__.to_arrow_schema()
+        dicts = [model_to_dict(d) for d in data]
+        return pa.Table.from_pylist(dicts, schema=schema)
+
+    return pa.Table.from_pylist(data)

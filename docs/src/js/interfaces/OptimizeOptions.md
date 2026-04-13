@@ -37,3 +37,12 @@ tbl.optimize({cleanupOlderThan: new Date()});
 ```ts
 deleteUnverified: boolean;
 ```
+
+Because they may be part of an in-progress transaction, files newer than
+7 days old are not deleted by default. If you are sure that there are no
+in-progress transactions, then you can set this to true to delete all
+files older than `cleanupOlderThan`.
+
+**WARNING**: This should only be set to true if you can guarantee that
+no other process is currently working on this dataset. Otherwise the
+dataset could be put into a corrupted state.

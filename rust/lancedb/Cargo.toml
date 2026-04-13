@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.24.0"
+version = "0.28.0-beta.5"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -25,6 +25,9 @@ datafusion-catalog.workspace = true
 datafusion-common.workspace = true
 datafusion-execution.workspace = true
 datafusion-expr.workspace = true
+datafusion-functions.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion-sql.workspace = true
 datafusion-physical-plan.workspace = true
 datafusion.workspace = true
 object_store = { workspace = true }

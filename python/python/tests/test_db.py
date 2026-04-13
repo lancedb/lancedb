@@ -3,6 +3,7 @@
 
 
 import re
+import sys
 from datetime import timedelta
 import os
 
@@ -183,8 +184,8 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     result = list(tmp_db.table_names("test2", limit=2))
     assert result == ["test3"], f"Expected ['test3'], got {result}"
 
-    # Test that namespace parameter can be passed as keyword
-    result = list(tmp_db.table_names(namespace=[]))
+    # Test that namespace_path parameter can be passed as keyword
+    result = list(tmp_db.table_names(namespace_path=[]))
     assert len(result) == 3
 
 
@@ -896,42 +897,22 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
 
 
 def test_local_namespace_operations(tmp_path):
-    """Test that local mode namespace operations behave as expected."""
-    # Create a local database connection
+    """Test that local mode namespace operations work via directory namespace."""
     db = lancedb.connect(tmp_path)
 
-    # Test list_namespaces returns empty list for root namespace
-    namespaces = db.list_namespaces().namespaces
-    assert namespaces == []
+    # Root namespace starts empty
+    assert db.list_namespaces().namespaces == []
 
-    # Test list_namespaces with non-empty namespace raises NotImplementedError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.list_namespaces(namespace=["test"])
+    # Create and list child namespace
+    db.create_namespace(["child"])
+    assert "child" in db.list_namespaces().namespaces
 
+    # List namespaces under child
+    assert db.list_namespaces(namespace_path=["child"]).namespaces == []
 
-def test_local_create_namespace_not_supported(tmp_path):
-    """Test that create_namespace is not supported in local mode."""
-    db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.create_namespace(["test_namespace"])
-
-
-def test_local_drop_namespace_not_supported(tmp_path):
-    """Test that drop_namespace is not supported in local mode."""
-    db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.drop_namespace(["test_namespace"])
+    # Drop namespace
+    db.drop_namespace(["child"])
+    assert db.list_namespaces().namespaces == []
 
 
 def test_clone_table_latest_version(tmp_path):
@@ -1048,3 +1029,59 @@ def test_clone_table_deep_clone_fails(tmp_path):
     source_uri = os.path.join(tmp_path, "source.lance")
     with pytest.raises(Exception, match="Deep clone is not yet implemented"):
         db.clone_table("cloned", source_uri, is_shallow=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_native_storage(tmp_path):
+    """Test namespace_client() returns DirectoryNamespace for native storage."""
+    from lance.namespace import DirectoryNamespace
+
+    db = lancedb.connect(tmp_path)
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+    assert str(tmp_path) in ns_client.namespace_id()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_with_storage_options(tmp_path):
+    """Test namespace_client() preserves storage options."""
+    from lance.namespace import DirectoryNamespace
+
+    storage_options = {"timeout": "10s"}
+    db = lancedb.connect(tmp_path, storage_options=storage_options)
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_operations(tmp_path):
+    """Test that namespace_client() returns a functional namespace client."""
+    db = lancedb.connect(tmp_path)
+    ns_client = db.namespace_client()
+
+    # Create a table through the main db connection
+    data = [{"id": 1, "text": "hello", "vector": [1.0, 2.0]}]
+    db.create_table("test_table", data=data)
+
+    # Verify the namespace client can see the table
+    from lance_namespace import ListTablesRequest
+
+    # id=[] means root namespace
+    response = ns_client.list_tables(ListTablesRequest(id=[]))
+    # Tables can be strings or objects with name attribute
+    table_names = [t.name if hasattr(t, "name") else t for t in response.tables]
+    assert "test_table" in table_names
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_namespace_connection(tmp_path):
+    """Test namespace_client() returns the backing client for namespace connections."""
+    from lance.namespace import DirectoryNamespace
+
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+    assert str(tmp_path) in ns_client.namespace_id()

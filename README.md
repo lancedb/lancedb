@@ -66,7 +66,7 @@ Follow the [Quickstart](https://lancedb.com/docs/quickstart/) doc to set up Lanc
 | Python SDK | https://lancedb.github.io/lancedb/python/python/ |
 | Typescript SDK | https://lancedb.github.io/lancedb/js/globals/ |
 | Rust SDK | https://docs.rs/lancedb/latest/lancedb/index.html |
-| REST API | https://docs.lancedb.com/api-reference/introduction |
+| REST API | https://docs.lancedb.com/api-reference/rest |
 
 ## **Join Us and Contribute**
 

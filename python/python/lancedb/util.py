@@ -324,6 +324,16 @@ def _(value: list):
     return "[" + ", ".join(map(value_to_sql, value)) + "]"
 
 
+@value_to_sql.register(dict)
+def _(value: dict):
+    # https://datafusion.apache.org/user-guide/sql/scalar_functions.html#named-struct
+    return (
+        "named_struct("
+        + ", ".join(f"'{k}', {value_to_sql(v)}" for k, v in value.items())
+        + ")"
+    )
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
@@ -419,3 +429,22 @@ def batch_to_tensor(batch: pa.RecordBatch):
     """
     torch = attempt_import_or_raise("torch", "torch")
     return torch.stack([torch.from_dlpack(col) for col in batch.columns])
+
+
+def batch_to_tensor_rows(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a list of PyTorch Tensor, one per row
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.  The 2D tensor
+    is then converted to a list of tensors, one per row
+
+    Fails if torch or numpy is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    numpy = attempt_import_or_raise("numpy", "numpy")
+    columns = [col.to_numpy(zero_copy_only=False) for col in batch.columns]
+    stacked = torch.tensor(numpy.column_stack(columns))
+    rows = list(stacked.unbind(dim=0))
+    return rows

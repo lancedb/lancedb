@@ -3,6 +3,10 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod cast;
+pub mod insert;
+pub mod reject_nan;
+pub mod scannable_exec;
 pub mod udtf;
 
 use std::{collections::HashMap, sync::Arc};
@@ -13,16 +17,17 @@ use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType, dml::InsertOp};
 use datafusion_physical_plan::{
-    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, stream::RecordBatchStreamAdapter,
 };
 use futures::{TryFutureExt, TryStreamExt};
+use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
+    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
 };
 use arrow_schema::{DataType, Field};
 use lance_index::scalar::FullTextSearchQuery;
@@ -250,6 +255,33 @@ impl TableProvider for BaseTableAdapter {
         // TODO
         None
     }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let mode = match insert_op {
+            InsertOp::Append => WriteMode::Append,
+            InsertOp::Overwrite => WriteMode::Overwrite,
+            InsertOp::Replace => {
+                return Err(DataFusionError::NotImplemented(
+                    "Replace mode is not supported for LanceDB tables".to_string(),
+                ));
+            }
+        };
+
+        let write_params = WriteParams {
+            mode,
+            ..Default::default()
+        };
+
+        self.table
+            .create_insert_exec(input, write_params)
+            .await
+            .map_err(|e| DataFusionError::External(e.into()))
+    }
 }
 
 #[cfg(test)]
@@ -258,8 +290,7 @@ pub mod tests {
 
     use arrow::array::AsArray;
     use arrow_array::{
-        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray, UInt32Array,
+        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::{
@@ -269,17 +300,17 @@ pub mod tests {
     use datafusion_catalog::TableProvider;
     use datafusion_common::stats::Precision;
     use datafusion_execution::SendableRecordBatchStream;
-    use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
+    use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, col, lit};
     use futures::{StreamExt, TryStreamExt};
     use tempfile::tempdir;
 
     use crate::{
         connect,
-        index::{scalar::BTreeIndexBuilder, Index},
+        index::{Index, scalar::BTreeIndexBuilder},
         table::datafusion::BaseTableAdapter,
     };
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -288,19 +319,17 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(UInt32Array::from_iter_values(0..10)),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(UInt32Array::from_iter_values(0..10)),
+            ],
         )
+        .unwrap()
     }
 
-    fn make_tbl_two_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_tbl_two_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -313,28 +342,26 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int64Array::from_iter_values(0..1000)),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                    Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
-                    )),
-                    Arc::new(BinaryArray::from_iter_values(
-                        (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
-                    )),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..1000)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+                Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
+                )),
+                Arc::new(BinaryArray::from_iter_values(
+                    (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+            ],
         )
+        .unwrap()
     }
 
     struct TestFixture {

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use lancedb::ipc::ipc_file_to_batches;
+use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Table as LanceDbTable,
@@ -71,6 +71,17 @@ impl Table {
     pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
+        let batches = batches
+            .into_iter()
+            .map(|batch| {
+                batch.map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "Failed to read record batch from IPC file: {}",
+                        e
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
 
         op = if mode == "append" {
@@ -167,6 +178,19 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn initial_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        Ok(self.inner_ref()?.initial_storage_options().await)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn latest_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        self.inner_ref()?
+            .latest_storage_options()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn update(
         &self,
         only_if: Option<String>,
@@ -208,18 +232,24 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub fn take_row_ids(&self, row_ids: Vec<i64>) -> napi::Result<TakeQuery> {
+    pub fn take_row_ids(&self, row_ids: Vec<BigInt>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
             self.inner_ref()?.take_row_ids(
                 row_ids
                     .into_iter()
-                    .map(|o| {
-                        u64::try_from(o).map_err(|e| {
-                            napi::Error::from_reason(format!(
-                                "Failed to convert row id to u64: {}",
-                                e
+                    .map(|id| {
+                        let (negative, value, lossless) = id.get_u64();
+                        if negative {
+                            Err(napi::Error::from_reason(
+                                "Row id cannot be negative".to_string(),
                             ))
-                        })
+                        } else if !lossless {
+                            Err(napi::Error::from_reason(
+                                "Row id is too large to fit in u64".to_string(),
+                            ))
+                        } else {
+                            Ok(value)
+                        }
                     })
                     .collect::<Result<Vec<_>>>()?,
             ),
@@ -241,6 +271,23 @@ impl Table {
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = NewColumnTransform::SqlExpressions(transforms);
+        let res = self
+            .inner_ref()?
+            .add_columns(transforms, None)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_columns_with_schema(
+        &self,
+        schema_buf: Buffer,
+    ) -> napi::Result<AddColumnsResult> {
+        let schema = ipc_file_to_schema(schema_buf.to_vec())
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC schema: {}", e)))?;
+
+        let transforms = NewColumnTransform::AllNulls(schema);
         let res = self
             .inner_ref()?
             .add_columns(transforms, None)
@@ -723,12 +770,14 @@ impl From<lancedb::table::AddResult> for AddResult {
 
 #[napi(object)]
 pub struct DeleteResult {
+    pub num_deleted_rows: i64,
     pub version: i64,
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(value: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: value.num_deleted_rows as i64,
             version: value.version as i64,
         }
     }

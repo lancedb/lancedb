@@ -5,8 +5,9 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
-    index::{extract_index_params, IndexConfig},
+    index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
+    table::scannable::PyScannable,
 };
 use arrow::{
     datatypes::{DataType, Schema},
@@ -18,12 +19,14 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+
+mod scannable;
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
@@ -109,19 +112,24 @@ impl From<lancedb::table::AddResult> for AddResult {
 #[pyclass(get_all)]
 #[derive(Clone, Debug)]
 pub struct DeleteResult {
+    pub num_deleted_rows: u64,
     pub version: u64,
 }
 
 #[pymethods]
 impl DeleteResult {
     pub fn __repr__(&self) -> String {
-        format!("DeleteResult(version={})", self.version)
+        format!(
+            "DeleteResult(num_deleted_rows={}, version={})",
+            self.num_deleted_rows, self.version
+        )
     }
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(result: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: result.num_deleted_rows,
             version: result.version,
         }
     }
@@ -287,23 +295,99 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
         })
     }
 
+    #[pyo3(signature = (data, mode, progress=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
-        data: Bound<'_, PyAny>,
+        data: PyScannable,
         mode: String,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
-        let mut op = self_.inner_ref()?.add(batches);
+        let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(progress_obj) = progress {
+            let is_callable = Python::attach(|py| progress_obj.bind(py).is_callable());
+            if is_callable {
+                // Callback: call with a dict of progress info.
+                op = op.progress(move |p| {
+                    Python::attach(|py| {
+                        let dict = PyDict::new(py);
+                        if let Err(e) = dict
+                            .set_item("output_rows", p.output_rows())
+                            .and_then(|_| dict.set_item("output_bytes", p.output_bytes()))
+                            .and_then(|_| dict.set_item("total_rows", p.total_rows()))
+                            .and_then(|_| {
+                                dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
+                            })
+                            .and_then(|_| dict.set_item("active_tasks", p.active_tasks()))
+                            .and_then(|_| dict.set_item("total_tasks", p.total_tasks()))
+                            .and_then(|_| dict.set_item("done", p.done()))
+                        {
+                            log::warn!("progress dict error: {e}");
+                            return;
+                        }
+                        if let Err(e) = progress_obj.call1(py, (dict,)) {
+                            log::warn!("progress callback error: {e}");
+                        }
+                    });
+                });
+            } else {
+                // tqdm-like: has update() method.
+                let mut last_rows: usize = 0;
+                let mut total_set = false;
+                op = op.progress(move |p| {
+                    let current = p.output_rows();
+                    let prev = last_rows;
+                    last_rows = current;
+                    Python::attach(|py| {
+                        if let Some(total) = p.total_rows()
+                            && !total_set
+                        {
+                            if let Err(e) = progress_obj.setattr(py, "total", total) {
+                                log::warn!("progress setattr error: {e}");
+                            }
+                            total_set = true;
+                        }
+                        let delta = current.saturating_sub(prev);
+                        if delta > 0 {
+                            if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
+                                log::warn!("progress update error: {e}");
+                            }
+                            // Show throughput and active workers in tqdm postfix.
+                            let elapsed = p.elapsed().as_secs_f64();
+                            if elapsed > 0.0 {
+                                let mb_per_sec = p.output_bytes() as f64 / elapsed / 1_000_000.0;
+                                let postfix = format!(
+                                    "{:.1} MB/s | {}/{} workers",
+                                    mb_per_sec,
+                                    p.active_tasks(),
+                                    p.total_tasks()
+                                );
+                                if let Err(e) =
+                                    progress_obj.call_method1(py, "set_postfix_str", (postfix,))
+                                {
+                                    log::warn!("progress set_postfix_str error: {e}");
+                                }
+                            }
+                        }
+                        if p.done() {
+                            // Force a final refresh so the bar shows completion.
+                            if let Err(e) = progress_obj.call_method0(py, "refresh") {
+                                log::warn!("progress refresh error: {e}");
+                            }
+                        }
+                    });
+                });
+            }
         }
 
         future_into_py(self_.py(), async move {
@@ -419,6 +503,17 @@ impl Table {
         })
     }
 
+    pub fn prewarm_data(
+        self_: PyRef<'_, Self>,
+        columns: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.prewarm_data(columns).await.infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -437,7 +532,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
                     dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
@@ -467,7 +562,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner.stats().await.infer_error()?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
@@ -502,6 +597,20 @@ impl Table {
         future_into_py(self_.py(), async move { inner.uri().await.infer_error() })
     }
 
+    pub fn initial_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.initial_storage_options().await)
+        })
+    }
+
+    pub fn latest_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.latest_storage_options().await.infer_error()
+        })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -521,7 +630,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
-            let versions_as_dict = Python::with_gil(|py| {
+            Python::attach(|py| {
                 versions
                     .iter()
                     .map(|v| {
@@ -538,9 +647,7 @@ impl Table {
                         Ok(dict.unbind())
                     })
                     .collect::<PyResult<Vec<_>>>()
-            });
-
-            versions_as_dict
+            })
         })
     }
 
@@ -872,7 +979,7 @@ impl Tags {
             let tags = inner.tags().await.infer_error()?;
             let res = tags.list().await.infer_error()?;
 
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let py_dict = PyDict::new(py);
                 for (key, contents) in res {
                     let value_dict = PyDict::new(py);

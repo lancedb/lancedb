@@ -1,0 +1,173 @@
+name: Codex Fix CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_run_url:
+        description: "Failing CI workflow run URL (e.g., https://github.com/lancedb/lancedb/actions/runs/12345678)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to fix (e.g., main, release/v2.0, or feature-branch)"
+        required: true
+        type: string
+      guidelines:
+        description: "Additional guidelines for the fix (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  fix-ci:
+    runs-on: warp-ubuntu-latest-x64-4x
+    timeout-minutes: 60
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Show inputs
+        run: |
+          echo "workflow_run_url = ${{ inputs.workflow_run_url }}"
+          echo "branch = ${{ inputs.branch }}"
+          echo "guidelines = ${{ inputs.guidelines }}"
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install maturin ruff pytest pyarrow pandas polars
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Install Node.js dependencies for TypeScript bindings
+        run: |
+          cd nodejs
+          npm ci
+
+      - name: Configure git user
+        run: |
+          git config user.name "lancedb automation"
+          git config user.email "robot@lancedb.com"
+
+      - name: Run Codex to fix CI failure
+        env:
+          WORKFLOW_RUN_URL: ${{ inputs.workflow_run_url }}
+          BRANCH: ${{ inputs.branch }}
+          GUIDELINES: ${{ inputs.guidelines }}
+          GITHUB_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.CODEX_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cat <<EOF >/tmp/codex-prompt.txt
+          You are running inside the lancedb repository on a GitHub Actions runner. Your task is to fix a CI failure.
+
+          Input parameters:
+          - Failing workflow run URL: ${WORKFLOW_RUN_URL}
+          - Branch to fix: ${BRANCH}
+          - Additional guidelines: ${GUIDELINES:-"None provided"}
+
+          Follow these steps exactly:
+
+          1. Extract the run ID from the workflow URL. The URL format is https://github.com/lancedb/lancedb/actions/runs/<run_id>.
+
+          2. Use "gh run view <run_id> --json jobs,conclusion,name" to get information about the failed run.
+
+          3. Identify which jobs failed. For each failed job, use "gh run view <run_id> --job <job_id> --log-failed" to get the failure logs.
+
+          4. Analyze the failure logs to understand what went wrong. Common failures include:
+             - Compilation errors
+             - Test failures
+             - Clippy warnings treated as errors
+             - Formatting issues
+             - Dependency issues
+
+          5. Based on the analysis, fix the issues in the codebase:
+             - For compilation errors: Fix the code that doesn't compile
+             - For test failures: Fix the failing tests or the code they test
+             - For clippy warnings: Apply the suggested fixes
+             - For formatting issues: Run "cargo fmt --all"
+             - For other issues: Apply appropriate fixes
+
+          6. After making fixes, verify them locally:
+             - Run "cargo fmt --all" to ensure formatting is correct
+             - Run "cargo clippy --workspace --tests --all-features -- -D warnings" to check for issues
+             - Run ONLY the specific failing tests to confirm they pass now:
+               - For Rust test failures: Run the specific test with "cargo test -p <crate> <test_name>"
+               - For Python test failures: Build with "cd python && maturin develop" then run "pytest <specific_test_file>::<test_name>"
+               - For Java test failures: Run "cd java && mvn test -Dtest=<TestClass>#<testMethod>"
+               - For TypeScript test failures: Run "cd nodejs && npm run build && npm test -- --testNamePattern='<test_name>'"
+               - Do NOT run the full test suite - only run the tests that were failing
+
+          7. If the additional guidelines are provided, follow them as well.
+
+          8. Inspect "git status --short" and "git diff" to review your changes.
+
+          9. Create a fix branch: "git checkout -b codex/fix-ci-<run_id>".
+
+          10. Stage all changes with "git add -A" and commit with message "fix: resolve CI failures from run <run_id>".
+
+          11. Push the branch: "git push origin codex/fix-ci-<run_id>". If the remote branch exists, delete it first with "gh api -X DELETE repos/lancedb/lancedb/git/refs/heads/codex/fix-ci-<run_id>" then push. Do NOT use "git push --force" or "git push -f".
+
+          12. Create a pull request targeting "${BRANCH}":
+              - Title: "ci: <short summary describing the fix>" (e.g., "ci: fix clippy warnings in lancedb" or "ci: resolve test flakiness in vector search")
+              - First, write the PR body to /tmp/pr-body.md using a heredoc (cat <<'PREOF' > /tmp/pr-body.md). The body should include:
+                - Link to the failing workflow run
+                - Summary of what failed
+                - Description of the fixes applied
+              - Then run "gh pr create --base ${BRANCH} --body-file /tmp/pr-body.md".
+
+          13. Display the new PR URL, "git status --short", and a summary of what was fixed.
+
+          Constraints:
+          - Use bash commands for all operations.
+          - Do not merge the PR.
+          - Do not modify GitHub workflow files unless they are the cause of the failure.
+          - If any command fails, diagnose and attempt to fix the issue instead of aborting immediately.
+          - If you cannot fix the issue automatically, create the PR anyway with a clear explanation of what you tried and what remains to be fixed.
+          - env "GH_TOKEN" is available, use "gh" tools for GitHub-related operations.
+          EOF
+
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"

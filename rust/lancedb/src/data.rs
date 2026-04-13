@@ -5,3 +5,4 @@
 
 pub mod inspect;
 pub mod sanitize;
+pub mod scannable;

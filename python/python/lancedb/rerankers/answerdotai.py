@@ -42,8 +42,16 @@ class AnswerdotaiRerankers(Reranker):
         rerankers = attempt_import_or_raise(
             "rerankers"
         )  # import here for faster ops later
+        self.model_name = model_name
+        self.model_type = model_type
         self.reranker = rerankers.Reranker(
             model_name=model_name, model_type=model_type, **kwargs
+        )
+
+    def __str__(self):
+        return (
+            f"AnswerdotaiRerankers(model_type={self.model_type}, "
+            f"model_name={self.model_name})"
         )
 
     def _rerank(self, result_set: pa.Table, query: str):

@@ -103,7 +103,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
-        totalBytes: 24,
+        totalBytes: 44,
       });
     });
 
@@ -310,6 +310,66 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
       const res = await table.takeOffsets([1, 2]).toArrow();
       expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
+    });
+
+    it("should support takeRowIds with bigint array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Get actual row IDs using withRowId()
+      const allRows = await table.query().withRowId().toArray();
+      const rowIds = allRows.map((row) => row._rowid) as bigint[];
+
+      // Verify row IDs are bigint
+      expect(typeof rowIds[0]).toBe("bigint");
+
+      // Use takeRowIds with bigint array (the main use case from issue #2722)
+      const res = await table.takeRowIds([rowIds[0], rowIds[2]]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with number array for backwards compatibility", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Small row IDs can be passed as numbers
+      const res = await table.takeRowIds([0, 2]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with mixed bigint and number array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Mixed array of bigint and number
+      const res = await table.takeRowIds([0n, 1, 2n]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 2, 3]);
+    });
+
+    it("should throw for non-integer number in takeRowIds", () => {
+      expect(() => table.takeRowIds([1.5])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+      expect(() => table.takeRowIds([0, 1.1, 2])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+    });
+
+    it("should throw for negative number in takeRowIds", () => {
+      expect(() => table.takeRowIds([-1])).toThrow("Row id cannot be negative");
+      expect(() => table.takeRowIds([0, -5, 2])).toThrow(
+        "Row id cannot be negative",
+      );
+    });
+
+    it("should throw for unsafe large number in takeRowIds", () => {
+      // Number.MAX_SAFE_INTEGER + 1 is not safe
+      const unsafeNumber = Number.MAX_SAFE_INTEGER + 1;
+      expect(() => table.takeRowIds([unsafeNumber])).toThrow(
+        "Row id is too large for number; use bigint instead",
+      );
+    });
+
+    it("should reject negative bigint in takeRowIds", async () => {
+      await table.add([{ id: 1 }]);
+      // Negative bigint should be rejected by the Rust layer
+      expect(() => {
+        table.takeRowIds([-1n]);
+      }).toThrow("Row id cannot be negative");
     });
 
     it("should return the table as an instance of an arrow table", async () => {
@@ -1199,6 +1259,98 @@ describe("schema evolution", function () {
     expect(await table.schema()).toEqual(expectedSchema);
   });
 
+  it("can add columns with schema for explicit data types", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Define schema for new columns with explicit data types
+    // Note: All columns must be nullable when using addColumns with Schema
+    // because they are initially populated with null values
+    const newColumnsSchema = new Schema([
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+
+    const result = await table.addColumns(newColumnsSchema);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+
+    // Verify that new columns are populated with null values
+    const results = await table.query().toArray();
+    expect(results).toHaveLength(1);
+    expect(results[0].price).toBeNull();
+    expect(results[0].category).toBeNull();
+    expect(results[0].rating).toBeNull();
+  });
+
+  it("can add a single column using Field", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add a single field
+    const priceField = new Field("price", new Float64(), true);
+    const result = await table.addColumns(priceField);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
+  it("can add multiple columns using array of Fields", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add multiple fields as array
+    const fields = [
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+    ];
+    const result = await table.addColumns(fields);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
   it("can alter the columns in the schema", async function () {
     const con = await connect(tmpDir.name);
     const schema = new Schema([
@@ -1520,9 +1672,9 @@ describe("when optimizing a dataset", () => {
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${
-      version - 1
-    }.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${String(
+      18446744073709551615n - (BigInt(version) - 1n),
+    ).padStart(20, "0")}.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
@@ -1635,6 +1787,65 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         .search(new MatchQuery("goodbye", "text"))
         .toArray();
       expect(results2[0].text).toBe(data[1].text);
+    });
+
+    test("full text search fast search", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [{ text: "hello world", vector: [0.1, 0.2, 0.3], id: 1 }];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      // Insert unindexed data after creating the index.
+      await table.add([{ text: "xyz", vector: [0.4, 0.5, 0.6], id: 2 }]);
+
+      const withFlatSearch = await table
+        .search("xyz", "fts")
+        .limit(10)
+        .toArray();
+      expect(withFlatSearch.length).toBeGreaterThan(0);
+
+      const fastSearchResults = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(fastSearchResults.length).toBe(0);
+
+      const nearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(nearestToTextFastSearch.length).toBe(0);
+
+      // fastSearch should be chainable with other methods.
+      const chainedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .select(["text"])
+        .limit(5)
+        .toArray();
+      expect(chainedFastSearch.length).toBe(0);
+
+      await table.optimize();
+
+      const indexedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedFastSearch.length).toBeGreaterThan(0);
+
+      const indexedNearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedNearestToTextFastSearch.length).toBeGreaterThan(0);
     });
 
     test("prewarm full text search index", async () => {
@@ -2083,5 +2294,38 @@ describe("when creating an empty table", () => {
     expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
     expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
     expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+});
+
+// Ensure we can create float32 arrays without using Arrow
+// by utilizing native JS TypedArray support
+//
+// https://github.com/lancedb/lancedb/issues/3115
+describe("when creating a table with Float32Array vectors", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("should persist Float32Array as FixedSizeList<Float32> in the LanceDB schema", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("test", [
+      { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
+      { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
+    ]);
+
+    const schema = await table.schema();
+    const vectorField = schema.fields.find((f) => f.name === "vector");
+    expect(vectorField).toBeDefined();
+    expect(vectorField!.type).toBeInstanceOf(FixedSizeList);
+
+    const fsl = vectorField!.type as FixedSizeList;
+    expect(fsl.listSize).toBe(3);
+    expect(fsl.children[0].type.typeId).toBe(Type.Float);
+    // precision: HALF=0, SINGLE=1, DOUBLE=2
+    expect((fsl.children[0].type as Float32).precision).toBe(1);
   });
 });

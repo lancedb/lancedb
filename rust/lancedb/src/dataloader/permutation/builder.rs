@@ -11,21 +11,23 @@ use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
+    Error, Result, Table,
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
     connect,
-    database::{CreateTableData, CreateTableRequest, Database},
+    database::{CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
-        split::{SplitStrategy, Splitter, SPLIT_ID_COLUMN},
-        util::{rename_column, TemporaryDirectory},
+        split::{SPLIT_ID_COLUMN, SplitStrategy, Splitter},
+        util::{TemporaryDirectory, rename_column},
     },
-    query::{ExecutableQuery, QueryBase},
-    Error, Result, Table,
+    query::{ExecutableQuery, QueryBase, Select},
 };
 
 pub const SRC_ROW_ID_COL: &str = "row_id";
 
 pub const SPLIT_NAMES_CONFIG_KEY: &str = "split_names";
+
+pub const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
 
 /// Where to store the permutation table
 #[derive(Debug, Clone, Default)]
@@ -55,7 +57,7 @@ pub struct PermutationConfig {
 }
 
 /// Strategy for shuffling the data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ShuffleStrategy {
     /// The data is randomly shuffled
     ///
@@ -76,13 +78,8 @@ pub enum ShuffleStrategy {
     /// The data is not shuffled
     ///
     /// This is useful for debugging and testing.
+    #[default]
     None,
-}
-
-impl Default for ShuffleStrategy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Builder for creating a permutation table.
@@ -167,10 +164,20 @@ impl PermutationBuilder {
         &self,
         data: SendableRecordBatchStream,
     ) -> Result<SendableRecordBatchStream> {
+        let memory_limit = std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT")
+            .unwrap_or_else(|_| DEFAULT_MEMORY_LIMIT.to_string())
+            .parse::<usize>()
+            .unwrap_or_else(|_| {
+                log::error!(
+                    "Failed to parse LANCEDB_PERM_BUILDER_MEMORY_LIMIT, using default: {}",
+                    DEFAULT_MEMORY_LIMIT
+                );
+                DEFAULT_MEMORY_LIMIT
+            });
         let ctx = SessionContext::new_with_config_rt(
             SessionConfig::default(),
             RuntimeEnvBuilder::new()
-                .with_memory_limit(100 * 1024 * 1024, 1.0)
+                .with_memory_limit(memory_limit, 1.0)
                 .with_disk_manager_builder(
                     DiskManagerBuilder::default()
                         .with_mode(self.config.temp_dir.to_disk_manager_mode()),
@@ -232,7 +239,7 @@ impl PermutationBuilder {
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
         // First pass, apply filter and load row ids
-        let mut rows = self.base_table.query().with_row_id();
+        let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
             rows = rows.only_if(filter);
@@ -301,10 +308,8 @@ impl PermutationBuilder {
             }
         };
 
-        let create_table_request = CreateTableRequest::new(
-            name.to_string(),
-            CreateTableData::StreamingData(streaming_data),
-        );
+        let create_table_request =
+            CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
 
         let table = database.create_table(create_table_request).await?;
 
@@ -322,6 +327,47 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn test_permutation_table_only_stores_row_id_and_split_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .col("col_b", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
+        let data_table = db
+            .create_table("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let permutation_table = PermutationBuilder::new(data_table.clone())
+            .with_split_strategy(
+                SplitStrategy::Sequential {
+                    sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
+                },
+                None,
+            )
+            .with_filter("col_a > 57".to_string())
+            .build()
+            .await
+            .unwrap();
+
+        let schema = permutation_table.schema().await.unwrap();
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            field_names,
+            vec!["row_id", "split_id"],
+            "Permutation table should only contain row_id and split_id columns, but found: {:?}",
+            field_names,
+        );
+    }
+
+    #[tokio::test]
     async fn test_permutation_builder() {
         let temp_dir = tempfile::tempdir().unwrap();
 
@@ -334,7 +380,7 @@ mod tests {
             .col("some_value", lance_datagen::array::step::<Int32Type>())
             .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
         let data_table = db
-            .create_table_streaming("mytbl", initial_data)
+            .create_table("mytbl", initial_data)
             .execute()
             .await
             .unwrap();
@@ -351,8 +397,6 @@ mod tests {
             .build()
             .await
             .unwrap();
-
-        println!("permutation_table: {:?}", permutation_table);
 
         // Potentially brittle seed-dependent values below
         assert_eq!(permutation_table.count_rows(None).await.unwrap(), 330);

@@ -4,9 +4,10 @@
 use std::sync::PoisonError;
 
 use arrow_schema::ArrowError;
+use datafusion_common::DataFusionError;
 use snafu::Snafu;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -80,6 +81,9 @@ pub enum Error {
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
     NotSupported { message: String },
+    /// External error pass through from user code.
+    #[snafu(transparent)]
+    External { source: BoxError },
     #[snafu(whatever, display("{message}"))]
     Other {
         message: String,
@@ -92,15 +96,72 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<ArrowError> for Error {
     fn from(source: ArrowError) -> Self {
-        Self::Arrow { source }
+        match source {
+            ArrowError::ExternalError(source) => Self::from_box_error(source),
+            _ => Self::Arrow { source },
+        }
+    }
+}
+
+impl From<DataFusionError> for Error {
+    fn from(source: DataFusionError) -> Self {
+        match source {
+            DataFusionError::ArrowError(source, _) => (*source).into(),
+            DataFusionError::External(source) => Self::from_box_error(source),
+            other => Self::External {
+                source: Box::new(other),
+            },
+        }
     }
 }
 
 impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
-        // TODO: Once Lance is changed to preserve ObjectStore, DataFusion, and Arrow errors, we can
-        // pass those variants through here as well.
-        Self::Lance { source }
+        // Try to unwrap external errors that were wrapped by lance
+        match source {
+            lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
+            lance::Error::External { source } => Self::from_box_error(source),
+            _ => Self::Lance { source },
+        }
+    }
+}
+
+impl Error {
+    fn from_box_error(mut source: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        source = match source.downcast::<Self>() {
+            Ok(e) => match *e {
+                Self::External { source } => return Self::from_box_error(source),
+                other => return other,
+            },
+            Err(source) => source,
+        };
+
+        source = match source.downcast::<lance::Error>() {
+            Ok(e) => match *e {
+                lance::Error::Wrapped { error, .. } => return Self::from_box_error(error),
+                other => return other.into(),
+            },
+            Err(source) => source,
+        };
+
+        source = match source.downcast::<ArrowError>() {
+            Ok(e) => match *e {
+                ArrowError::ExternalError(source) => return Self::from_box_error(source),
+                other => return other.into(),
+            },
+            Err(source) => source,
+        };
+
+        source = match source.downcast::<DataFusionError>() {
+            Ok(e) => match *e {
+                DataFusionError::ArrowError(source, _) => return (*source).into(),
+                DataFusionError::External(source) => return Self::from_box_error(source),
+                other => return other.into(),
+            },
+            Err(source) => source,
+        };
+
+        Self::External { source }
     }
 }
 

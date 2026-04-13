@@ -38,6 +38,9 @@ class LinearCombinationReranker(Reranker):
         self.weight = weight
         self.fill = fill
 
+    def __str__(self):
+        return f"LinearCombinationReranker(weight={self.weight}, fill={self.fill})"
+
     def rerank_hybrid(
         self,
         query: str,  # noqa: F821

@@ -16,7 +16,7 @@ The Python package is a wrapper around the Rust library, `lancedb`. We use
 
 To set up your development environment, you will need to install the following:
 
-1. Python 3.9 or later
+1. Python 3.10 or later
 2. Cargo (Rust's package manager). Use [rustup](https://rustup.rs/) to install.
 3. [protoc](https://grpc.io/docs/protoc-installation/) (Protocol Buffers compiler)
 

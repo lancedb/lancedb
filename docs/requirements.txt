@@ -1,9 +1,9 @@
-mkdocs==1.5.3
+mkdocs==1.6.1
 mkdocs-jupyter==0.24.1
-mkdocs-material==9.5.3
-mkdocs-autorefs<=1.0
-mkdocstrings[python]==0.25.2
-griffe
-mkdocs-render-swagger-plugin
-pydantic
-mkdocs-redirects
+mkdocs-material==9.6.23
+mkdocs-autorefs>=0.5,<=1.0
+mkdocstrings[python]>=0.24,<1.0
+griffe>=0.40,<1.0
+mkdocs-render-swagger-plugin>=0.1.0
+pydantic>=2.0,<3.0
+mkdocs-redirects>=1.2.0

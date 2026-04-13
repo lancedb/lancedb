@@ -3,12 +3,13 @@
 
 //! Provides the `ListingDatabase`, a simple database where tables are folders in a directory
 
+use std::collections::HashSet;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
 use lance::dataset::refs::Ref;
-use lance::dataset::{builder::DatasetBuilder, ReadParams, WriteMode};
+use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
@@ -653,7 +654,7 @@ impl ListingDatabase {
     async fn handle_table_exists(
         &self,
         table_name: &str,
-        namespace: Vec<String>,
+        namespace_path: Vec<String>,
         mode: CreateTableMode,
         data_schema: &arrow_schema::Schema,
     ) -> Result<Arc<dyn BaseTable>> {
@@ -664,11 +665,12 @@ impl ListingDatabase {
             CreateTableMode::ExistOk(callback) => {
                 let req = OpenTableRequest {
                     name: table_name.to_string(),
-                    namespace: namespace.clone(),
+                    namespace_path: namespace_path.clone(),
                     index_cache_size: None,
                     lance_read_params: None,
                     location: None,
                     namespace_client: None,
+                    managed_versioning: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -750,7 +752,7 @@ impl Database for ListingDatabase {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
+        if !request.namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
             });
@@ -837,7 +839,7 @@ impl Database for ListingDatabase {
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         // When namespace is not empty, location must be provided
-        if !request.namespace.is_empty() && request.location.is_none() {
+        if !request.namespace_path.is_empty() && request.location.is_none() {
             return Err(Error::InvalidInput {
                 message: "Location must be provided when namespace is not empty".into(),
             });
@@ -863,12 +865,13 @@ impl Database for ListingDatabase {
         match NativeTable::create(
             &table_uri,
             &request.name,
-            request.namespace.clone(),
+            request.namespace_path.clone(),
             request.data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
             request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
         )
         .await
         {
@@ -876,7 +879,7 @@ impl Database for ListingDatabase {
             Err(Error::TableAlreadyExists { .. }) => {
                 self.handle_table_exists(
                     &request.name,
-                    request.namespace.clone(),
+                    request.namespace_path.clone(),
                     request.mode,
                     &data_schema,
                 )
@@ -887,7 +890,7 @@ impl Database for ListingDatabase {
     }
 
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if !request.target_namespace.is_empty() {
+        if !request.target_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
             });
@@ -922,7 +925,7 @@ impl Database for ListingDatabase {
             .with_read_params(read_params.clone())
             .load()
             .await
-            .map_err(|e| Error::Lance { source: e })?;
+            .map_err(|e| -> Error { e.into() })?;
 
         let version_ref = match (request.source_version, request.source_tag) {
             (Some(v), None) => Ok(Ref::Version(None, Some(v))),
@@ -937,16 +940,18 @@ impl Database for ListingDatabase {
         source_dataset
             .shallow_clone(&target_uri, version_ref, Some(storage_params))
             .await
-            .map_err(|e| Error::Lance { source: e })?;
+            .map_err(|e| -> Error { e.into() })?;
 
         let cloned_table = NativeTable::open_with_params(
             &target_uri,
             &request.target_table_name,
-            request.target_namespace,
+            request.target_namespace_path,
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
-            None,
+            request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
+            None,           // managed_versioning - will be queried if namespace_client is provided
         )
         .await?;
 
@@ -955,7 +960,7 @@ impl Database for ListingDatabase {
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // When namespace is not empty, location must be provided
-        if !request.namespace.is_empty() && request.location.is_none() {
+        if !request.namespace_path.is_empty() && request.location.is_none() {
             return Err(Error::InvalidInput {
                 message: "Location must be provided when namespace is not empty".into(),
             });
@@ -1017,11 +1022,13 @@ impl Database for ListingDatabase {
             NativeTable::open_with_params(
                 &table_uri,
                 &request.name,
-                request.namespace,
+                request.namespace_path,
                 self.store_wrapper.clone(),
                 Some(read_params),
                 self.read_consistency_interval,
                 request.namespace_client,
+                HashSet::new(), // listing database doesn't support server-side queries
+                request.managed_versioning, // Pass through managed_versioning from request
             )
             .await?,
         );
@@ -1032,15 +1039,15 @@ impl Database for ListingDatabase {
         &self,
         _cur_name: &str,
         _new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
-        if !cur_namespace.is_empty() {
+        if !cur_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
         }
-        if !new_namespace.is_empty() {
+        if !new_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
@@ -1050,8 +1057,8 @@ impl Database for ListingDatabase {
         })
     }
 
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
-        if !namespace.is_empty() {
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        if !namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
@@ -1060,9 +1067,9 @@ impl Database for ListingDatabase {
     }
 
     #[allow(deprecated)]
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
         // Check if namespace parameter is provided
-        if !namespace.is_empty() {
+        if !namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
@@ -1092,14 +1099,25 @@ impl Database for ListingDatabase {
         })?;
         Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
     }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), self.uri.clone());
+        for (key, value) in &self.storage_options {
+            properties.insert(format!("storage.{}", key), value.clone());
+        }
+        Ok(("dir".to_string(), properties))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Table;
     use crate::connection::ConnectRequest;
-    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest, WriteOptions};
-    use crate::table::{Table, TableDefinition};
+    use crate::data::scannable::Scannable;
+    use crate::database::{CreateTableMode, CreateTableRequest};
+    use crate::table::WriteOptions;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::path::PathBuf;
@@ -1138,8 +1156,8 @@ mod tests {
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "source_table".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1155,11 +1173,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned_table".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri: source_uri.clone(),
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1196,16 +1215,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "source_with_data".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1220,11 +1234,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned_with_data".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1263,8 +1278,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1279,11 +1294,12 @@ mod tests {
         let cloned = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1299,8 +1315,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1315,11 +1331,12 @@ mod tests {
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: false, // Request deep clone
+                namespace_client: None,
             })
             .await;
 
@@ -1339,8 +1356,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1355,11 +1372,12 @@ mod tests {
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec!["namespace".to_string()], // Non-empty namespace
+                target_namespace_path: vec!["namespace".to_string()], // Non-empty namespace
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1379,8 +1397,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1395,11 +1413,12 @@ mod tests {
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "invalid/name".to_string(), // Invalid name with slash
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1414,11 +1433,12 @@ mod tests {
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri: "/nonexistent/table.lance".to_string(),
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1434,8 +1454,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1450,11 +1470,12 @@ mod tests {
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: Some(1),
                 source_tag: Some("v1.0".to_string()),
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1484,16 +1505,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "versioned_source".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch1) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1517,14 +1533,7 @@ mod tests {
 
         let db = Arc::new(db);
         let source_table_obj = Table::new(source_table.clone(), db.clone());
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch2)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch2).execute().await.unwrap();
 
         // Verify source table now has 4 rows
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
@@ -1535,11 +1544,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned_from_version".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: Some(initial_version),
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1570,16 +1580,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "tagged_source".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1607,14 +1612,7 @@ mod tests {
         .unwrap();
 
         let source_table_obj = Table::new(source_table.clone(), db.clone());
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch2)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch2).execute().await.unwrap();
 
         // Source table should have 4 rows
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
@@ -1625,11 +1623,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned_from_tag".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: Some("v1.0".to_string()),
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1657,16 +1656,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "independent_source".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1681,11 +1675,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "independent_clone".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1706,14 +1701,7 @@ mod tests {
 
         let db = Arc::new(db);
         let cloned_table_obj = Table::new(cloned_table.clone(), db.clone());
-        cloned_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch_clone)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        cloned_table_obj.add(batch_clone).execute().await.unwrap();
 
         // Add different data to the source table
         let batch_source = RecordBatch::try_new(
@@ -1726,14 +1714,7 @@ mod tests {
         .unwrap();
 
         let source_table_obj = Table::new(source_table.clone(), db);
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch_source)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch_source).execute().await.unwrap();
 
         // Verify they have evolved independently
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4); // 2 + 2
@@ -1751,16 +1732,11 @@ mod tests {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
                 .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "latest_version_source".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1779,14 +1755,7 @@ mod tests {
             .unwrap();
 
             let source_table_obj = Table::new(source_table.clone(), db.clone());
-            source_table_obj
-                .add(Box::new(arrow_array::RecordBatchIterator::new(
-                    vec![Ok(batch)],
-                    schema.clone(),
-                )))
-                .execute()
-                .await
-                .unwrap();
+            source_table_obj.add(batch).execute().await.unwrap();
         }
 
         // Source should have 8 rows total (2 + 2 + 2 + 2)
@@ -1799,11 +1768,12 @@ mod tests {
         let cloned_table = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned_latest".to_string(),
-                target_namespace: vec![],
+                target_namespace_path: vec![],
                 source_uri,
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1849,16 +1819,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let table = db
             .create_table(CreateTableRequest {
                 name: "test_stable".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1887,11 +1852,6 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let mut storage_options = HashMap::new();
         storage_options.insert(
             OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
@@ -1913,8 +1873,8 @@ mod tests {
         let table = db
             .create_table(CreateTableRequest {
                 name: "test_stable_table_level".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
@@ -1963,11 +1923,6 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let mut storage_options = HashMap::new();
         storage_options.insert(
             OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
@@ -1989,8 +1944,8 @@ mod tests {
         let table = db
             .create_table(CreateTableRequest {
                 name: "test_override".to_string(),
-                namespace: vec![],
-                data: CreateTableData::Data(reader),
+                namespace_path: vec![],
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
@@ -2107,8 +2062,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "table1".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -2119,8 +2074,8 @@ mod tests {
 
         db.create_table(CreateTableRequest {
             name: "table2".to_string(),
-            namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,

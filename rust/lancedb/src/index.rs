@@ -9,7 +9,7 @@ use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::index::vector::IvfRqIndexBuilder;
-use crate::{table::BaseTable, DistanceType, Error, Result};
+use crate::{DistanceType, Error, Result, table::BaseTable};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},

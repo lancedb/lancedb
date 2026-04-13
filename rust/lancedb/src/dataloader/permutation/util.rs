@@ -7,12 +7,12 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Fields, Schema};
 use datafusion_execution::disk_manager::DiskManagerMode;
 use futures::TryStreamExt;
-use rand::{rngs::SmallRng, RngCore, SeedableRng};
+use rand::{RngCore, SeedableRng, rngs::SmallRng};
 use tempfile::TempDir;
 
 use crate::{
-    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     Error, Result,
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
 };
 
 /// Directory to use for temporary files

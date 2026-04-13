@@ -5,12 +5,15 @@ import {
   Table as ArrowTable,
   Data,
   DataType,
+  Field,
   IntoVector,
   MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  fromTableToBuffer,
   isMultiVector,
+  makeEmptyTable,
   tableFromIPC,
 } from "./arrow";
 
@@ -84,6 +87,16 @@ export interface OptimizeOptions {
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
+  /**
+   * Because they may be part of an in-progress transaction, files newer than
+   * 7 days old are not deleted by default. If you are sure that there are no
+   * in-progress transactions, then you can set this to true to delete all
+   * files older than `cleanupOlderThan`.
+   *
+   * **WARNING**: This should only be set to true if you can guarantee that
+   * no other process is currently working on this dataset. Otherwise the
+   * dataset could be put into a corrupted state.
+   */
   deleteUnverified: boolean;
 }
 
@@ -347,9 +360,13 @@ export abstract class Table {
   /**
    * Create a query that returns a subset of the rows in the table.
    * @param rowIds The row ids of the rows to return.
+   *
+   * Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+   * For convenience / backwards compatibility, `number[]` is also accepted (for
+   * small row ids that fit in a safe integer).
    * @returns A builder that can be used to parameterize the query.
    */
-  abstract takeRowIds(rowIds: number[]): TakeQuery;
+  abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -377,15 +394,16 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
-   * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
-   * the SQL expression to use to calculate the value of the new column. These
-   * expressions will be evaluated for each row in the table, and can
-   * reference existing columns in the table.
+   * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
+   *   - An array of objects with column names and SQL expressions to calculate values
+   *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+   *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+   *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult>;
 
   /**
@@ -497,19 +515,7 @@ export abstract class Table {
    *  - Index: Optimizes the indices, adding new data to existing indices
    *
    *
-   *  Experimental API
-   *  ----------------
-   *
-   *  The optimization process is undergoing active development and may change.
-   *  Our goal with these changes is to improve the performance of optimization and
-   *  reduce the complexity.
-   *
-   *  That being said, it is essential today to run optimize if you want the best
-   *  performance.  It should be stable and safe to use in production, but it our
-   *  hope that the API may be simplified (or not even need to be called) in the
-   *  future.
-   *
-   *  The frequency an application shoudl call optimize is based on the frequency of
+   *  The frequency an application should call optimize is based on the frequency of
    *  data modifications.  If data is frequently added, deleted, or updated then
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
@@ -538,6 +544,35 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /**
+   * Get the initial storage options that were passed in when opening this table.
+   *
+   * For dynamically refreshed options (e.g., credential vending), use
+   * {@link Table.latestStorageOptions}.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
+
+  /**
+   * Get the latest storage options, refreshing from provider if configured.
+   *
+   * This method is useful for credential vending scenarios where storage options
+   * may be refreshed dynamically. If no dynamic provider is configured, this
+   * returns the initial static options.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
 }
 
 export class LocalTable extends Table {
@@ -686,8 +721,24 @@ export class LocalTable extends Table {
     return new TakeQuery(this.inner.takeOffsets(offsets));
   }
 
-  takeRowIds(rowIds: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeRowIds(rowIds));
+  takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
+    const ids = rowIds.map((id) => {
+      if (typeof id === "bigint") {
+        return id;
+      }
+      if (!Number.isInteger(id)) {
+        throw new Error("Row id must be an integer (or bigint)");
+      }
+      if (id < 0) {
+        throw new Error("Row id cannot be negative");
+      }
+      if (!Number.isSafeInteger(id)) {
+        throw new Error("Row id is too large for number; use bigint instead");
+      }
+      return BigInt(id);
+    });
+
+    return new TakeQuery(this.inner.takeRowIds(ids));
   }
 
   query(): Query {
@@ -757,9 +808,40 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult> {
-    return await this.inner.addColumns(newColumnTransforms);
+    // Handle single Field -> convert to array of Fields
+    if (newColumnTransforms instanceof Field) {
+      newColumnTransforms = [newColumnTransforms];
+    }
+
+    // Handle array of Fields -> convert to Schema
+    if (
+      Array.isArray(newColumnTransforms) &&
+      newColumnTransforms.length > 0 &&
+      newColumnTransforms[0] instanceof Field
+    ) {
+      const fields = newColumnTransforms as Field[];
+      newColumnTransforms = new Schema(fields);
+    }
+
+    // Handle Schema -> use schema-based approach
+    if (newColumnTransforms instanceof Schema) {
+      const schema = newColumnTransforms;
+      // Convert schema to buffer using Arrow IPC format
+      const emptyTable = makeEmptyTable(schema);
+      const schemaBuf = await fromTableToBuffer(emptyTable);
+      return await this.inner.addColumnsWithSchema(schemaBuf);
+    }
+
+    // Handle SQL expressions (existing functionality)
+    if (Array.isArray(newColumnTransforms)) {
+      return await this.inner.addColumns(
+        newColumnTransforms as AddColumnsSql[],
+      );
+    }
+
+    throw new Error("Invalid input type for addColumns");
   }
 
   async alterColumns(
@@ -856,6 +938,18 @@ export class LocalTable extends Table {
 
   async stats(): Promise<TableStatistics> {
     return await this.inner.stats();
+  }
+
+  async initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.initialStorageOptions();
+  }
+
+  async latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.latestStorageOptions();
   }
 
   mergeInsert(on: string | string[]): MergeInsertBuilder {

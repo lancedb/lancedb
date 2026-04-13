@@ -39,7 +39,6 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb").execute().await.unwrap();
 //! # });
@@ -51,17 +50,15 @@
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
 //!
-//! You can also use [`ConnectOptions`] to configure the connection to the database.
+//! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
 //! ```rust
-//! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
-//!     .aws_creds(AwsCredential {
-//!         key_id: "some_key".to_string(),
-//!         secret_key: "some_secret".to_string(),
-//!         token: None,
-//!     })
+//!     .storage_options([
+//!         ("aws_access_key_id", "some_key"),
+//!         ("aws_secret_access_key", "some_secret"),
+//!     ])
 //!     .execute()
 //!     .await
 //!     .unwrap();
@@ -76,7 +73,10 @@
 //!
 //! #### Create a table
 //!
-//! To create a Table, you need to provide a [`arrow_schema::Schema`] and a [`arrow_array::RecordBatch`] stream.
+//! To create a Table, you need to provide an [`arrow_array::RecordBatch`]. The
+//! schema of the `RecordBatch` determines the schema of the table.
+//!
+//! Vector columns should be represented as `FixedSizeList<Float16/Float32>` data type.
 //!
 //! ```rust
 //! # use std::sync::Arc;
@@ -87,34 +87,29 @@
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! let ndims = 128;
 //! let schema = Arc::new(Schema::new(vec![
 //!     Field::new("id", DataType::Int32, false),
 //!     Field::new(
 //!         "vector",
-//!         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 128),
+//!         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), ndims),
 //!         true,
 //!     ),
 //! ]));
-//! // Create a RecordBatch stream.
-//! let batches = RecordBatchIterator::new(
-//!     vec![RecordBatch::try_new(
+//! let data = RecordBatch::try_new(
 //!         schema.clone(),
 //!         vec![
 //!             Arc::new(Int32Array::from_iter_values(0..256)),
 //!             Arc::new(
 //!                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//!                     (0..256).map(|_| Some(vec![Some(1.0); 128])),
-//!                     128,
+//!                     (0..256).map(|_| Some(vec![Some(1.0); ndims as usize])),
+//!                     ndims,
 //!                 ),
 //!             ),
 //!         ],
 //!     )
-//!     .unwrap()]
-//!     .into_iter()
-//!     .map(Ok),
-//!     schema.clone(),
-//! );
-//! db.create_table("my_table", Box::new(batches))
+//!     .unwrap();
+//! db.create_table("my_table", data)
 //!     .execute()
 //!     .await
 //!     .unwrap();
@@ -153,42 +148,18 @@
 //! #### Open table and search
 //!
 //! ```rust
-//! # use std::sync::Arc;
 //! # use futures::TryStreamExt;
-//! # use arrow_schema::{DataType, Schema, Field};
-//! # use arrow_array::{RecordBatch, RecordBatchIterator};
-//! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
 //! # use lancedb::query::{ExecutableQuery, QueryBase};
-//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
-//! # let schema = Arc::new(Schema::new(vec![
-//! #  Field::new("id", DataType::Int32, false),
-//! #  Field::new("vector", DataType::FixedSizeList(
-//! #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-//! # ]));
-//! # let batches = RecordBatchIterator::new(vec![
-//! #    RecordBatch::try_new(schema.clone(),
-//! #       vec![
-//! #           Arc::new(Int32Array::from_iter_values(0..10)),
-//! #           Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//! #               (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-//! #       ]).unwrap()
-//! #   ].into_iter().map(Ok),
-//! #    schema.clone());
-//! # db.create_table("my_table", Box::new(batches)).execute().await.unwrap();
-//! # let table = db.open_table("my_table").execute().await.unwrap();
+//! # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
 //! let results = table
 //!     .query()
-//!     .nearest_to(&[1.0; 128])
-//!     .unwrap()
+//!     .nearest_to(&[1.0; 128])?
 //!     .execute()
-//!     .await
-//!     .unwrap()
+//!     .await?
 //!     .try_collect::<Vec<_>>()
-//!     .await
-//!     .unwrap();
-//! # });
+//!     .await?;
+//! #   Ok(())
+//! # }
 //! ```
 
 pub mod arrow;
@@ -198,6 +169,7 @@ pub mod database;
 pub mod dataloader;
 pub mod embeddings;
 pub mod error;
+pub mod expr;
 pub mod index;
 pub mod io;
 pub mod ipc;
@@ -221,13 +193,14 @@ pub use error::{Error, Result};
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
     /// between vectors. l2 distance has a range of [0, ∞).
+    #[default]
     L2,
     /// Cosine distance.  Cosine distance is a distance metric
     /// calculated from the cosine similarity between two vectors. Cosine
@@ -247,12 +220,6 @@ pub enum DistanceType {
     /// Hamming distance. Hamming distance is a distance metric that measures
     /// the number of positions at which the corresponding elements are different.
     Hamming,
-}
-
-impl Default for DistanceType {
-    fn default() -> Self {
-        Self::L2
-    }
 }
 
 impl From<DistanceType> for LanceDistanceType {

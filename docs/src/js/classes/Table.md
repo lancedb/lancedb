@@ -71,11 +71,12 @@ Add new columns with defined values.
 
 #### Parameters
 
-* **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
-    pairs of column names and
-    the SQL expression to use to calculate the value of the new column. These
-    expressions will be evaluated for each row in the table, and can
-    reference existing columns in the table.
+* **newColumnTransforms**: `Field`&lt;`any`&gt; \| `Field`&lt;`any`&gt;[] \| `Schema`&lt;`any`&gt; \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    Either:
+    - An array of objects with column names and SQL expressions to calculate values
+    - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+    - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+    - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
 
 #### Returns
 
@@ -367,6 +368,27 @@ Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 
+### initialStorageOptions()
+
+```ts
+abstract initialStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the initial storage options that were passed in when opening this table.
+
+For dynamically refreshed options (e.g., credential vending), use
+[Table.latestStorageOptions](Table.md#lateststorageoptions).
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
+
+***
+
 ### isOpen()
 
 ```ts
@@ -378,6 +400,28 @@ Return true if the table has not been closed
 #### Returns
 
 `boolean`
+
+***
+
+### latestStorageOptions()
+
+```ts
+abstract latestStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the latest storage options, refreshing from provider if configured.
+
+This method is useful for credential vending scenarios where storage options
+may be refreshed dynamically. If no dynamic provider is configured, this
+returns the initial static options.
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
 
 ***
 
@@ -441,19 +485,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
  - Prune: Removes old versions of the dataset
  - Index: Optimizes the indices, adding new data to existing indices
 
- Experimental API
- ----------------
-
- The optimization process is undergoing active development and may change.
- Our goal with these changes is to improve the performance of optimization and
- reduce the complexity.
-
- That being said, it is essential today to run optimize if you want the best
- performance.  It should be stable and safe to use in production, but it our
- hope that the API may be simplified (or not even need to be called) in the
- future.
-
- The frequency an application shoudl call optimize is based on the frequency of
+ The frequency an application should call optimize is based on the frequency of
  data modifications.  If data is frequently added, deleted, or updated then
  optimize should be run frequently.  A good rule of thumb is to run optimize if
  you have added or modified 100,000 or more records or run more than 20 data
@@ -705,8 +737,11 @@ Create a query that returns a subset of the rows in the table.
 
 #### Parameters
 
-* **rowIds**: `number`[]
+* **rowIds**: readonly (`number` \| `bigint`)[]
     The row ids of the rows to return.
+    Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+    For convenience / backwards compatibility, `number[]` is also accepted (for
+    small row ids that fit in a safe integer).
 
 #### Returns
 

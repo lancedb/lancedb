@@ -3,16 +3,17 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
+use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 
 use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
 use lancedb::connection::Connection;
-use lancedb::index::scalar::FtsIndexBuilder;
+
 use lancedb::index::Index;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, Result, Table};
+use lancedb::{Result, Table, connect};
 use rand::random;
 
 #[tokio::main]
@@ -29,7 +30,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 1000;
 
     let schema = Arc::new(Schema::new(vec![
@@ -45,19 +46,21 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
         .collect::<Vec<_>>();
     let n_terms = 3;
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
-                    (0..n_terms)
-                        .map(|_| words[random::<u32>() as usize % words.len()])
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }))),
-            ],
-        )
-        .unwrap()]
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
+                        (0..n_terms)
+                            .map(|_| words[random::<u32>() as usize % words.len()])
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }))),
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),
@@ -66,7 +69,7 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 }
 
 async fn create_table(db: &Connection) -> Result<Table> {
-    let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    let initial_data = create_some_records()?;
     let tbl = db.create_table("my_table", initial_data).execute().await?;
     Ok(tbl)
 }

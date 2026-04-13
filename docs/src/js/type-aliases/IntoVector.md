@@ -7,5 +7,10 @@
 # Type Alias: IntoVector
 
 ```ts
-type IntoVector: Float32Array | Float64Array | number[] | Promise<Float32Array | Float64Array | number[]>;
+type IntoVector:
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | number[]
+  | Promise<Float32Array | Float64Array | Uint8Array | number[]>;
 ```

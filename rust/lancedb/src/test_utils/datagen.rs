@@ -6,8 +6,9 @@ use futures::TryStreamExt;
 use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 
 use crate::{
+    Error, Table,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
-    connect, Error, Table,
+    connect,
 };
 
 #[async_trait::async_trait]
@@ -34,10 +35,7 @@ impl LanceDbDatagenExt for BatchGeneratorBuilder {
             schema,
         ));
         let db = connect("memory:///").execute().await.unwrap();
-        db.create_table_streaming(table_name, stream)
-            .execute()
-            .await
-            .unwrap()
+        db.create_table(table_name, stream).execute().await.unwrap()
     }
 }
 
@@ -48,8 +46,5 @@ pub async fn virtual_table(name: &str, values: &RecordBatch) -> Table {
         schema,
     ));
     let db = connect("memory:///").execute().await.unwrap();
-    db.create_table_streaming(name, stream)
-        .execute()
-        .await
-        .unwrap()
+    db.create_table(name, stream).execute().await.unwrap()
 }

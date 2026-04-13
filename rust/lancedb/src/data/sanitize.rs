@@ -4,10 +4,10 @@
 use std::{iter::repeat_with, sync::Arc};
 
 use arrow_array::{
-    cast::AsArray,
-    types::{Float16Type, Float32Type, Float64Type, Int32Type, Int64Type},
     Array, ArrowNumericType, FixedSizeListArray, PrimitiveArray, RecordBatch, RecordBatchIterator,
     RecordBatchReader,
+    cast::AsArray,
+    types::{Float16Type, Float32Type, Float64Type, Int32Type, Int64Type},
 };
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
@@ -184,7 +184,7 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int32Array, Int8Array,
+        FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int8Array, Int32Array,
         RecordBatch, RecordBatchIterator, StringArray,
     };
     use arrow_schema::Field;

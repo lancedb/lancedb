@@ -3,6 +3,12 @@
 
 use std::sync::Arc;
 
+use arrow_array::{
+    Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
+    Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
+};
+use arrow_buffer::ScalarBuffer;
+use half::f16;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
@@ -17,12 +23,39 @@ use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::convert_error;
 use crate::error::NapiErrorExt;
+use crate::error::convert_error;
 use crate::iterator::RecordBatchIterator;
+use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
-use crate::rerankers::RerankerCallbacks;
 use crate::util::{parse_distance_type, schema_to_buffer};
+
+fn bytes_to_arrow_array(data: Uint8Array, dtype: String) -> napi::Result<Arc<dyn Array>> {
+    let buf = arrow_buffer::Buffer::from(data.to_vec());
+    let num_bytes = buf.len();
+    match dtype.as_str() {
+        "float16" => {
+            let scalar_buf = ScalarBuffer::<f16>::new(buf, 0, num_bytes / 2);
+            Ok(Arc::new(ArrowFloat16Array::new(scalar_buf, None)))
+        }
+        "float32" => {
+            let scalar_buf = ScalarBuffer::<f32>::new(buf, 0, num_bytes / 4);
+            Ok(Arc::new(ArrowFloat32Array::new(scalar_buf, None)))
+        }
+        "float64" => {
+            let scalar_buf = ScalarBuffer::<f64>::new(buf, 0, num_bytes / 8);
+            Ok(Arc::new(ArrowFloat64Array::new(scalar_buf, None)))
+        }
+        "uint8" => {
+            let scalar_buf = ScalarBuffer::<u8>::new(buf, 0, num_bytes);
+            Ok(Arc::new(ArrowUInt8Array::new(scalar_buf, None)))
+        }
+        _ => Err(napi::Error::from_reason(format!(
+            "Unsupported vector dtype: {}. Expected one of: float16, float32, float64, uint8",
+            dtype
+        ))),
+    }
+}
 
 #[napi]
 pub struct Query {
@@ -42,7 +75,7 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -75,6 +108,13 @@ impl Query {
             .clone()
             .nearest_to(vector.as_ref())
             .default_error()?;
+        Ok(VectorQuery { inner })
+    }
+
+    #[napi]
+    pub fn nearest_to_raw(&mut self, data: Uint8Array, dtype: String) -> Result<VectorQuery> {
+        let array = bytes_to_arrow_array(data, dtype)?;
+        let inner = self.inner.clone().nearest_to(array).default_error()?;
         Ok(VectorQuery { inner })
     }
 
@@ -164,6 +204,13 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn add_query_vector_raw(&mut self, data: Uint8Array, dtype: String) -> Result<()> {
+        let array = bytes_to_arrow_array(data, dtype)?;
+        self.inner = self.inner.clone().add_query_vector(array).default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
         let distance_type = parse_distance_type(distance_type)?;
         self.inner = self.inner.clone().distance_type(distance_type);
@@ -235,7 +282,7 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -272,11 +319,13 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn rerank(&mut self, callbacks: RerankerCallbacks) {
-        self.inner = self
-            .inner
-            .clone()
-            .rerank(Arc::new(Reranker::new(callbacks)));
+    pub fn rerank(
+        &mut self,
+        rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+    ) -> napi::Result<()> {
+        let reranker = Reranker::new(rerank_hybrid)?;
+        self.inner = self.inner.clone().rerank(Arc::new(reranker));
+        Ok(())
     }
 
     #[napi(catch_unwind)]
@@ -523,12 +572,12 @@ impl JsFullTextQuery {
     }
 }
 
-fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
-    if let Ok(Some(query)) = query.get::<_, &JsFullTextQuery>("query") {
+fn parse_fts_query(query: Object) -> napi::Result<FullTextSearchQuery> {
+    if let Ok(Some(query)) = query.get::<&JsFullTextQuery>("query") {
         Ok(FullTextSearchQuery::new_query(query.inner.clone()))
-    } else if let Ok(Some(query_text)) = query.get::<_, String>("query") {
+    } else if let Ok(Some(query_text)) = query.get::<String>("query") {
         let mut query_text = query_text;
-        let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
+        let columns = query.get::<Option<Vec<String>>>("columns")?.flatten();
 
         let is_phrase =
             query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
@@ -549,15 +598,12 @@ fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
             }
         };
         let mut query = FullTextSearchQuery::new_query(query);
-        if let Some(cols) = columns {
-            if !cols.is_empty() {
-                query = query.with_columns(&cols).map_err(|e| {
-                    napi::Error::from_reason(format!(
-                        "Failed to set full text search columns: {}",
-                        e
-                    ))
-                })?;
-            }
+        if let Some(cols) = columns
+            && !cols.is_empty()
+        {
+            query = query.with_columns(&cols).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to set full text search columns: {}", e))
+            })?;
         }
         Ok(query)
     } else {

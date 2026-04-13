@@ -8,17 +8,16 @@
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{
-    FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
-};
+use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
 
 use futures::TryStreamExt;
 use lancedb::connection::Connection;
-use lancedb::index::vector::IvfPqIndexBuilder;
+
 use lancedb::index::Index;
+use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, DistanceType, Result, Table};
+use lancedb::{DistanceType, Result, Table, connect};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,7 +33,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
 
@@ -52,19 +51,21 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 
     // Create a RecordBatch stream.
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
-                        DIM as i32,
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(
+                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                            (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
+                            DIM as i32,
+                        ),
                     ),
-                ),
-            ],
-        )
-        .unwrap()]
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),
@@ -73,9 +74,9 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 }
 
 async fn create_table(db: &Connection) -> Result<Table> {
-    let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    let initial_data = create_some_records()?;
     let tbl = db
-        .create_table("my_table", Box::new(initial_data))
+        .create_table("my_table", initial_data)
         .execute()
         .await
         .unwrap();
