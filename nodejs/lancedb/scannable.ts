@@ -140,6 +140,9 @@ export class Scannable {
   /**
    * Build a Scannable from an Arrow `RecordBatchReader`. A reader can only
    * be consumed once; `rescannable` defaults to `false`.
+   *
+   * The reader must already be opened (via `.open()`) so its `.schema` is
+   * populated — `RecordBatchReader.from(...)` returns an unopened reader.
    */
   static fromRecordBatchReader(
     reader: RecordBatchReader,
