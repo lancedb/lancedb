@@ -85,6 +85,9 @@ export class Scannable {
     opts: ScannableOptions = {},
   ): Scannable {
     const numRows = opts.numRows ?? null;
+    if (numRows != null && !Number.isInteger(numRows)) {
+      throw new TypeError("numRows must be an integer");
+    }
     const rescannable = opts.rescannable ?? true;
 
     let iter: AsyncIterator<RecordBatch> | Iterator<RecordBatch> | null = null;
@@ -182,6 +185,8 @@ async function encodeBatch(batch: RecordBatch): Promise<Buffer> {
   return Buffer.from(bytes);
 }
 
+// Uses IPC File format (not Stream) because the Rust side parses it with
+// `ipc_file_to_schema`, which expects File format.
 function encodeSchema(schema: Schema): Buffer {
   const writer = new RecordBatchFileWriter();
   writer.reset(undefined, schema);

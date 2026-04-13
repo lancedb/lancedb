@@ -139,6 +139,12 @@ describe("Scannable", () => {
         /non-negative/,
       );
     });
+
+    test("throws when numRows is not an integer", () => {
+      expect(() => Scannable.fromTable(makeTable(), { numRows: 3.5 })).toThrow(
+        /integer/,
+      );
+    });
   });
 
   describe("native handle", () => {
