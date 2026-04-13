@@ -111,7 +111,6 @@ if TYPE_CHECKING:
     )
     from .db import LanceDBConnection
     from .index import IndexConfig
-    from .io import StorageOptionsProvider
     from .types import (
         AddMode,
         BaseTokenizerType,
