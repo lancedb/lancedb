@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import asyncio
 import os
 from datetime import date, datetime, timedelta
 from time import sleep
@@ -525,6 +526,42 @@ async def test_add_async(mem_db_async: AsyncConnection):
     )
     assert add_res.version == 2
     assert await table.count_rows() == 3
+
+
+@pytest.mark.asyncio
+async def test_add_async_embedding_does_not_block_event_loop(
+    mem_db_async: AsyncConnection,
+):
+    class SlowEmbeddingFunction(MockTextEmbeddingFunction):
+        def generate_embeddings(self, texts):
+            sleep(0.2)
+            return super().generate_embeddings(texts)
+
+    emb = SlowEmbeddingFunction.create()
+
+    class MyModel(LanceModel):
+        text: str = emb.SourceField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
+
+    table = await mem_db_async.create_table("test_async_embed_add", schema=MyModel)
+
+    ticks = 0
+    done = asyncio.Event()
+
+    async def heartbeat():
+        nonlocal ticks
+        while not done.is_set():
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        await table.add([{"text": f"hello world {i}"} for i in range(4)])
+    finally:
+        done.set()
+        await heartbeat_task
+
+    assert ticks >= 1
 
 
 def test_add_overwrite_infers_vector_schema(mem_db: DBConnection):
