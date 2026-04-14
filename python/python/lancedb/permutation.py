@@ -648,6 +648,9 @@ class Permutation:
 
         new_selection = {}
         for name in columns:
+            if name == "_rowid":
+                new_selection[name] = name
+                continue
             value = self.selection.get(name, None)
             if value is None:
                 raise ValueError(
