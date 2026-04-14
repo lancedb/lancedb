@@ -2175,6 +2175,23 @@ class LanceTable(Table):
         target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table."""
+        if (
+            "CreateTableIndex" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_create_index
+
+            table_id = self._namespace_path + [self.name]
+            _execute_server_side_create_index(
+                self._namespace_client,
+                table_id,
+                column=vector_column_name,
+                index_type=index_type,
+                name=name,
+                distance_type=metric,
+            )
+            return
+
         if accelerator is not None:
             # accelerator is only supported through pylance.
             self.to_lance().create_index(
@@ -2370,6 +2387,22 @@ class LanceTable(Table):
         index_type: ScalarIndexType = "BTREE",
         name: Optional[str] = None,
     ):
+        if (
+            "CreateTableIndex" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_create_index
+
+            table_id = self._namespace_path + [self.name]
+            _execute_server_side_create_index(
+                self._namespace_client,
+                table_id,
+                column=column,
+                index_type=index_type,
+                name=name,
+            )
+            return
+
         if index_type == "BTREE":
             config = BTree()
         elif index_type == "BITMAP":
@@ -2582,6 +2615,23 @@ class LanceTable(Table):
         int
             The number of vectors in the table.
         """
+        if (
+            "InsertIntoTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_insert
+
+            table_id = self._namespace_path + [self.name]
+            _execute_server_side_insert(
+                self._namespace_client,
+                table_id,
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
+            return AddResult(version=0)
+
         progress, owns = _normalize_progress(progress)
         try:
             return LOOP.run(
@@ -2934,6 +2984,16 @@ class LanceTable(Table):
         return self
 
     def delete(self, where: str) -> DeleteResult:
+        if (
+            "DeleteFromTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_delete
+
+            table_id = self._namespace_path + [self.name]
+            _execute_server_side_delete(self._namespace_client, table_id, where)
+            return DeleteResult()
+
         return LOOP.run(self._table.delete(where))
 
     def update(
@@ -2987,6 +3047,25 @@ class LanceTable(Table):
         2  2  [10.0, 10.0]
 
         """
+        if (
+            "UpdateTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_update
+
+            table_id = self._namespace_path + [self.name]
+            # Combine values and values_sql into SQL expressions
+            updates = {}
+            if values:
+                for col, val in values.items():
+                    updates[col] = repr(val)
+            if values_sql:
+                updates.update(values_sql)
+            resp = _execute_server_side_update(
+                self._namespace_client, table_id, updates, where=where
+            )
+            return UpdateResult(rows_updated=resp.updated_rows, version=resp.version)
+
         return LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
     def _execute_query(
@@ -3034,6 +3113,31 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ) -> MergeResult:
+        if (
+            "MergeInsertIntoTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_merge_insert
+
+            table_id = self._namespace_path + [self.name]
+            on_key = merge._on[0] if len(merge._on) == 1 else ",".join(merge._on)
+            _execute_server_side_merge_insert(
+                self._namespace_client,
+                table_id,
+                new_data,
+                on=on_key,
+                when_matched_update_all=merge._when_matched_update_all,
+                when_matched_update_all_filt=merge._when_matched_update_all_condition,
+                when_not_matched_insert_all=merge._when_not_matched_insert_all,
+                when_not_matched_by_source_delete=(
+                    merge._when_not_matched_by_source_delete
+                ),
+                when_not_matched_by_source_delete_filt=(
+                    merge._when_not_matched_by_source_condition
+                ),
+            )
+            return MergeResult(version=0)
+
         return LOOP.run(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
