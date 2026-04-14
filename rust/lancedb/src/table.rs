@@ -34,13 +34,9 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
-use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
-use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
-use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
-use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::format;
@@ -1373,41 +1369,58 @@ impl NativeTable {
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
 
-        // Determine if managed_versioning is enabled
-        // Use the provided value if available, otherwise query the namespace
-        let managed_versioning = match managed_versioning {
-            Some(value) => value,
-            None if namespace_client.is_some() => {
-                let ns_client = namespace_client.as_ref().unwrap();
-                let describe_request = DescribeTableRequest {
-                    id: Some(table_id.clone()),
-                    ..Default::default()
-                };
-                let response = ns_client
-                    .describe_table(describe_request)
-                    .await
-                    .map_err(|e| Error::Runtime {
-                        message: format!(
-                            "Failed to describe table via namespace client: {}. \
-                             If you don't need managed versioning, don't pass namespace_client.",
-                            e
-                        ),
-                    })?;
-                response.managed_versioning == Some(true)
-            }
-            None => false,
-        };
+        // When namespace_client is provided, use DatasetBuilder::from_namespace
+        // which properly integrates all namespace features: credential vending
+        // via storage_options_provider, managed versioning commit handler, and
+        // storage options merging.
+        if let Some(ref ns_client) = namespace_client {
+            let builder = DatasetBuilder::from_namespace(ns_client.clone(), table_id)
+                .await
+                .map_err(|e| match e {
+                    lance::Error::Namespace { source, .. } => Error::Runtime {
+                        message: format!("Failed to get table info from namespace: {:?}", source),
+                    },
+                    e => e.into(),
+                })?;
 
-        let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+            let dataset = builder
+                .with_read_params(params)
+                .load()
+                .await
+                .map_err(|e| match e {
+                    lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                        name: name.to_string(),
+                        source: Box::new(e),
+                    },
+                    e => e.into(),
+                })?;
+
+            let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+            let id = Self::build_id(&namespace, name);
+
+            return Ok(Self {
+                name: name.to_string(),
+                namespace,
+                id,
+                uri: uri.to_string(),
+                dataset,
+                read_consistency_interval,
+                namespace_client,
+                pushdown_operations,
+            });
+        }
+
+        // Without namespace_client, use the original from_uri path
+        let managed_versioning = managed_versioning.unwrap_or(false);
+
+        let builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
-        if managed_versioning && let Some(ref ns_client) = namespace_client {
-            let external_store =
-                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
-            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
-                external_manifest_store: Arc::new(external_store),
-            });
-            builder = builder.with_commit_handler(commit_handler);
+        if managed_versioning {
+            log::warn!(
+                "managed_versioning is enabled but no namespace_client was provided. \
+                 Commit handler will not be set up."
+            );
         }
 
         let dataset = builder.load().await.map_err(|e| match e {
