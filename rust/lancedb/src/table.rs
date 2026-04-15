@@ -1415,20 +1415,29 @@ impl NativeTable {
         }
 
         // When managed_versioning is already known (caller already called describe_table),
-        // use from_uri to avoid a redundant describe_table call. The caller is responsible
-        // for passing storage_options and storage_options_provider via ReadParams.
+        // use from_uri to avoid a redundant describe_table call.
         let managed_versioning = managed_versioning.unwrap_or(false);
 
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
-        // Set up commit handler when managed_versioning is enabled
-        if managed_versioning && let Some(ref ns_client) = namespace_client {
-            let external_store =
-                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
-            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
-                external_manifest_store: Arc::new(external_store),
-            });
-            builder = builder.with_commit_handler(commit_handler);
+        if let Some(ref ns_client) = namespace_client {
+            // Set up storage options accessor with namespace provider for credential refresh.
+            // Must be set after with_read_params which overwrites builder.options.
+            let provider: Arc<dyn lance_io::object_store::StorageOptionsProvider> = Arc::new(
+                LanceNamespaceStorageOptionsProvider::new(ns_client.clone(), table_id.clone()),
+            );
+            builder = builder.with_storage_options_provider(provider);
+
+            // Set up commit handler when managed_versioning is enabled
+            if managed_versioning {
+                let external_store =
+                    LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
+                let commit_handler: Arc<dyn CommitHandler> =
+                    Arc::new(ExternalManifestCommitHandler {
+                        external_manifest_store: Arc::new(external_store),
+                    });
+                builder = builder.with_commit_handler(commit_handler);
+            }
         }
 
         let dataset = builder.load().await.map_err(|e| match e {
