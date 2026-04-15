@@ -191,7 +191,7 @@ def _into_pyarrow_reader(
             f"Unknown data type {type(data)}. "
             "Supported types: list of dicts, pandas DataFrame, polars DataFrame, "
             "pyarrow Table/RecordBatch, or Pydantic models. "
-            "See https://lancedb.com/docs/tables/ for examples."
+            "See https://docs.lancedb.com/tables/ for examples."
         )
 
 

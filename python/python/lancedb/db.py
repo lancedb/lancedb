@@ -282,7 +282,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -433,7 +433,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
         Returns
         -------
@@ -1434,7 +1434,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -1625,7 +1625,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().

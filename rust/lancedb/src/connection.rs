@@ -171,7 +171,7 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let store_params = self
             .request
@@ -188,7 +188,7 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -738,7 +738,7 @@ impl ConnectBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.request.options.insert(key.into(), value.into());
         self
@@ -746,7 +746,7 @@ impl ConnectBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -914,7 +914,7 @@ impl ConnectNamespaceBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.storage_options.insert(key.into(), value.into());
         self
@@ -922,7 +922,7 @@ impl ConnectNamespaceBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
