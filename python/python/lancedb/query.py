@@ -1535,7 +1535,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             warnings.warn(
                 "Tantivy FTS only supports descending order with nulls_last for "
                 "compatibility with ordering_field_name. The requested ordering "
-                "will be ignored. Consider using LanceDB FTS for full ordering support.",
+                "will be ignored. Consider using LanceDB FTS for full ordering "
+                "support.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1544,7 +1545,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if ordering.nulls_first:
             warnings.warn(
                 "Tantivy FTS does not support nulls_first. The requested ordering "
-                "will be ignored. Consider using LanceDB FTS for full ordering support.",
+                "will be ignored. Consider using LanceDB FTS for full ordering "
+                "support.",
                 UserWarning,
                 stacklevel=2,
             )
