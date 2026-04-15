@@ -582,9 +582,22 @@ class LanceQueryBuilder(ABC):
             If "auto", the query type is inferred based on the query.
         vector_column_name: str
             The name of the vector column to use for vector search.
+        ordering_field_name: Optional[str]
+            .. deprecated:: 0.27.0
+                Use ``order_by()`` method instead.
+        fts_columns: Optional[Union[str, List[str]]]
+            The columns to search in for full text search.
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if ordering_field_name is not None:
+            import warnings
+
+            warnings.warn(
+                "ordering_field_name is deprecated, use .order_by() method instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
             # hybrid fts and vector query
@@ -1498,11 +1511,48 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
+        self._ordering_field_name = ordering_field_name
         self._reranker = None
         self._fast_search = fast_search
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
+
+    def _tantivy_ordering_field(self) -> Optional[str]:
+        if not self._order_by:
+            return self._ordering_field_name
+
+        import warnings
+
+        if len(self._order_by) > 1:
+            warnings.warn(
+                "Tantivy FTS only supports a single ordering field. "
+                "Only the first ordering column can be considered.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        ordering = self._order_by[0]
+        if ordering.ascending:
+            warnings.warn(
+                "Tantivy FTS only supports descending order with nulls_last for "
+                "compatibility with ordering_field_name. The requested ordering "
+                "will be ignored. Consider using LanceDB FTS for full ordering support.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return None
+
+        if ordering.nulls_first:
+            warnings.warn(
+                "Tantivy FTS does not support nulls_first. The requested ordering "
+                "will be ignored. Consider using LanceDB FTS for full ordering support.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return None
+
+        return ordering.column_name
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
