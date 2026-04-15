@@ -3,18 +3,18 @@
 
 use std::sync::Arc;
 
-use arrow_array::{
-    Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
-    Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
-};
-use arrow_buffer::ScalarBuffer;
-use half::f16;
 use crate::error::NapiErrorExt;
 use crate::error::convert_error;
 use crate::iterator::RecordBatchIterator;
 use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
 use crate::util::{parse_distance_type, schema_to_buffer};
+use arrow_array::{
+    Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
+    Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
+};
+use arrow_buffer::ScalarBuffer;
+use half::f16;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,

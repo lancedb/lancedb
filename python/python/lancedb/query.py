@@ -971,7 +971,6 @@ class LanceQueryBuilder(ABC):
         """  # noqa: E501
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
-
     def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
         """
         Set the ordering for the results.
@@ -989,7 +988,6 @@ class LanceQueryBuilder(ABC):
         """
         self._order_by = ordering
         return self
-
 
     def analyze_plan(self) -> str:
         """
