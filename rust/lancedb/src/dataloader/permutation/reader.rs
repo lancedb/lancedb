@@ -20,7 +20,7 @@ use arrow::array::AsArray;
 use arrow::compute::concat_batches;
 use arrow::datatypes::UInt64Type;
 use arrow_array::{RecordBatch, UInt64Array};
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
@@ -407,6 +407,54 @@ impl PermutationReader {
                 .await?
         };
         Self::row_ids_to_batches(self.base_table.clone(), row_ids, selection).await
+    }
+
+    pub async fn snapshot_indices(&self) -> Result<RecordBatch> {
+        let row_ids = if let Some(permutation_table) = &self.permutation_table {
+            permutation_table
+                .query(
+                    &AnyQuery::Query(QueryRequest {
+                        select: Select::Columns(vec![SRC_ROW_ID_COL.to_string()]),
+                        filter: Some(QueryFilter::Sql(format!(
+                            "{} = {}",
+                            SPLIT_ID_COLUMN, self.split
+                        ))),
+                        offset: self.offset.map(|o| o as usize),
+                        limit: self.limit.map(|l| l as usize),
+                        ..Default::default()
+                    }),
+                    QueryExecutionOptions::default(),
+                )
+                .await?
+        } else {
+            self.base_table
+                .query(
+                    &AnyQuery::Query(QueryRequest {
+                        select: Select::Columns(vec![ROW_ID.to_string()]),
+                        offset: self.offset.map(|o| o as usize),
+                        limit: self.limit.map(|l| l as usize),
+                        ..Default::default()
+                    }),
+                    QueryExecutionOptions::default(),
+                )
+                .await?
+        };
+
+        let batches = row_ids.try_collect::<Vec<_>>().await?;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            SRC_ROW_ID_COL,
+            DataType::UInt64,
+            false,
+        )]));
+        if batches.is_empty() {
+            return Ok(RecordBatch::try_new(
+                schema,
+                vec![Arc::new(UInt64Array::from(Vec::<u64>::new()))],
+            )?);
+        }
+
+        let batch = concat_batches(&batches[0].schema(), &batches)?;
+        Ok(RecordBatch::try_new(schema, vec![batch.column(0).clone()])?)
     }
 
     /// If we are going to use `take` then we load the offset -> row id map once for the split and cache it

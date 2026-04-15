@@ -303,6 +303,15 @@ impl PyPermutationReader {
         slf.reader.count_rows()
     }
 
+    #[pyo3(signature = ())]
+    pub fn snapshot_indices<'py>(slf: PyRef<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let reader = slf.reader.clone();
+        future_into_py(slf.py(), async move {
+            let batch = reader.snapshot_indices().await.infer_error()?;
+            Ok(PyArrowType(batch))
+        })
+    }
+
     #[pyo3(signature = (offset))]
     pub fn with_offset<'py>(slf: PyRef<'py, Self>, offset: u64) -> PyResult<Bound<'py, PyAny>> {
         let reader = slf.reader.as_ref().clone();
