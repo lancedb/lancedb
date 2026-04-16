@@ -138,15 +138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-swap"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a07d1f37ff60921c83bdfc7407723bdefe89b44b98a9b772f225c8f9d67141a6"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "argminmax"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -302,7 +293,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex 0.12.1",
+ "lz4_flex",
  "zstd",
 ]
 
@@ -1279,31 +1270,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bon"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f47dbe92550676ee653353c310dfb9cf6ba17ee70396e1f7cf0a2020ad49b2fe"
-dependencies = [
- "bon-macros",
- "rustversion",
-]
-
-[[package]]
-name = "bon-macros"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "519bd3116aeeb42d5372c29d982d16d0170d3d4a5ed85fc7dd91642ffff3c67c"
-dependencies = [
- "darling 0.20.11",
- "ident_case",
- "prettyplease",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "brotli"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1471,12 +1437,6 @@ dependencies = [
  "libc",
  "shlex",
 ]
-
-[[package]]
-name = "census"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f4c707c6a209cbe82d10abd08e1ea8995e9ea937d2550646e02798948992be0"
 
 [[package]]
 name = "cfg-if"
@@ -1795,7 +1755,7 @@ dependencies = [
  "crossterm_winapi",
  "document-features",
  "parking_lot",
- "rustix 1.1.4",
+ "rustix",
  "winapi",
 ]
 
@@ -2715,12 +2675,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "downcast-rs"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
-
-[[package]]
 name = "dtor"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2956,12 +2910,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8eb564c5c7423d25c886fb561d1e4ee69f72354d16918afa32c08811f6b6a55"
 
 [[package]]
-name = "fastdivide"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afc2bd4d5a73106dd53d10d73d3401c2f32730ba2c0b93ddb888a8983680471"
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3055,16 +3003,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs4"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7e180ac76c23b45e767bd7ae9579bc0bb458618c4bc71835926e098e61d15f8"
-dependencies = [
- "rustix 0.38.44",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3072,8 +3010,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-array",
  "rand 0.9.2",
@@ -3559,12 +3497,6 @@ checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "htmlescape"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9025058dae765dee5070ec375f591e2ba14638c63feff74f13805a72e523163"
 
 [[package]]
 name = "http"
@@ -4134,8 +4066,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4178,12 +4110,14 @@ dependencies = [
  "lance-linalg",
  "lance-namespace",
  "lance-table",
+ "lance-tokenizer",
  "log",
  "moka",
  "object_store",
  "permutation",
  "pin-project",
  "prost",
+ "prost-build",
  "prost-types",
  "rand 0.9.2",
  "roaring",
@@ -4191,7 +4125,6 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu 0.9.0",
- "tantivy",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -4202,8 +4135,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4224,8 +4157,8 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrayref",
  "paste",
@@ -4234,8 +4167,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4272,8 +4205,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4304,8 +4237,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4323,8 +4256,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4361,8 +4294,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4394,8 +4327,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4432,6 +4365,7 @@ dependencies = [
  "lance-io",
  "lance-linalg",
  "lance-table",
+ "lance-tokenizer",
  "libm",
  "log",
  "ndarray",
@@ -4449,7 +4383,6 @@ dependencies = [
  "serde_json",
  "smallvec",
  "snafu 0.9.0",
- "tantivy",
  "tempfile",
  "tokio",
  "tracing",
@@ -4459,8 +4392,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4504,8 +4437,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4521,8 +4454,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4535,8 +4468,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -4581,8 +4514,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4621,14 +4554,24 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "5.1.0-beta.3"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.1.0-beta.3#0a0d53b5ef4b0f65bb775ce63bdcabc79d1d14b8"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
 dependencies = [
  "arrow-array",
  "arrow-schema",
  "lance-arrow",
  "num-traits",
  "rand 0.9.2",
+]
+
+[[package]]
+name = "lance-tokenizer"
+version = "6.0.0-beta.1"
+source = "git+https://github.com/lance-format/lance.git?tag=v6.0.0-beta.1#c7a7d3a0e944646e793d297d4a2e2cf7e4fb28a3"
+dependencies = [
+ "rust-stemmers",
+ "serde",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -4776,12 +4719,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
-name = "levenshtein_automata"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c2cdeb66e45e9f36bfad5bbdb4d2384e70936afbee843c6f6543f0c551ebb25"
-
-[[package]]
 name = "lexical-core"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4871,12 +4808,6 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
-
-[[package]]
-name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
@@ -4957,12 +4888,6 @@ dependencies = [
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
-
-[[package]]
-name = "lz4_flex"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
@@ -5033,15 +4958,6 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest",
-]
-
-[[package]]
-name = "measure_time"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51c55d61e72fc3ab704396c5fa16f4c184db37978ae4e94ca8959693a235fc0e"
-dependencies = [
- "log",
 ]
 
 [[package]]
@@ -5196,12 +5112,6 @@ dependencies = [
  "syn 1.0.109",
  "target-features",
 ]
-
-[[package]]
-name = "murmurhash32"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "napi"
@@ -5492,12 +5402,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "oneshot"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "269bca4c2591a28585d6bf10d9ed0332b7d76900a1b02bec41bdc3a2cdcda107"
-
-[[package]]
 name = "onig"
 version = "6.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5585,15 +5489,6 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
-
-[[package]]
-name = "ownedbytes"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fbd56f7631767e61784dc43f8580f403f4475bd4aaa4da003e6295e1bab4a7e"
-dependencies = [
- "stable_deref_trait",
-]
 
 [[package]]
 name = "p256"
@@ -7051,19 +6946,6 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "0.38.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
-dependencies = [
- "bitflags",
- "errno",
- "libc",
- "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
@@ -7071,7 +6953,7 @@ dependencies = [
  "bitflags",
  "errno",
  "libc",
- "linux-raw-sys 0.12.1",
+ "linux-raw-sys",
  "windows-sys 0.59.0",
 ]
 
@@ -7537,15 +7419,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
-name = "sketches-ddsketch"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7918,152 +7791,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
-name = "tantivy"
-version = "0.24.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64a966cb0e76e311f09cf18507c9af192f15d34886ee43d7ba7c7e3803660c43"
-dependencies = [
- "aho-corasick",
- "arc-swap",
- "base64 0.22.1",
- "bitpacking",
- "bon",
- "byteorder",
- "census",
- "crc32fast",
- "crossbeam-channel",
- "downcast-rs",
- "fastdivide",
- "fnv",
- "fs4",
- "htmlescape",
- "hyperloglogplus",
- "itertools 0.14.0",
- "levenshtein_automata",
- "log",
- "lru",
- "lz4_flex 0.11.6",
- "measure_time",
- "memmap2 0.9.10",
- "once_cell",
- "oneshot",
- "rayon",
- "regex",
- "rust-stemmers",
- "rustc-hash",
- "serde",
- "serde_json",
- "sketches-ddsketch",
- "smallvec",
- "tantivy-bitpacker",
- "tantivy-columnar",
- "tantivy-common",
- "tantivy-fst",
- "tantivy-query-grammar",
- "tantivy-stacker",
- "tantivy-tokenizer-api",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "uuid",
- "winapi",
-]
-
-[[package]]
-name = "tantivy-bitpacker"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1adc286a39e089ae9938935cd488d7d34f14502544a36607effd2239ff0e2494"
-dependencies = [
- "bitpacking",
-]
-
-[[package]]
-name = "tantivy-columnar"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6300428e0c104c4f7db6f95b466a6f5c1b9aece094ec57cdd365337908dc7344"
-dependencies = [
- "downcast-rs",
- "fastdivide",
- "itertools 0.14.0",
- "serde",
- "tantivy-bitpacker",
- "tantivy-common",
- "tantivy-sstable",
- "tantivy-stacker",
-]
-
-[[package]]
-name = "tantivy-common"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91b6ea6090ce03dc72c27d0619e77185d26cc3b20775966c346c6d4f7e99d7f"
-dependencies = [
- "async-trait",
- "byteorder",
- "ownedbytes",
- "serde",
- "time",
-]
-
-[[package]]
-name = "tantivy-fst"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d60769b80ad7953d8a7b2c70cdfe722bbcdcac6bccc8ac934c40c034d866fc18"
-dependencies = [
- "byteorder",
- "regex-syntax",
- "utf8-ranges",
-]
-
-[[package]]
-name = "tantivy-query-grammar"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e810cdeeebca57fc3f7bfec5f85fdbea9031b2ac9b990eb5ff49b371d52bbe6a"
-dependencies = [
- "nom 7.1.3",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "tantivy-sstable"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "709f22c08a4c90e1b36711c1c6cad5ae21b20b093e535b69b18783dd2cb99416"
-dependencies = [
- "futures-util",
- "itertools 0.14.0",
- "tantivy-bitpacker",
- "tantivy-common",
- "tantivy-fst",
- "zstd",
-]
-
-[[package]]
-name = "tantivy-stacker"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bcdebb267671311d1e8891fd9d1301803fdb8ad21ba22e0a30d0cab49ba59c1"
-dependencies = [
- "murmurhash32",
- "rand_distr 0.4.3",
- "tantivy-common",
-]
-
-[[package]]
-name = "tantivy-tokenizer-api"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa942fcee81e213e09715bbce8734ae2180070b97b33839a795ba1de201547d"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8090,7 +7817,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.2",
  "once_cell",
- "rustix 1.1.4",
+ "rustix",
  "windows-sys 0.59.0",
 ]
 
@@ -8541,6 +8268,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-normalization-alignments"
