@@ -451,6 +451,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_namespace_connection_with_namespace_client_properties() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .namespace_client_property("table_version_tracking_enabled", "true")
+            .namespace_client_property("manifest_enabled", "true")
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let test_data = create_test_data();
+        conn.create_table("test_table", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(DescribeTableRequest {
+                id: Some(vec!["test_ns".into(), "test_table".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to describe table");
+
+        assert_eq!(describe.managed_versioning, Some(true));
+    }
+
+    #[tokio::test]
     async fn test_namespace_create_table_basic() {
         // Setup: Create a temporary directory for the namespace
         let tmp_dir = tempdir().unwrap();

@@ -285,11 +285,12 @@ const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl ListingDatabase {
-    fn namespace_client_properties(
+    fn build_namespace_client_properties(
         uri: &str,
         storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
     ) -> HashMap<String, String> {
-        let mut properties = HashMap::new();
+        let mut properties = namespace_client_properties;
         properties.insert("root".to_string(), uri.to_string());
         for (key, value) in storage_options {
             properties.insert(format!("storage.{}", key), value.clone());
@@ -300,10 +301,15 @@ impl ListingDatabase {
     async fn connect_namespace_database(
         uri: &str,
         storage_options: HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Arc<lance::session::Session>,
     ) -> Result<Arc<LanceNamespaceDatabase>> {
-        let ns_properties = Self::namespace_client_properties(uri, &storage_options);
+        let ns_properties = Self::build_namespace_client_properties(
+            uri,
+            &storage_options,
+            namespace_client_properties,
+        );
         Ok(Arc::new(
             LanceNamespaceDatabase::connect(
                 "dir",
@@ -336,6 +342,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -426,6 +433,7 @@ impl ListingDatabase {
                 let namespace_database = Self::connect_namespace_database(
                     &table_base_uri,
                     options.storage_options.clone(),
+                    request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
                     session.clone(),
                 )
@@ -450,6 +458,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -461,6 +470,7 @@ impl ListingDatabase {
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
+        namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
@@ -477,6 +487,7 @@ impl ListingDatabase {
         let namespace_database = Self::connect_namespace_database(
             path,
             HashMap::new(),
+            namespace_client_properties,
             read_consistency_interval,
             session.clone(),
         )
@@ -791,18 +802,10 @@ impl Database for ListingDatabase {
         self.namespace_database().describe_namespace(request).await
     }
 
+    #[allow(deprecated)]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         if !request.namespace_path.is_empty() {
-            let response = self
-                .namespace_database()
-                .list_tables(ListTablesRequest {
-                    id: Some(request.namespace_path),
-                    page_token: request.start_after,
-                    limit: request.limit.map(|l| l as i32),
-                    ..Default::default()
-                })
-                .await?;
-            return Ok(response.tables);
+            return self.namespace_database().table_names(request).await;
         }
         let mut f = self
             .object_store
@@ -1154,6 +1157,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options: Default::default(),
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1287,6 +1291,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options: options.clone(),
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1821,6 +1826,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1926,6 +1932,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1997,6 +2004,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -2173,6 +2181,69 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_with_namespace_client_properties() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let mut namespace_client_properties = HashMap::new();
+        namespace_client_properties.insert(
+            "table_version_tracking_enabled".to_string(),
+            "true".to_string(),
+        );
+        namespace_client_properties.insert("manifest_enabled".to_string(), "true".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let namespace_path = vec!["test_ns".to_string()];
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "managed_table".to_string(),
+            namespace_path: namespace_path.clone(),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let namespace_client = db.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(vec!["test_ns".to_string(), "managed_table".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(describe.managed_versioning, Some(true));
     }
 
     #[tokio::test]

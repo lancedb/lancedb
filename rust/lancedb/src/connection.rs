@@ -582,6 +582,14 @@ pub struct ConnectRequest {
     /// Database specific options
     pub options: HashMap<String, String>,
 
+    /// Extra properties for the equivalent namespace client.
+    ///
+    /// For a local [`ListingDatabase`], these are merged into the backing
+    /// `DirectoryNamespace` properties. This is useful for namespace-specific
+    /// settings such as `table_version_tracking_enabled` that are distinct from
+    /// storage options.
+    pub namespace_client_properties: HashMap<String, String>,
+
     /// The interval at which to check for updates from other processes.
     ///
     /// If None, then consistency is not checked. For performance
@@ -621,6 +629,7 @@ impl ConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                namespace_client_properties: HashMap::new(),
                 session: None,
             },
             embedding_registry: None,
@@ -753,6 +762,31 @@ impl ConnectBuilder {
     ) -> Self {
         for (key, value) in pairs {
             self.request.options.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Set an additional property for the equivalent namespace client.
+    pub fn namespace_client_property(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.request
+            .namespace_client_properties
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple additional properties for the equivalent namespace client.
+    pub fn namespace_client_properties(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.request
+                .namespace_client_properties
+                .insert(key.into(), value.into());
         }
         self
     }
@@ -893,6 +927,7 @@ pub struct ConnectNamespaceBuilder {
     ns_impl: String,
     properties: HashMap<String, String>,
     storage_options: HashMap<String, String>,
+    namespace_client_properties: HashMap<String, String>,
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
@@ -905,6 +940,7 @@ impl ConnectNamespaceBuilder {
             ns_impl: ns_impl.to_string(),
             properties,
             storage_options: HashMap::new(),
+            namespace_client_properties: HashMap::new(),
             read_consistency_interval: None,
             embedding_registry: None,
             session: None,
@@ -929,6 +965,29 @@ impl ConnectNamespaceBuilder {
     ) -> Self {
         for (key, value) in pairs {
             self.storage_options.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Set an additional namespace client property.
+    pub fn namespace_client_property(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.namespace_client_properties
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple additional namespace client properties.
+    pub fn namespace_client_properties(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.namespace_client_properties
+                .insert(key.into(), value.into());
         }
         self
     }
@@ -994,10 +1053,13 @@ impl ConnectNamespaceBuilder {
     pub async fn execute(self) -> Result<Connection> {
         use crate::database::namespace::LanceNamespaceDatabase;
 
+        let mut properties = self.properties;
+        properties.extend(self.namespace_client_properties);
+
         let internal = Arc::new(
             LanceNamespaceDatabase::connect(
                 &self.ns_impl,
-                self.properties,
+                properties,
                 self.storage_options,
                 self.read_consistency_interval,
                 self.session,
@@ -1115,6 +1177,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.uri(), relative_uri.to_str().unwrap().to_string());
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_namespace_client_properties() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let db = connect(uri)
+            .namespace_client_property("table_version_tracking_enabled", "true")
+            .namespace_client_property("manifest_enabled", "true")
+            .execute()
+            .await
+            .unwrap();
+
+        let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
+        assert_eq!(ns_impl, "dir");
+        assert_eq!(properties.get("root"), Some(&uri.to_string()));
+        assert_eq!(
+            properties.get("table_version_tracking_enabled"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            properties.get("manifest_enabled"),
+            Some(&"true".to_string())
+        );
     }
 
     #[tokio::test]
