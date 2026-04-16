@@ -107,6 +107,14 @@ where
             refresh_window < ttl,
             "refresh_window ({refresh_window:?}) must be less than ttl ({ttl:?})"
         );
+        #[cfg(test)]
+        {
+            // Tests may advance the thread-local mock clock and leave it behind for
+            // the next test that happens to run on the same worker thread. Each new
+            // cache should start from a clean clock state instead of inheriting
+            // unrelated mock time from a previous test.
+            clock::clear_mock();
+        }
         Self {
             inner: Arc::new(Mutex::new(CacheInner {
                 state: State::Empty,

@@ -285,7 +285,10 @@ mod tests {
 
     use super::*;
 
-    use crate::{connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions};
+    use crate::{
+        connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions,
+        utils::background_cache::clock,
+    };
 
     async fn create_test_dataset(uri: &str) -> Dataset {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -462,6 +465,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
         let ds = create_test_dataset(uri).await;
+
+        // Other tests use a thread-local mock clock. Simulate leaked state from a
+        // previous test to ensure this wrapper starts from real time.
+        clock::advance_by(Duration::from_secs(60));
 
         let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_millis(200)));
 
