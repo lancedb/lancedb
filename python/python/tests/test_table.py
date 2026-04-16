@@ -3,6 +3,7 @@
 
 
 import os
+import sys
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -2040,6 +2041,13 @@ def test_hybrid_search_metric_type(tmp_db: DBConnection):
 @pytest.mark.parametrize(
     "consistency_interval", [None, timedelta(seconds=0), timedelta(seconds=0.1)]
 )
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "TODO: directory namespace is not supported on Windows yet; "
+        "re-enable after that is fixed."
+    ),
+)
 def test_consistency(tmp_path, consistency_interval):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"id": 0}])
@@ -2060,7 +2068,6 @@ def test_consistency(tmp_path, consistency_interval):
     elif consistency_interval == timedelta(seconds=0):
         assert table2.version == table.version
     else:
-        # (consistency_interval == timedelta(seconds=0.1)
         assert table2.version == table.version - 1
         sleep(0.1)
         assert table2.version == table.version

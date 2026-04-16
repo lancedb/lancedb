@@ -2184,6 +2184,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(windows))] // TODO: support Windows once directory namespace-backed listing DB tests are supported.
     async fn test_listing_database_with_namespace_client_properties() {
         let tempdir = tempdir().unwrap();
         let uri = tempdir.path().to_str().unwrap();
