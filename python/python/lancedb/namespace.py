@@ -578,12 +578,17 @@ class LanceNamespaceDBConnection(DBConnection):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             embedding_functions=embedding_functions,
-            namespace_path=namespace_path,
+            namespace_path=[],
             storage_options=merged_storage_options,
             location=location,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
         )
+
+        tbl._namespace_path = namespace_path
+        tbl._location = location
+        tbl._namespace_client = self._namespace_client
+        tbl._pushdown_operations = self._namespace_client_pushdown_operations
 
         return tbl
 
@@ -914,17 +919,23 @@ class LanceNamespaceDBConnection(DBConnection):
         # storage options provider
         # Pass managed_versioning to avoid redundant describe_table call
         # Pass pushdown_operations if configured on this connection
-        return LanceTable.open(
+        table = LanceTable.open(
             temp_conn,
             name,
-            namespace_path=namespace_path,
+            namespace_path=[],
             storage_options=storage_options,
             index_cache_size=index_cache_size,
             location=table_uri,
-            namespace_client=namespace_client,
-            managed_versioning=managed_versioning,
+            namespace_client=None,
+            managed_versioning=False,
             pushdown_operations=self._namespace_client_pushdown_operations,
         )
+
+        table._namespace_path = namespace_path
+        table._location = table_uri
+        table._namespace_client = namespace_client
+        table._pushdown_operations = self._namespace_client_pushdown_operations
+        return table
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -1120,7 +1131,7 @@ class AsyncLanceNamespaceDBConnection:
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
-                namespace_path=namespace_path,
+                namespace_path=[],
                 storage_options=merged_storage_options,
                 location=location,
                 namespace_client=self._namespace_client,
@@ -1222,17 +1233,23 @@ class AsyncLanceNamespaceDBConnection:
                 session=self.session,
             )
 
-            return LanceTable.open(
+            table = LanceTable.open(
                 temp_conn,
                 name,
-                namespace_path=namespace_path,
+                namespace_path=[],
                 storage_options=merged_storage_options,
                 index_cache_size=index_cache_size,
                 location=response.location,
-                namespace_client=self._namespace_client,
-                managed_versioning=managed_versioning,
+                namespace_client=None,
+                managed_versioning=False,
                 pushdown_operations=self._namespace_client_pushdown_operations,
             )
+
+            table._namespace_path = namespace_path
+            table._location = response.location
+            table._namespace_client = self._namespace_client
+            table._pushdown_operations = self._namespace_client_pushdown_operations
+            return table
 
         lance_table = await asyncio.to_thread(_open_table)
         return lance_table._table
