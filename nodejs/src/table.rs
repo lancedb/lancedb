@@ -503,6 +503,16 @@ impl Table {
             .await
             .default_error()
     }
+
+    #[napi(catch_unwind)]
+    pub async fn dataset_config(&self) -> napi::Result<HashMap<String, String>> {
+        let native = self
+            .inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?;
+        let manifest = native.manifest().await.default_error()?;
+        Ok(manifest.config.clone())
+    }
 }
 
 #[napi(object)]
