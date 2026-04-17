@@ -301,6 +301,100 @@ def _normalize_create_table_mode(mode: str) -> str:
         raise ValueError(f"Invalid mode: {mode}. Must be 'create' or 'overwrite'")
 
 
+def _execute_server_side_insert(
+    namespace_client,
+    table_id: List[str],
+    data: "DATA",
+    mode: str = "append",
+    on_bad_vectors: str = "error",
+    fill_value: float = 0.0,
+):
+    """Execute an insert operation on the namespace server."""
+    from lance_namespace import InsertIntoTableRequest
+
+    arrow_ipc_bytes = _data_to_arrow_ipc(
+        data, schema=None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+    )
+    request = InsertIntoTableRequest(id=table_id, mode=mode)
+    return namespace_client.insert_into_table(request, arrow_ipc_bytes)
+
+
+def _execute_server_side_delete(
+    namespace_client,
+    table_id: List[str],
+    predicate: str,
+):
+    """Execute a delete operation on the namespace server."""
+    from lance_namespace import DeleteFromTableRequest
+
+    request = DeleteFromTableRequest(id=table_id, predicate=predicate)
+    return namespace_client.delete_from_table(request)
+
+
+def _execute_server_side_update(
+    namespace_client,
+    table_id: List[str],
+    updates: Dict[str, str],
+    where: Optional[str] = None,
+):
+    """Execute an update operation on the namespace server."""
+    from lance_namespace import UpdateTableRequest
+
+    update_pairs = [[col, expr] for col, expr in updates.items()]
+    request = UpdateTableRequest(id=table_id, updates=update_pairs, predicate=where)
+    return namespace_client.update_table(request)
+
+
+def _execute_server_side_create_index(
+    namespace_client,
+    table_id: List[str],
+    column: str,
+    index_type: str,
+    name: Optional[str] = None,
+    distance_type: Optional[str] = None,
+    **kwargs,
+):
+    """Execute an index creation on the namespace server."""
+    from lance_namespace import CreateTableIndexRequest
+
+    request = CreateTableIndexRequest(
+        id=table_id,
+        column=column,
+        index_type=index_type,
+        name=name,
+        distance_type=distance_type,
+        **{k: v for k, v in kwargs.items() if v is not None},
+    )
+    return namespace_client.create_table_index(request)
+
+
+def _execute_server_side_merge_insert(
+    namespace_client,
+    table_id: List[str],
+    data: "DATA",
+    on: str,
+    when_matched_update_all: bool = False,
+    when_matched_update_all_filt: Optional[str] = None,
+    when_not_matched_insert_all: bool = False,
+    when_not_matched_by_source_delete: bool = False,
+    when_not_matched_by_source_delete_filt: Optional[str] = None,
+):
+    """Execute a merge insert operation on the namespace server."""
+    from lance_namespace import MergeInsertIntoTableRequest
+
+    arrow_ipc_bytes = _data_to_arrow_ipc(data, schema=None)
+    request = MergeInsertIntoTableRequest(
+        id=table_id,
+        on=on,
+        when_matched_update_all=when_matched_update_all or None,
+        when_matched_update_all_filt=when_matched_update_all_filt,
+        when_not_matched_insert_all=when_not_matched_insert_all or None,
+        when_not_matched_by_source_delete=when_not_matched_by_source_delete or None,
+        when_not_matched_by_source_delete_filt=(when_not_matched_by_source_delete_filt),
+    )
+    return namespace_client.merge_insert_into_table(request, arrow_ipc_bytes)
+
+
 def _convert_pyarrow_type_to_json(arrow_type: pa.DataType) -> JsonArrowDataType:
     """Convert PyArrow DataType to JsonArrowDataType."""
     if pa.types.is_null(arrow_type):
@@ -402,10 +496,13 @@ class LanceNamespaceDBConnection(DBConnection):
             List of namespace operations to push down to the namespace server.
             Supported values:
 
-            - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
-            - "CreateTable": Execute table creation on the namespace server via
-              namespace.create_table() instead of using declare_table + local write.
+            - "QueryTable": Execute queries on the namespace server.
+            - "CreateTable": Execute table creation on the namespace server.
+            - "InsertIntoTable": Execute inserts on the namespace server.
+            - "MergeInsertIntoTable": Execute merge inserts on the namespace server.
+            - "DeleteFromTable": Execute deletes on the namespace server.
+            - "UpdateTable": Execute updates on the namespace server.
+            - "CreateTableIndex": Execute index creation on the namespace server.
 
             Default is None (no pushdown, all operations run locally).
         namespace_client_impl : Optional[str]
@@ -976,10 +1073,13 @@ class AsyncLanceNamespaceDBConnection:
             List of namespace operations to push down to the namespace server.
             Supported values:
 
-            - "QueryTable": Execute queries on the namespace server via
-              namespace.query_table() instead of locally.
-            - "CreateTable": Execute table creation on the namespace server via
-              namespace.create_table() instead of using declare_table + local write.
+            - "QueryTable": Execute queries on the namespace server.
+            - "CreateTable": Execute table creation on the namespace server.
+            - "InsertIntoTable": Execute inserts on the namespace server.
+            - "MergeInsertIntoTable": Execute merge inserts on the namespace server.
+            - "DeleteFromTable": Execute deletes on the namespace server.
+            - "UpdateTable": Execute updates on the namespace server.
+            - "CreateTableIndex": Execute index creation on the namespace server.
 
             Default is None (no pushdown, all operations run locally).
         """
