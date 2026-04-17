@@ -434,6 +434,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_table_with_auto_cleanup_config() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(10),
+                    auto_cleanup_older_than_secs: Some(3600),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("auto_cleanup_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let native_table = table.as_native().unwrap();
+        let config = &native_table.manifest().await.unwrap().config;
+        assert_eq!(config.get("lance.auto_cleanup.interval").unwrap(), "10");
+        assert_eq!(config.get("lance.auto_cleanup.older_than").unwrap(), "1h");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_auto_cleanup_disabled() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("no_cleanup_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let native_table = table.as_native().unwrap();
+        let config = &native_table.manifest().await.unwrap().config;
+        assert!(config.get("lance.auto_cleanup.interval").is_none());
+    }
+
+    #[tokio::test]
     async fn test_create_table_with_embedding() {
         // Register the mock embedding function
         let registry = Arc::new(MemoryRegistry::new());
