@@ -2929,6 +2929,7 @@ class LanceTable(Table):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
         )
         return self

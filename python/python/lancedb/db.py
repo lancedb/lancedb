@@ -1390,6 +1390,7 @@ class AsyncConnection(object):
         namespace_path: Optional[List[str]] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -1587,6 +1588,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
         else:
             data = data_to_reader(data, schema)
@@ -1597,6 +1599,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
 
         return AsyncTable(new_table)
