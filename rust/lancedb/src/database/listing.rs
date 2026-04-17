@@ -917,17 +917,13 @@ impl ListingDatabase {
             if interval == 0 {
                 write_params.auto_cleanup = None;
             } else {
-                let mut params = write_params
-                    .auto_cleanup
-                    .unwrap_or_default();
+                let mut params = write_params.auto_cleanup.unwrap_or_default();
                 params.interval = interval as usize;
                 write_params.auto_cleanup = Some(params);
             }
         }
         if let Some(older_than_secs) = self.new_table_config.auto_cleanup_older_than_secs {
-            let mut params = write_params
-                .auto_cleanup
-                .unwrap_or_default();
+            let mut params = write_params.auto_cleanup.unwrap_or_default();
             params.older_than =
                 chrono::TimeDelta::try_seconds(older_than_secs as i64).expect("valid duration");
             write_params.auto_cleanup = Some(params);
