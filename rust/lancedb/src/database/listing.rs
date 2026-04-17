@@ -9,7 +9,7 @@ use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
 use lance::dataset::refs::Ref;
-use lance::dataset::{AutoCleanupParams, ReadParams, WriteMode, builder::DatasetBuilder};
+use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
@@ -919,7 +919,7 @@ impl ListingDatabase {
             } else {
                 let mut params = write_params
                     .auto_cleanup
-                    .unwrap_or(AutoCleanupParams::default());
+                    .unwrap_or_default();
                 params.interval = interval as usize;
                 write_params.auto_cleanup = Some(params);
             }
@@ -927,7 +927,7 @@ impl ListingDatabase {
         if let Some(older_than_secs) = self.new_table_config.auto_cleanup_older_than_secs {
             let mut params = write_params
                 .auto_cleanup
-                .unwrap_or(AutoCleanupParams::default());
+                .unwrap_or_default();
             params.older_than =
                 chrono::TimeDelta::try_seconds(older_than_secs as i64).expect("valid duration");
             write_params.auto_cleanup = Some(params);
