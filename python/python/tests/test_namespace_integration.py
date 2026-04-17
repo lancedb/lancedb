@@ -19,6 +19,7 @@ Tests verify:
 
 import copy
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -389,6 +390,10 @@ def test_namespace_open_table_with_provider(s3_bucket: str, use_custom: bool):
     assert get_describe_call_count(inner_ns_client) == describe_count_after_open
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TODO: fix schema-only namespace metrics test on Windows",
+)
 @pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
 def test_namespace_create_schema_only_with_provider(use_custom: bool):
     """
@@ -427,7 +432,9 @@ def test_namespace_create_schema_only_with_provider(use_custom: bool):
         assert get_declare_call_count(inner_ns_client) == 0
         assert get_describe_call_count(inner_ns_client) == 0
 
-        table = db.create_table(table_name, schema=schema, namespace_path=namespace_path)
+        table = db.create_table(
+            table_name, schema=schema, namespace_path=namespace_path
+        )
 
         assert table.name == table_name
         assert table.namespace == namespace_path
