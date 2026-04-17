@@ -24,4 +24,4 @@ RUN python --version && \
   rustc --version && \
   protoc --version
 
-RUN pip install --no-cache-dir tantivy lancedb
+RUN pip install --no-cache-dir lancedb

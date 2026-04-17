@@ -1385,7 +1385,7 @@ def test_query_timeout(tmp_path):
         }
     )
     table = db.create_table("test", data)
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text")
 
     with pytest.raises(Exception, match="Query timeout"):
         table.search().where("text = 'a'").to_list(timeout=timedelta(0))

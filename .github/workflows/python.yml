@@ -108,7 +108,6 @@ jobs:
       - name: Install
         run: |
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
-          pip install tantivy
           pip install mlx
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
@@ -227,6 +226,5 @@ jobs:
           pip install "pydantic<2"
           pip install pyarrow==16
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
-          pip install tantivy
       - name: Run tests
         run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests

@@ -26,11 +26,8 @@ from lancedb.rerankers import (
 )
 from lancedb.table import LanceTable
 
-# Tests rely on FTS index
-pytest.importorskip("lancedb.fts")
 
-
-def get_test_table(tmp_path, use_tantivy):
+def get_test_table(tmp_path):
     db = lancedb.connect(tmp_path)
     # Create a LanceDB table schema with a vector and a text column
     emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
@@ -98,7 +95,7 @@ def get_test_table(tmp_path, use_tantivy):
     )
 
     # Create a fts index
-    table.create_fts_index("text", use_tantivy=use_tantivy, replace=True)
+    table.create_fts_index("text", replace=True)
 
     return table, MyTable
 
@@ -208,8 +205,8 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     assert len(result) == 20 and result == result_arrow
 
 
-def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
-    table, schema = get_test_table(tmp_path, use_tantivy)
+def _run_test_hybrid_reranker(reranker, tmp_path):
+    table, schema = get_test_table(tmp_path)
     # The default reranker
     result1 = (
         table.search(
@@ -285,8 +282,7 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     )
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_linear_combination(tmp_path, use_tantivy):
+def test_linear_combination(tmp_path):
     reranker = LinearCombinationReranker()
 
     vector_results = pa.Table.from_pydict(
@@ -313,22 +309,20 @@ def test_linear_combination(tmp_path, use_tantivy):
     assert "_score" not in combined_results.column_names
     assert "_relevance_score" in combined_results.column_names
 
-    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_rrf_reranker(tmp_path, use_tantivy):
+def test_rrf_reranker(tmp_path):
     reranker = RRFReranker()
-    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_mrr_reranker(tmp_path, use_tantivy):
+def test_mrr_reranker(tmp_path):
     reranker = MRRReranker()
-    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path)
 
     # Test multi-vector part
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     query = "single player experience"
     rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
     rs2 = (
@@ -363,7 +357,7 @@ def test_rrf_reranker_distance():
     table = db.create_table("test", data)
 
     table.create_index(num_partitions=1, num_sub_vectors=2)
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text")
 
     reranker = RRFReranker(return_score="all")
 
@@ -422,35 +416,31 @@ def test_rrf_reranker_distance():
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cohere_reranker(tmp_path, use_tantivy):
+def test_cohere_reranker(tmp_path):
     pytest.importorskip("cohere")
     reranker = CohereReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cross_encoder_reranker(tmp_path, use_tantivy):
+def test_cross_encoder_reranker(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_colbert_reranker(tmp_path, use_tantivy):
+def test_colbert_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = ColbertReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_answerdotai_reranker(tmp_path, use_tantivy):
+def test_answerdotai_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = AnswerdotaiRerankers()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
@@ -459,10 +449,9 @@ def test_answerdotai_reranker(tmp_path, use_tantivy):
     or os.environ.get("OPENAI_BASE_URL") is not None,
     reason="OPENAI_API_KEY not set",
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_openai_reranker(tmp_path, use_tantivy):
+def test_openai_reranker(tmp_path):
     pytest.importorskip("openai")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
@@ -470,10 +459,9 @@ def test_openai_reranker(tmp_path, use_tantivy):
 @pytest.mark.skipif(
     os.environ.get("JINA_API_KEY") is None, reason="JINA_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_jina_reranker(tmp_path, use_tantivy):
+def test_jina_reranker(tmp_path):
     pytest.importorskip("jina")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     reranker = JinaReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
@@ -481,11 +469,10 @@ def test_jina_reranker(tmp_path, use_tantivy):
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_voyageai_reranker(tmp_path, use_tantivy):
+def test_voyageai_reranker(tmp_path):
     pytest.importorskip("voyageai")
     reranker = VoyageAIReranker(model_name="rerank-2.5")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
@@ -504,7 +491,7 @@ def test_empty_result_reranker():
 
     # Create empty table with schema
     empty_table = db.create_table("empty_table", schema=schema, mode="overwrite")
-    empty_table.create_fts_index("text", use_tantivy=False, replace=True)
+    empty_table.create_fts_index("text", replace=True)
     for reranker in [
         CrossEncoderReranker(),
         # ColbertReranker(),
@@ -603,11 +590,10 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
+def test_cross_encoder_reranker_return_all(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker(return_score="all")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     query = "single player experience"
     result = (
         table.search(query, query_type="hybrid", vector_column_name="vector")

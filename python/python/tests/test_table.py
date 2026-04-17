@@ -1947,7 +1947,6 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
 
 def test_hybrid_search(tmp_db: DBConnection):
     # This test uses an FTS index
-    pytest.importorskip("lancedb.fts")
     pytest.importorskip("lance")
 
     table, MyTable, emb = setup_hybrid_search_table(tmp_db, "test")
@@ -2018,7 +2017,6 @@ def test_hybrid_search(tmp_db: DBConnection):
 
 def test_hybrid_search_metric_type(tmp_db: DBConnection):
     # This test uses an FTS index
-    pytest.importorskip("lancedb.fts")
     pytest.importorskip("lance")
 
     # Need to use nonnorm as the embedding function so l2 and dot results

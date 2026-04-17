@@ -943,29 +943,26 @@ class Table(ABC):
         Parameters
         ----------
         field_names: str or list of str
-            The name(s) of the field to index.
-            If ``use_tantivy`` is False (default), only a single field name
-            (str) is supported. To index multiple fields, create a separate
-            FTS index for each field.
+            The name of the field to index. Native FTS indexes can only be
+            created on a single field at a time. To search over multiple text
+            fields, create a separate FTS index for each field.
         replace: bool, default False
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
         writer_heap_size: int, default 1GB
-            Only available with use_tantivy=True
+            Deprecated legacy Tantivy parameter. Any value other than the
+            default raises an error.
         ordering_field_names:
-            A list of unsigned type fields to index to optionally order
-            results on at search time.
-            only available with use_tantivy=True
+            Deprecated legacy Tantivy parameter. Setting this raises an error.
         tokenizer_name: str, default "default"
-            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
-            language code followed by "_stem". So for english it would be "en_stem".
-            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
+            A compatibility alias for native tokenizer configs. Can be "raw",
+            "default" or the 2 letter language code followed by "_stem". So
+            for english it would be "en_stem".
         use_tantivy: bool, default False
-            If True, use the legacy full-text search implementation based on tantivy.
-            If False, use the new full-text search implementation based on lance-index.
+            Deprecated legacy Tantivy parameter. Setting this to True raises an
+            error.
         with_position: bool, default False
-            Only available with use_tantivy=False
             If False, do not store the positions of the terms in the text.
             This can reduce the size of the index and improve indexing speed.
             But it will raise an exception for phrase queries.
@@ -1746,6 +1743,16 @@ class Table(ABC):
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
         return (path, fs, index_exists)
 
+    def _ensure_no_legacy_fts_index(self):
+        path, _, exists = self._get_fts_index_path()
+        if exists:
+            raise ValueError(
+                "Legacy Tantivy FTS index detected at "
+                f"{path}. Tantivy-based FTS has been removed. "
+                "Delete the legacy index and recreate it with "
+                "table.create_fts_index(...)."
+            )
+
     @abstractmethod
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -2405,84 +2412,58 @@ class LanceTable(Table):
         prefix_only: bool = False,
         name: Optional[str] = None,
     ):
-        if not use_tantivy:
-            if not isinstance(field_names, str):
-                raise ValueError(
-                    "Native FTS indexes can only be created on a single field "
-                    "at a time. To search over multiple text fields, create a "
-                    "separate FTS index for each field."
-                )
+        self._ensure_no_legacy_fts_index()
 
-            if tokenizer_name is None:
-                tokenizer_configs = {
-                    "base_tokenizer": base_tokenizer,
-                    "language": language,
-                    "with_position": with_position,
-                    "max_token_length": max_token_length,
-                    "lower_case": lower_case,
-                    "stem": stem,
-                    "remove_stop_words": remove_stop_words,
-                    "ascii_folding": ascii_folding,
-                    "ngram_min_length": ngram_min_length,
-                    "ngram_max_length": ngram_max_length,
-                    "prefix_only": prefix_only,
-                }
-            else:
-                tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
-
-            config = FTS(
-                **tokenizer_configs,
+        if use_tantivy:
+            raise ValueError(
+                "Tantivy-based FTS has been removed. "
+                "Remove use_tantivy and recreate the index with native FTS."
             )
-
-            # delete the existing legacy index if it exists
-            if replace:
-                path, fs, exist = self._get_fts_index_path()
-                if exist:
-                    fs.delete_dir(path)
-
-            LOOP.run(
-                self._table.create_index(
-                    field_names,
-                    replace=replace,
-                    config=config,
-                    name=name,
-                )
+        if ordering_field_names is not None:
+            raise ValueError(
+                "ordering_field_names was only supported by the removed "
+                "Tantivy-based FTS implementation."
             )
-            return
-
-        from .fts import create_index, populate_index
-
-        if isinstance(field_names, str):
-            field_names = [field_names]
-
-        if isinstance(ordering_field_names, str):
-            ordering_field_names = [ordering_field_names]
-
-        path, fs, exist = self._get_fts_index_path()
-        if exist:
-            if not replace:
-                raise ValueError("Index already exists. Use replace=True to overwrite.")
-            fs.delete_dir(path)
-
-        if not isinstance(fs, pa_fs.LocalFileSystem):
-            raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
+        if writer_heap_size != 1024 * 1024 * 1024:
+            raise ValueError(
+                "writer_heap_size was only supported by the removed "
+                "Tantivy-based FTS implementation."
+            )
+        if not isinstance(field_names, str):
+            raise ValueError(
+                "Native FTS indexes can only be created on a single field "
+                "at a time. To search over multiple text fields, create a "
+                "separate FTS index for each field."
             )
 
         if tokenizer_name is None:
-            tokenizer_name = "default"
-        index = create_index(
-            path,
-            field_names,
-            ordering_fields=ordering_field_names,
-            tokenizer_name=tokenizer_name,
+            tokenizer_configs = {
+                "base_tokenizer": base_tokenizer,
+                "language": language,
+                "with_position": with_position,
+                "max_token_length": max_token_length,
+                "lower_case": lower_case,
+                "stem": stem,
+                "remove_stop_words": remove_stop_words,
+                "ascii_folding": ascii_folding,
+                "ngram_min_length": ngram_min_length,
+                "ngram_max_length": ngram_max_length,
+                "prefix_only": prefix_only,
+            }
+        else:
+            tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
+
+        config = FTS(
+            **tokenizer_configs,
         )
-        populate_index(
-            index,
-            self,
-            field_names,
-            ordering_fields=ordering_field_names,
-            writer_heap_size=writer_heap_size,
+
+        LOOP.run(
+            self._table.create_index(
+                field_names,
+                replace=replace,
+                config=config,
+                name=name,
+            )
         )
 
     @staticmethod
