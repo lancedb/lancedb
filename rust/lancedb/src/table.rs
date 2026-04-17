@@ -22,7 +22,7 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
-use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance::io::WrappingObjectStore;
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
@@ -31,7 +31,6 @@ use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
-use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
@@ -1688,16 +1687,6 @@ impl NativeTable {
         pushdown_operations: HashSet<PushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        // Build table_id from namespace + name for the storage options provider
-        let mut table_id = namespace.clone();
-        table_id.push(name.to_string());
-
-        // Set up storage options provider from namespace
-        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-            namespace_client.clone(),
-            table_id,
-        ));
-
         // Start with provided params or defaults
         let mut params = params.unwrap_or_default();
 
@@ -1705,18 +1694,6 @@ impl NativeTable {
         if let Some(sess) = session {
             params.session = Some(sess);
         }
-
-        // Ensure store_params exists and set the storage options provider
-        let store_params = params
-            .store_params
-            .get_or_insert_with(ObjectStoreParams::default);
-        let accessor = match store_params.storage_options().cloned() {
-            Some(options) => {
-                StorageOptionsAccessor::with_initial_and_provider(options, storage_options_provider)
-            }
-            None => StorageOptionsAccessor::with_provider(storage_options_provider),
-        };
-        store_params.storage_options_accessor = Some(Arc::new(accessor));
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
