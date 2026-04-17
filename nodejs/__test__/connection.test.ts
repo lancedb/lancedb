@@ -187,6 +187,16 @@ describe("given a connection", () => {
     });
   });
 
+  it("should disable auto cleanup via storage options", async () => {
+    const db = await connect(tmpDir.name, {
+      storageOptions: { auto_cleanup_interval: "0" },
+    });
+    const table = (await db.createTable("no_cleanup", [{ id: 1 }])) as LocalTable;
+    const config = await table.datasetConfig();
+    expect(config["lance.auto_cleanup.interval"]).toBeUndefined();
+    expect(config["lance.auto_cleanup.older_than"]).toBeUndefined();
+  });
+
   it("should be able to migrate tables to the V2 manifest paths", async () => {
     const db = await connect(tmpDir.name);
     const table = (await db.createEmptyTable(
