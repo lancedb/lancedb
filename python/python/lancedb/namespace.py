@@ -558,13 +558,28 @@ class LanceNamespaceDBConnection(DBConnection):
         if namespace_storage_options:
             merged_storage_options.update(namespace_storage_options)
 
-        # Step 2: Create table using LanceTable.create with the location
-        # We need a temporary connection for the LanceTable.create method
+        # Step 2: Create the dataset at the namespace-declared physical location.
+        #
+        # The namespace has already resolved the logical table identifier
+        # (namespace_path + name) to an exact storage location. We create a
+        # temporary LanceDBConnection rooted at that location so we can reuse the
+        # standard local LanceTable.create logic for the actual write.
+        # TODO: Refactor the local/namespace create path so we do not need this
+        # temporary connection trick just to reuse the existing LanceTable.create
+        # implementation.
+        #
+        # This temporary connection is *not* a logical database root. If we were
+        # to pass the original namespace_path through to LanceTable.create, the
+        # lower layers would try to resolve the namespace again underneath an
+        # already-resolved table location. We therefore pass namespace_path=[] to
+        # the low-level create call and restore the logical namespace metadata on
+        # the returned Python wrapper after the write succeeds.
         temp_conn = LanceDBConnection(
             location,  # Use the actual location as the connection URI
             read_consistency_interval=self.read_consistency_interval,
             storage_options=merged_storage_options,
             session=self.session,
+            _is_temporary_location_connection=True,
         )
 
         # Note: storage_options_provider is auto-created in Rust from namespace_client
@@ -902,9 +917,18 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
     ) -> LanceTable:
-        # Open a table directly from a URI using the location parameter
-        # Note: storage_options should already be merged by the caller
-        # Note: storage_options_provider is auto-created in Rust from namespace_client
+        # Open a table directly from the namespace-resolved physical location.
+        #
+        # As in the create path above, the temporary connection is rooted at the
+        # concrete table location returned by the namespace. The logical
+        # namespace_path has already been resolved, so we must not reapply it when
+        # opening the table. We open with namespace_path=[] and then restore the
+        # logical namespace metadata on the returned Python wrapper.
+        # TODO: Refactor the local/namespace open path so we do not need this
+        # temporary connection trick just to reuse the existing LanceTable.open
+        # implementation.
+        #
+        # Note: storage_options should already be merged by the caller.
         if namespace_path is None:
             namespace_path = []
         temp_conn = LanceDBConnection(
@@ -912,6 +936,7 @@ class LanceNamespaceDBConnection(DBConnection):
             read_consistency_interval=self.read_consistency_interval,
             storage_options=storage_options if storage_options is not None else {},
             session=self.session,
+            _is_temporary_location_connection=True,
         )
 
         # Open the table using the temporary connection with the location parameter
@@ -1223,14 +1248,17 @@ class AsyncLanceNamespaceDBConnection:
         # Convert None to False since we already have the answer from describe_table.
         managed_versioning = response.managed_versioning is True
 
-        # Open table in a thread
-        # Note: storage_options_provider is auto-created in Rust from namespace_client
+        # Open the table from the namespace-resolved physical location in a
+        # thread. As in the sync helper above, use a temporary location-rooted
+        # connection, avoid reapplying namespace_path during the low-level open,
+        # and restore the logical namespace metadata on the Python wrapper.
         def _open_table():
             temp_conn = LanceDBConnection(
                 response.location,
                 read_consistency_interval=self.read_consistency_interval,
                 storage_options=merged_storage_options,
                 session=self.session,
+                _is_temporary_location_connection=True,
             )
 
             table = LanceTable.open(

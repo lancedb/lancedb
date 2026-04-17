@@ -591,10 +591,12 @@ class LanceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
         _inner: Optional[LanceDbConnection] = None,
+        _is_temporary_location_connection: bool = False,
     ):
         if _inner is not None:
             self._conn = _inner
             self._cached_namespace_client = None
+            self._is_temporary_location_connection = False
             return
 
         if not isinstance(uri, Path):
@@ -643,6 +645,7 @@ class LanceDBConnection(DBConnection):
         self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
         self._cached_namespace_client: Optional[LanceNamespace] = None
+        self._is_temporary_location_connection = _is_temporary_location_connection
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
@@ -913,6 +916,12 @@ class LanceDBConnection(DBConnection):
     def _namespace_conn(self) -> DBConnection:
         """Return a LanceNamespaceDBConnection backed by this connection's
         directory namespace.  Used to delegate child-namespace operations."""
+        if self._is_temporary_location_connection:
+            raise RuntimeError(
+                "Temporary location connections cannot derive nested namespace "
+                "connections. Use the original namespace connection instead."
+            )
+
         from lancedb.namespace import LanceNamespaceDBConnection
 
         return LanceNamespaceDBConnection(
