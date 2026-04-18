@@ -242,10 +242,10 @@ def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
 
     # FTS indices should error since they are not supported yet.
     with pytest.raises(
-        NotImplementedError,
-        match="Full-text search is only supported on the local filesystem",
+        ValueError,
+        match="Tantivy-based FTS has been removed",
     ):
-        table.create_fts_index("x")
+        table.create_fts_index("x", use_tantivy=True)
 
     # make sure list tables still works
     assert db.table_names() == ["test_ddb_sync"]

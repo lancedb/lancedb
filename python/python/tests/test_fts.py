@@ -494,8 +494,9 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_nested_schema(tmp_path, table):
-    with pytest.raises(ValueError, match="Native FTS indexes can only be created"):
-        table.create_fts_index("nested.text")
+    table.create_fts_index("nested.text")
+    rs = table.search("puppy").limit(5).to_list()
+    assert len(rs) == 5
 
 
 def test_search_index_with_filter(table):
