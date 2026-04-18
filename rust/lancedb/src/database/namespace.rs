@@ -52,6 +52,27 @@ pub struct LanceNamespaceDatabase {
 }
 
 impl LanceNamespaceDatabase {
+    pub fn from_namespace_client(
+        namespace: Arc<dyn LanceNamespace>,
+        ns_impl: String,
+        ns_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        pushdown_operations: HashSet<PushdownOperation>,
+    ) -> Self {
+        Self {
+            namespace,
+            storage_options,
+            read_consistency_interval,
+            session,
+            uri: format!("namespace://{}", ns_impl),
+            pushdown_operations,
+            ns_impl,
+            ns_properties,
+        }
+    }
+
     pub async fn connect(
         ns_impl: &str,
         ns_properties: HashMap<String, String>,
