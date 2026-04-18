@@ -915,7 +915,7 @@ use std::collections::HashSet;
 /// These operations will be executed on the namespace server instead of locally
 /// when enabled via [`ConnectNamespaceBuilder::pushdown_operations`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PushdownOperation {
+pub enum NamespaceClientPushdownOperation {
     /// Execute queries on the namespace server via `query_table()` instead of locally.
     QueryTable,
     /// Execute table creation on the namespace server via `create_table()`
@@ -931,7 +931,7 @@ pub struct ConnectNamespaceBuilder {
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
-    pushdown_operations: HashSet<PushdownOperation>,
+    pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
 }
 
 impl ConnectNamespaceBuilder {
@@ -1029,11 +1029,11 @@ impl ConnectNamespaceBuilder {
     /// and leveraging server-side compute resources.
     ///
     /// Available operations:
-    /// - [`PushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
-    /// - [`PushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    /// - [`NamespaceClientPushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
+    /// - [`NamespaceClientPushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
     ///
     /// By default, no operations are pushed down (all executed locally).
-    pub fn pushdown_operation(mut self, operation: PushdownOperation) -> Self {
+    pub fn pushdown_operation(mut self, operation: NamespaceClientPushdownOperation) -> Self {
         self.pushdown_operations.insert(operation);
         self
     }
@@ -1043,7 +1043,7 @@ impl ConnectNamespaceBuilder {
     /// See [`Self::pushdown_operation`] for details.
     pub fn pushdown_operations(
         mut self,
-        operations: impl IntoIterator<Item = PushdownOperation>,
+        operations: impl IntoIterator<Item = NamespaceClientPushdownOperation>,
     ) -> Self {
         self.pushdown_operations.extend(operations);
         self

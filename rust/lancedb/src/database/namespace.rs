@@ -22,7 +22,7 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
-use crate::connection::PushdownOperation;
+use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 use crate::table::NativeTable;
@@ -44,7 +44,7 @@ pub struct LanceNamespaceDatabase {
     // database URI
     uri: String,
     // Operations to push down to the namespace server
-    pushdown_operations: HashSet<PushdownOperation>,
+    pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Namespace implementation type (e.g., "dir", "rest")
     ns_impl: String,
     // Namespace properties used to construct the namespace client
@@ -53,23 +53,23 @@ pub struct LanceNamespaceDatabase {
 
 impl LanceNamespaceDatabase {
     pub fn from_namespace_client(
-        namespace: Arc<dyn LanceNamespace>,
-        ns_impl: String,
-        ns_properties: HashMap<String, String>,
+        namespace_client: Arc<dyn LanceNamespace>,
+        namespace_client_impl: String,
+        namespace_client_properties: HashMap<String, String>,
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
         Self {
-            namespace,
+            namespace: namespace_client,
             storage_options,
             read_consistency_interval,
             session,
-            uri: format!("namespace://{}", ns_impl),
-            pushdown_operations,
-            ns_impl,
-            ns_properties,
+            uri: format!("namespace://{}", namespace_client_impl),
+            pushdown_operations: namespace_client_pushdown_operations,
+            ns_impl: namespace_client_impl,
+            ns_properties: namespace_client_properties,
         }
     }
 
@@ -79,7 +79,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {

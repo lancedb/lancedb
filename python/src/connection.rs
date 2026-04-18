@@ -10,7 +10,7 @@ use std::{
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
-    connection::PushdownOperation,
+    connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
 };
@@ -45,17 +45,17 @@ impl Connection {
     }
 }
 
-fn parse_pushdown_operations(
+fn parse_namespace_client_pushdown_operations(
     operations: Option<Vec<String>>,
-) -> PyResult<HashSet<PushdownOperation>> {
+) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
     let mut parsed = HashSet::new();
     for operation in operations.unwrap_or_default() {
         match operation.as_str() {
             "QueryTable" => {
-                parsed.insert(PushdownOperation::QueryTable);
+                parsed.insert(NamespaceClientPushdownOperation::QueryTable);
             }
             "CreateTable" => {
-                parsed.insert(PushdownOperation::CreateTable);
+                parsed.insert(NamespaceClientPushdownOperation::CreateTable);
             }
             _ => {
                 return Err(PyValueError::new_err(format!(
@@ -590,7 +590,8 @@ pub fn connect_namespace_client(
 ) -> PyResult<Connection> {
     let namespace_client = extract_namespace_arc(py, namespace_client)?;
     let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
-    let pushdown_operations = parse_pushdown_operations(namespace_client_pushdown_operations)?;
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
     let ns_impl = namespace_client_impl.unwrap_or_else(|| "python".to_string());
     let ns_properties = namespace_client_properties.unwrap_or_default();
     let storage_options = storage_options.unwrap_or_default();
@@ -603,7 +604,7 @@ pub fn connect_namespace_client(
         storage_options,
         read_consistency_interval,
         session,
-        pushdown_operations,
+        namespace_client_pushdown_operations,
     );
 
     Ok(Connection::new(LanceConnection::new(
