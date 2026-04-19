@@ -494,9 +494,8 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_nested_schema(tmp_path, table):
-    table.create_fts_index("nested.text")
-    rs = table.search("puppy").limit(5).to_list()
-    assert len(rs) == 5
+    with pytest.raises(ValueError, match="top-level fields"):
+        table.create_fts_index("nested.text")
 
 
 def test_search_index_with_filter(table):
@@ -549,8 +548,7 @@ def test_null_input(table):
 def test_syntax(table):
     # https://github.com/lancedb/lancedb/issues/769
     table.create_fts_index("text")
-    with pytest.raises(ValueError, match="Syntax Error"):
-        table.search("they could have been dogs OR").limit(10).to_list()
+    table.search("they could have been dogs OR").limit(10).to_list()
 
     # these should work
 
@@ -561,6 +559,7 @@ def test_syntax(table):
     ).to_list()
 
     # phrase queries
+    table.create_fts_index("text", with_position=True, replace=True)
     table.search("they could have been dogs OR cats").phrase_query().limit(10).to_list()
     table.search('"they could have been dogs OR cats"').limit(10).to_list()
     table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(

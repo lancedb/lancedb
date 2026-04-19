@@ -2435,6 +2435,11 @@ class LanceTable(Table):
                 "at a time. To search over multiple text fields, create a "
                 "separate FTS index for each field."
             )
+        if "." in field_names:
+            raise ValueError(
+                "Native FTS indexes can only be created on top-level fields. "
+                f"Received nested field path: {field_names!r}."
+            )
 
         if tokenizer_name is None:
             tokenizer_configs = {
