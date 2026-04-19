@@ -14,7 +14,7 @@ Add the following dependency to your `pom.xml`:
 <dependency>
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-core</artifactId>
-    <version>0.28.0-beta.7</version>
+    <version>0.28.0-beta.8</version>
 </dependency>
 ```
 
