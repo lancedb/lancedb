@@ -38,6 +38,7 @@ from lance_namespace_urllib3_client.models.query_table_request_vector import (
     QueryTableRequestVector,
 )
 from lance_namespace_urllib3_client.models.string_fts_query import StringFtsQuery
+from lance_namespace.errors import TableNotFoundError
 from lancedb._lancedb import connect_namespace_client as _connect_namespace_client
 from lancedb.background_loop import LOOP
 from lancedb.db import AsyncConnection, DBConnection
@@ -546,14 +547,20 @@ class LanceNamespaceDBConnection(DBConnection):
     ) -> Table:
         if namespace_path is None:
             namespace_path = []
-        async_table = LOOP.run(
-            self._inner.open_table(
-                name,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
+        try:
+            async_table = LOOP.run(
+                self._inner.open_table(
+                    name,
+                    namespace_path=namespace_path,
+                    storage_options=storage_options,
+                    index_cache_size=index_cache_size,
+                )
             )
-        )
+        except RuntimeError as e:
+            if "Table not found" in str(e):
+                table_id = namespace_path + [name]
+                raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
+            raise
 
         return LanceTable(
             self,
@@ -971,12 +978,18 @@ class AsyncLanceNamespaceDBConnection:
         """Open an existing table from the namespace."""
         if namespace_path is None:
             namespace_path = []
-        return await self._inner.open_table(
-            name,
-            namespace_path=namespace_path,
-            storage_options=storage_options,
-            index_cache_size=index_cache_size,
-        )
+        try:
+            return await self._inner.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+        except RuntimeError as e:
+            if "Table not found" in str(e):
+                table_id = namespace_path + [name]
+                raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
+            raise
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""

@@ -184,22 +184,15 @@ impl Database for LanceNamespaceDatabase {
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
-        let describe_request = DescribeTableRequest {
-            id: Some(table_id.clone()),
-            ..Default::default()
-        };
-
-        let describe_result = self.namespace.describe_table(describe_request).await;
 
         match request.mode {
-            CreateTableMode::Create => {
-                if describe_result.is_ok() {
-                    return Err(Error::TableAlreadyExists {
-                        name: request.name.clone(),
-                    });
-                }
-            }
+            CreateTableMode::Create => {}
             CreateTableMode::Overwrite => {
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let describe_result = self.namespace.describe_table(describe_request).await;
                 if describe_result.is_ok() {
                     // Drop the existing table - must succeed
                     let drop_request = DropTableRequest {
@@ -215,6 +208,11 @@ impl Database for LanceNamespaceDatabase {
                 }
             }
             CreateTableMode::ExistOk(_) => {
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let describe_result = self.namespace.describe_table(describe_request).await;
                 if describe_result.is_ok() {
                     let native_table = NativeTable::open_from_namespace(
                         self.namespace.clone(),
@@ -242,7 +240,26 @@ impl Database for LanceNamespaceDatabase {
         };
 
         let (location, initial_storage_options, managed_versioning) = {
-            let response = self.namespace.declare_table(declare_request).await?;
+            let response = self
+                .namespace
+                .declare_table(declare_request)
+                .await
+                .map_err(|e| {
+                    let err_str = e.to_string();
+                    if matches!(request.mode, CreateTableMode::Create)
+                        && (err_str.contains("already exists")
+                            || err_str.contains("TableAlreadyExists")
+                            || err_str.contains("table already exists"))
+                    {
+                        Error::TableAlreadyExists {
+                            name: request.name.clone(),
+                        }
+                    } else {
+                        Error::Runtime {
+                            message: format!("Failed to declare table: {}", e),
+                        }
+                    }
+                })?;
             let loc = response.location.ok_or_else(|| Error::Runtime {
                 message: "Table location is missing from declare_table response".to_string(),
             })?;
