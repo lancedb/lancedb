@@ -12,18 +12,19 @@ from .base import Reranker
 class LinearCombinationReranker(Reranker):
     """
     Reranks the results using a linear combination of the scores from the
-    vector and FTS search. For missing scores, fill with `fill` value.
+    vector and FTS search. Vector distances are inverted to relevance before
+    combining. For missing scores, apply the `fill` penalty.
     Parameters
     ----------
     weight : float, default 0.7
         The weight to give to the vector score. Must be between 0 and 1.
     fill : float, default 1.0
-        The score to give to results that are only in one of the two result sets.
-        This is treated as penalty, so a higher value means a lower score.
-        TODO: We should just hardcode this--
-        its pretty confusing as we invert scores to calculate final score
+        The penalty to apply to results that are only in one of the two result
+        sets. `fill` is interpreted in distance space, so a missing `_distance`
+        or `_score` contributes a relevance score of `1 - fill`. A higher value
+        means a lower final relevance score.
     return_score : str, default "relevance"
-        opntions are "relevance" or "all"
+        options are "relevance" or "all"
         The type of score to return. If "relevance", will return only the relevance
         score. If "all", will return all scores from the vector and FTS search along
         with the relevance score.
@@ -103,7 +104,7 @@ class LinearCombinationReranker(Reranker):
         combined_list = []
         for row_id, result in results.items():
             vector_score = self._invert_score(result.get("_distance", fill))
-            fts_score = result.get("_score", fill)
+            fts_score = result.get("_score", 1 - fill)
             result["_relevance_score"] = self._combine_score(vector_score, fts_score)
             combined_list.append(result)
 
@@ -123,8 +124,8 @@ class LinearCombinationReranker(Reranker):
         return tbl
 
     def _combine_score(self, vector_score, fts_score):
-        # these scores represent distance
-        return 1 - (self.weight * vector_score + (1 - self.weight) * fts_score)
+        # Both vector_score and fts_score are relevance scores
+        return self.weight * vector_score + (1 - self.weight) * fts_score
 
     def _invert_score(self, dist: float):
         # Invert the score between relevance and distance
