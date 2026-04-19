@@ -26,6 +26,7 @@ use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 use crate::table::NativeTable;
+use lance::dataset::WriteMode;
 
 use super::{
     BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
@@ -184,6 +185,7 @@ impl Database for LanceNamespaceDatabase {
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
+        let mut existing_table = None;
 
         match request.mode {
             CreateTableMode::Create => {}
@@ -192,20 +194,7 @@ impl Database for LanceNamespaceDatabase {
                     id: Some(table_id.clone()),
                     ..Default::default()
                 };
-                let describe_result = self.namespace.describe_table(describe_request).await;
-                if describe_result.is_ok() {
-                    // Drop the existing table - must succeed
-                    let drop_request = DropTableRequest {
-                        id: Some(table_id.clone()),
-                        ..Default::default()
-                    };
-                    self.namespace
-                        .drop_table(drop_request)
-                        .await
-                        .map_err(|e| Error::Runtime {
-                            message: format!("Failed to drop existing table for overwrite: {}", e),
-                        })?;
-                }
+                existing_table = self.namespace.describe_table(describe_request).await.ok();
             }
             CreateTableMode::ExistOk(_) => {
                 let describe_request = DescribeTableRequest {
@@ -240,39 +229,54 @@ impl Database for LanceNamespaceDatabase {
         };
 
         let (location, initial_storage_options, managed_versioning) = {
-            let response = self
-                .namespace
-                .declare_table(declare_request)
-                .await
-                .map_err(|e| {
-                    let err_str = e.to_string();
-                    if matches!(request.mode, CreateTableMode::Create)
-                        && (err_str.contains("already exists")
-                            || err_str.contains("TableAlreadyExists")
-                            || err_str.contains("table already exists"))
-                    {
-                        Error::TableAlreadyExists {
-                            name: request.name.clone(),
-                        }
-                    } else {
-                        Error::Runtime {
-                            message: format!("Failed to declare table: {}", e),
-                        }
-                    }
+            if let Some(response) = existing_table {
+                let loc = response.location.ok_or_else(|| Error::Runtime {
+                    message: "Table location is missing from describe_table response".to_string(),
                 })?;
-            let loc = response.location.ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from declare_table response".to_string(),
-            })?;
-            // Use storage options from response, fall back to self.storage_options
-            let opts = response
-                .storage_options
-                .or_else(|| Some(self.storage_options.clone()))
-                .filter(|o| !o.is_empty());
-            (loc, opts, response.managed_versioning)
+                let opts = response
+                    .storage_options
+                    .or_else(|| Some(self.storage_options.clone()))
+                    .filter(|o| !o.is_empty());
+                (loc, opts, response.managed_versioning)
+            } else {
+                let response = self
+                    .namespace
+                    .declare_table(declare_request)
+                    .await
+                    .map_err(|e| {
+                        let err_str = e.to_string();
+                        if matches!(request.mode, CreateTableMode::Create)
+                            && (err_str.contains("already exists")
+                                || err_str.contains("TableAlreadyExists")
+                                || err_str.contains("table already exists"))
+                        {
+                            Error::TableAlreadyExists {
+                                name: request.name.clone(),
+                            }
+                        } else {
+                            Error::Runtime {
+                                message: format!("Failed to declare table: {}", e),
+                            }
+                        }
+                    })?;
+                let loc = response.location.ok_or_else(|| Error::Runtime {
+                    message: "Table location is missing from declare_table response".to_string(),
+                })?;
+                // Use storage options from response, fall back to self.storage_options
+                let opts = response
+                    .storage_options
+                    .or_else(|| Some(self.storage_options.clone()))
+                    .filter(|o| !o.is_empty());
+                (loc, opts, response.managed_versioning)
+            }
         };
 
         // Build write params with storage options and commit handler
         let mut params = request.write_options.lance_write_params.unwrap_or_default();
+
+        if matches!(request.mode, CreateTableMode::Overwrite) {
+            params.mode = WriteMode::Overwrite;
+        }
 
         // Set up storage options if provided
         if let Some(storage_opts) = initial_storage_options {
