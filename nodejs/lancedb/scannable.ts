@@ -71,9 +71,8 @@ export class Scannable {
    * @param schema - The Arrow schema of the produced batches.
    * @param factory - Called at the start of each scan to produce a batch
    *   iterator. Must be idempotent when `rescannable` is true.
-   * @param opts.numRows - Optional row count hint.
-   * @param opts.rescannable - Defaults to `true`. Set to `false` if calling
-   *   `factory()` twice would not reproduce the same data.
+   * @param opts - Optional hints. `rescannable` defaults to `true`; set to
+   *   `false` if calling `factory()` twice would not reproduce the same data.
    */
   static fromFactory(
     schema: Schema,
