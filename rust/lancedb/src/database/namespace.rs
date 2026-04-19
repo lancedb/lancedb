@@ -239,35 +239,62 @@ impl Database for LanceNamespaceDatabase {
                     .filter(|o| !o.is_empty());
                 (loc, opts, response.managed_versioning)
             } else {
-                let response = self
-                    .namespace
-                    .declare_table(declare_request)
-                    .await
-                    .map_err(|e| {
-                        let err_str = e.to_string();
-                        if matches!(request.mode, CreateTableMode::Create)
-                            && (err_str.contains("already exists")
+                match self.namespace.declare_table(declare_request).await {
+                    Ok(response) => {
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from declare_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e)
+                        if matches!(request.mode, CreateTableMode::Create) && {
+                            let err_str = e.to_string();
+                            err_str.contains("already exists")
                                 || err_str.contains("TableAlreadyExists")
-                                || err_str.contains("table already exists"))
-                        {
-                            Error::TableAlreadyExists {
+                                || err_str.contains("table already exists")
+                        } =>
+                    {
+                        let response = self
+                            .namespace
+                            .describe_table(DescribeTableRequest {
+                                id: Some(table_id.clone()),
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|describe_err| Error::Runtime {
+                                message: format!(
+                                    "Failed to describe existing declared table after declare conflict: {}",
+                                    describe_err
+                                ),
+                            })?;
+
+                        if response.version.is_some() && response.schema.is_some() {
+                            return Err(Error::TableAlreadyExists {
                                 name: request.name.clone(),
-                            }
-                        } else {
-                            Error::Runtime {
-                                message: format!("Failed to declare table: {}", e),
-                            }
+                            });
                         }
-                    })?;
-                let loc = response.location.ok_or_else(|| Error::Runtime {
-                    message: "Table location is missing from declare_table response".to_string(),
-                })?;
-                // Use storage options from response, fall back to self.storage_options
-                let opts = response
-                    .storage_options
-                    .or_else(|| Some(self.storage_options.clone()))
-                    .filter(|o| !o.is_empty());
-                (loc, opts, response.managed_versioning)
+
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from describe_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e) => {
+                        return Err(Error::Runtime {
+                            message: format!("Failed to declare table: {}", e),
+                        });
+                    }
+                }
             }
         };
 
@@ -732,6 +759,58 @@ mod tests {
         assert_eq!(id_col.value(0), 10);
         assert_eq!(id_col.value(1), 20);
         assert_eq!(id_col.value(2), 30);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_after_declare_conflict() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        namespace_client
+            .declare_table(DeclareTableRequest {
+                id: Some(vec!["test_ns".into(), "declared_test".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to declare table");
+
+        let test_data = create_test_data();
+        let table = conn
+            .create_table("declared_test", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table after declare conflict");
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+        assert_eq!(table.namespace(), &["test_ns"]);
+        assert_eq!(table.id(), "test_ns$declared_test");
     }
 
     #[tokio::test]
