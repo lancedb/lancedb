@@ -15,7 +15,9 @@ import {
   MatchQuery,
   PhraseQuery,
   Table,
+  col,
   connect,
+  lit,
 } from "../lancedb";
 import {
   Table as ArrowTable,
@@ -2192,6 +2194,34 @@ describe("column name options", () => {
   test("can filter on columns with different names", async () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
+  });
+
+  test("col() quotes camelCase column names automatically", async () => {
+    // col() wraps identifiers that need quoting (uppercase letters, spaces,
+    // special chars) so users don't have to write raw backtick syntax.
+    const results = await table
+      .query()
+      .where(`${col("camelCase")} = ${lit(1)}`)
+      .toArray();
+    expect(results[0].camelCase).toBe(1);
+  });
+
+  test("col() leaves lowercase identifiers unquoted", () => {
+    expect(col("age")).toBe("age");
+    expect(col("my_col")).toBe("my_col");
+  });
+
+  test("col() quotes identifiers that need it", () => {
+    expect(col("camelCase")).toBe("`camelCase`");
+    expect(col("first name")).toBe("`first name`");
+    expect(col("2bad")).toBe("`2bad`");
+  });
+
+  test("lit() converts JS values to SQL literals", () => {
+    expect(lit(42)).toBe("42");
+    expect(lit("hello")).toBe("'hello'");
+    expect(lit(true)).toBe("TRUE");
+    expect(lit(null)).toBe("NULL");
   });
 
   test("can make multiple vector queries in one go", async () => {

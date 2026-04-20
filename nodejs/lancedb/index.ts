@@ -114,6 +114,7 @@ export {
 } from "./header";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
+export { col, lit } from "./expr";
 
 export * as embedding from "./embedding";
 export { permutationBuilder, PermutationBuilder } from "./permutation";
