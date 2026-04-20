@@ -96,7 +96,7 @@ schema so the consumer can validate before any batch is pulled.
 
 * **schema**: `Schema`&lt;`any`&gt;
 
-* **iter**: `AsyncIterable`&lt;`RecordBatch`&lt;`any`&gt;&gt; \| `Iterable`&lt;`RecordBatch`&lt;`any`&gt;&gt;
+* **iter**: `Iterable`&lt;`RecordBatch`&lt;`any`&gt;&gt; \| `AsyncIterable`&lt;`RecordBatch`&lt;`any`&gt;&gt;
 
 * **opts**: [`ScannableOptions`](../interfaces/ScannableOptions.md) = `{}`
 
