@@ -98,7 +98,12 @@ _MODEL_BACKED_TOKENIZER_ERRORS = (
 
 def _add_unique_note(exception: BaseException, note: str) -> None:
     existing_notes = getattr(exception, "__notes__", ()) or ()
-    if note not in existing_notes:
+    message = (
+        exception.args[0]
+        if exception.args and isinstance(exception.args[0], str)
+        else ""
+    )
+    if note not in existing_notes and note not in message:
         add_note(exception, note)
 
 
