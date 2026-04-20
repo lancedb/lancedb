@@ -641,7 +641,7 @@ mod tests {
     /// batch with a "json vs large_binary" schema-mismatch error.
     #[tokio::test]
     async fn test_arrow_json_passthrough_to_lance_json() {
-        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME, json_field};
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
         use lance_arrow::ARROW_EXT_NAME_KEY;
 
         // Build a table schema with a lance.json field (LargeBinary + lance.json metadata).

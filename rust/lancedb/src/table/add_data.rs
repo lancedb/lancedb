@@ -1039,5 +1039,122 @@ mod tests {
         table.add(batch).execute().await.unwrap();
 
         assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Verify the data was correctly written by reading it back.
+        // Lance stores JSON as JSONB (binary format), so we read as large_binary
+        // and verify the content can be parsed.
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["data"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 3);
+
+        // Verify null value is preserved
+        assert!(batch.column(0).is_null(0));
+
+        // Verify JSON values are correctly stored (as JSONB binary)
+        let json_col = batch.column(0);
+        let json_bytes: &arrow_array::LargeBinaryArray = json_col.as_binary();
+
+        // Row 1: {"a": 1}
+        assert!(!json_bytes.is_null(1));
+        let json1 = String::from_utf8_lossy(json_bytes.value(1).as_ref());
+        assert!(json1.contains("\"a\":") || json1.contains("a"));
+
+        // Row 2: {"b": 2}
+        assert!(!json_bytes.is_null(2));
+        let json2 = String::from_utf8_lossy(json_bytes.value(2).as_ref());
+        assert!(json2.contains("\"b\":") || json2.contains("b"));
+    }
+
+    /// Test that LargeUtf8-backed arrow.json can be appended to a lance.json table.
+    /// This is similar to the Utf8 case but uses LargeUtf8 which is the default for
+    /// PyArrow's pa.large_string() or when creating pa.json_() with certain versions.
+    #[tokio::test]
+    async fn test_add_arrow_json_large_utf8_into_lance_json_table() {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+
+        // Build a table whose "data" column is lance.json (LargeBinary +
+        // ARROW:extension:name = "lance.json").
+        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let table_schema = Arc::new(Schema::new(vec![lance_json_field.clone()]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_test_large_utf8", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the table schema looks like lance.json.
+        let stored_field = table.schema().await.unwrap();
+        let data_field = stored_field.field_with_name("data").unwrap();
+        assert_eq!(data_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            data_field.metadata().get("ARROW:extension:name").map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+        );
+
+        // Now append using a LargeUtf8-backed arrow.json typed field.
+        let mut arrow_json_metadata = std::collections::HashMap::new();
+        arrow_json_metadata.insert(
+            "ARROW:extension:name".to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        );
+        let arrow_json_field = Field::new("data", DataType::LargeUtf8, true)
+            .with_metadata(arrow_json_metadata);
+        let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
+
+        let json_values: Vec<Option<&str>> = vec![None, Some(r#"{"x": 10}"#), Some(r#"{"y": 20}"#)];
+        let string_array: Arc<dyn arrow_array::Array> = Arc::new(
+            arrow_array::LargeStringArray::from(json_values),
+        );
+        let batch =
+            RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+
+        // This must not fail with a schema-mismatch error.
+        table.add(batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Verify the data was correctly written by reading it back.
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["data"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 3);
+
+        // Verify null value is preserved
+        assert!(batch.column(0).is_null(0));
+
+        // Verify JSON values are correctly stored (as JSONB binary)
+        let json_col = batch.column(0);
+        let json_bytes: &arrow_array::LargeBinaryArray = json_col.as_binary();
+
+        // Row 1: {"x": 10}
+        assert!(!json_bytes.is_null(1));
+        let json1 = String::from_utf8_lossy(json_bytes.value(1).as_ref());
+        assert!(json1.contains("\"x\":") || json1.contains("x"));
+
+        // Row 2: {"y": 20}
+        assert!(!json_bytes.is_null(2));
+        let json2 = String::from_utf8_lossy(json_bytes.value(2).as_ref());
+        assert!(json2.contains("\"y\":") || json2.contains("y"));
     }
 }
