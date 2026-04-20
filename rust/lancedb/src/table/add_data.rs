@@ -1066,13 +1066,15 @@ mod tests {
 
         // Row 1: {"a": 1}
         assert!(!json_bytes.is_null(1));
-        let json1 = String::from_utf8_lossy(json_bytes.value(1).as_ref());
-        assert!(json1.contains("\"a\":") || json1.contains("a"));
+        let json1 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(1).as_ref())
+            .expect("JSON should be valid");
+        assert_eq!(json1, serde_json::json!({"a": 1}));
 
         // Row 2: {"b": 2}
         assert!(!json_bytes.is_null(2));
-        let json2 = String::from_utf8_lossy(json_bytes.value(2).as_ref());
-        assert!(json2.contains("\"b\":") || json2.contains("b"));
+        let json2 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(2).as_ref())
+            .expect("JSON should be valid");
+        assert_eq!(json2, serde_json::json!({"b": 2}));
     }
 
     /// Test that LargeUtf8-backed arrow.json can be appended to a lance.json table.
@@ -1149,12 +1151,14 @@ mod tests {
 
         // Row 1: {"x": 10}
         assert!(!json_bytes.is_null(1));
-        let json1 = String::from_utf8_lossy(json_bytes.value(1).as_ref());
-        assert!(json1.contains("\"x\":") || json1.contains("x"));
+        let json1 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(1).as_ref())
+            .expect("JSON should be valid");
+        assert_eq!(json1, serde_json::json!({"x": 10}));
 
         // Row 2: {"y": 20}
         assert!(!json_bytes.is_null(2));
-        let json2 = String::from_utf8_lossy(json_bytes.value(2).as_ref());
-        assert!(json2.contains("\"y\":") || json2.contains("y"));
+        let json2 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(2).as_ref())
+            .expect("JSON should be valid");
+        assert_eq!(json2, serde_json::json!({"y": 20}));
     }
 }
