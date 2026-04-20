@@ -95,21 +95,31 @@ def table(tmp_path) -> ldb.table.LanceTable:
 
 
 @pytest.fixture
-def language_model_home(monkeypatch):
-    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(TEST_LANGUAGE_MODEL_HOME))
-    return TEST_LANGUAGE_MODEL_HOME
+def language_model_home(monkeypatch, tmp_path):
+    model_home = tmp_path / "language-models"
+    shutil.copytree(TEST_LANGUAGE_MODEL_HOME, model_home)
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(model_home))
+    return model_home
 
 
 @pytest.fixture
 def lindera_ipadic(language_model_home):
     model_path = language_model_home / "lindera" / "ipadic"
     extracted_model = model_path / "main"
+    config_path = model_path / "config.yml"
 
     if extracted_model.exists():
         shutil.rmtree(extracted_model)
 
     with zipfile.ZipFile(model_path / "main.zip", "r") as zip_ref:
         zip_ref.extractall(model_path)
+    config_path.write_text(
+        "segmenter:\n"
+        '  mode: "normal"\n'
+        "  dictionary:\n"
+        f'    path: "{extracted_model.resolve().as_posix()}"\n',
+        encoding="utf-8",
+    )
 
     try:
         yield
