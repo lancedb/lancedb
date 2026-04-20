@@ -13,6 +13,7 @@ use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
+use lance_arrow::json::{is_arrow_json_field, is_json_field};
 
 use crate::{Error, Result};
 
@@ -63,6 +64,18 @@ fn build_field_exprs(
 
         let input_field = &input_fields[input_idx];
         let input_expr = get_input_expr(input_idx);
+
+        // Special case: input is arrow.json (PyArrow pa.json_() extension type backed by
+        // Utf8/LargeUtf8) and the table field is lance.json (backed by LargeBinary).
+        // Lance-core's write path already handles the arrow.json → lance.json conversion
+        // (including JSONB encoding), so we pass the expression through unchanged and let
+        // lance-core deal with it. Attempting to cast Utf8 → LargeBinary here would
+        // produce a field whose metadata still identifies it as arrow.json, which then
+        // causes a schema-mismatch error inside lance-core.
+        if is_arrow_json_field(input_field) && is_json_field(table_field) {
+            result.push((input_expr, Arc::clone(input_field) as FieldRef));
+            continue;
+        }
 
         let expr = match (input_field.data_type(), table_field.data_type()) {
             // Both are structs: recurse into sub-fields to handle subschemas and casts.
@@ -617,5 +630,61 @@ mod tests {
             .downcast_ref()
             .unwrap();
         assert_eq!(a.values(), &[1, 3]);
+    }
+
+    /// `arrow.json` input (PyArrow `pa.json_()`, Utf8 + extension metadata) against a
+    /// `lance.json` table field (LargeBinary + extension metadata) must be passed through
+    /// without a cast so that lance-core can perform its own arrow.json → JSONB conversion.
+    ///
+    /// Before the fix, `cast_to_table_schema` attempted a `Utf8 → LargeBinary` DataFusion
+    /// cast that preserved the wrong extension metadata, causing lance-core to reject the
+    /// batch with a "json vs large_binary" schema-mismatch error.
+    #[tokio::test]
+    async fn test_arrow_json_passthrough_to_lance_json() {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME, json_field};
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+
+        // Build a table schema with a lance.json field (LargeBinary + lance.json metadata).
+        let lance_field = json_field("data", true);
+        let table_schema = Schema::new(vec![lance_field]);
+
+        // Build an input batch with an arrow.json field (Utf8 + arrow.json metadata).
+        let mut arrow_meta = std::collections::HashMap::new();
+        arrow_meta.insert(ARROW_EXT_NAME_KEY.to_string(), ARROW_JSON_EXT_NAME.to_string());
+        let arrow_field = Field::new("data", DataType::Utf8, true).with_metadata(arrow_meta);
+        let input_schema = Arc::new(Schema::new(vec![arrow_field]));
+        let input_batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(StringArray::from(vec![
+                Some(r#"{"x": 1}"#),
+                None,
+                Some(r#"{"y": 2}"#),
+            ]))],
+        )
+        .unwrap();
+
+        let plan = plan_from_batch(input_batch).await;
+        let projected = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        // The projected schema's "data" field must carry arrow.json metadata
+        // (the input field), not be silently dropped or miscast.
+        let out_field = projected.schema().field_with_name("data").unwrap().clone();
+        assert_eq!(out_field.data_type(), &DataType::Utf8);
+        assert_eq!(
+            out_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(ARROW_JSON_EXT_NAME),
+            "output field must still carry arrow.json metadata so lance-core can handle it"
+        );
+
+        // The data must flow through correctly (3 rows, no panic).
+        let result = collect(projected).await;
+        assert_eq!(result.num_rows(), 3);
+        let col: &StringArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(col.value(0), r#"{"x": 1}"#);
+        assert!(result.column(0).is_null(1));
+        assert_eq!(col.value(2), r#"{"y": 2}"#);
     }
 }

@@ -982,4 +982,62 @@ mod tests {
         table2.add(struct_batch).execute().await.unwrap();
         assert_eq!(table2.count_rows(None).await.unwrap(), 2);
     }
+
+    /// Regression test: appending `arrow.json` (PyArrow `pa.json_()`) data into a table
+    /// whose schema was created with `pa.json_()` (internally stored as `lance.json`, backed
+    /// by `LargeBinary`) must succeed without a schema-mismatch error.
+    ///
+    /// Previously `build_field_exprs` would attempt a `Utf8 → LargeBinary` DataFusion cast,
+    /// which produced a field whose Arrow extension metadata still read `arrow.json` instead
+    /// of `lance.json`.  Lance-core then rejected the append with
+    /// `"json vs large_binary" schema mismatch`.
+    #[tokio::test]
+    async fn test_add_arrow_json_into_lance_json_table() {
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+
+        // Build a table whose "data" column is lance.json (LargeBinary +
+        // ARROW:extension:name = "lance.json").  We use json_field() helper from
+        // lance-arrow which produces exactly this shape.
+        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let table_schema = Arc::new(Schema::new(vec![lance_json_field.clone()]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_test", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the table schema looks like lance.json.
+        let stored_field = table.schema().await.unwrap();
+        let data_field = stored_field.field_with_name("data").unwrap();
+        assert_eq!(data_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            data_field.metadata().get("ARROW:extension:name").map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+        );
+
+        // Now append using an arrow.json typed field (Utf8 + arrow.json extension).
+        // This is what PyArrow produces for pa.json_() arrays.
+        let mut arrow_json_metadata = std::collections::HashMap::new();
+        arrow_json_metadata.insert(
+            "ARROW:extension:name".to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        );
+        let arrow_json_field = Field::new("data", DataType::Utf8, true)
+            .with_metadata(arrow_json_metadata);
+        let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
+
+        let json_values: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
+        let string_array: Arc<dyn arrow_array::Array> = Arc::new(
+            arrow_array::StringArray::from(json_values),
+        );
+        let batch =
+            RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+
+        // This must not fail with a schema-mismatch error.
+        table.add(batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
 }
