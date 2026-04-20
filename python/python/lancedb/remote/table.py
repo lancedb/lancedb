@@ -39,6 +39,7 @@ from lancedb.table import _normalize_progress
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
+from ..types import BaseTokenizerType
 
 
 class RemoteTable(Table):
@@ -167,7 +168,7 @@ class RemoteTable(Table):
         wait_timeout: Optional[timedelta] = None,
         with_position: bool = False,
         # tokenizer configs:
-        base_tokenizer: str = "simple",
+        base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,

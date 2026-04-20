@@ -86,6 +86,52 @@ from .util import (
 )
 from .index import lang_mapping
 
+_MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
+_MODEL_BACKED_TOKENIZER_ERRORS = (
+    "unknown base tokenizer",
+    "Invalid directory path:",
+    "Failed to load Jieba",
+    "Failed to load tokenizer config",
+    "Failed to initialize default tokenizer",
+)
+
+
+def _add_unique_note(exception: BaseException, note: str) -> None:
+    existing_notes = getattr(exception, "__notes__", ()) or ()
+    if note not in existing_notes:
+        add_note(exception, note)
+
+
+def _is_model_backed_tokenizer(base_tokenizer: str) -> bool:
+    return any(
+        base_tokenizer == prefix or base_tokenizer.startswith(f"{prefix}/")
+        for prefix in _MODEL_BACKED_TOKENIZER_PREFIXES
+    )
+
+
+def _maybe_add_fts_error_note(
+    exception: BaseException, *, base_tokenizer: str, language: Optional[str] = None
+) -> None:
+    message = str(exception)
+    if language is not None and "not support the requested language" in message:
+        supported_langs = ", ".join(lang_mapping.values())
+        _add_unique_note(exception, f"Supported languages: {supported_langs}")
+        return
+
+    if not _is_model_backed_tokenizer(base_tokenizer):
+        return
+
+    if not any(marker in message for marker in _MODEL_BACKED_TOKENIZER_ERRORS):
+        return
+
+    _add_unique_note(
+        exception,
+        "Model-backed tokenizers such as 'jieba/default' and 'lindera/ipadic' "
+        "require tokenizer models under LANCE_LANGUAGE_MODEL_HOME. Expected "
+        "layouts include '$LANCE_LANGUAGE_MODEL_HOME/jieba/default/...' and "
+        "'$LANCE_LANGUAGE_MODEL_HOME/lindera/ipadic/...'.",
+    )
+
 
 if TYPE_CHECKING:
     from .db import LanceDBConnection
@@ -958,7 +1004,8 @@ class Table(ABC):
         tokenizer_name: str, default "default"
             A compatibility alias for native tokenizer configs. Can be "raw",
             "default" or the 2 letter language code followed by "_stem". So
-            for english it would be "en_stem".
+            for english it would be "en_stem". Prefer ``base_tokenizer`` for
+            new code.
         use_tantivy: bool, default False
             Deprecated legacy Tantivy parameter. Setting this to True raises an
             error.
@@ -972,8 +1019,11 @@ class Table(ABC):
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
             - "ngram": N-Gram tokenizer.
+            - "jieba/*": Jieba tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
+            - "lindera/*": Lindera tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
         language : str, default "English"
-            The language to use for tokenization.
+            The language to use for stemming and stop-word removal. This is not
+            the primary way to enable CJK tokenization.
         max_token_length : int, default 40
             The maximum token length to index. Tokens longer than this length will be
             ignored.
@@ -999,6 +1049,11 @@ class Table(ABC):
             The timeout to wait if indexing is asynchronous.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
+
+        Notes
+        -----
+        Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
+        require tokenizer models under ``LANCE_LANGUAGE_MODEL_HOME``.
         """
         raise NotImplementedError
 
@@ -2462,14 +2517,22 @@ class LanceTable(Table):
             **tokenizer_configs,
         )
 
-        LOOP.run(
-            self._table.create_index(
-                field_names,
-                replace=replace,
-                config=config,
-                name=name,
+        try:
+            LOOP.run(
+                self._table.create_index(
+                    field_names,
+                    replace=replace,
+                    config=config,
+                    name=name,
+                )
             )
-        )
+        except (ValueError, RuntimeError) as e:
+            _maybe_add_fts_error_note(
+                e,
+                base_tokenizer=config.base_tokenizer,
+                language=config.language,
+            )
+            raise e
 
     @staticmethod
     def infer_tokenizer_configs(tokenizer_name: str) -> dict:
@@ -3865,11 +3928,13 @@ class AsyncTable:
                 name=name,
                 train=train,
             )
-        except ValueError as e:
-            if "not support the requested language" in str(e):
-                supported_langs = ", ".join(lang_mapping.values())
-                help_msg = f"Supported languages: {supported_langs}"
-                add_note(e, help_msg)
+        except (ValueError, RuntimeError) as e:
+            if isinstance(config, FTS):
+                _maybe_add_fts_error_note(
+                    e,
+                    base_tokenizer=config.base_tokenizer,
+                    language=config.language,
+                )
             raise e
 
     async def drop_index(self, name: str) -> None:
