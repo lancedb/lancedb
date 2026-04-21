@@ -1,0 +1,77 @@
+name: Security audit (SCA)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - rust/**/Cargo.toml
+      - rust/**/Cargo.lock
+      - Cargo.toml
+      - Cargo.lock
+      - python/pyproject.toml
+      - python/uv.lock
+      - nodejs/package.json
+      - nodejs/package-lock.json
+      - .github/workflows/security-audit.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (warn-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  pip-audit:
+    name: pip-audit (blocking)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Resolve core runtime dependencies
+        run: |
+          cat > /tmp/core_reqs.in <<'EOF'
+          deprecation>=2.1.0
+          numpy>=1.24.0
+          packaging>=23.0
+          pyarrow>=16
+          pydantic>=1.10
+          tqdm>=4.27.0
+          lance-namespace>=0.3.2
+          EOF
+          uv pip compile /tmp/core_reqs.in -o /tmp/core_reqs.txt
+      - name: Run pip-audit
+        run: |
+          uv tool install --python 3.12 pip-audit
+          uv tool run pip-audit -r /tmp/core_reqs.txt --no-deps
+
+  npm-audit:
+    name: npm audit (warn-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
