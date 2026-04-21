@@ -3,19 +3,24 @@
 
 use core::fmt;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow::compute::{concat_batches, take_record_batch};
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, UInt32Array};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Float32Array, Int32Array, RecordBatch,
+    UInt32Array,
+};
+use arrow_row::{OwnedRow, RowConverter, SortField};
+use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::execution::SessionState;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 use datafusion_common::{
-    DFSchema, DFSchemaRef, DataFusionError, Result as DFResult, Statistics, stats::Precision,
+    DFSchema, DFSchemaRef, DataFusionError, Result as DFResult, Statistics, TableReference,
 };
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore};
@@ -31,14 +36,50 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 use crate::DistanceType;
 
 // ---------------------------------------------------------------------------
+// Static field helpers — allocated once
+// ---------------------------------------------------------------------------
+
+static QUERY_INDEX_FIELD: OnceLock<FieldRef> = OnceLock::new();
+static DISTANCE_FIELD: OnceLock<FieldRef> = OnceLock::new();
+
+fn query_index_field() -> &'static FieldRef {
+    QUERY_INDEX_FIELD.get_or_init(|| Arc::new(Field::new("_query_index", DataType::Int32, false)))
+}
+
+fn distance_field() -> &'static FieldRef {
+    DISTANCE_FIELD.get_or_init(|| Arc::new(Field::new("_distance", DataType::Float32, true)))
+}
+
+fn query_vector_field(value_field: FieldRef, dim: i32) -> FieldRef {
+    Arc::new(Field::new(
+        "_query_vector",
+        DataType::Dictionary(
+            Box::new(DataType::Int32),
+            Box::new(DataType::FixedSizeList(value_field, dim)),
+        ),
+        true,
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Schema helper
 // ---------------------------------------------------------------------------
 
-/// Extend an input Arrow schema with `query_index: Int32` and `_distance: Float32`.
-pub(crate) fn knn_output_schema(input_schema: &SchemaRef) -> SchemaRef {
+/// Extend an input Arrow schema with `_query_index: Int32`, `_distance: Float32`,
+/// and `_query_vector: Dictionary(Int32, FixedSizeList(...))`.
+pub(crate) fn knn_output_schema(
+    input_schema: &SchemaRef,
+    query_vectors: &FixedSizeListArray,
+) -> SchemaRef {
     let mut fields = input_schema.fields().to_vec();
-    fields.push(Arc::new(Field::new("query_index", DataType::Int32, false)));
-    fields.push(Arc::new(Field::new("_distance", DataType::Float32, true)));
+    fields.push(query_index_field().clone());
+    fields.push(distance_field().clone());
+    // Derive the value field and dimension from the query vector array's type.
+    let (value_field, dim) = match query_vectors.data_type() {
+        DataType::FixedSizeList(vf, d) => (vf.clone(), *d),
+        _ => unreachable!("query_vectors must be FixedSizeListArray"),
+    };
+    fields.push(query_vector_field(value_field, dim));
     Arc::new(Schema::new(fields))
 }
 
@@ -50,27 +91,34 @@ pub(crate) fn knn_output_schema(input_schema: &SchemaRef) -> SchemaRef {
 /// all query vectors at once.
 ///
 /// The output schema is the input schema augmented with:
-/// - `query_index: Int32` — 0-based index into `query_vectors`
+/// - `_query_index: Int32` — 0-based index into `query_vectors`
 /// - `_distance: Float32` — distance from that query to this row
+/// - `_query_vector: Dictionary(Int32, FixedSizeList(...))` — the original query vector
 ///
-/// At most `k` rows are emitted per distinct `query_index`.
+/// At most `k` rows are emitted per distinct `_query_index`.
 pub(crate) struct KnnNode {
     pub input: LogicalPlan,
-    pub column: String,
+    /// Qualifier and resolved field for the vector column (validated at construction).
+    pub column_qualifier: Option<TableReference>,
+    pub column_field: FieldRef,
     /// All query vectors; one row per query.
     pub query_vectors: Arc<FixedSizeListArray>,
     pub k: usize,
     pub distance_type: DistanceType,
+    /// When false, the vector column is excluded from output rows to save memory.
+    /// Set by [`KnnProjectVectorRule`] when the column isn't used downstream.
+    pub project_vector: bool,
     schema: DFSchemaRef,
 }
 
 impl fmt::Debug for KnnNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KnnNode")
-            .field("column", &self.column)
+            .field("column", &self.column_field.name())
             .field("k", &self.k)
             .field("distance_type", &self.distance_type)
             .field("num_queries", &self.query_vectors.len())
+            .field("project_vector", &self.project_vector)
             .finish()
     }
 }
@@ -78,23 +126,41 @@ impl fmt::Debug for KnnNode {
 impl KnnNode {
     pub fn try_new(
         input: LogicalPlan,
-        column: impl Into<String>,
+        column: impl Into<String> + AsRef<str>,
         query_vectors: Arc<FixedSizeListArray>,
         k: usize,
         distance_type: DistanceType,
     ) -> DFResult<Self> {
-        let column = column.into();
+        // Validate the column exists in the input schema at construction time.
+        let (qualifier, field) = input
+            .schema()
+            .qualified_field_with_name(None, column.as_ref())?;
+        let column_qualifier = qualifier.cloned();
+        let column_field = field.clone();
+
         let input_arrow = input.schema().as_arrow().clone();
-        let output_arrow = knn_output_schema(&Arc::new(input_arrow));
+        let output_arrow = knn_output_schema(&Arc::new(input_arrow), &query_vectors);
         let schema = Arc::new(DFSchema::try_from(output_arrow.as_ref().clone())?);
         Ok(Self {
             input,
-            column,
+            column_qualifier,
+            column_field,
             query_vectors,
             k,
             distance_type,
+            project_vector: true,
             schema,
         })
+    }
+
+    /// Rebuild this node with `project_vector = false`, recomputing the schema
+    /// so `_query_vector` reflects the correct type still (schema is unchanged —
+    /// the output schema always includes `_query_vector`).
+    pub fn without_vector_projection(self) -> Self {
+        Self {
+            project_vector: false,
+            ..self
+        }
     }
 }
 
@@ -106,12 +172,13 @@ impl PartialOrd for KnnNode {
     }
 }
 
-// Eq/PartialEq: structural fields only, not vector data.
+// Eq/PartialEq: structural fields only; use pointer identity for query_vectors.
 impl PartialEq for KnnNode {
     fn eq(&self, other: &Self) -> bool {
-        self.column == other.column
+        self.column_field.name() == other.column_field.name()
             && self.k == other.k
             && self.distance_type == other.distance_type
+            && self.project_vector == other.project_vector
             && Arc::ptr_eq(&self.query_vectors, &other.query_vectors)
     }
 }
@@ -121,10 +188,11 @@ impl Eq for KnnNode {}
 // Hash: same fields as PartialEq; use pointer identity for query_vectors.
 impl Hash for KnnNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.column.hash(state);
+        self.column_field.name().hash(state);
         self.k.hash(state);
-        // DistanceType doesn't derive Hash, use discriminant instead.
+        // DistanceType doesn't derive Hash; use discriminant.
         std::mem::discriminant(&self.distance_type).hash(state);
+        self.project_vector.hash(state);
         Arc::as_ptr(&self.query_vectors).hash(state);
     }
 }
@@ -149,11 +217,12 @@ impl UserDefinedLogicalNodeCore for KnnNode {
     fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "KnnNode: column={}, k={}, num_queries={}, distance_type={}",
-            self.column,
+            "KnnNode: column={}, k={}, num_queries={}, distance_type={}, project_vector={}",
+            self.column_field.name(),
             self.k,
             self.query_vectors.len(),
             self.distance_type,
+            self.project_vector,
         )
     }
 
@@ -164,16 +233,18 @@ impl UserDefinedLogicalNodeCore for KnnNode {
     ) -> DFResult<Self> {
         Ok(Self {
             input: inputs.remove(0),
-            column: self.column.clone(),
+            column_qualifier: self.column_qualifier.clone(),
+            column_field: self.column_field.clone(),
             query_vectors: self.query_vectors.clone(),
             k: self.k,
             distance_type: self.distance_type,
+            project_vector: self.project_vector,
             schema: self.schema.clone(),
         })
     }
 
     fn prevent_predicate_push_down_columns(&self) -> HashSet<String> {
-        ["query_index", "_distance"]
+        ["_query_index", "_distance", "_query_vector"]
             .iter()
             .map(|s| s.to_string())
             .collect()
@@ -199,12 +270,26 @@ impl ExtensionPlanner for KnnPlanner {
         let Some(knn) = node.as_any().downcast_ref::<KnnNode>() else {
             return Ok(None);
         };
+        // Resolve the column index once at physical plan construction time.
+        let input_schema = physical_inputs[0].schema();
+        let col_idx = input_schema
+            .fields()
+            .iter()
+            .position(|f| f.name() == knn.column_field.name())
+            .ok_or_else(|| {
+                DataFusionError::Plan(format!(
+                    "KNN column '{}' not found in physical schema",
+                    knn.column_field.name()
+                ))
+            })?;
+
         let partial = PartialKnnExec::try_new(
             physical_inputs[0].clone(),
-            knn.column.clone(),
+            col_idx,
             knn.query_vectors.clone(),
             knn.k,
             knn.distance_type,
+            knn.project_vector,
         )?;
         let merged = MergeKnnExec::try_new(Arc::new(partial), knn.k)?;
         Ok(Some(Arc::new(merged)))
@@ -212,30 +297,88 @@ impl ExtensionPlanner for KnnPlanner {
 }
 
 // ---------------------------------------------------------------------------
-// PartialKnnExec — physical plan node (per-partition brute-force)
+// Heap entry for PartialKnnExec — max-heap keyed by distance (descending)
+// ---------------------------------------------------------------------------
+
+/// Heap entry stored per query during streaming top-k.
+///
+/// We use a max-heap (`BinaryHeap`) and pop the *largest* entry when the heap
+/// exceeds `k`, leaving only the `k` smallest distances. For positive IEEE 754
+/// floats, the bit representation as `u32` has the same ordering as the float,
+/// so natural `u32` comparison gives us a correct max-heap on distance.
+struct HeapEntry {
+    /// f32 distance bits; `u32` ordering matches f32 ordering for positive values.
+    dist_bits: u32,
+    row: OwnedRow,
+}
+
+impl HeapEntry {
+    fn new(dist: f32, row: OwnedRow) -> Self {
+        Self {
+            dist_bits: dist.to_bits(),
+            row,
+        }
+    }
+
+    fn dist(&self) -> f32 {
+        f32::from_bits(self.dist_bits)
+    }
+}
+
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.dist_bits == other.dist_bits
+    }
+}
+impl Eq for HeapEntry {}
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Larger dist_bits = farther candidate = higher priority to pop.
+        self.dist_bits.cmp(&other.dist_bits)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PartialKnnExec — physical plan node (per-partition streaming top-k)
 // ---------------------------------------------------------------------------
 
 /// Scans one partition and returns the top-k nearest rows for **every** query
 /// vector in `query_vectors`.
 ///
-/// Output schema: input columns + `query_index: Int32` + `_distance: Float32`.
+/// Output schema: input columns (minus the vector column if `project_vector` is
+/// false) + `_query_index: Int32` + `_distance: Float32` +
+/// `_query_vector: Dictionary(Int32, FixedSizeList(...))`.
+///
 /// Each query vector contributes at most `k` rows, differentiated by
-/// `query_index` (0-based position in `query_vectors`).
+/// `_query_index` (0-based position in `query_vectors`).
 pub(crate) struct PartialKnnExec {
     input: Arc<dyn ExecutionPlan>,
-    column: String,
+    /// Pre-resolved column index in the input schema.
+    column_idx: usize,
     query_vectors: Arc<FixedSizeListArray>,
     k: usize,
     distance_type: DistanceType,
+    /// When false, the vector column is not included in the `RowConverter` to
+    /// save memory on large embedding columns.
+    project_vector: bool,
+    /// Converts non-vector columns to/from row format for the heap.
+    /// Built once at construction time.
+    row_converter: Arc<RowConverter>,
     properties: PlanProperties,
 }
 
 impl fmt::Debug for PartialKnnExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PartialKnnExec")
-            .field("column", &self.column)
+            .field("column_idx", &self.column_idx)
             .field("num_queries", &self.query_vectors.len())
             .field("k", &self.k)
+            .field("project_vector", &self.project_vector)
             .field("schema", &self.schema())
             .finish()
     }
@@ -244,12 +387,40 @@ impl fmt::Debug for PartialKnnExec {
 impl PartialKnnExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
-        column: impl Into<String>,
+        column_idx: usize,
         query_vectors: Arc<FixedSizeListArray>,
         k: usize,
         distance_type: DistanceType,
+        project_vector: bool,
     ) -> DFResult<Self> {
-        let output_schema = knn_output_schema(&input.schema());
+        let input_schema = input.schema();
+
+        // Build the RowConverter from the columns we want to store in the heap
+        // (all columns, or all except the vector column when project_vector=false).
+        let sort_fields: Vec<SortField> = input_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| project_vector || *i != column_idx)
+            .map(|(_, f)| SortField::new(f.data_type().clone()))
+            .collect();
+        let row_converter = Arc::new(
+            RowConverter::new(sort_fields)
+                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?,
+        );
+
+        // The output schema is derived from the input schema (excluding the
+        // vector column when project_vector=false) plus the KNN metadata columns.
+        let data_fields: Vec<FieldRef> = input_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| project_vector || *i != column_idx)
+            .map(|(_, f)| f.clone())
+            .collect();
+        let data_schema = Arc::new(Schema::new(data_fields));
+        let output_schema = knn_output_schema(&data_schema, &query_vectors);
+
         let num_partitions = input.output_partitioning().partition_count();
         let properties = PlanProperties::new(
             EquivalenceProperties::new(output_schema),
@@ -259,10 +430,12 @@ impl PartialKnnExec {
         );
         Ok(Self {
             input,
-            column: column.into(),
+            column_idx,
             query_vectors,
             k,
             distance_type,
+            project_vector,
+            row_converter,
             properties,
         })
     }
@@ -272,11 +445,11 @@ impl DisplayAs for PartialKnnExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "PartialKnnExec: column={}, num_queries={}, k={}, distance_type={}",
-            self.column,
+            "PartialKnnExec: column_idx={}, num_queries={}, k={}, project_vector={}",
+            self.column_idx,
             self.query_vectors.len(),
             self.k,
-            self.distance_type,
+            self.project_vector,
         )
     }
 }
@@ -309,11 +482,16 @@ impl ExecutionPlan for PartialKnnExec {
         }
         Ok(Arc::new(Self::try_new(
             children.remove(0),
-            self.column.clone(),
+            self.column_idx,
             self.query_vectors.clone(),
             self.k,
             self.distance_type,
+            self.project_vector,
         )?))
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![true]
     }
 
     fn execute(
@@ -322,130 +500,115 @@ impl ExecutionPlan for PartialKnnExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let mut input_stream = self.input.execute(partition, context)?;
-        let column = self.column.clone();
+        let column_idx = self.column_idx;
         let query_vectors = self.query_vectors.clone();
         let k = self.k;
+        let project_vector = self.project_vector;
         let lance_dist: LanceDistanceType = self.distance_type.into();
+        let row_converter = self.row_converter.clone();
         let schema = self.schema();
 
         let fut = async move {
-            // Buffer all input batches for this partition.
-            let mut batches: Vec<RecordBatch> = Vec::new();
-            while let Some(batch) = input_stream.next().await {
-                batches.push(batch?);
-            }
-
-            if batches.is_empty() {
-                return Ok(RecordBatch::new_empty(schema));
-            }
-
-            let col_idx = batches[0].schema().index_of(&column).map_err(|_| {
-                DataFusionError::Plan(format!("KNN column '{}' not found in schema", column))
-            })?;
-
-            let dist_fn = lance_dist.arrow_batch_func();
             let num_queries = query_vectors.len();
-            let mut result_batches: Vec<RecordBatch> = Vec::with_capacity(num_queries);
+            let dist_fn = lance_dist.arrow_batch_func();
 
-            for qi in 0..num_queries {
-                let query_vec = query_vectors.value(qi);
+            // One max-heap per query vector. We keep at most k entries, discarding
+            // the farthest candidate whenever the heap exceeds k.
+            let mut heaps: Vec<BinaryHeap<HeapEntry>> = (0..num_queries)
+                .map(|_| BinaryHeap::with_capacity(k + 1))
+                .collect();
 
-                // Collect (distance, batch_idx, row_idx) across all batches.
-                let mut candidates: Vec<(f32, usize, usize)> = Vec::new();
-                for (bi, batch) in batches.iter().enumerate() {
-                    let vec_col = batch.column(col_idx);
-                    let fsl = vec_col
-                        .as_any()
-                        .downcast_ref::<FixedSizeListArray>()
-                        .ok_or_else(|| {
-                            DataFusionError::Plan(format!(
-                                "Column '{}' is not a FixedSizeListArray",
-                                column
-                            ))
-                        })?;
+            while let Some(batch) = input_stream.next().await {
+                let batch = batch?;
 
+                // Extract only the columns we want to store in the row converter.
+                let data_cols: Vec<ArrayRef> = batch
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| project_vector || *i != column_idx)
+                    .map(|(_, c)| c.clone())
+                    .collect();
+                let rows = row_converter
+                    .convert_columns(&data_cols)
+                    .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+
+                let fsl = batch
+                    .column(column_idx)
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .ok_or_else(|| {
+                        DataFusionError::Plan("KNN column is not a FixedSizeListArray".into())
+                    })?;
+
+                for (qi, heap) in heaps.iter_mut().enumerate() {
+                    let query_vec = query_vectors.value(qi);
                     let distances: Arc<Float32Array> = dist_fn(query_vec.as_ref(), fsl)
                         .map_err(|e| DataFusionError::External(e.into()))?;
 
-                    for (row, dist) in distances.values().iter().enumerate() {
-                        candidates.push((*dist, bi, row));
+                    for (row_idx, &dist) in distances.values().iter().enumerate() {
+                        heap.push(HeapEntry::new(dist, rows.row(row_idx).owned()));
+                        if heap.len() > k {
+                            heap.pop();
+                        }
                     }
                 }
-
-                // Sort ascending by distance, keep top k.
-                candidates
-                    .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-                candidates.truncate(k);
-
-                if candidates.is_empty() {
-                    continue;
-                }
-
-                let n = candidates.len();
-
-                // For each selected (batch_idx, row_idx), extract as a
-                // single-row batch then concatenate.
-                let mut row_batches: Vec<RecordBatch> = Vec::with_capacity(n);
-                for &(_, bi, ri) in &candidates {
-                    let idx = UInt32Array::from(vec![ri as u32]);
-                    // take_record_batch takes all columns at once.
-                    let input_cols_count = batches[bi].num_columns();
-                    let row_batch = RecordBatch::try_new(
-                        batches[bi].schema(),
-                        batches[bi]
-                            .columns()
-                            .iter()
-                            .map(|c| {
-                                arrow::compute::take(c.as_ref(), &idx, None)
-                                    .map(|a| a as Arc<dyn Array>)
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    )?;
-                    // Drop the extra info — we only need the data columns (not
-                    // query_index/_distance which aren't in the input schema).
-                    let _ = input_cols_count;
-                    row_batches.push(row_batch);
-                }
-
-                let refs: Vec<&RecordBatch> = row_batches.iter().collect();
-                let mut combined = concat_batches(&batches[0].schema(), refs)?;
-
-                // Append query_index and _distance columns.
-                let qi_col =
-                    Arc::new(arrow_array::Int32Array::from(vec![qi as i32; n])) as Arc<dyn Array>;
-                let dist_col = Arc::new(Float32Array::from(
-                    candidates.iter().map(|&(d, _, _)| d).collect::<Vec<_>>(),
-                )) as Arc<dyn Array>;
-
-                let mut cols = combined.columns().to_vec();
-                cols.push(qi_col);
-                cols.push(dist_col);
-                combined = RecordBatch::try_new(schema.clone(), cols)?;
-                result_batches.push(combined);
             }
 
-            if result_batches.is_empty() {
+            if heaps.iter().all(|h| h.is_empty()) {
                 return Ok(RecordBatch::new_empty(schema));
             }
 
-            let refs: Vec<&RecordBatch> = result_batches.iter().collect();
-            concat_batches(&schema, refs).map_err(Into::into)
+            // Flatten heaps into (qi, dist, row) triples, sort by (qi ASC, dist ASC).
+            let mut entries: Vec<(i32, f32, OwnedRow)> = heaps
+                .into_iter()
+                .enumerate()
+                .flat_map(|(qi, heap)| heap.into_iter().map(move |e| (qi as i32, e.dist(), e.row)))
+                .collect();
+            entries.sort_unstable_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+            });
+
+            // Reconstruct data columns from the stored rows.
+            let data_cols = row_converter
+                .convert_rows(entries.iter().map(|(_, _, r)| r.row()))
+                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+
+            // Build the KNN metadata columns.
+            let qi_arr = Arc::new(Int32Array::from_iter_values(
+                entries.iter().map(|(qi, _, _)| *qi),
+            )) as ArrayRef;
+            let dist_arr = Arc::new(Float32Array::from_iter_values(
+                entries.iter().map(|(_, d, _)| *d),
+            )) as ArrayRef;
+            // _query_vector is a dictionary with keys = _query_index and values = the
+            // original query_vectors array. This is memory-efficient: the dictionary
+            // values are shared and the keys are just the same Int32 buffer.
+            let dict_col = Arc::new(
+                DictionaryArray::<Int32Type>::try_new(
+                    Int32Array::from_iter_values(entries.iter().map(|(qi, _, _)| *qi)),
+                    query_vectors.clone(),
+                )
+                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?,
+            ) as ArrayRef;
+
+            let mut all_cols = data_cols;
+            all_cols.push(qi_arr);
+            all_cols.push(dist_arr);
+            all_cols.push(dict_col);
+            RecordBatch::try_new(schema, all_cols).map_err(Into::into)
         };
 
         let schema_clone = self.schema();
-        let output = futures::stream::once(fut);
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema_clone,
-            output,
+            futures::stream::once(fut),
         )))
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
-        Ok(Statistics {
-            num_rows: Precision::Exact(self.k * self.query_vectors.len()),
-            total_byte_size: Precision::Absent,
-            column_statistics: vec![],
-        })
+        Ok(Statistics::new_unknown(&self.schema()))
     }
 }
 
@@ -458,6 +621,9 @@ impl ExecutionPlan for PartialKnnExec {
 pub(crate) struct MergeKnnExec {
     input: Arc<dyn ExecutionPlan>,
     k: usize,
+    /// Pre-resolved column indices in the merged schema.
+    query_index_col_idx: usize,
+    distance_col_idx: usize,
     properties: PlanProperties,
 }
 
@@ -473,6 +639,20 @@ impl fmt::Debug for MergeKnnExec {
 impl MergeKnnExec {
     pub fn try_new(input: Arc<dyn ExecutionPlan>, k: usize) -> DFResult<Self> {
         let schema = input.schema();
+        let query_index_col_idx = schema
+            .fields()
+            .iter()
+            .position(|f| f.name() == "_query_index")
+            .ok_or_else(|| {
+                DataFusionError::Internal("_query_index not found in PartialKnnExec schema".into())
+            })?;
+        let distance_col_idx = schema
+            .fields()
+            .iter()
+            .position(|f| f.name() == "_distance")
+            .ok_or_else(|| {
+                DataFusionError::Internal("_distance not found in PartialKnnExec schema".into())
+            })?;
         let properties = PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(1),
@@ -482,6 +662,8 @@ impl MergeKnnExec {
         Ok(Self {
             input,
             k,
+            query_index_col_idx,
+            distance_col_idx,
             properties,
         })
     }
@@ -522,6 +704,10 @@ impl ExecutionPlan for MergeKnnExec {
         Ok(Arc::new(Self::try_new(children.remove(0), self.k)?))
     }
 
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
     fn execute(
         &self,
         partition: usize,
@@ -529,8 +715,7 @@ impl ExecutionPlan for MergeKnnExec {
     ) -> DFResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(DataFusionError::Internal(format!(
-                "MergeKnnExec only has one output partition, got {}",
-                partition
+                "MergeKnnExec only has one output partition, got {partition}"
             )));
         }
 
@@ -541,9 +726,11 @@ impl ExecutionPlan for MergeKnnExec {
 
         let k = self.k;
         let schema = self.schema();
+        let query_index_col_idx = self.query_index_col_idx;
+        let distance_col_idx = self.distance_col_idx;
 
         let fut = async move {
-            // Collect all per-partition batches concurrently.
+            // Drain all partitions concurrently, then concatenate.
             let partition_batches: Vec<Vec<RecordBatch>> =
                 futures::future::try_join_all(input_streams.into_iter().map(|mut s| async move {
                     let mut batches = Vec::new();
@@ -563,14 +750,11 @@ impl ExecutionPlan for MergeKnnExec {
 
             let combined = concat_batches(&schema, all_batches)?;
 
-            let qi_col_idx = combined.schema().index_of("query_index")?;
-            let dist_col_idx = combined.schema().index_of("_distance")?;
-
             let qi_arr = combined
-                .column(qi_col_idx)
-                .as_primitive::<arrow_array::types::Int32Type>();
+                .column(query_index_col_idx)
+                .as_primitive::<Int32Type>();
             let dist_arr = combined
-                .column(dist_col_idx)
+                .column(distance_col_idx)
                 .as_primitive::<arrow_array::types::Float32Type>();
 
             let max_qi = qi_arr.values().iter().copied().max().unwrap_or(-1);
@@ -579,7 +763,8 @@ impl ExecutionPlan for MergeKnnExec {
             }
 
             // For each query group, pick top-k rows by distance.
-            let mut kept_rows: Vec<u32> = Vec::new();
+            let num_queries = (max_qi + 1) as usize;
+            let mut kept_rows: Vec<u32> = Vec::with_capacity(k * num_queries);
             for qi in 0..=max_qi {
                 let mut rows_for_qi: Vec<(f32, usize)> = qi_arr
                     .values()
@@ -612,10 +797,9 @@ impl ExecutionPlan for MergeKnnExec {
         };
 
         let schema_clone = self.schema();
-        let output = futures::stream::once(fut);
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             schema_clone,
-            output,
+            futures::stream::once(fut),
         )))
     }
 

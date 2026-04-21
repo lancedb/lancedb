@@ -15,6 +15,7 @@ use datafusion_common::Result as DFResult;
 use datafusion_expr::{LogicalPlan, logical_plan::Extension};
 
 use super::knn::{KnnNode, KnnPlanner};
+use super::knn_optimizer::KnnProjectVectorRule;
 use crate::DistanceType;
 
 /// Extends DataFusion's [`DataFrame`] with a batch KNN method.
@@ -51,10 +52,11 @@ impl DataFrameKnnExt for DataFrame {
         k: usize,
         distance_type: DistanceType,
     ) -> DFResult<DataFrame> {
+        let column = column.into();
         let (session_state, logical_plan) = self.into_parts();
         let node = Arc::new(KnnNode::try_new(
             logical_plan,
-            column,
+            &column,
             query_vectors,
             k,
             distance_type,
@@ -96,5 +98,6 @@ impl QueryPlanner for KnnQueryPlanner {
 pub fn register_knn_planner(state: SessionState) -> SessionState {
     SessionStateBuilder::new_from_existing(state)
         .with_query_planner(Arc::new(KnnQueryPlanner))
+        .with_optimizer_rule(Arc::new(KnnProjectVectorRule))
         .build()
 }

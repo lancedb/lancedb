@@ -3,20 +3,34 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, UInt8Array};
+use arrow_array::types::Float32Type;
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    Array, DictionaryArray, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, UInt8Array,
+};
 use arrow_schema::{DataType, Field, Schema};
+use futures::TryStreamExt as _;
+use lance_datagen::{BatchCount, BatchGeneratorBuilder, Dimension, RowCount, array};
 use lancedb::{DistanceType, Result, connect, table::knn::batch_knn};
 
-fn make_float_batch(num_rows: usize, dim: usize) -> RecordBatch {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a table of 10 rows where row i has vec [4i, 4i+1, 4i+2, 4i+3].
+async fn make_table_known_vecs() -> lancedb::Table {
+    // We need deterministic vectors for nearest-neighbor assertions, so we
+    // still construct the batch manually here.
+    let dim = 4_i32;
+    let num_rows: usize = 10;
     let id_array = Int32Array::from_iter_values(0..num_rows as i32);
-    // Row i has vec [dim*i, dim*i+1, ..., dim*i+dim-1]
-    let values: Float32Array = (0..num_rows * dim)
+    let values: Float32Array = (0..num_rows * dim as usize)
         .map(|i| i as f32)
         .collect::<Vec<_>>()
         .into();
     let list_array = FixedSizeListArray::try_new(
         Arc::new(Field::new("item", DataType::Float32, true)),
-        dim as i32,
+        dim,
         Arc::new(values),
         None,
     )
@@ -25,14 +39,14 @@ fn make_float_batch(num_rows: usize, dim: usize) -> RecordBatch {
         Field::new("id", DataType::Int32, false),
         Field::new(
             "vec",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                dim as i32,
-            ),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
             false,
         ),
     ]));
-    RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(list_array)]).unwrap()
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(list_array)]).unwrap();
+    let db = connect("memory:///").execute().await.unwrap();
+    db.create_table("t", vec![batch]).execute().await.unwrap()
 }
 
 fn float_queries(vecs: Vec<Vec<f32>>, dim: usize) -> Arc<FixedSizeListArray> {
@@ -48,13 +62,13 @@ fn float_queries(vecs: Vec<Vec<f32>>, dim: usize) -> Arc<FixedSizeListArray> {
     )
 }
 
-/// For each query_index in `batches`, return the id of the nearest row.
+/// Returns `(query_index, id)` pairs for the nearest row per query_index.
 fn nearest_ids(batches: &[RecordBatch]) -> Vec<(i32, i32)> {
     let mut rows: Vec<(i32, f32, i32)> = batches
         .iter()
         .flat_map(|b| {
             let qi = b
-                .column_by_name("query_index")
+                .column_by_name("_query_index")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<Int32Array>()
@@ -86,12 +100,13 @@ fn nearest_ids(batches: &[RecordBatch]) -> Vec<(i32, i32)> {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[tokio::test]
 async fn test_single_query_l2() -> Result<()> {
-    let dir = tempfile::tempdir().unwrap();
-    let db = connect(dir.path().to_str().unwrap()).execute().await?;
-    let batch = make_float_batch(10, 4);
-    let tbl = db.create_table("t", vec![batch]).execute().await?;
+    let tbl = make_table_known_vecs().await;
     let native = tbl.as_native().unwrap();
 
     // Exact match for row 3: vec [12, 13, 14, 15]
@@ -108,10 +123,7 @@ async fn test_single_query_l2() -> Result<()> {
 
 #[tokio::test]
 async fn test_multiple_queries() -> Result<()> {
-    let dir = tempfile::tempdir().unwrap();
-    let db = connect(dir.path().to_str().unwrap()).execute().await?;
-    let batch = make_float_batch(10, 4);
-    let tbl = db.create_table("t", vec![batch]).execute().await?;
+    let tbl = make_table_known_vecs().await;
     let native = tbl.as_native().unwrap();
 
     // Query 0 → row 0, query 1 → row 7
@@ -131,10 +143,7 @@ async fn test_multiple_queries() -> Result<()> {
 
 #[tokio::test]
 async fn test_top_k_returns_k_rows() -> Result<()> {
-    let dir = tempfile::tempdir().unwrap();
-    let db = connect(dir.path().to_str().unwrap()).execute().await?;
-    let batch = make_float_batch(10, 4);
-    let tbl = db.create_table("t", vec![batch]).execute().await?;
+    let tbl = make_table_known_vecs().await;
     let native = tbl.as_native().unwrap();
 
     let q = float_queries(vec![vec![0.0, 1.0, 2.0, 3.0]], 4);
@@ -146,20 +155,16 @@ async fn test_top_k_returns_k_rows() -> Result<()> {
 
     let total: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total, 3, "k=3 should return exactly 3 rows");
-    // Nearest is still row 0
     assert_eq!(nearest_ids(&batches), vec![(0, 0)]);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_cosine_distance() -> Result<()> {
-    let dir = tempfile::tempdir().unwrap();
-    let db = connect(dir.path().to_str().unwrap()).execute().await?;
-    let batch = make_float_batch(5, 4);
-    let tbl = db.create_table("t", vec![batch]).execute().await?;
+    let tbl = make_table_known_vecs().await;
     let native = tbl.as_native().unwrap();
 
-    // Row 2 has vec [8, 9, 10, 11]; a scalar multiple is cosine-identical
+    // Row 2 has vec [8, 9, 10, 11]; a scalar multiple is cosine-identical.
     let q = float_queries(vec![vec![8.0, 9.0, 10.0, 11.0]], 4);
     let batches = batch_knn(native, "vec", q, 1, DistanceType::Cosine)
         .await?
@@ -173,9 +178,6 @@ async fn test_cosine_distance() -> Result<()> {
 
 #[tokio::test]
 async fn test_hamming_binary_vectors() -> Result<()> {
-    let dir = tempfile::tempdir().unwrap();
-    let db = connect(dir.path().to_str().unwrap()).execute().await?;
-
     let dim = 4_i32;
     let rows_flat: Vec<u8> = vec![
         0b0000_0000,
@@ -218,10 +220,10 @@ async fn test_hamming_binary_vectors() -> Result<()> {
         ],
     )
     .unwrap();
-    let tbl = db.create_table("t", vec![batch]).execute().await?;
+    let db = connect("memory:///").execute().await.unwrap();
+    let tbl = db.create_table("t", vec![batch]).execute().await.unwrap();
     let native = tbl.as_native().unwrap();
 
-    // All-zero query — nearest by Hamming is id=0
     let q_list = Arc::new(
         FixedSizeListArray::try_new(
             Arc::new(Field::new("item", DataType::UInt8, true)),
@@ -238,5 +240,71 @@ async fn test_hamming_binary_vectors() -> Result<()> {
         .unwrap();
 
     assert_eq!(nearest_ids(&batches), vec![(0, 0)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_output_has_query_vector_column() -> Result<()> {
+    let tbl = make_table_known_vecs().await;
+    let native = tbl.as_native().unwrap();
+
+    let q = float_queries(vec![vec![0.0, 1.0, 2.0, 3.0]], 4);
+    let batches = batch_knn(native, "vec", q, 1, DistanceType::L2)
+        .await?
+        .collect()
+        .await
+        .unwrap();
+
+    // Verify the _query_vector column exists and is a Dictionary type.
+    let batch = &batches[0];
+    let qv_col = batch
+        .column_by_name("_query_vector")
+        .expect("_query_vector column");
+    assert!(
+        matches!(qv_col.data_type(), DataType::Dictionary(_, _)),
+        "expected Dictionary type, got {:?}",
+        qv_col.data_type()
+    );
+    // The dictionary should have exactly one distinct entry (our single query vector).
+    let dict = qv_col
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .unwrap();
+    assert_eq!(dict.values().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_schema_and_row_count_with_random_data() -> Result<()> {
+    // Use lance_datagen for table creation — we only check schema/counts here,
+    // not exact nearest neighbors.
+    let (stream, _schema) = BatchGeneratorBuilder::new()
+        .col("id", array::step::<arrow_array::types::Int32Type>())
+        .col("vec", array::rand_vec::<Float32Type>(Dimension::from(8u32)))
+        .into_reader_stream(RowCount::from(50), BatchCount::from(1));
+    let batches: Vec<RecordBatch> = stream.try_collect().await.expect("datagen failed");
+    let db = connect("memory:///").execute().await.unwrap();
+    let tbl = db.create_table("t", batches).execute().await.unwrap();
+
+    let native = tbl.as_native().unwrap();
+    let q = float_queries(vec![vec![0.0; 8], vec![1.0; 8]], 8);
+    let batches = batch_knn(native, "vec", q, 3, DistanceType::L2)
+        .await?
+        .collect()
+        .await
+        .unwrap();
+
+    // 2 queries × k=3 = 6 rows
+    let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total, 6);
+
+    // All expected columns present
+    let schema = batches[0].schema();
+    assert!(schema.field_with_name("id").is_ok());
+    assert!(schema.field_with_name("_query_index").is_ok());
+    assert!(schema.field_with_name("_distance").is_ok());
+    assert!(schema.field_with_name("_query_vector").is_ok());
+    // Vector column is projected by default
+    assert!(schema.field_with_name("vec").is_ok());
     Ok(())
 }
