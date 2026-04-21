@@ -420,15 +420,37 @@ async fn batch_knn_flat(
             message: "no samples provided".to_string(),
         })?;
 
-    // Build FixedSizeListArray from sample vectors.
+    // Lance's brute-force KNN expects the query vectors' element type to match
+    // the indexed column's element type exactly, so read the column dtype off
+    // the schema and cast the (f32-normalized) sample values accordingly.
+    let schema = table.schema().await?;
+    let column_dtype = schema
+        .field_with_name(vec_col)
+        .map_err(|e| Error::Arrow { source: e })?
+        .data_type()
+        .clone();
+    let inner_dtype = match &column_dtype {
+        DataType::FixedSizeList(field, _) => field.data_type().clone(),
+        other => {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "vector column '{}' is not a FixedSizeList (got {:?})",
+                    vec_col, other
+                ),
+            });
+        }
+    };
+
     let flat_values: Vec<f32> = samples
         .iter()
         .flat_map(|(_, v)| v.iter().copied())
         .collect();
-    let values = Float32Array::from(flat_values);
-    let field = Arc::new(arrow_schema::Field::new("item", DataType::Float32, true));
+    let values_f32: ArrayRef = Arc::new(Float32Array::from(flat_values));
+    let values =
+        arrow_cast::cast(&values_f32, &inner_dtype).map_err(|e| Error::Arrow { source: e })?;
+    let field = Arc::new(arrow_schema::Field::new("item", inner_dtype, true));
     let fsl = Arc::new(
-        FixedSizeListArray::try_new(field, dim, Arc::new(values), None)
+        FixedSizeListArray::try_new(field, dim, values, None)
             .map_err(|e| Error::Arrow { source: e })?,
     );
 
