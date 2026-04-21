@@ -74,21 +74,15 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0134
     { id = "RUSTSEC-2025-0134", reason = "transitive via rustls-native-certs/object_store; waiting on upstream migration" },
 
-    # protobuf: DoS via stack exhaustion on deeply nested messages. We do
-    # not parse untrusted protobuf at the edge; this reaches us only via
-    # transitive dependencies.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0009
-    { id = "RUSTSEC-2026-0009", reason = "transitive; LanceDB does not parse untrusted protobuf input" },
-
     # rustls-webpki 0.101.7 (old major line): name-constraint checks for
     # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
-    # from aws-smithy-http-client 1.1.3. The 0.103 line we actively use is
-    # patched in this PR; clearing the 0.101 copy requires an aws-sdk bump
-    # that conflicts with our MSRV.
+    # from aws-smithy-http-client. The 0.103 line we actively use is patched.
+    # Clearing the 0.101 copy requires the aws-sdk chain to migrate off
+    # rustls 0.21.
     # https://rustsec.org/advisories/RUSTSEC-2026-0098
     # https://rustsec.org/advisories/RUSTSEC-2026-0099
-    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21; blocked on MSRV-compatible aws-sdk bump" },
-    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21; blocked on MSRV-compatible aws-sdk bump" },
+    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
 ]
 
 # ---------------------------------------------------------------------------
