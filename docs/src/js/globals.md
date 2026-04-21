@@ -48,6 +48,7 @@
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [AddResult](interfaces/AddResult.md)
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
+- [AnalyzeIndexOptions](interfaces/AnalyzeIndexOptions.md)
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [CompactionStats](interfaces/CompactionStats.md)

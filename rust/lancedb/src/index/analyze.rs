@@ -584,4 +584,220 @@ mod tests {
         assert!(set.contains(&5));
         assert!(!set.contains(&8));
     }
+
+    #[tokio::test]
+    async fn analyze_index_all_ivf_types() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use arrow_array::builder::FixedSizeListBuilder;
+        use arrow_array::builder::Float32Builder;
+        use arrow_array::types::UInt32Type;
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        use crate::connect;
+        use crate::index::Index;
+        use crate::index::vector::{
+            IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+            IvfRqIndexBuilder, IvfSqIndexBuilder,
+        };
+
+        struct Case {
+            name: &'static str,
+            index_type_str: &'static str,
+            make_index: fn() -> Index,
+            refine_input: Option<&'static [u32]>,
+            ef_input: Option<&'static [u32]>,
+        }
+
+        // Shared sweep: 2 nprobes × 1 k. Plus refine/ef factors per case.
+        const NPROBES: &[u32] = &[1, 4];
+        const K: &[usize] = &[10];
+        const REFINE: &[u32] = &[1];
+        const EF: &[u32] = &[16];
+
+        let cases = [
+            Case {
+                name: "flat",
+                index_type_str: "IVF_FLAT",
+                make_index: || Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(4)),
+                refine_input: None,
+                ef_input: None,
+            },
+            Case {
+                name: "sq",
+                index_type_str: "IVF_SQ",
+                make_index: || Index::IvfSq(IvfSqIndexBuilder::default().num_partitions(4)),
+                refine_input: Some(REFINE),
+                ef_input: None,
+            },
+            Case {
+                name: "pq",
+                index_type_str: "IVF_PQ",
+                make_index: || {
+                    Index::IvfPq(
+                        IvfPqIndexBuilder::default()
+                            .num_partitions(4)
+                            .num_sub_vectors(4),
+                    )
+                },
+                refine_input: Some(REFINE),
+                ef_input: None,
+            },
+            Case {
+                name: "rq",
+                index_type_str: "IVF_RQ",
+                make_index: || Index::IvfRq(IvfRqIndexBuilder::default().num_partitions(4)),
+                refine_input: Some(REFINE),
+                ef_input: None,
+            },
+            Case {
+                name: "hnsw_sq",
+                index_type_str: "IVF_HNSW_SQ",
+                make_index: || Index::IvfHnswSq(IvfHnswSqIndexBuilder::default().num_partitions(4)),
+                refine_input: Some(REFINE),
+                ef_input: Some(EF),
+            },
+            Case {
+                name: "hnsw_pq",
+                index_type_str: "IVF_HNSW_PQ",
+                make_index: || {
+                    Index::IvfHnswPq(
+                        IvfHnswPqIndexBuilder::default()
+                            .num_partitions(4)
+                            .num_sub_vectors(4),
+                    )
+                },
+                refine_input: Some(REFINE),
+                ef_input: Some(EF),
+            },
+        ];
+
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dim: i32 = 16;
+        let num_rows = 1024usize;
+        let arrow_schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
+            false,
+        )]));
+
+        let make_batch = || {
+            let mut rng = StdRng::seed_from_u64(0xA11CE);
+            let mut b = FixedSizeListBuilder::new(Float32Builder::new(), dim);
+            for _ in 0..num_rows {
+                for _ in 0..dim {
+                    b.values().append_value(rng.random::<f32>());
+                }
+                b.append(true);
+            }
+            RecordBatch::try_new(arrow_schema.clone(), vec![Arc::new(b.finish())]).unwrap()
+        };
+
+        for case in &cases {
+            let table = conn
+                .create_table(case.name, make_batch())
+                .execute()
+                .await
+                .unwrap_or_else(|e| panic!("{}: create_table failed: {}", case.name, e));
+            table
+                .create_index(&["embeddings"], (case.make_index)())
+                .execute()
+                .await
+                .unwrap_or_else(|e| panic!("{}: create_index failed: {}", case.name, e));
+            table
+                .wait_for_index(&["embeddings_idx"], Duration::from_secs(60))
+                .await
+                .unwrap_or_else(|e| panic!("{}: wait_for_index failed: {}", case.name, e));
+
+            let out = analyze_index(
+                &table,
+                "embeddings_idx",
+                AnalyzeIndexOptions {
+                    sample_size: 30,
+                    k: Some(K.to_vec()),
+                    seed: Some(0xBEEF),
+                    nprobes: Some(NPROBES.to_vec()),
+                    refine_factor: case.refine_input.map(<[u32]>::to_vec),
+                    ef: case.ef_input.map(<[u32]>::to_vec),
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: analyze_index failed: {}", case.name, e));
+
+            let expected_rows = NPROBES.len()
+                * K.len()
+                * case.refine_input.map_or(1, <[u32]>::len)
+                * case.ef_input.map_or(1, <[u32]>::len);
+            assert_eq!(out.schema(), analyze_index_schema(), "{}", case.name);
+            assert_eq!(out.num_rows(), expected_rows, "{}", case.name);
+
+            let index_type_col = out.column(1).as_string::<i32>();
+            let k_col = out.column(2).as_primitive::<UInt32Type>();
+            let nprobes_col = out.column(3).as_primitive::<UInt32Type>();
+            let refine_col = out.column(4).as_primitive::<UInt32Type>();
+            let ef_col = out.column(5).as_primitive::<UInt32Type>();
+            let recall_col = out.column(6).as_primitive::<Float64Type>();
+            let lmin_col = out.column(7).as_primitive::<Float64Type>();
+
+            for i in 0..out.num_rows() {
+                assert_eq!(
+                    index_type_col.value(i),
+                    case.index_type_str,
+                    "{}",
+                    case.name
+                );
+                assert_eq!(k_col.value(i) as usize, K[0], "{}", case.name);
+                assert!(
+                    NPROBES.contains(&nprobes_col.value(i)),
+                    "{}: unexpected nprobes {}",
+                    case.name,
+                    nprobes_col.value(i)
+                );
+                let r = recall_col.value(i);
+                assert!(
+                    (0.0..=1.0).contains(&r),
+                    "{}: recall out of range: {}",
+                    case.name,
+                    r
+                );
+                assert!(lmin_col.value(i) >= 0.0, "{}", case.name);
+            }
+
+            assert_column_matches(refine_col, case.refine_input, case.name, "refine_factor");
+            assert_column_matches(ef_col, case.ef_input, case.name, "ef");
+        }
+
+        fn assert_column_matches(
+            col: &arrow_array::PrimitiveArray<UInt32Type>,
+            expected: Option<&[u32]>,
+            case: &str,
+            field: &str,
+        ) {
+            match expected {
+                None => assert_eq!(
+                    col.null_count(),
+                    col.len(),
+                    "{case}: expected {field} all null"
+                ),
+                Some(values) => {
+                    assert_eq!(col.null_count(), 0, "{case}: expected {field} non-null");
+                    for i in 0..col.len() {
+                        assert!(
+                            values.contains(&col.value(i)),
+                            "{case}: unexpected {field} value {}",
+                            col.value(i)
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
