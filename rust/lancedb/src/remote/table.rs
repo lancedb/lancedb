@@ -1925,6 +1925,61 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
+    async fn analyze_index(
+        &self,
+        index_name: &str,
+        options: crate::index::analyze::AnalyzeIndexOptions,
+    ) -> Result<RecordBatch> {
+        let mut body = serde_json::json!({
+            "sample_size": options.sample_size,
+        });
+        if let Some(v) = self.current_version().await {
+            body["version"] = Number::from(v).into();
+        }
+        if let Some(k) = options.k {
+            body["k"] = serde_json::to_value(k).unwrap();
+        }
+        if let Some(seed) = options.seed {
+            body["seed"] = Number::from(seed).into();
+        }
+        if let Some(nprobes) = options.nprobes {
+            body["nprobes"] = serde_json::to_value(nprobes).unwrap();
+        }
+        if let Some(rf) = options.refine_factor {
+            body["refine_factor"] = serde_json::to_value(rf).unwrap();
+        }
+        if let Some(ef) = options.ef {
+            body["ef"] = serde_json::to_value(ef).unwrap();
+        }
+
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/index/{}/analyze",
+                self.identifier, index_name
+            ))
+            .json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let bytes = response.bytes().await.err_to_http(request_id.clone())?;
+
+        let mut reader = FileReader::try_new(Cursor::new(bytes), None)?;
+        let batch = reader.next().ok_or_else(|| Error::Http {
+            source: "analyze_index response contained no record batches".into(),
+            request_id: request_id.clone(),
+            status_code: None,
+        })??;
+        if reader.next().is_some() {
+            return Err(Error::Http {
+                source: "analyze_index response contained more than one record batch".into(),
+                request_id,
+                status_code: None,
+            });
+        }
+        Ok(batch)
+    }
+
     async fn table_definition(&self) -> Result<TableDefinition> {
         let schema = self.schema().await?;
         TableDefinition::try_from_rich_schema(schema)
@@ -3559,6 +3614,78 @@ mod tests {
         });
         let indices = table.index_stats("my_index").await.unwrap();
         assert!(indices.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_analyze_index() {
+        use crate::index::{AnalyzeIndexOptions, analyze_index_schema};
+        use arrow_array::{Float64Array, StringArray, UInt32Array};
+        use arrow_ipc::writer::FileWriter;
+        use std::io::Cursor as StdCursor;
+
+        // Build a canned IPC-file response matching analyze_index_schema().
+        let schema = analyze_index_schema();
+        let response_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![4])),
+                Arc::new(StringArray::from(vec!["IVF_PQ"])),
+                Arc::new(UInt32Array::from(vec![10])),
+                Arc::new(UInt32Array::from(vec![1])),
+                Arc::new(UInt32Array::from(vec![Some(2u32)])),
+                Arc::new(UInt32Array::from(vec![None::<u32>])),
+                Arc::new(Float64Array::from(vec![0.9])),
+                Arc::new(Float64Array::from(vec![0.1])),
+                Arc::new(Float64Array::from(vec![0.2])),
+                Arc::new(Float64Array::from(vec![0.3])),
+                Arc::new(Float64Array::from(vec![0.4])),
+                Arc::new(Float64Array::from(vec![0.5])),
+            ],
+        )
+        .unwrap();
+        let mut ipc_buf = StdCursor::new(Vec::<u8>::with_capacity(4096));
+        {
+            let mut writer = FileWriter::try_new(&mut ipc_buf, &schema).unwrap();
+            writer.write(&response_batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let ipc_bytes = ipc_buf.into_inner();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/index/my_index/analyze"
+            );
+
+            // Verify the request body carries every option we set, verbatim.
+            let body_bytes = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+            assert_eq!(body["sample_size"], serde_json::json!(50));
+            assert_eq!(body["k"], serde_json::json!([10, 20]));
+            assert_eq!(body["seed"], serde_json::json!(42));
+            assert_eq!(body["nprobes"], serde_json::json!([1, 4]));
+            assert_eq!(body["refine_factor"], serde_json::json!([2]));
+            assert_eq!(body["ef"], serde_json::json!([16, 32]));
+
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, "application/vnd.apache.arrow.file")
+                .body(ipc_bytes.clone())
+                .unwrap()
+        });
+
+        let options = AnalyzeIndexOptions {
+            sample_size: 50,
+            k: Some(vec![10, 20]),
+            seed: Some(42),
+            nprobes: Some(vec![1, 4]),
+            refine_factor: Some(vec![2]),
+            ef: Some(vec![16, 32]),
+        };
+        let batch = table.analyze_index("my_index", options).await.unwrap();
+        assert_eq!(batch.schema(), schema);
+        assert_eq!(batch.num_rows(), 1);
     }
 
     #[tokio::test]

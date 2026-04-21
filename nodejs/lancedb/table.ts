@@ -564,7 +564,8 @@ export abstract class Table {
    * Analyze a vector index by sweeping ANN parameters against exhaustive
    * ground truth on a random sample of queries drawn from the table.
    *
-   * Supports all IVF index variants on local tables.
+   * Supports all IVF index variants. Works against local and remote tables;
+   * on remote tables the computation runs server-side.
    *
    * The returned record batch has one row per `(nprobes, refine_factor, ef, k)`
    * configuration with columns `num_partitions`, `index_type`, `k`, `nprobes`,

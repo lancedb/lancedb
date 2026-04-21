@@ -130,9 +130,16 @@ class RemoteTable(Table):
         refine_factor: Optional[List[int]] = None,
         ef: Optional[List[int]] = None,
     ) -> "pa.RecordBatch":
-        raise NotImplementedError(
-            "analyze_index is not supported on remote tables; it requires a "
-            "local (native) table."
+        return LOOP.run(
+            self._table.analyze_index(
+                index_name,
+                sample_size=sample_size,
+                k=k,
+                seed=seed,
+                nprobes=nprobes,
+                refine_factor=refine_factor,
+                ef=ef,
+            )
         )
 
     def create_scalar_index(

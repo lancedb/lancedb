@@ -363,6 +363,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "create_insert_exec not implemented".to_string(),
         })
     }
+
+    /// Analyze a vector index. See [`Table::analyze_index`] for details.
+    ///
+    /// Native tables are handled by the wrapper via [`crate::index::analyze::analyze_index`];
+    /// remote tables override this method to POST to the server.
+    async fn analyze_index(
+        &self,
+        _index_name: &str,
+        _options: AnalyzeIndexOptions,
+    ) -> Result<arrow_array::RecordBatch> {
+        Err(Error::NotSupported {
+            message: "analyze_index not implemented for this table type".to_string(),
+        })
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1214,17 +1228,22 @@ impl Table {
     /// Analyze a vector index by sweeping ANN parameters against exhaustive
     /// ground truth on a random sample of queries drawn from the table.
     ///
-    /// Currently supports `IVF_FLAT` and `IVF_PQ` indices on local (native)
-    /// tables. Returns a single Arrow [`RecordBatch`](arrow_array::RecordBatch)
-    /// with one row per `(nprobes, refine_factor, k)` configuration; see
+    /// Supports all IVF index variants. Returns a single Arrow
+    /// [`RecordBatch`](arrow_array::RecordBatch) with one row per
+    /// `(nprobes, refine_factor, ef, k)` configuration; see
     /// [`analyze_index_schema`](crate::index::analyze_index_schema) for the
-    /// schema.
+    /// schema. Works against both local and remote tables; on remote tables
+    /// the computation runs server-side.
     pub async fn analyze_index(
         &self,
         index_name: &str,
         options: AnalyzeIndexOptions,
     ) -> Result<arrow_array::RecordBatch> {
-        analyze_index(self, index_name, options).await
+        if self.inner.as_native().is_some() {
+            analyze_index(self, index_name, options).await
+        } else {
+            self.inner.analyze_index(index_name, options).await
+        }
     }
 }
 

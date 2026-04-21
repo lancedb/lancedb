@@ -1621,7 +1621,8 @@ class Table(ABC):
         Analyze a vector index by sweeping ANN parameters against exhaustive
         ground truth on a random sample of queries drawn from the table.
 
-        Supports all IVF index variants on local tables.
+        Supports all IVF index variants. Works against local and remote tables;
+        on remote tables the computation runs server-side.
 
         Parameters
         ----------
@@ -5023,7 +5024,8 @@ class AsyncTable:
         Analyze a vector index by sweeping ANN parameters against exhaustive
         ground truth on a random sample of queries drawn from the table.
 
-        Supports all IVF index variants on local tables.
+        Supports all IVF index variants. Works against local and remote tables;
+        on remote tables the computation runs server-side.
 
         Parameters
         ----------
