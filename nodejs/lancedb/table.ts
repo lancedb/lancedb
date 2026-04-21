@@ -8,6 +8,7 @@ import {
   Field,
   IntoVector,
   MultiVector,
+  RecordBatch,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
@@ -104,6 +105,27 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+/**
+ * Options for {@link Table.analyzeIndex}.
+ *
+ * Each sweep field is an explicit list of values to evaluate. Leaving a field
+ * undefined falls back to a sensible default for that axis.
+ */
+export interface AnalyzeIndexOptions {
+  /** Number of query vectors to sample, clamped to the table's row count. Defaults to 1000. */
+  sampleSize: number;
+  /** `K` values to sweep. Defaults to `[10, 20, 50, 100]`. */
+  k: number[];
+  /** RNG seed for reproducibility. */
+  seed: number;
+  /** `nprobes` values to sweep. Defaults to a geometric sweep capped at `num_partitions`. */
+  nprobes: number[];
+  /** `refine_factor` values to sweep. Ignored for IVF_FLAT. */
+  refineFactor: number[];
+  /** HNSW `ef` (search beam width) values to sweep. Ignored for non-HNSW indexes. */
+  ef: number[];
 }
 
 /**
@@ -538,6 +560,25 @@ export abstract class Table {
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
 
+  /**
+   * Analyze a vector index by sweeping ANN parameters against exhaustive
+   * ground truth on a random sample of queries drawn from the table.
+   *
+   * Supports all IVF index variants on local tables.
+   *
+   * The returned record batch has one row per `(nprobes, refine_factor, ef, k)`
+   * configuration with columns `num_partitions`, `index_type`, `k`, `nprobes`,
+   * `refine_factor`, `ef`, `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+   * `refine_factor` is null for IVF_FLAT; `ef` is null for non-HNSW indexes.
+   *
+   * @param {string} name The name of the index to analyze.
+   * @param {AnalyzeIndexOptions} options Sweep and sampling options.
+   */
+  abstract analyzeIndex(
+    name: string,
+    options?: Partial<AnalyzeIndexOptions>,
+  ): Promise<RecordBatch>;
+
   /** Returns table and fragment statistics
    *
    * @returns {TableStatistics} The table and fragment statistics
@@ -934,6 +975,25 @@ export class LocalTable extends Table {
       return undefined;
     }
     return stats;
+  }
+
+  async analyzeIndex(
+    name: string,
+    options?: Partial<AnalyzeIndexOptions>,
+  ): Promise<RecordBatch> {
+    const buf = await this.inner.analyzeIndex(name, {
+      sampleSize: options?.sampleSize,
+      k: options?.k,
+      seed: options?.seed,
+      nprobes: options?.nprobes,
+      refineFactor: options?.refineFactor,
+      ef: options?.ef,
+    });
+    const { batches } = tableFromIPC(buf);
+    if (batches.length !== 1) {
+      throw new Error(`analyzeIndex expected 1 batch, got ${batches.length}`);
+    }
+    return batches[0];
   }
 
   async stats(): Promise<TableStatistics> {

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! Sweep ANN parameters against exhaustive ground truth and report recall +
-//! latency percentiles per configuration. Supports `IVF_FLAT` and `IVF_PQ`.
+//! latency percentiles per configuration. Supports all IVF index variants.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -41,6 +41,8 @@ pub struct AnalyzeIndexOptions {
     pub nprobes: Option<Vec<u32>>,
     /// `refine_factor` values to sweep. Ignored for IVF_FLAT.
     pub refine_factor: Option<Vec<u32>>,
+    /// `ef` (HNSW search beam width) values to sweep. Ignored for non-HNSW indexes.
+    pub ef: Option<Vec<u32>>,
 }
 
 impl Default for AnalyzeIndexOptions {
@@ -51,6 +53,7 @@ impl Default for AnalyzeIndexOptions {
             seed: None,
             nprobes: None,
             refine_factor: None,
+            ef: None,
         }
     }
 }
@@ -63,6 +66,7 @@ pub fn analyze_index_schema() -> SchemaRef {
         Field::new("k", DataType::UInt32, false),
         Field::new("nprobes", DataType::UInt32, false),
         Field::new("refine_factor", DataType::UInt32, true),
+        Field::new("ef", DataType::UInt32, true),
         Field::new("recall", DataType::Float64, false),
         Field::new("latency_min_ms", DataType::Float64, false),
         Field::new("latency_p50_ms", DataType::Float64, false),
@@ -103,19 +107,16 @@ pub async fn analyze_index(
             message: format!("index '{}' not found on table", index_name),
         })?;
 
-    match index.index_type {
-        IndexType::IvfFlat | IndexType::IvfPq => {}
-        other => {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "analyze_index supports IVF_FLAT and IVF_PQ only (got {}); \
-                     support for other index types is planned",
-                    other
-                ),
-            });
-        }
+    if !is_ivf(&index.index_type) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "analyze_index supports IVF index variants only (got {})",
+                index.index_type
+            ),
+        });
     }
-    let is_pq = matches!(index.index_type, IndexType::IvfPq);
+    let sweeps_refine = uses_refine_factor(&index.index_type);
+    let sweeps_ef = is_hnsw(&index.index_type);
 
     let vec_col = index
         .columns
@@ -204,7 +205,7 @@ pub async fn analyze_index(
         });
     }
 
-    let mut refine_sweep: Vec<Option<u32>> = if is_pq {
+    let mut refine_sweep: Vec<Option<u32>> = if sweeps_refine {
         options
             .refine_factor
             .clone()
@@ -220,6 +221,22 @@ pub async fn analyze_index(
     };
     refine_sweep.sort_by_key(|r| r.unwrap_or(0));
 
+    let mut ef_sweep: Vec<Option<u32>> = if sweeps_ef {
+        options
+            .ef
+            .clone()
+            .unwrap_or_else(|| default_ef_sweep(max_k))
+            .into_iter()
+            .filter(|e| *e > 0)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .map(Some)
+            .collect()
+    } else {
+        vec![None]
+    };
+    ef_sweep.sort_by_key(|e| e.unwrap_or(0));
+
     // Fetch GT once at the largest K; smaller K values take a prefix.
     let ground_truth = batch_knn_flat(table, &vec_col, &samples, max_k + 1, distance_type).await?;
 
@@ -228,6 +245,7 @@ pub async fn analyze_index(
     let mut out_k = Vec::new();
     let mut out_nprobes = Vec::new();
     let mut out_refine_factor: Vec<Option<u32>> = Vec::new();
+    let mut out_ef: Vec<Option<u32>> = Vec::new();
     let mut out_recall = Vec::new();
     let mut out_min = Vec::new();
     let mut out_p50 = Vec::new();
@@ -239,50 +257,56 @@ pub async fn analyze_index(
 
     for &np in &nprobes_sweep {
         for &rf in &refine_sweep {
-            for &k in &k_sweep {
-                let mut latencies_ms: Vec<f64> = Vec::with_capacity(samples.len());
-                let mut recalls: Vec<f64> = Vec::with_capacity(samples.len());
+            for &ef in &ef_sweep {
+                for &k in &k_sweep {
+                    let mut latencies_ms: Vec<f64> = Vec::with_capacity(samples.len());
+                    let mut recalls: Vec<f64> = Vec::with_capacity(samples.len());
 
-                for (query_idx, (self_rowid, vector)) in samples.iter().enumerate() {
-                    let start = Instant::now();
-                    let mut q = table
-                        .query()
-                        .nearest_to(vector.as_slice())?
-                        .column(&vec_col)
-                        .distance_type(distance_type)
-                        .nprobes(np as usize)
-                        .limit(k + 1)
-                        .with_row_id();
-                    if let Some(rf) = rf {
-                        q = q.refine_factor(rf);
+                    for (query_idx, (self_rowid, vector)) in samples.iter().enumerate() {
+                        let start = Instant::now();
+                        let mut q = table
+                            .query()
+                            .nearest_to(vector.as_slice())?
+                            .column(&vec_col)
+                            .distance_type(distance_type)
+                            .nprobes(np as usize)
+                            .limit(k + 1)
+                            .with_row_id();
+                        if let Some(rf) = rf {
+                            q = q.refine_factor(rf);
+                        }
+                        if let Some(ef) = ef {
+                            q = q.ef(ef as usize);
+                        }
+                        let batches: Vec<RecordBatch> = q.execute().await?.try_collect().await?;
+                        let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
+                        latencies_ms.push(elapsed_ms);
+
+                        let indexed_ids = extract_row_ids(&batches)?;
+                        let gt_ids = &ground_truth[query_idx];
+                        recalls.push(recall_at_k(gt_ids, &indexed_ids, *self_rowid, k));
                     }
-                    let batches: Vec<RecordBatch> = q.execute().await?.try_collect().await?;
-                    let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                    latencies_ms.push(elapsed_ms);
 
-                    let indexed_ids = extract_row_ids(&batches)?;
-                    let gt_ids = &ground_truth[query_idx];
-                    recalls.push(recall_at_k(gt_ids, &indexed_ids, *self_rowid, k));
+                    let avg_recall = if recalls.is_empty() {
+                        0.0
+                    } else {
+                        recalls.iter().sum::<f64>() / recalls.len() as f64
+                    };
+                    let (lmin, l50, l90, l99, lmax) = latency_percentiles(&mut latencies_ms);
+
+                    out_num_partitions.push(num_partitions);
+                    out_index_type.push(index_type_str.clone());
+                    out_k.push(k as u32);
+                    out_nprobes.push(np);
+                    out_refine_factor.push(rf);
+                    out_ef.push(ef);
+                    out_recall.push(avg_recall);
+                    out_min.push(lmin);
+                    out_p50.push(l50);
+                    out_p90.push(l90);
+                    out_p99.push(l99);
+                    out_max.push(lmax);
                 }
-
-                let avg_recall = if recalls.is_empty() {
-                    0.0
-                } else {
-                    recalls.iter().sum::<f64>() / recalls.len() as f64
-                };
-                let (lmin, l50, l90, l99, lmax) = latency_percentiles(&mut latencies_ms);
-
-                out_num_partitions.push(num_partitions);
-                out_index_type.push(index_type_str.clone());
-                out_k.push(k as u32);
-                out_nprobes.push(np);
-                out_refine_factor.push(rf);
-                out_recall.push(avg_recall);
-                out_min.push(lmin);
-                out_p50.push(l50);
-                out_p90.push(l90);
-                out_p99.push(l99);
-                out_max.push(lmax);
             }
         }
     }
@@ -296,6 +320,7 @@ pub async fn analyze_index(
             Arc::new(UInt32Array::from(out_k)),
             Arc::new(UInt32Array::from(out_nprobes)),
             Arc::new(UInt32Array::from_iter(out_refine_factor)),
+            Arc::new(UInt32Array::from_iter(out_ef)),
             Arc::new(Float64Array::from(out_recall)),
             Arc::new(Float64Array::from(out_min)),
             Arc::new(Float64Array::from(out_p50)),
@@ -309,6 +334,26 @@ pub async fn analyze_index(
     })
 }
 
+fn is_ivf(ty: &IndexType) -> bool {
+    matches!(
+        ty,
+        IndexType::IvfFlat
+            | IndexType::IvfSq
+            | IndexType::IvfPq
+            | IndexType::IvfRq
+            | IndexType::IvfHnswSq
+            | IndexType::IvfHnswPq
+    )
+}
+
+fn uses_refine_factor(ty: &IndexType) -> bool {
+    !matches!(ty, IndexType::IvfFlat)
+}
+
+fn is_hnsw(ty: &IndexType) -> bool {
+    matches!(ty, IndexType::IvfHnswSq | IndexType::IvfHnswPq)
+}
+
 fn default_nprobes(num_partitions: u32) -> Vec<u32> {
     [1u32, 2, 4, 8, 16, 32, 64]
         .into_iter()
@@ -319,6 +364,13 @@ fn default_nprobes(num_partitions: u32) -> Vec<u32> {
 
 fn default_refine_factors() -> Vec<u32> {
     vec![1, 2, 4]
+}
+
+// HNSW's `ef` must be >= the query limit to be meaningful. Sweep multiples of
+// the largest k in the run so every row's ef is within a useful range.
+fn default_ef_sweep(max_k: usize) -> Vec<u32> {
+    let base = (max_k as u32).saturating_add(1);
+    vec![base, base.saturating_mul(2), base.saturating_mul(4)]
 }
 
 // TODO: swap this for Lance's batch KNN primitive when it lands. This only

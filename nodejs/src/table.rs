@@ -3,7 +3,8 @@
 
 use std::collections::HashMap;
 
-use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
+use lancedb::index::AnalyzeIndexOptions;
+use lancedb::ipc::{batches_to_ipc_file, ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Table as LanceDbTable,
@@ -479,6 +480,31 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn analyze_index(
+        &self,
+        index_name: String,
+        options: AnalyzeIndexOptionsJs,
+    ) -> napi::Result<Buffer> {
+        let opts = AnalyzeIndexOptions {
+            sample_size: options.sample_size.map(|v| v as usize).unwrap_or(1000),
+            k: options
+                .k
+                .map(|v| v.into_iter().map(|n| n as usize).collect()),
+            seed: options.seed.map(|s| s as u64),
+            nprobes: options.nprobes,
+            refine_factor: options.refine_factor,
+            ef: options.ef,
+        };
+        let batch = self
+            .inner_ref()?
+            .analyze_index(&index_name, opts)
+            .await
+            .default_error()?;
+        let buf = batches_to_ipc_file(&[batch]).default_error()?;
+        Ok(Buffer::from(buf.as_ref()))
+    }
+
+    #[napi(catch_unwind)]
     pub fn merge_insert(&self, on: Vec<String>) -> napi::Result<NativeMergeInsertBuilder> {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
@@ -503,6 +529,17 @@ impl Table {
             .await
             .default_error()
     }
+}
+
+/// Options for [`Table::analyze_index`].
+#[napi(object)]
+pub struct AnalyzeIndexOptionsJs {
+    pub sample_size: Option<u32>,
+    pub k: Option<Vec<u32>>,
+    pub seed: Option<u32>,
+    pub nprobes: Option<Vec<u32>>,
+    pub refine_factor: Option<Vec<u32>>,
+    pub ef: Option<Vec<u32>>,
 }
 
 #[napi(object)]

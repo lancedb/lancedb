@@ -559,7 +559,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (index_name, sample_size=1000, k=None, seed=None, nprobes=None, refine_factor=None))]
+    #[pyo3(signature = (index_name, sample_size=1000, k=None, seed=None, nprobes=None, refine_factor=None, ef=None))]
     pub fn analyze_index(
         self_: PyRef<'_, Self>,
         index_name: String,
@@ -568,6 +568,7 @@ impl Table {
         seed: Option<u64>,
         nprobes: Option<Vec<u32>>,
         refine_factor: Option<Vec<u32>>,
+        ef: Option<Vec<u32>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let options = AnalyzeIndexOptions {
@@ -576,6 +577,7 @@ impl Table {
             seed,
             nprobes,
             refine_factor,
+            ef,
         };
         future_into_py(self_.py(), async move {
             let batch = inner

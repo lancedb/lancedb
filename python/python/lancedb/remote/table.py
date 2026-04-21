@@ -128,6 +128,7 @@ class RemoteTable(Table):
         seed: Optional[int] = None,
         nprobes: Optional[List[int]] = None,
         refine_factor: Optional[List[int]] = None,
+        ef: Optional[List[int]] = None,
     ) -> "pa.RecordBatch":
         raise NotImplementedError(
             "analyze_index is not supported on remote tables; it requires a "

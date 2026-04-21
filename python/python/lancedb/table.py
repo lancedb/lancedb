@@ -1615,12 +1615,13 @@ class Table(ABC):
         seed: Optional[int] = None,
         nprobes: Optional[List[int]] = None,
         refine_factor: Optional[List[int]] = None,
+        ef: Optional[List[int]] = None,
     ) -> "pa.RecordBatch":
         """
         Analyze a vector index by sweeping ANN parameters against exhaustive
         ground truth on a random sample of queries drawn from the table.
 
-        Currently supports `IVF_FLAT` and `IVF_PQ` indices on local tables.
+        Supports all IVF index variants on local tables.
 
         Parameters
         ----------
@@ -1637,15 +1638,19 @@ class Table(ABC):
             `nprobes` values to sweep. Defaults to an auto-selected sweep
             capped at `num_partitions`.
         refine_factor: list of int, optional
-            `refine_factor` values to sweep (IVF_PQ only). Ignored for
-            IVF_FLAT.
+            `refine_factor` values to sweep. Ignored for IVF_FLAT.
+        ef: list of int, optional
+            HNSW `ef` (search beam width) values to sweep. Ignored for
+            non-HNSW indexes.
 
         Returns
         -------
         pyarrow.RecordBatch
-            One row per `(nprobes, refine_factor, k)` configuration. Columns:
-            `num_partitions`, `index_type`, `k`, `nprobes`, `refine_factor`,
-            `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+            One row per `(nprobes, refine_factor, ef, k)` configuration.
+            Columns: `num_partitions`, `index_type`, `k`, `nprobes`,
+            `refine_factor`, `ef`, `recall`, and
+            `latency_{min,p50,p90,p99,max}_ms`. `refine_factor` is null for
+            IVF_FLAT; `ef` is null for non-HNSW indexes.
         """
 
     @abstractmethod
@@ -3211,6 +3216,7 @@ class LanceTable(Table):
         seed: Optional[int] = None,
         nprobes: Optional[List[int]] = None,
         refine_factor: Optional[List[int]] = None,
+        ef: Optional[List[int]] = None,
     ) -> "pa.RecordBatch":
         return LOOP.run(
             self._table.analyze_index(
@@ -3220,6 +3226,7 @@ class LanceTable(Table):
                 seed=seed,
                 nprobes=nprobes,
                 refine_factor=refine_factor,
+                ef=ef,
             )
         )
 
@@ -5010,12 +5017,13 @@ class AsyncTable:
         seed: Optional[int] = None,
         nprobes: Optional[List[int]] = None,
         refine_factor: Optional[List[int]] = None,
+        ef: Optional[List[int]] = None,
     ) -> "pa.RecordBatch":
         """
         Analyze a vector index by sweeping ANN parameters against exhaustive
         ground truth on a random sample of queries drawn from the table.
 
-        Currently supports `IVF_FLAT` and `IVF_PQ` indices on local tables.
+        Supports all IVF index variants on local tables.
 
         Parameters
         ----------
@@ -5032,15 +5040,19 @@ class AsyncTable:
             `nprobes` values to sweep. Defaults to an auto-selected sweep
             capped at `num_partitions`.
         refine_factor: list of int, optional
-            `refine_factor` values to sweep (IVF_PQ only). Ignored for
-            IVF_FLAT.
+            `refine_factor` values to sweep. Ignored for IVF_FLAT.
+        ef: list of int, optional
+            HNSW `ef` (search beam width) values to sweep. Ignored for
+            non-HNSW indexes.
 
         Returns
         -------
         pyarrow.RecordBatch
-            One row per `(nprobes, refine_factor, k)` configuration. Columns:
-            `num_partitions`, `index_type`, `k`, `nprobes`, `refine_factor`,
-            `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+            One row per `(nprobes, refine_factor, ef, k)` configuration.
+            Columns: `num_partitions`, `index_type`, `k`, `nprobes`,
+            `refine_factor`, `ef`, `recall`, and
+            `latency_{min,p50,p90,p99,max}_ms`. `refine_factor` is null for
+            IVF_FLAT; `ef` is null for non-HNSW indexes.
         """
         return await self._inner.analyze_index(
             index_name,
@@ -5049,6 +5061,7 @@ class AsyncTable:
             seed=seed,
             nprobes=nprobes,
             refine_factor=refine_factor,
+            ef=ef,
         )
 
     async def uses_v2_manifest_paths(self) -> bool:
