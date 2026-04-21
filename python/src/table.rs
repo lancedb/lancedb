@@ -559,6 +559,7 @@ impl Table {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (index_name, sample_size=1000, k=None, seed=None, nprobes=None, refine_factor=None, ef=None))]
     pub fn analyze_index(
         self_: PyRef<'_, Self>,
