@@ -16,7 +16,7 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Configuration for TLS/mTLS settings.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TlsConfig {
     /// Path to the client certificate file (PEM format)
     pub cert_file: Option<String>,
@@ -24,8 +24,20 @@ pub struct TlsConfig {
     pub key_file: Option<String>,
     /// Path to the CA certificate file for server verification (PEM format)
     pub ssl_ca_cert: Option<String>,
-    /// Whether to verify the hostname in the server's certificate
+    /// Whether to verify the hostname in the server's certificate.
+    /// Defaults to `true`.
     pub assert_hostname: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            cert_file: None,
+            key_file: None,
+            ssl_ca_cert: None,
+            assert_hostname: true,
+        }
+    }
 }
 
 /// Trait for providing custom headers for each request
@@ -926,7 +938,7 @@ mod tests {
         assert!(config.cert_file.is_none());
         assert!(config.key_file.is_none());
         assert!(config.ssl_ca_cert.is_none());
-        assert!(!config.assert_hostname);
+        assert!(config.assert_hostname);
     }
 
     #[test]
