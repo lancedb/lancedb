@@ -4,55 +4,49 @@
 use std::sync::Arc;
 
 use arrow_array::FixedSizeListArray;
-use arrow_schema::Schema;
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionContext;
 
-use crate::error::{Error, Result};
+use crate::DistanceType;
+use crate::error::Result;
 use crate::table::NativeTable;
-use crate::table::datafusion::knn::{MergeKnnExec, PartialKnnExec};
-use crate::utils::default_vector_column;
+use crate::table::datafusion::BaseTableAdapter;
+use crate::table::datafusion::knn_ext::{DataFrameKnnExt, register_knn_planner};
 
-/// Convenience alias — this module operates on the native (local) table type.
-type LanceTable = NativeTable;
-
-/// Build an [`ExecutionPlan`] that finds the `k` nearest neighbors for every
-/// vector in `query_vectors`.
+/// Build a brute-force KNN DataFrame over all rows in `table`.
 ///
-/// Output schema: table columns + `query_index: Int32` + `_distance: Float32`.
-/// Results are grouped by `query_index` (0-based position in `query_vectors`)
-/// with at most `k` rows per group, sorted ascending by `_distance`.
-async fn batch_knn(
-    table: &LanceTable,
-    query_vectors: FixedSizeListArray,
+/// Returns a [`datafusion::dataframe::DataFrame`] with the table's columns
+/// plus `query_index: Int32` and `_distance: Float32`, containing at most `k`
+/// rows per query vector sorted by `(query_index ASC, _distance ASC)`.
+///
+/// The caller can chain additional DataFrame operations before collecting.
+pub async fn batch_knn(
+    table: &NativeTable,
+    column: impl Into<String>,
+    query_vectors: Arc<FixedSizeListArray>,
     k: usize,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let ds_ref = table.dataset.get().await?;
-    let arrow_schema = Schema::from(ds_ref.schema());
+    distance_type: DistanceType,
+) -> Result<datafusion::dataframe::DataFrame> {
+    let state = register_knn_planner(SessionContext::new().state());
+    let ctx = SessionContext::new_with_state(state);
 
-    // Auto-detect the vector column by matching the query dimension.
-    let dim = query_vectors.value_length();
-    let column = default_vector_column(&arrow_schema, Some(dim))?;
+    // NativeTable implements BaseTable — coerce via explicit type on binding.
+    let base: Arc<dyn crate::table::BaseTable> = Arc::new(table.clone());
+    let adapter = BaseTableAdapter::try_new(base).await?;
+    let provider: Arc<dyn datafusion_catalog::TableProvider> = Arc::new(adapter);
+    ctx.register_table("_knn_source", provider)
+        .map_err(|e| crate::error::Error::Runtime {
+            message: e.to_string(),
+        })?;
 
-    let scan_plan = ds_ref
-        .scan()
-        .create_plan()
+    let df = ctx
+        .table("_knn_source")
         .await
-        .map_err(|e| Error::Runtime {
+        .map_err(|e| crate::error::Error::Runtime {
             message: e.to_string(),
         })?;
 
-    let partial = PartialKnnExec::try_new(scan_plan, column, query_vectors, k).map_err(|e| {
-        Error::Runtime {
+    df.knn(column, query_vectors, k, distance_type)
+        .map_err(|e| crate::error::Error::Runtime {
             message: e.to_string(),
-        }
-    })?;
-
-    let merged =
-        MergeKnnExec::try_new(Arc::new(partial) as Arc<dyn ExecutionPlan>, k).map_err(|e| {
-            Error::Runtime {
-                message: e.to_string(),
-            }
-        })?;
-
-    Ok(Arc::new(merged) as Arc<dyn ExecutionPlan>)
+        })
 }
