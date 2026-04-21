@@ -4586,6 +4586,7 @@ dependencies = [
  "arrow-data",
  "arrow-ipc",
  "arrow-ord",
+ "arrow-row",
  "arrow-schema",
  "arrow-select",
  "async-openai",
