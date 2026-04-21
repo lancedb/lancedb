@@ -373,8 +373,9 @@ fn default_ef_sweep(max_k: usize) -> Vec<u32> {
     vec![base, base.saturating_mul(2), base.saturating_mul(4)]
 }
 
-// TODO: swap this for Lance's batch KNN primitive when it lands. This only
-// affects the GT phase; the ANN latency columns are measured per-query.
+/// Compute ground truth KNN for a batch of query vectors using brute-force
+/// flat scan. Returns `Vec<Vec<u64>>` — nearest neighbor `_rowid` values
+/// grouped by query index.
 async fn batch_knn_flat(
     table: &Table,
     vec_col: &str,
@@ -382,21 +383,58 @@ async fn batch_knn_flat(
     k: usize,
     distance_type: DistanceType,
 ) -> Result<Vec<Vec<u64>>> {
-    let mut results = Vec::with_capacity(samples.len());
-    for (_row_id, v) in samples {
-        let batches: Vec<RecordBatch> = table
-            .query()
-            .nearest_to(v.as_slice())?
-            .column(vec_col)
-            .distance_type(distance_type)
-            .bypass_vector_index()
-            .limit(k)
-            .with_row_id()
-            .execute()
-            .await?
-            .try_collect()
-            .await?;
-        results.push(extract_row_ids(&batches)?);
+    use arrow_array::Float32Array;
+    use arrow_array::types::Int32Type;
+
+    let base = table.base_table().clone();
+    let dim = samples
+        .first()
+        .map(|(_, v)| v.len() as i32)
+        .ok_or_else(|| Error::InvalidInput {
+            message: "no samples provided".to_string(),
+        })?;
+
+    // Build FixedSizeListArray from sample vectors.
+    let flat_values: Vec<f32> = samples
+        .iter()
+        .flat_map(|(_, v)| v.iter().copied())
+        .collect();
+    let values = Float32Array::from(flat_values);
+    let field = Arc::new(arrow_schema::Field::new("item", DataType::Float32, true));
+    let fsl = Arc::new(
+        FixedSizeListArray::try_new(field, dim, Arc::new(values), None)
+            .map_err(|e| Error::Arrow { source: e })?,
+    );
+
+    let df = crate::table::knn::batch_knn(base, vec_col, fsl, k, distance_type, true).await?;
+    let batches: Vec<RecordBatch> = df.collect().await.map_err(|e| Error::Runtime {
+        message: e.to_string(),
+    })?;
+
+    // Group _rowid values by _query_index.
+    let num_queries = samples.len();
+    let mut results: Vec<Vec<u64>> = vec![Vec::new(); num_queries];
+    for batch in &batches {
+        let qi_col = batch
+            .column_by_name("_query_index")
+            .ok_or_else(|| Error::InvalidInput {
+                message: "batch_knn result missing _query_index column".to_string(),
+            })?
+            .as_primitive::<Int32Type>();
+        let rowid_col = batch
+            .column_by_name(ROW_ID_COL)
+            .ok_or_else(|| Error::InvalidInput {
+                message: "batch_knn result missing _rowid column".to_string(),
+            })?
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .ok_or_else(|| Error::InvalidInput {
+                message: "_rowid column was not UInt64".to_string(),
+            })?;
+        for i in 0..batch.num_rows() {
+            let qi = qi_col.value(i) as usize;
+            results[qi].push(rowid_col.value(i));
+        }
     }
     Ok(results)
 }

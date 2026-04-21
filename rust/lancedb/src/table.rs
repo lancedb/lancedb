@@ -72,7 +72,7 @@ mod add_data;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
-pub mod knn;
+pub(crate) mod knn;
 pub mod merge;
 pub mod optimize;
 pub mod query;

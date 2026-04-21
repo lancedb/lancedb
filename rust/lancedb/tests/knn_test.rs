@@ -9,9 +9,12 @@ use arrow_array::{
     Array, DictionaryArray, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
+use datafusion::prelude::SessionContext;
 use futures::TryStreamExt as _;
 use lance_datagen::{BatchCount, BatchGeneratorBuilder, Dimension, RowCount, array};
-use lancedb::{DistanceType, Result, connect, table::knn::batch_knn};
+use lancedb::table::datafusion::BaseTableAdapter;
+use lancedb::table::datafusion::knn_ext::{DataFrameKnnExt, register_knn_planner};
+use lancedb::{DistanceType, Result, connect};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,8 +22,6 @@ use lancedb::{DistanceType, Result, connect, table::knn::batch_knn};
 
 /// Build a table of 10 rows where row i has vec [4i, 4i+1, 4i+2, 4i+3].
 async fn make_table_known_vecs() -> lancedb::Table {
-    // We need deterministic vectors for nearest-neighbor assertions, so we
-    // still construct the batch manually here.
     let dim = 4_i32;
     let num_rows: usize = 10;
     let id_array = Int32Array::from_iter_values(0..num_rows as i32);
@@ -60,6 +61,29 @@ fn float_queries(vecs: Vec<Vec<f32>>, dim: usize) -> Arc<FixedSizeListArray> {
         )
         .unwrap(),
     )
+}
+
+/// Register a table with a KNN-enabled SessionContext and return a DataFrame.
+async fn knn_df(
+    tbl: &lancedb::Table,
+    column: &str,
+    query_vectors: Arc<FixedSizeListArray>,
+    k: usize,
+    distance_type: DistanceType,
+) -> Vec<RecordBatch> {
+    let state = register_knn_planner(SessionContext::new().state());
+    let ctx = SessionContext::new_with_state(state);
+    let adapter = BaseTableAdapter::try_new(tbl.base_table().clone())
+        .await
+        .unwrap();
+    let provider: Arc<dyn datafusion_catalog::TableProvider> = Arc::new(adapter);
+    ctx.register_table("_knn_source", provider).unwrap();
+    let df = ctx.table("_knn_source").await.unwrap();
+    df.knn(column, query_vectors, k, distance_type)
+        .unwrap()
+        .collect()
+        .await
+        .unwrap()
 }
 
 /// Returns `(query_index, id)` pairs for the nearest row per query_index.
@@ -107,16 +131,8 @@ fn nearest_ids(batches: &[RecordBatch]) -> Vec<(i32, i32)> {
 #[tokio::test]
 async fn test_single_query_l2() -> Result<()> {
     let tbl = make_table_known_vecs().await;
-    let native = tbl.as_native().unwrap();
-
-    // Exact match for row 3: vec [12, 13, 14, 15]
     let q = float_queries(vec![vec![12.0, 13.0, 14.0, 15.0]], 4);
-    let batches = batch_knn(native, "vec", q, 1, DistanceType::L2)
-        .await?
-        .collect()
-        .await
-        .unwrap();
-
+    let batches = knn_df(&tbl, "vec", q, 1, DistanceType::L2).await;
     assert_eq!(nearest_ids(&batches), vec![(0, 3)]);
     Ok(())
 }
@@ -124,19 +140,11 @@ async fn test_single_query_l2() -> Result<()> {
 #[tokio::test]
 async fn test_multiple_queries() -> Result<()> {
     let tbl = make_table_known_vecs().await;
-    let native = tbl.as_native().unwrap();
-
-    // Query 0 → row 0, query 1 → row 7
     let q = float_queries(
         vec![vec![0.0, 1.0, 2.0, 3.0], vec![28.0, 29.0, 30.0, 31.0]],
         4,
     );
-    let batches = batch_knn(native, "vec", q, 1, DistanceType::L2)
-        .await?
-        .collect()
-        .await
-        .unwrap();
-
+    let batches = knn_df(&tbl, "vec", q, 1, DistanceType::L2).await;
     assert_eq!(nearest_ids(&batches), vec![(0, 0), (1, 7)]);
     Ok(())
 }
@@ -144,15 +152,8 @@ async fn test_multiple_queries() -> Result<()> {
 #[tokio::test]
 async fn test_top_k_returns_k_rows() -> Result<()> {
     let tbl = make_table_known_vecs().await;
-    let native = tbl.as_native().unwrap();
-
     let q = float_queries(vec![vec![0.0, 1.0, 2.0, 3.0]], 4);
-    let batches = batch_knn(native, "vec", q, 3, DistanceType::L2)
-        .await?
-        .collect()
-        .await
-        .unwrap();
-
+    let batches = knn_df(&tbl, "vec", q, 3, DistanceType::L2).await;
     let total: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total, 3, "k=3 should return exactly 3 rows");
     assert_eq!(nearest_ids(&batches), vec![(0, 0)]);
@@ -162,16 +163,8 @@ async fn test_top_k_returns_k_rows() -> Result<()> {
 #[tokio::test]
 async fn test_cosine_distance() -> Result<()> {
     let tbl = make_table_known_vecs().await;
-    let native = tbl.as_native().unwrap();
-
-    // Row 2 has vec [8, 9, 10, 11]; a scalar multiple is cosine-identical.
     let q = float_queries(vec![vec![8.0, 9.0, 10.0, 11.0]], 4);
-    let batches = batch_knn(native, "vec", q, 1, DistanceType::Cosine)
-        .await?
-        .collect()
-        .await
-        .unwrap();
-
+    let batches = knn_df(&tbl, "vec", q, 1, DistanceType::Cosine).await;
     assert_eq!(nearest_ids(&batches), vec![(0, 2)]);
     Ok(())
 }
@@ -222,7 +215,6 @@ async fn test_hamming_binary_vectors() -> Result<()> {
     .unwrap();
     let db = connect("memory:///").execute().await.unwrap();
     let tbl = db.create_table("t", vec![batch]).execute().await.unwrap();
-    let native = tbl.as_native().unwrap();
 
     let q_list = Arc::new(
         FixedSizeListArray::try_new(
@@ -233,12 +225,7 @@ async fn test_hamming_binary_vectors() -> Result<()> {
         )
         .unwrap(),
     );
-    let batches = batch_knn(native, "vec", q_list, 1, DistanceType::Hamming)
-        .await?
-        .collect()
-        .await
-        .unwrap();
-
+    let batches = knn_df(&tbl, "vec", q_list, 1, DistanceType::Hamming).await;
     assert_eq!(nearest_ids(&batches), vec![(0, 0)]);
     Ok(())
 }
@@ -246,16 +233,9 @@ async fn test_hamming_binary_vectors() -> Result<()> {
 #[tokio::test]
 async fn test_output_has_query_vector_column() -> Result<()> {
     let tbl = make_table_known_vecs().await;
-    let native = tbl.as_native().unwrap();
-
     let q = float_queries(vec![vec![0.0, 1.0, 2.0, 3.0]], 4);
-    let batches = batch_knn(native, "vec", q, 1, DistanceType::L2)
-        .await?
-        .collect()
-        .await
-        .unwrap();
+    let batches = knn_df(&tbl, "vec", q, 1, DistanceType::L2).await;
 
-    // Verify the _query_vector column exists and is a Dictionary type.
     let batch = &batches[0];
     let qv_col = batch
         .column_by_name("_query_vector")
@@ -265,7 +245,6 @@ async fn test_output_has_query_vector_column() -> Result<()> {
         "expected Dictionary type, got {:?}",
         qv_col.data_type()
     );
-    // The dictionary should have exactly one distinct entry (our single query vector).
     let dict = qv_col
         .as_any()
         .downcast_ref::<DictionaryArray<Int32Type>>()
@@ -276,8 +255,6 @@ async fn test_output_has_query_vector_column() -> Result<()> {
 
 #[tokio::test]
 async fn test_schema_and_row_count_with_random_data() -> Result<()> {
-    // Use lance_datagen for table creation — we only check schema/counts here,
-    // not exact nearest neighbors.
     let (stream, _schema) = BatchGeneratorBuilder::new()
         .col("id", array::step::<arrow_array::types::Int32Type>())
         .col("vec", array::rand_vec::<Float32Type>(Dimension::from(8u32)))
@@ -286,25 +263,17 @@ async fn test_schema_and_row_count_with_random_data() -> Result<()> {
     let db = connect("memory:///").execute().await.unwrap();
     let tbl = db.create_table("t", batches).execute().await.unwrap();
 
-    let native = tbl.as_native().unwrap();
     let q = float_queries(vec![vec![0.0; 8], vec![1.0; 8]], 8);
-    let batches = batch_knn(native, "vec", q, 3, DistanceType::L2)
-        .await?
-        .collect()
-        .await
-        .unwrap();
+    let batches = knn_df(&tbl, "vec", q, 3, DistanceType::L2).await;
 
-    // 2 queries × k=3 = 6 rows
     let total: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total, 6);
 
-    // All expected columns present
     let schema = batches[0].schema();
     assert!(schema.field_with_name("id").is_ok());
     assert!(schema.field_with_name("_query_index").is_ok());
     assert!(schema.field_with_name("_distance").is_ok());
     assert!(schema.field_with_name("_query_vector").is_ok());
-    // Vector column is projected by default
     assert!(schema.field_with_name("vec").is_ok());
     Ok(())
 }

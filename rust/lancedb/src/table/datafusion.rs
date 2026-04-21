@@ -149,6 +149,7 @@ pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
     fts_query: Option<FullTextSearchQuery>,
+    with_row_id: bool,
 }
 
 impl BaseTableAdapter {
@@ -164,6 +165,7 @@ impl BaseTableAdapter {
             table,
             schema: Arc::new(schema),
             fts_query: None,
+            with_row_id: false,
         })
     }
 
@@ -179,7 +181,18 @@ impl BaseTableAdapter {
             table: self.table.clone(),
             schema,
             fts_query: Some(fts_query),
+            with_row_id: self.with_row_id,
         }
+    }
+
+    /// Include the `_rowid` meta column in the scan output.
+    pub fn with_row_id(mut self) -> Self {
+        let rowid_field = Field::new("_rowid", DataType::UInt64, false);
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(rowid_field));
+        self.schema = Arc::new(ArrowSchema::new(fields));
+        self.with_row_id = true;
+        self
     }
 }
 
@@ -210,6 +223,7 @@ impl TableProvider for BaseTableAdapter {
         let mut query = QueryRequest {
             full_text_search: self.fts_query.clone(),
             disable_scoring_autoprojection: disable_scoring,
+            with_row_id: self.with_row_id,
             ..Default::default()
         };
 
