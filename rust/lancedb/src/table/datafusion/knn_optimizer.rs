@@ -72,12 +72,8 @@ impl OptimizerRule for KnnProjectVectorRule {
 }
 
 /// Returns `true` if `expr` references a column with the given (unqualified) name.
+/// Uses DataFusion's `column_refs()` to walk the full expression tree,
+/// handling casts, functions, binary expressions, etc.
 fn expr_references_column(expr: &Expr, name: &str) -> bool {
-    match expr {
-        Expr::Column(col) => col.name == name,
-        Expr::Alias(alias) => expr_references_column(&alias.expr, name),
-        // For any other expression type we conservatively return false; the
-        // optimizer will simply leave project_vector=true (safe).
-        _ => false,
-    }
+    expr.column_refs().iter().any(|col| col.name == name)
 }

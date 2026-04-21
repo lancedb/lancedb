@@ -7,12 +7,11 @@ use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
-use arrow::compute::{concat_batches, take_record_batch};
+use arrow::compute::{concat, interleave_record_batch};
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, Float32Array, Int32Array, RecordBatch,
-    UInt32Array,
 };
 use arrow_row::{OwnedRow, RowConverter, SortField};
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
@@ -547,9 +546,14 @@ impl ExecutionPlan for PartialKnnExec {
                         .map_err(|e| DataFusionError::External(e.into()))?;
 
                     for (row_idx, &dist) in distances.values().iter().enumerate() {
-                        heap.push(HeapEntry::new(dist, rows.row(row_idx).owned()));
-                        if heap.len() > k {
-                            heap.pop();
+                        // Only allocate an OwnedRow when this candidate can enter
+                        // the heap — either the heap isn't full yet, or this
+                        // distance beats the current worst.
+                        if heap.len() < k || dist < heap.peek().unwrap().dist() {
+                            heap.push(HeapEntry::new(dist, rows.row(row_idx).owned()));
+                            if heap.len() > k {
+                                heap.pop();
+                            }
                         }
                     }
                 }
@@ -559,16 +563,15 @@ impl ExecutionPlan for PartialKnnExec {
                 return Ok(RecordBatch::new_empty(schema));
             }
 
-            // Flatten heaps into (qi, dist, row) triples, sort by (qi ASC, dist ASC).
-            let mut entries: Vec<(i32, f32, OwnedRow)> = heaps
-                .into_iter()
-                .enumerate()
-                .flat_map(|(qi, heap)| heap.into_iter().map(move |e| (qi as i32, e.dist(), e.row)))
-                .collect();
-            entries.sort_unstable_by(|a, b| {
-                a.0.cmp(&b.0)
-                    .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
-            });
+            // Flatten heaps into (qi, dist, row) triples ordered by (qi ASC, dist ASC).
+            // into_sorted_vec() returns ascending order by Ord, and our Ord has
+            // larger distance = Greater, so ascending = nearest first.
+            let mut entries: Vec<(i32, f32, OwnedRow)> = Vec::with_capacity(k * num_queries);
+            for (qi, heap) in heaps.into_iter().enumerate() {
+                for entry in heap.into_sorted_vec() {
+                    entries.push((qi as i32, entry.dist(), entry.row));
+                }
+            }
 
             // Reconstruct data columns from the stored rows.
             let data_cols = row_converter
@@ -741,59 +744,61 @@ impl ExecutionPlan for MergeKnnExec {
                 }))
                 .await?;
 
-            let all_batches: Vec<&RecordBatch> =
+            let batch_refs: Vec<&RecordBatch> =
                 partition_batches.iter().flat_map(|v| v.iter()).collect();
 
-            if all_batches.is_empty() {
+            if batch_refs.is_empty() {
                 return Ok(RecordBatch::new_empty(schema));
             }
 
-            let combined = concat_batches(&schema, all_batches)?;
+            // Build batch offsets for global→(batch, local) index mapping.
+            let mut batch_offsets: Vec<usize> = Vec::with_capacity(batch_refs.len() + 1);
+            batch_offsets.push(0);
+            for b in &batch_refs {
+                batch_offsets.push(batch_offsets.last().unwrap() + b.num_rows());
+            }
 
-            let qi_arr = combined
-                .column(query_index_col_idx)
-                .as_primitive::<Int32Type>();
-            let dist_arr = combined
-                .column(distance_col_idx)
-                .as_primitive::<arrow_array::types::Float32Type>();
+            // Lightweight concat of just the qi and distance columns for grouping.
+            let qi_arrays: Vec<&dyn Array> = batch_refs
+                .iter()
+                .map(|b| b.column(query_index_col_idx).as_ref())
+                .collect();
+            let dist_arrays: Vec<&dyn Array> = batch_refs
+                .iter()
+                .map(|b| b.column(distance_col_idx).as_ref())
+                .collect();
+            let qi_concat = concat(&qi_arrays)?;
+            let dist_concat = concat(&dist_arrays)?;
+            let qi_arr = qi_concat.as_primitive::<Int32Type>();
+            let dist_arr = dist_concat.as_primitive::<arrow_array::types::Float32Type>();
 
             let max_qi = qi_arr.values().iter().copied().max().unwrap_or(-1);
             if max_qi < 0 {
                 return Ok(RecordBatch::new_empty(schema));
             }
 
-            // For each query group, pick top-k rows by distance.
+            // Single-pass grouping: bucket rows by query index.
             let num_queries = (max_qi + 1) as usize;
-            let mut kept_rows: Vec<u32> = Vec::with_capacity(k * num_queries);
-            for qi in 0..=max_qi {
-                let mut rows_for_qi: Vec<(f32, usize)> = qi_arr
-                    .values()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, q)| **q == qi)
-                    .map(|(i, _)| (dist_arr.value(i), i))
-                    .collect();
-
-                rows_for_qi
-                    .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-                rows_for_qi.truncate(k);
-                kept_rows.extend(rows_for_qi.into_iter().map(|(_, i)| i as u32));
+            let mut groups: Vec<Vec<(f32, usize)>> = vec![Vec::new(); num_queries];
+            for (i, &qi) in qi_arr.values().iter().enumerate() {
+                groups[qi as usize].push((dist_arr.value(i), i));
             }
 
-            // Sort final output by (query_index ASC, _distance ASC).
-            kept_rows.sort_unstable_by(|&a, &b| {
-                let qa = qi_arr.value(a as usize);
-                let qb = qi_arr.value(b as usize);
-                qa.cmp(&qb).then_with(|| {
-                    dist_arr
-                        .value(a as usize)
-                        .partial_cmp(&dist_arr.value(b as usize))
-                        .unwrap_or(Ordering::Equal)
-                })
-            });
+            // Per-group: sort by distance, keep top-k, append to kept_rows.
+            // Groups are iterated in qi order and within each group rows are
+            // sorted by distance, so the output is already in (qi ASC, dist ASC).
+            let mut kept_rows: Vec<(usize, usize)> = Vec::with_capacity(k * num_queries);
+            for group in &mut groups {
+                group.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+                group.truncate(k);
+                for &(_, global_idx) in group.iter() {
+                    let batch_idx = batch_offsets.partition_point(|&off| off <= global_idx) - 1;
+                    kept_rows.push((batch_idx, global_idx - batch_offsets[batch_idx]));
+                }
+            }
 
-            let indices = UInt32Array::from(kept_rows);
-            take_record_batch(&combined, &indices).map_err(Into::into)
+            interleave_record_batch(&batch_refs, &kept_rows)
+                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
         };
 
         let schema_clone = self.schema();
