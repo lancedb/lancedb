@@ -1606,6 +1606,49 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def analyze_index(
+        self,
+        index_name: str,
+        *,
+        sample_size: int = 1000,
+        k: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+        nprobes: Optional[List[int]] = None,
+        refine_factor: Optional[List[int]] = None,
+    ) -> "pa.RecordBatch":
+        """
+        Analyze a vector index by sweeping ANN parameters against exhaustive
+        ground truth on a random sample of queries drawn from the table.
+
+        Currently supports `IVF_FLAT` and `IVF_PQ` indices on local tables.
+
+        Parameters
+        ----------
+        index_name: str
+            The name of the index to analyze.
+        sample_size: int, default 1000
+            Number of query vectors to sample from the table. Clamped to the
+            table's row count.
+        k: list of int, optional
+            `K` values to sweep. Defaults to `[10, 20, 50, 100]`.
+        seed: int, optional
+            RNG seed for reproducibility.
+        nprobes: list of int, optional
+            `nprobes` values to sweep. Defaults to an auto-selected sweep
+            capped at `num_partitions`.
+        refine_factor: list of int, optional
+            `refine_factor` values to sweep (IVF_PQ only). Ignored for
+            IVF_FLAT.
+
+        Returns
+        -------
+        pyarrow.RecordBatch
+            One row per `(nprobes, refine_factor, k)` configuration. Columns:
+            `num_partitions`, `index_type`, `k`, `nprobes`, `refine_factor`,
+            `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+        """
+
+    @abstractmethod
     def add_columns(
         self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
     ):
@@ -3158,6 +3201,27 @@ class LanceTable(Table):
             The statistics about the index. Returns None if the index does not exist.
         """
         return LOOP.run(self._table.index_stats(index_name))
+
+    def analyze_index(
+        self,
+        index_name: str,
+        *,
+        sample_size: int = 1000,
+        k: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+        nprobes: Optional[List[int]] = None,
+        refine_factor: Optional[List[int]] = None,
+    ) -> "pa.RecordBatch":
+        return LOOP.run(
+            self._table.analyze_index(
+                index_name,
+                sample_size=sample_size,
+                k=k,
+                seed=seed,
+                nprobes=nprobes,
+                refine_factor=refine_factor,
+            )
+        )
 
     def add_columns(
         self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
@@ -4936,6 +5000,56 @@ class AsyncTable:
             return None
         else:
             return IndexStatistics(**stats)
+
+    async def analyze_index(
+        self,
+        index_name: str,
+        *,
+        sample_size: int = 1000,
+        k: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+        nprobes: Optional[List[int]] = None,
+        refine_factor: Optional[List[int]] = None,
+    ) -> "pa.RecordBatch":
+        """
+        Analyze a vector index by sweeping ANN parameters against exhaustive
+        ground truth on a random sample of queries drawn from the table.
+
+        Currently supports `IVF_FLAT` and `IVF_PQ` indices on local tables.
+
+        Parameters
+        ----------
+        index_name: str
+            The name of the index to analyze.
+        sample_size: int, default 1000
+            Number of query vectors to sample from the table. Clamped to the
+            table's row count.
+        k: list of int, optional
+            `K` values to sweep. Defaults to `[10, 20, 50, 100]`.
+        seed: int, optional
+            RNG seed for reproducibility.
+        nprobes: list of int, optional
+            `nprobes` values to sweep. Defaults to an auto-selected sweep
+            capped at `num_partitions`.
+        refine_factor: list of int, optional
+            `refine_factor` values to sweep (IVF_PQ only). Ignored for
+            IVF_FLAT.
+
+        Returns
+        -------
+        pyarrow.RecordBatch
+            One row per `(nprobes, refine_factor, k)` configuration. Columns:
+            `num_partitions`, `index_type`, `k`, `nprobes`, `refine_factor`,
+            `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+        """
+        return await self._inner.analyze_index(
+            index_name,
+            sample_size=sample_size,
+            k=k,
+            seed=seed,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+        )
 
     async def uses_v2_manifest_paths(self) -> bool:
         """

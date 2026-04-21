@@ -119,6 +119,21 @@ class RemoteTable(Table):
         """List all the stats of a specified index"""
         return LOOP.run(self._table.index_stats(index_uuid))
 
+    def analyze_index(
+        self,
+        index_name: str,
+        *,
+        sample_size: int = 1000,
+        k: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+        nprobes: Optional[List[int]] = None,
+        refine_factor: Optional[List[int]] = None,
+    ) -> "pa.RecordBatch":
+        raise NotImplementedError(
+            "analyze_index is not supported on remote tables; it requires a "
+            "local (native) table."
+        )
+
     def create_scalar_index(
         self,
         column: str,

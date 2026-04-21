@@ -12,8 +12,9 @@ use crate::{
 use arrow::{
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
+    pyarrow::{FromPyArrow, IntoPyArrow, PyArrowType, ToPyArrow},
 };
+use lancedb::index::analyze::AnalyzeIndexOptions;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
     Table as LanceDbTable,
@@ -555,6 +556,33 @@ impl Table {
             } else {
                 Ok(None)
             }
+        })
+    }
+
+    #[pyo3(signature = (index_name, sample_size=1000, k=None, seed=None, nprobes=None, refine_factor=None))]
+    pub fn analyze_index(
+        self_: PyRef<'_, Self>,
+        index_name: String,
+        sample_size: usize,
+        k: Option<Vec<usize>>,
+        seed: Option<u64>,
+        nprobes: Option<Vec<u32>>,
+        refine_factor: Option<Vec<u32>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let options = AnalyzeIndexOptions {
+            sample_size,
+            k,
+            seed,
+            nprobes,
+            refine_factor,
+        };
+        future_into_py(self_.py(), async move {
+            let batch = inner
+                .analyze_index(&index_name, options)
+                .await
+                .infer_error()?;
+            Python::attach(|py| batch.into_pyarrow(py).map(|obj| obj.unbind()))
         })
     }
 

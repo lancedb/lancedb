@@ -54,6 +54,7 @@ use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
+use crate::index::analyze::{AnalyzeIndexOptions, analyze_index};
 use crate::index::vector::VectorIndex;
 use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
@@ -1208,6 +1209,22 @@ impl Table {
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
+    }
+
+    /// Analyze a vector index by sweeping ANN parameters against exhaustive
+    /// ground truth on a random sample of queries drawn from the table.
+    ///
+    /// Currently supports `IVF_FLAT` and `IVF_PQ` indices on local (native)
+    /// tables. Returns a single Arrow [`RecordBatch`](arrow_array::RecordBatch)
+    /// with one row per `(nprobes, refine_factor, k)` configuration; see
+    /// [`analyze_index_schema`](crate::index::analyze_index_schema) for the
+    /// schema.
+    pub async fn analyze_index(
+        &self,
+        index_name: &str,
+        options: AnalyzeIndexOptions,
+    ) -> Result<arrow_array::RecordBatch> {
+        analyze_index(self, index_name, options).await
     }
 }
 
