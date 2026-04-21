@@ -30,9 +30,66 @@ version = 2
 # Yanked crates are a signal the author retracted the release (often due to
 # bugs or security issues) and should not be depended on.
 yanked = "deny"
-# Advisory IDs we have explicitly reviewed and chosen to accept, with a
-# rationale tracked in a linked issue. Keep this list short.
-ignore = []
+# Advisory IDs we have explicitly reviewed and chosen to accept. Every
+# entry must include a rationale and, where possible, an upstream issue
+# pointing to a fix. Revisit this list whenever dependencies are updated.
+ignore = [
+    # rsa: Marvin Attack timing side-channel in PKCS#1 v1.5 decryption.
+    # Reached only through opendal → reqsign → rsa. We do not use RSA
+    # decryption in LanceDB ourselves; this is dormant in the signing path.
+    # No fixed release exists upstream as of this writing.
+    # https://rustsec.org/advisories/RUSTSEC-2023-0071
+    { id = "RUSTSEC-2023-0071", reason = "rsa crate via opendal/reqsign; no fixed upstream release" },
+
+    # instant: unmaintained. Pulled in via backoff → instant. Upstream
+    # recommends switching to `web-time`; fix has to come from backoff.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0384
+    { id = "RUSTSEC-2024-0384", reason = "transitive via backoff; waiting on backoff replacement" },
+
+    # paste: unmaintained (author archived the repo). Used transitively by
+    # datafusion and the arrow ecosystem; widespread, no drop-in replacement.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0436
+    { id = "RUSTSEC-2024-0436", reason = "transitive via datafusion; awaiting ecosystem migration" },
+
+    # tantivy: segfault on malformed input due to missing bounds check.
+    # Pulled in via lance for full-text search. We only feed tantivy
+    # documents we construct ourselves, not attacker-controlled bytes.
+    # Tracked for a lance dependency bump.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0003
+    { id = "RUSTSEC-2025-0003", reason = "tantivy via lance; inputs are internally produced, not user-supplied bytes" },
+
+    # backoff: unmaintained. Reached only via async-openai. Replacement
+    # requires async-openai to migrate (or us to drop async-openai).
+    # https://rustsec.org/advisories/RUSTSEC-2025-0012
+    { id = "RUSTSEC-2025-0012", reason = "transitive via async-openai; waiting on upstream migration" },
+
+    # number_prefix: unmaintained. Transitive via indicatif → hf-hub.
+    # No security impact, just maintenance status.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0119
+    { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
+
+    # rustls-pemfile: unmaintained. Reached from two separate chains:
+    # rustls-native-certs 0.6 (via hyper-rustls 0.24) and object_store 0.12.
+    # Both upstream dependencies need to move before we can drop it.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134
+    { id = "RUSTSEC-2025-0134", reason = "transitive via rustls-native-certs/object_store; waiting on upstream migration" },
+
+    # protobuf: DoS via stack exhaustion on deeply nested messages. We do
+    # not parse untrusted protobuf at the edge; this reaches us only via
+    # transitive dependencies.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0009
+    { id = "RUSTSEC-2026-0009", reason = "transitive; LanceDB does not parse untrusted protobuf input" },
+
+    # rustls-webpki 0.101.7 (old major line): name-constraint checks for
+    # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
+    # from aws-smithy-http-client 1.1.3. The 0.103 line we actively use is
+    # patched in this PR; clearing the 0.101 copy requires an aws-sdk bump
+    # that conflicts with our MSRV.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0098
+    # https://rustsec.org/advisories/RUSTSEC-2026-0099
+    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21; blocked on MSRV-compatible aws-sdk bump" },
+    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21; blocked on MSRV-compatible aws-sdk bump" },
+]
 
 # ---------------------------------------------------------------------------
 # Licenses: only allow licenses we've reviewed as compatible with Apache-2.0.
