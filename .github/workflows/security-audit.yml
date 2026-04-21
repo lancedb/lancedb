@@ -42,22 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Resolve core runtime dependencies
-        run: |
-          cat > /tmp/core_reqs.in <<'EOF'
-          deprecation>=2.1.0
-          numpy>=1.24.0
-          packaging>=23.0
-          pyarrow>=16
-          pydantic>=1.10
-          tqdm>=4.27.0
-          lance-namespace>=0.3.2
-          EOF
-          uv pip compile /tmp/core_reqs.in -o /tmp/core_reqs.txt
-      - name: Run pip-audit
-        run: |
-          uv tool install --python 3.12 pip-audit
-          uv tool run pip-audit -r /tmp/core_reqs.txt --no-deps
+      - name: Run pip-audit against pyproject.toml
+        run: uv tool run --python 3.12 --from pip-audit pip-audit .
 
   npm-audit:
     name: npm audit (warn-only)
