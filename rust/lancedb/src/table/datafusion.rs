@@ -5,6 +5,7 @@
 
 pub mod cast;
 pub mod insert;
+pub mod knn;
 pub mod reject_nan;
 pub mod scannable_exec;
 pub mod udtf;
