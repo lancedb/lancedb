@@ -240,19 +240,7 @@ pub async fn analyze_index(
     // Fetch GT once at the largest K; smaller K values take a prefix.
     let ground_truth = batch_knn_flat(table, &vec_col, &samples, max_k + 1, distance_type).await?;
 
-    let mut out_num_partitions = Vec::new();
-    let mut out_index_type = Vec::new();
-    let mut out_k = Vec::new();
-    let mut out_nprobes = Vec::new();
-    let mut out_refine_factor: Vec<Option<u32>> = Vec::new();
-    let mut out_ef: Vec<Option<u32>> = Vec::new();
-    let mut out_recall = Vec::new();
-    let mut out_min = Vec::new();
-    let mut out_p50 = Vec::new();
-    let mut out_p90 = Vec::new();
-    let mut out_p99 = Vec::new();
-    let mut out_max = Vec::new();
-
+    let mut rows: Vec<AnalyzeRow> = Vec::new();
     let index_type_str = index.index_type.to_string();
 
     for &np in &nprobes_sweep {
@@ -294,39 +282,77 @@ pub async fn analyze_index(
                     };
                     let (lmin, l50, l90, l99, lmax) = latency_percentiles(&mut latencies_ms);
 
-                    out_num_partitions.push(num_partitions);
-                    out_index_type.push(index_type_str.clone());
-                    out_k.push(k as u32);
-                    out_nprobes.push(np);
-                    out_refine_factor.push(rf);
-                    out_ef.push(ef);
-                    out_recall.push(avg_recall);
-                    out_min.push(lmin);
-                    out_p50.push(l50);
-                    out_p90.push(l90);
-                    out_p99.push(l99);
-                    out_max.push(lmax);
+                    rows.push(AnalyzeRow {
+                        num_partitions,
+                        index_type: index_type_str.clone(),
+                        k: k as u32,
+                        nprobes: np,
+                        refine_factor: rf,
+                        ef,
+                        recall: avg_recall,
+                        latency_min_ms: lmin,
+                        latency_p50_ms: l50,
+                        latency_p90_ms: l90,
+                        latency_p99_ms: l99,
+                        latency_max_ms: lmax,
+                    });
                 }
             }
         }
     }
 
-    let schema = analyze_index_schema();
+    rows_to_record_batch(&rows)
+}
+
+struct AnalyzeRow {
+    num_partitions: u32,
+    index_type: String,
+    k: u32,
+    nprobes: u32,
+    refine_factor: Option<u32>,
+    ef: Option<u32>,
+    recall: f64,
+    latency_min_ms: f64,
+    latency_p50_ms: f64,
+    latency_p90_ms: f64,
+    latency_p99_ms: f64,
+    latency_max_ms: f64,
+}
+
+fn rows_to_record_batch(rows: &[AnalyzeRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
-        schema,
+        analyze_index_schema(),
         vec![
-            Arc::new(UInt32Array::from(out_num_partitions)),
-            Arc::new(StringArray::from(out_index_type)),
-            Arc::new(UInt32Array::from(out_k)),
-            Arc::new(UInt32Array::from(out_nprobes)),
-            Arc::new(UInt32Array::from_iter(out_refine_factor)),
-            Arc::new(UInt32Array::from_iter(out_ef)),
-            Arc::new(Float64Array::from(out_recall)),
-            Arc::new(Float64Array::from(out_min)),
-            Arc::new(Float64Array::from(out_p50)),
-            Arc::new(Float64Array::from(out_p90)),
-            Arc::new(Float64Array::from(out_p99)),
-            Arc::new(Float64Array::from(out_max)),
+            Arc::new(UInt32Array::from_iter_values(
+                rows.iter().map(|r| r.num_partitions),
+            )),
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| &r.index_type),
+            )),
+            Arc::new(UInt32Array::from_iter_values(rows.iter().map(|r| r.k))),
+            Arc::new(UInt32Array::from_iter_values(
+                rows.iter().map(|r| r.nprobes),
+            )),
+            Arc::new(UInt32Array::from_iter(rows.iter().map(|r| r.refine_factor))),
+            Arc::new(UInt32Array::from_iter(rows.iter().map(|r| r.ef))),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.recall),
+            )),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.latency_min_ms),
+            )),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.latency_p50_ms),
+            )),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.latency_p90_ms),
+            )),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.latency_p99_ms),
+            )),
+            Arc::new(Float64Array::from_iter_values(
+                rows.iter().map(|r| r.latency_max_ms),
+            )),
         ],
     )
     .map_err(|e| Error::InvalidInput {
