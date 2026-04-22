@@ -231,6 +231,27 @@ def test_hybrid_prefilter_explain_plan(table_with_id: Table):
     )
 
 
+def test_hybrid_prefilter_default(table_with_id: Table):
+    plan_default = (
+        table_with_id.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("dog")
+        .where("id = 1")
+        .limit(2)
+        .explain_plan(verbose=True)
+    )
+
+    assert "full_filter=id = Int64(1)" in plan_default, (
+        f"Default .where() should act as prefilter=True and push filter into the scan."
+        f"\nPlan:\n{plan_default}"
+    )
+
+    assert "full_filter=id = Int64(1)" in plan_default, (
+        f"Default .where() should act as prefilter=True and push filter into the scan."
+        f"\nPlan:\n{plan_default}"
+    )
+
+
 def test_normalize_scores():
     cases = [
         (pa.array([0.1, 0.4]), pa.array([0.0, 1.0])),
