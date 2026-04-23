@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
-use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
+use lance_io::object_store::{
+    ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreRegistry, StorageOptionsAccessor,
+};
 use lance_namespace::{
     LanceNamespace,
     models::{
@@ -340,6 +342,20 @@ impl Database for LanceNamespaceDatabase {
             self.session.clone(),
         )
         .await?;
+
+        // lance >= v6.0.0-beta.2: declare_table creates a `.lance-reserved` marker file to
+        // prevent directory scanning from seeing an incomplete table. After writing data we
+        // must remove it so the table appears in directory listings.
+        if let Ok(dataset) = native_table.dataset.get().await {
+            let registry = Arc::new(ObjectStoreRegistry::default());
+            if let Ok(table_path) = LanceObjectStore::extract_path_from_uri(registry, dataset.uri())
+            {
+                let _ = dataset
+                    .object_store
+                    .delete(&table_path.child(".lance-reserved"))
+                    .await;
+            }
+        }
 
         Ok(Arc::new(native_table))
     }
