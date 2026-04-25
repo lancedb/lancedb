@@ -42,7 +42,7 @@ datafusion = { version = "52.1", default-features = false }
 datafusion-catalog = "52.1"
 datafusion-common = { version = "52.1", default-features = false }
 datafusion-execution = "52.1"
-datafusion-expr = "52.1"
+datafusion-expr = "53.1"
 datafusion-functions = "52.1"
 datafusion-physical-plan = "52.1"
 datafusion-physical-expr = "52.1"
