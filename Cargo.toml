@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=6.0.0-beta.1", default-features = false, "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=6.0.0-beta.1", default-features = false, "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=6.0.0-beta.1", default-features = false, "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=6.0.0-beta.1", "tag" = "v6.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "57.2", optional = false }
