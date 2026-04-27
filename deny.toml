@@ -83,6 +83,12 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0099
     { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
     { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+
+    # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
+    # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
+    # we actively use is upgraded to 0.103.13 which contains the fix.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0104
+    { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
 ]
 
 # ---------------------------------------------------------------------------
