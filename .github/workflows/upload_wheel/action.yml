@@ -5,6 +5,10 @@ inputs:
   fury_token:
     required: true
     description: "release token for the fury repo"
+  package-name:
+    description: "Distribution name (matches build_linux_wheel package-name). Default 'lancedb'."
+    required: false
+    default: "lancedb"
 
 runs:
   using: "composite"
@@ -23,8 +27,11 @@ runs:
     shell: bash
     env:
       FURY_TOKEN: ${{ inputs.fury_token }}
+      PACKAGE_NAME: ${{ inputs.package-name }}
     run: |
-      WHEEL=$(ls target/wheels/lancedb-*.whl 2> /dev/null | head -n 1)
+      # maturin normalizes hyphens to underscores in wheel filenames
+      WHEEL_PREFIX=$(echo "$PACKAGE_NAME" | tr - _)
+      WHEEL=$(ls target/wheels/${WHEEL_PREFIX}-*.whl 2> /dev/null | head -n 1)
       echo "Uploading $WHEEL to Fury"
       curl -f -F package=@$WHEEL https://$FURY_TOKEN@push.fury.io/lancedb/
   - name: Publish to PyPI
