@@ -1,5 +1,7 @@
 [workspace]
-members = ["rust/lancedb", "nodejs", "python"]
+members = ["rust/lancedb", "rust/lancedb-wasm", "nodejs", "python"]
+# Python package needs to be built by maturin.
+exclude = ["python"]
 resolver = "2"
 
 [workspace.package]

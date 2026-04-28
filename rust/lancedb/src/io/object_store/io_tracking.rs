@@ -240,6 +240,7 @@ impl MultipartUpload for IoTrackingMultipartUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::TryStreamExt;
 
     /// Helper: poison a Mutex<IoStats> by panicking while holding the lock.
     fn poison_stats(stats: &Arc<Mutex<IoStats>>) {
@@ -287,5 +288,90 @@ mod tests {
         let s = stats.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(s.write_iops, 1);
         assert_eq!(s.write_bytes, 2048);
+    }
+
+    #[tokio::test]
+    async fn test_tracks_range_reads_and_bytes() {
+        let target: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let path = Path::parse("range.bin").unwrap();
+        target
+            .put(&path, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target,
+            stats: stats.clone(),
+        };
+
+        let range = store.get_range(&path, 2..7).await.unwrap();
+        assert_eq!(range, Bytes::from_static(b"23456"));
+
+        let ranges = store.get_ranges(&path, &[0..2, 7..10]).await.unwrap();
+        assert_eq!(
+            ranges,
+            vec![Bytes::from_static(b"01"), Bytes::from_static(b"789")]
+        );
+
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.read_iops, 2);
+        assert_eq!(s.read_bytes, 10);
+    }
+
+    #[tokio::test]
+    async fn test_tracks_metadata_reads_without_bytes() {
+        let target: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let path = Path::parse("metadata.bin").unwrap();
+        target
+            .put(&path, Bytes::from_static(b"hello").into())
+            .await
+            .unwrap();
+
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target,
+            stats: stats.clone(),
+        };
+
+        let head = store.head(&path).await.unwrap();
+        assert_eq!(head.size, 5);
+
+        let listed = store.list(None).try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let listed_with_delimiter = store.list_with_delimiter(None).await.unwrap();
+        assert_eq!(listed_with_delimiter.objects.len(), 1);
+
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.read_iops, 3);
+        assert_eq!(s.read_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_incremental_stats_resets_after_reads_and_writes() {
+        let target: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let tracker = IoStatsHolder::default();
+        let store = tracker.wrap("test", target);
+        let path = Path::parse("reset.bin").unwrap();
+
+        store
+            .put(&path, Bytes::from_static(b"abcdef").into())
+            .await
+            .unwrap();
+        let range = store.get_range(&path, 1..4).await.unwrap();
+        assert_eq!(range, Bytes::from_static(b"bcd"));
+
+        let first = tracker.incremental_stats();
+        assert_eq!(first.write_iops, 1);
+        assert_eq!(first.write_bytes, 6);
+        assert_eq!(first.read_iops, 1);
+        assert_eq!(first.read_bytes, 3);
+
+        let second = tracker.incremental_stats();
+        assert_eq!(second.write_iops, 0);
+        assert_eq!(second.write_bytes, 0);
+        assert_eq!(second.read_iops, 0);
+        assert_eq!(second.read_bytes, 0);
     }
 }

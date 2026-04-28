@@ -66,6 +66,7 @@ use crate::utils::{
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
+use self::web_publish::{patch_read_params, patch_write_params, wrap_commit_handler};
 
 mod add_data;
 pub mod datafusion;
@@ -76,6 +77,7 @@ pub mod optimize;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
+mod web_publish;
 pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
@@ -1362,7 +1364,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
-        let params = params.unwrap_or_default();
+        let params = patch_read_params(uri, params.unwrap_or_default()).await?;
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -1407,7 +1409,7 @@ impl NativeTable {
             let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: Arc::new(external_store),
             });
-            builder = builder.with_commit_handler(commit_handler);
+            builder = builder.with_commit_handler(wrap_commit_handler(commit_handler));
         }
 
         let dataset = builder.load().await.map_err(|e| match e {
@@ -1591,9 +1593,13 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         // Default params uses format v1.
-        let params = params.unwrap_or(WriteParams {
-            ..Default::default()
-        });
+        let params = patch_write_params(
+            uri,
+            params.unwrap_or(WriteParams {
+                ..Default::default()
+            }),
+        )
+        .await?;
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -1717,6 +1723,8 @@ impl NativeTable {
             None => StorageOptionsAccessor::with_provider(storage_options_provider),
         };
         store_params.storage_options_accessor = Some(Arc::new(accessor));
+
+        let params = patch_write_params(uri, params).await?;
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {

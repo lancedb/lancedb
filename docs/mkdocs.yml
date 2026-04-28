@@ -128,7 +128,9 @@ nav:
   - Documentation:
       - SDK Reference: index.md
       - Python: python/python.md
-      - Javascript/TypeScript: js/globals.md
+      - Javascript/TypeScript:
+          - Node SDK: js/globals.md
+          - Web WASM Client: js/web.md
       - Java: java/java.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
 
