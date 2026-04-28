@@ -92,14 +92,6 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ::: lancedb.context.Contextualizer
 
-## Full text search
-
-::: lancedb.fts.create_index
-
-::: lancedb.fts.populate_index
-
-::: lancedb.fts.search_index
-
 ## Utilities
 
 ::: lancedb.schema.vector
