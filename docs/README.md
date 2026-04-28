@@ -1,6 +1,6 @@
 # LanceDB Documentation
 
-LanceDB docs are available at [lancedb.com/docs](https://lancedb.com/docs).
+LanceDB docs are available at [docs.lancedb.com](https://docs.lancedb.com).
 
 The SDK docs are built and deployed automatically by [Github Actions](../.github/workflows/docs.yml)
 whenever a commit is pushed to the `main` branch. So it is possible for the docs to show

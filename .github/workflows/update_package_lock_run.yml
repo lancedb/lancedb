@@ -3,6 +3,9 @@ name: Update package-lock.json
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest

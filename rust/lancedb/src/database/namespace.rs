@@ -22,10 +22,11 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
-use crate::connection::PushdownOperation;
+use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 use crate::table::NativeTable;
+use lance::dataset::WriteMode;
 
 use super::{
     BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
@@ -44,7 +45,7 @@ pub struct LanceNamespaceDatabase {
     // database URI
     uri: String,
     // Operations to push down to the namespace server
-    pushdown_operations: HashSet<PushdownOperation>,
+    pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Namespace implementation type (e.g., "dir", "rest")
     ns_impl: String,
     // Namespace properties used to construct the namespace client
@@ -52,13 +53,34 @@ pub struct LanceNamespaceDatabase {
 }
 
 impl LanceNamespaceDatabase {
+    pub fn from_namespace_client(
+        namespace_client: Arc<dyn LanceNamespace>,
+        namespace_client_impl: String,
+        namespace_client_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    ) -> Self {
+        Self {
+            namespace: namespace_client,
+            storage_options,
+            read_consistency_interval,
+            session,
+            uri: format!("namespace://{}", namespace_client_impl),
+            pushdown_operations: namespace_client_pushdown_operations,
+            ns_impl: namespace_client_impl,
+            ns_properties: namespace_client_properties,
+        }
+    }
+
     pub async fn connect(
         ns_impl: &str,
         ns_properties: HashMap<String, String>,
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -163,37 +185,23 @@ impl Database for LanceNamespaceDatabase {
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
-        let describe_request = DescribeTableRequest {
-            id: Some(table_id.clone()),
-            ..Default::default()
-        };
-
-        let describe_result = self.namespace.describe_table(describe_request).await;
+        let mut existing_table = None;
 
         match request.mode {
-            CreateTableMode::Create => {
-                if describe_result.is_ok() {
-                    return Err(Error::TableAlreadyExists {
-                        name: request.name.clone(),
-                    });
-                }
-            }
+            CreateTableMode::Create => {}
             CreateTableMode::Overwrite => {
-                if describe_result.is_ok() {
-                    // Drop the existing table - must succeed
-                    let drop_request = DropTableRequest {
-                        id: Some(table_id.clone()),
-                        ..Default::default()
-                    };
-                    self.namespace
-                        .drop_table(drop_request)
-                        .await
-                        .map_err(|e| Error::Runtime {
-                            message: format!("Failed to drop existing table for overwrite: {}", e),
-                        })?;
-                }
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                existing_table = self.namespace.describe_table(describe_request).await.ok();
             }
             CreateTableMode::ExistOk(_) => {
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let describe_result = self.namespace.describe_table(describe_request).await;
                 if describe_result.is_ok() {
                     let native_table = NativeTable::open_from_namespace(
                         self.namespace.clone(),
@@ -221,20 +229,81 @@ impl Database for LanceNamespaceDatabase {
         };
 
         let (location, initial_storage_options, managed_versioning) = {
-            let response = self.namespace.declare_table(declare_request).await?;
-            let loc = response.location.ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from declare_table response".to_string(),
-            })?;
-            // Use storage options from response, fall back to self.storage_options
-            let opts = response
-                .storage_options
-                .or_else(|| Some(self.storage_options.clone()))
-                .filter(|o| !o.is_empty());
-            (loc, opts, response.managed_versioning)
+            if let Some(response) = existing_table {
+                let loc = response.location.ok_or_else(|| Error::Runtime {
+                    message: "Table location is missing from describe_table response".to_string(),
+                })?;
+                let opts = response
+                    .storage_options
+                    .or_else(|| Some(self.storage_options.clone()))
+                    .filter(|o| !o.is_empty());
+                (loc, opts, response.managed_versioning)
+            } else {
+                match self.namespace.declare_table(declare_request).await {
+                    Ok(response) => {
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from declare_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e)
+                        if matches!(request.mode, CreateTableMode::Create) && {
+                            let err_str = e.to_string();
+                            err_str.contains("already exists")
+                                || err_str.contains("TableAlreadyExists")
+                                || err_str.contains("table already exists")
+                        } =>
+                    {
+                        let response = self
+                            .namespace
+                            .describe_table(DescribeTableRequest {
+                                id: Some(table_id.clone()),
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|describe_err| Error::Runtime {
+                                message: format!(
+                                    "Failed to describe existing declared table after declare conflict: {}",
+                                    describe_err
+                                ),
+                            })?;
+
+                        if response.version.is_some() && response.schema.is_some() {
+                            return Err(Error::TableAlreadyExists {
+                                name: request.name.clone(),
+                            });
+                        }
+
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from describe_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e) => {
+                        return Err(Error::Runtime {
+                            message: format!("Failed to declare table: {}", e),
+                        });
+                    }
+                }
+            }
         };
 
         // Build write params with storage options and commit handler
         let mut params = request.write_options.lance_write_params.unwrap_or_default();
+
+        if matches!(request.mode, CreateTableMode::Overwrite) {
+            params.mode = WriteMode::Overwrite;
+        }
 
         // Set up storage options if provided
         if let Some(storage_opts) = initial_storage_options {
@@ -451,6 +520,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_namespace_connection_with_namespace_client_properties() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .namespace_client_property("table_version_tracking_enabled", "true")
+            .namespace_client_property("manifest_enabled", "true")
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let test_data = create_test_data();
+        conn.create_table("test_table", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(DescribeTableRequest {
+                id: Some(vec!["test_ns".into(), "test_table".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to describe table");
+
+        assert_eq!(describe.managed_versioning, Some(true));
+    }
+
+    #[tokio::test]
     async fn test_namespace_create_table_basic() {
         // Setup: Create a temporary directory for the namespace
         let tmp_dir = tempdir().unwrap();
@@ -649,6 +759,58 @@ mod tests {
         assert_eq!(id_col.value(0), 10);
         assert_eq!(id_col.value(1), 20);
         assert_eq!(id_col.value(2), 30);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_after_declare_conflict() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        namespace_client
+            .declare_table(DeclareTableRequest {
+                id: Some(vec!["test_ns".into(), "declared_test".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to declare table");
+
+        let test_data = create_test_data();
+        let table = conn
+            .create_table("declared_test", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table after declare conflict");
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+        assert_eq!(table.namespace(), &["test_ns"]);
+        assert_eq!(table.id(), "test_ns$declared_test");
     }
 
     #[tokio::test]

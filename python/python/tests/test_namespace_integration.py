@@ -18,6 +18,9 @@ Tests verify:
 """
 
 import copy
+import shutil
+import sys
+import tempfile
 import time
 import uuid
 from typing import Dict, Optional
@@ -385,6 +388,66 @@ def test_namespace_open_table_with_provider(s3_bucket: str, use_custom: bool):
 
     # Verify credentials were cached (no additional describe_table calls)
     assert get_describe_call_count(inner_ns_client) == describe_count_after_open
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TODO: fix schema-only namespace metrics test on Windows",
+)
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_create_schema_only_with_provider(use_custom: bool):
+    """
+    Test creating a schema-only table through namespace with storage options provider.
+
+    Verifies:
+    - declare_table is called once to reserve the location
+    - describe_table is not needed during create in create mode
+    - the table can be reopened successfully afterward
+    - opening the table triggers exactly one describe_table call
+    """
+    temp_dir = tempfile.mkdtemp()
+    try:
+        ns_client, inner_ns_client = create_tracking_namespace(
+            bucket_name=temp_dir,
+            storage_options={},
+            credential_expires_in_seconds=3600,
+            use_custom=use_custom,
+        )
+
+        db = LanceNamespaceDBConnection(ns_client)
+
+        namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
+        db.create_namespace([namespace_name])
+
+        table_name = f"test_table_{uuid.uuid4().hex}"
+        namespace_path = [namespace_name]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("text", pa.string()),
+            ]
+        )
+
+        assert get_declare_call_count(inner_ns_client) == 0
+        assert get_describe_call_count(inner_ns_client) == 0
+
+        table = db.create_table(
+            table_name, schema=schema, namespace_path=namespace_path
+        )
+
+        assert table.name == table_name
+        assert table.namespace == namespace_path
+        assert get_declare_call_count(inner_ns_client) == 1
+        assert get_describe_call_count(inner_ns_client) == 0
+
+        reopened_table = db.open_table(table_name, namespace_path=namespace_path)
+
+        assert reopened_table.schema == schema
+        assert get_declare_call_count(inner_ns_client) == 1
+        assert get_describe_call_count(inner_ns_client) == 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.mark.s3_test

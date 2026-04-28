@@ -36,9 +36,6 @@ import pytest
 import pytest_asyncio
 from utils import exception_output
 
-pytest.importorskip("lancedb.fts")
-tantivy = pytest.importorskip("tantivy")
-
 
 @pytest.fixture
 def table(tmp_path) -> ldb.table.LanceTable:
@@ -144,58 +141,53 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     return table
 
 
-def test_create_index(tmp_path):
-    index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
-    assert isinstance(index, tantivy.Index)
-    assert os.path.exists(str(tmp_path / "index"))
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"use_tantivy": True},
+            "Tantivy-based FTS has been removed",
+        ),
+        (
+            {"ordering_field_names": ["count"]},
+            "ordering_field_names was only supported",
+        ),
+        (
+            {"writer_heap_size": 128},
+            "writer_heap_size was only supported",
+        ),
+    ],
+)
+def test_reject_removed_tantivy_parameters(table, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        table.create_fts_index("text", **kwargs)
 
 
-def test_create_index_with_stemming(tmp_path, table):
-    index = ldb.fts.create_index(
-        str(tmp_path / "index"), ["text"], tokenizer_name="en_stem"
-    )
-    assert isinstance(index, tantivy.Index)
-    assert os.path.exists(str(tmp_path / "index"))
+def test_reject_legacy_tantivy_index(table):
+    path, _, _ = table._get_fts_index_path()
+    os.makedirs(path, exist_ok=True)
 
-    # Check stemming by running tokenizer on non empty table
-    table.create_fts_index("text", tokenizer_name="en_stem", use_tantivy=True)
+    with pytest.raises(ValueError, match="Legacy Tantivy FTS index detected"):
+        table.search("puppy").limit(5).to_list()
+
+    with pytest.raises(ValueError, match="Legacy Tantivy FTS index detected"):
+        table.create_fts_index("text")
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
 @pytest.mark.parametrize("with_position", [True, False])
-def test_create_inverted_index(table, use_tantivy, with_position):
-    if use_tantivy and not with_position:
-        pytest.skip("we don't support building a tantivy index without position")
+def test_create_inverted_index(table, with_position):
     table.create_fts_index(
         "text",
-        use_tantivy=use_tantivy,
         with_position=with_position,
         name="custom_fts_index",
     )
-    if not use_tantivy:
-        indices = table.list_indices()
-        fts_indices = [i for i in indices if i.index_type == "FTS"]
-        assert any(i.name == "custom_fts_index" for i in fts_indices)
+    indices = table.list_indices()
+    fts_indices = [i for i in indices if i.index_type == "FTS"]
+    assert any(i.name == "custom_fts_index" for i in fts_indices)
 
 
-def test_populate_index(tmp_path, table):
-    index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
-    assert ldb.fts.populate_index(index, table, ["text"]) == len(table)
-
-
-def test_search_index(tmp_path, table):
-    index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
-    ldb.fts.populate_index(index, table, ["text"])
-    index.reload()
-    results = ldb.fts.search_index(index, query="puppy", limit=5)
-    assert len(results) == 2
-    assert len(results[0]) == 5  # row_ids
-    assert len(results[1]) == 5  # _score
-
-
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_search_fts(table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+def test_search_fts(table):
+    table.create_fts_index("text")
     results = table.search("puppy").select(["id", "text"]).limit(5).to_list()
     assert len(results) == 5
     assert len(results[0]) == 3  # id, text, _score
@@ -204,53 +196,52 @@ def test_search_fts(table, use_tantivy):
     results = table.search("puppy").select(["id", "text"]).to_list()
     assert len(results) == 10
 
-    if not use_tantivy:
-        # Test with a query
-        results = (
-            table.search(MatchQuery("puppy", "text"))
-            .select(["id", "text"])
-            .limit(5)
-            .to_list()
-        )
-        assert len(results) == 5
+    # Test with a query
+    results = (
+        table.search(MatchQuery("puppy", "text"))
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
 
-        # Test boost query
-        results = (
-            table.search(
-                BoostQuery(
-                    MatchQuery("puppy", "text"),
-                    MatchQuery("runs", "text"),
-                )
+    # Test boost query
+    results = (
+        table.search(
+            BoostQuery(
+                MatchQuery("puppy", "text"),
+                MatchQuery("runs", "text"),
             )
-            .select(["id", "text"])
-            .limit(5)
-            .to_list()
         )
-        assert len(results) == 5
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
 
-        # Test multi match query
-        table.create_fts_index("text2", use_tantivy=use_tantivy)
-        results = (
-            table.search(MultiMatchQuery("puppy", ["text", "text2"]))
-            .select(["id", "text"])
-            .limit(5)
-            .to_list()
-        )
-        assert len(results) == 5
-        assert len(results[0]) == 3  # id, text, _score
+    # Test multi match query
+    table.create_fts_index("text2")
+    results = (
+        table.search(MultiMatchQuery("puppy", ["text", "text2"]))
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
 
-        # Test boolean query
-        results = (
-            table.search(MatchQuery("puppy", "text") & MatchQuery("runs", "text"))
-            .select(["id", "text"])
-            .limit(5)
-            .to_list()
-        )
-        assert len(results) == 5
-        assert len(results[0]) == 3  # id, text, _score
-        for r in results:
-            assert "puppy" in r["text"]
-            assert "runs" in r["text"]
+    # Test boolean query
+    results = (
+        table.search(MatchQuery("puppy", "text") & MatchQuery("runs", "text"))
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+    for r in results:
+        assert "puppy" in r["text"]
+        assert "runs" in r["text"]
 
 
 @pytest.mark.asyncio
@@ -318,13 +309,13 @@ async def test_fts_select_async(async_table):
 
 
 def test_search_fts_phrase_query(table):
-    table.create_fts_index("text", use_tantivy=False, with_position=False)
+    table.create_fts_index("text", with_position=False)
     try:
         phrase_results = table.search('"puppy runs"').limit(100).to_list()
         assert False
     except Exception:
         pass
-    table.create_fts_index("text", use_tantivy=False, with_position=True, replace=True)
+    table.create_fts_index("text", with_position=True, replace=True)
     results = table.search("puppy").limit(100).to_list()
 
     # Test with quotation marks
@@ -375,8 +366,8 @@ async def test_search_fts_phrase_query_async(async_table):
 
 
 def test_search_fts_specify_column(table):
-    table.create_fts_index("text", use_tantivy=False)
-    table.create_fts_index("text2", use_tantivy=False)
+    table.create_fts_index("text")
+    table.create_fts_index("text2")
 
     results = table.search("puppy", fts_columns="text").limit(5).to_list()
     assert len(results) == 5
@@ -470,42 +461,8 @@ async def test_search_fts_specify_column_async(async_table):
         pass
 
 
-def test_search_ordering_field_index_table(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"], use_tantivy=True)
-    rows = (
-        table.search("puppy", ordering_field_name="count")
-        .limit(20)
-        .select(["text", "count"])
-        .to_list()
-    )
-    for r in rows:
-        assert "puppy" in r["text"]
-    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
-
-
-def test_search_ordering_field_index(tmp_path, table):
-    index = ldb.fts.create_index(
-        str(tmp_path / "index"), ["text"], ordering_fields=["count"]
-    )
-
-    ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"])
-    index.reload()
-    results = ldb.fts.search_index(
-        index, query="puppy", limit=5, ordering_field="count"
-    )
-    assert len(results) == 2
-    assert len(results[0]) == 5  # row_ids
-    assert len(results[1]) == 5  # _distance
-    rows = table.to_lance().take(results[0]).to_pylist()
-
-    for r in rows:
-        assert "puppy" in r["text"]
-    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
-
-
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_create_index_from_table(tmp_path, table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+def test_create_index_from_table(tmp_path, table):
+    table.create_fts_index("text")
     df = table.search("puppy").limit(5).select(["text"]).to_pandas()
     assert len(df) <= 5
     assert "text" in df.columns
@@ -525,36 +482,24 @@ def test_create_index_from_table(tmp_path, table, use_tantivy):
     )
 
     with pytest.raises(Exception, match="already exists"):
-        table.create_fts_index("text", use_tantivy=use_tantivy)
+        table.create_fts_index("text")
 
-    table.create_fts_index("text", replace=True, use_tantivy=use_tantivy)
+    table.create_fts_index("text", replace=True)
     assert len(table.search("gorilla").limit(1).to_pandas()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):
-    table.create_fts_index(["text", "text2"], use_tantivy=True)
-    df = table.search("puppy").limit(5).to_pandas()
-    assert len(df) == 5
-    assert "text" in df.columns
-    assert "text2" in df.columns
-
-
-def test_empty_rs(tmp_path, table, mocker):
-    table.create_fts_index(["text", "text2"], use_tantivy=True)
-    mocker.patch("lancedb.fts.search_index", return_value=([], []))
-    df = table.search("puppy").limit(5).to_pandas()
-    assert len(df) == 0
+    with pytest.raises(ValueError, match="Native FTS indexes can only be created"):
+        table.create_fts_index(["text", "text2"])
 
 
 def test_nested_schema(tmp_path, table):
-    table.create_fts_index("nested.text", use_tantivy=True)
-    rs = table.search("puppy").limit(5).to_list()
-    assert len(rs) == 5
+    with pytest.raises(ValueError, match="top-level fields"):
+        table.create_fts_index("nested.text")
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_search_index_with_filter(table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+def test_search_index_with_filter(table):
+    table.create_fts_index("text")
     orig_import = __import__
 
     def import_mock(name, *args):
@@ -584,8 +529,7 @@ def test_search_index_with_filter(table, use_tantivy):
         assert r["_rowid"] is not None
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_null_input(table, use_tantivy):
+def test_null_input(table):
     table.add(
         [
             {
@@ -598,14 +542,13 @@ def test_null_input(table, use_tantivy):
             }
         ]
     )
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+    table.create_fts_index("text")
 
 
 def test_syntax(table):
     # https://github.com/lancedb/lancedb/issues/769
-    table.create_fts_index("text", use_tantivy=True)
-    with pytest.raises(ValueError, match="Syntax Error"):
-        table.search("they could have been dogs OR").limit(10).to_list()
+    table.create_fts_index("text")
+    table.search("they could have been dogs OR").limit(10).to_list()
 
     # these should work
 
@@ -616,6 +559,7 @@ def test_syntax(table):
     ).to_list()
 
     # phrase queries
+    table.create_fts_index("text", with_position=True, replace=True)
     table.search("they could have been dogs OR cats").phrase_query().limit(10).to_list()
     table.search('"they could have been dogs OR cats"').limit(10).to_list()
     table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(
@@ -639,7 +583,7 @@ def test_language(mem_db: DBConnection):
     table = mem_db.create_table("test", data=data)
 
     with pytest.raises(ValueError) as e:
-        table.create_fts_index("text", use_tantivy=False, language="klingon")
+        table.create_fts_index("text", language="klingon")
 
     assert exception_output(e) == (
         "ValueError: LanceDB does not support the requested language: 'klingon'\n"
@@ -650,7 +594,6 @@ def test_language(mem_db: DBConnection):
 
     table.create_fts_index(
         "text",
-        use_tantivy=False,
         language="French",
         stem=True,
         ascii_folding=True,
@@ -690,7 +633,7 @@ def test_fts_on_list(mem_db: DBConnection):
         }
     )
     table = mem_db.create_table("test", data=data)
-    table.create_fts_index("text", use_tantivy=False, with_position=True)
+    table.create_fts_index("text", with_position=True)
 
     res = table.search("lance").limit(5).to_list()
     assert len(res) == 3
@@ -702,7 +645,7 @@ def test_fts_on_list(mem_db: DBConnection):
 def test_fts_ngram(mem_db: DBConnection):
     data = pa.table({"text": ["hello world", "lance database", "lance is cool"]})
     table = mem_db.create_table("test", data=data)
-    table.create_fts_index("text", use_tantivy=False, base_tokenizer="ngram")
+    table.create_fts_index("text", base_tokenizer="ngram")
 
     results = table.search("lan", query_type="fts").limit(10).to_list()
     assert len(results) == 2
@@ -721,7 +664,6 @@ def test_fts_ngram(mem_db: DBConnection):
     # test setting min_ngram_length and prefix_only
     table.create_fts_index(
         "text",
-        use_tantivy=False,
         base_tokenizer="ngram",
         replace=True,
         ngram_min_length=2,
@@ -886,7 +828,7 @@ def test_fts_query_to_json():
 
 
 def test_fts_fast_search(table):
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text")
 
     # Insert some unindexed data
     table.add(

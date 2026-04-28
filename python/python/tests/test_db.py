@@ -15,8 +15,7 @@ import pytest
 from lancedb.pydantic import LanceModel, Vector
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_basic(tmp_path, use_tantivy):
+def test_basic(tmp_path):
     db = lancedb.connect(tmp_path)
 
     assert db.uri == str(tmp_path)
@@ -49,7 +48,7 @@ def test_basic(tmp_path, use_tantivy):
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
 
-    table.create_fts_index("item", use_tantivy=use_tantivy)
+    table.create_fts_index("item")
     rs = table.search("bar", query_type="fts").to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
@@ -897,42 +896,22 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
 
 
 def test_local_namespace_operations(tmp_path):
-    """Test that local mode namespace operations behave as expected."""
-    # Create a local database connection
+    """Test that local mode namespace operations work via directory namespace."""
     db = lancedb.connect(tmp_path)
 
-    # Test list_namespaces returns empty list for root namespace
-    namespaces = db.list_namespaces().namespaces
-    assert namespaces == []
+    # Root namespace starts empty
+    assert db.list_namespaces().namespaces == []
 
-    # Test list_namespaces with non-empty namespace raises NotImplementedError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.list_namespaces(namespace_path=["test"])
+    # Create and list child namespace
+    db.create_namespace(["child"])
+    assert "child" in db.list_namespaces().namespaces
 
+    # List namespaces under child
+    assert db.list_namespaces(namespace_path=["child"]).namespaces == []
 
-def test_local_create_namespace_not_supported(tmp_path):
-    """Test that create_namespace is not supported in local mode."""
-    db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.create_namespace(["test_namespace"])
-
-
-def test_local_drop_namespace_not_supported(tmp_path):
-    """Test that drop_namespace is not supported in local mode."""
-    db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.drop_namespace(["test_namespace"])
+    # Drop namespace
+    db.drop_namespace(["child"])
+    assert db.list_namespaces().namespaces == []
 
 
 def test_clone_table_latest_version(tmp_path):

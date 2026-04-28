@@ -282,7 +282,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -433,7 +433,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
         Returns
         -------
@@ -529,6 +529,19 @@ class DBConnection(EnforceOverrides):
             "namespace_client is not supported for this connection type"
         )
 
+    def serialize(self) -> str:
+        """Serialize this connection for reconstruction.
+
+        The returned string can be passed to :func:`lancedb.deserialize_conn`
+        to recreate an equivalent connection, e.g. in a remote worker.
+
+        Returns
+        -------
+        str
+            Serialized representation of this connection.
+        """
+        raise NotImplementedError("serialize is not supported for this connection type")
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -581,6 +594,7 @@ class LanceDBConnection(DBConnection):
     ):
         if _inner is not None:
             self._conn = _inner
+            self._cached_namespace_client = None
             return
 
         if not isinstance(uri, Path):
@@ -628,6 +642,7 @@ class LanceDBConnection(DBConnection):
         # beyond _conn.
         self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
+        self._cached_namespace_client: Optional[LanceNamespace] = None
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
@@ -651,6 +666,22 @@ class LanceDBConnection(DBConnection):
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
         return val
+
+    @override
+    def serialize(self) -> str:
+        import json
+
+        rci = self.read_consistency_interval
+        return json.dumps(
+            {
+                "connection_type": "local",
+                "uri": self.uri,
+                "storage_options": self.storage_options,
+                "read_consistency_interval_seconds": (
+                    rci.total_seconds() if rci else None
+                ),
+            }
+        )
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -687,10 +718,10 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
-            self._conn.list_namespaces(
-                namespace_path=namespace_path, page_token=page_token, limit=limit
-            )
+        return self._namespace_conn().list_namespaces(
+            namespace_path=namespace_path,
+            page_token=page_token,
+            limit=limit,
         )
 
     @override
@@ -700,27 +731,10 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
-        """Create a new namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to create.
-        mode: str, optional
-            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
-            or "overwrite" (replace if exists). Case insensitive.
-        properties: Dict[str, str], optional
-            Properties to set on the namespace.
-
-        Returns
-        -------
-        CreateNamespaceResponse
-            Response containing the properties of the created namespace.
-        """
-        return LOOP.run(
-            self._conn.create_namespace(
-                namespace_path=namespace_path, mode=mode, properties=properties
-            )
+        return self._namespace_conn().create_namespace(
+            namespace_path=namespace_path,
+            mode=mode,
+            properties=properties,
         )
 
     @override
@@ -730,46 +744,19 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
-        """Drop a namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to drop.
-        mode: str, optional
-            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
-        behavior: str, optional
-            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
-            Case insensitive.
-
-        Returns
-        -------
-        DropNamespaceResponse
-            Response containing properties and transaction_id if applicable.
-        """
-        return LOOP.run(
-            self._conn.drop_namespace(
-                namespace_path=namespace_path, mode=mode, behavior=behavior
-            )
+        return self._namespace_conn().drop_namespace(
+            namespace_path=namespace_path,
+            mode=mode,
+            behavior=behavior,
         )
 
     @override
     def describe_namespace(
         self, namespace_path: List[str]
     ) -> DescribeNamespaceResponse:
-        """Describe a namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to describe.
-
-        Returns
-        -------
-        DescribeNamespaceResponse
-            Response containing the namespace properties.
-        """
-        return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
+        return self._namespace_conn().describe_namespace(
+            namespace_path=namespace_path,
+        )
 
     @override
     def list_tables(
@@ -798,6 +785,12 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
+        if namespace_path:
+            return self._namespace_conn().list_tables(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                limit=limit,
+            )
         return LOOP.run(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
@@ -886,6 +879,22 @@ class LanceDBConnection(DBConnection):
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
+        if namespace_path:
+            return self._namespace_conn().create_table(
+                name,
+                data=data,
+                schema=schema,
+                mode=mode,
+                exist_ok=exist_ok,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                embedding_functions=embedding_functions,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
+            )
+
         tbl = LanceTable.create(
             self,
             name,
@@ -900,6 +909,19 @@ class LanceDBConnection(DBConnection):
             storage_options=storage_options,
         )
         return tbl
+
+    def _namespace_conn(self) -> DBConnection:
+        """Return a LanceNamespaceDBConnection backed by this connection's
+        directory namespace.  Used to delegate child-namespace operations."""
+        from lancedb.namespace import LanceNamespaceDBConnection
+
+        return LanceNamespaceDBConnection(
+            self.namespace_client(),
+            read_consistency_interval=self.read_consistency_interval,
+            storage_options=self.storage_options,
+            namespace_client_impl=None,
+            namespace_client_properties=None,
+        )
 
     @override
     def open_table(
@@ -917,7 +939,8 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
         namespace_path: List[str], optional
-            The namespace to open the table from.
+            The namespace to open the table from.  When non-empty, the
+            table is resolved through the directory namespace client.
 
         Returns
         -------
@@ -934,6 +957,14 @@ class LanceDBConnection(DBConnection):
                 "and pass it to lancedb.connect().",
                 DeprecationWarning,
                 stacklevel=2,
+            )
+
+        if namespace_path:
+            return self._namespace_conn().open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
             )
 
         return LanceTable.open(
@@ -1020,6 +1051,9 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
+        if namespace_path:
+            self._namespace_conn().drop_table(name, namespace_path=namespace_path)
+            return
         LOOP.run(
             self._conn.drop_table(
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
@@ -1071,14 +1105,17 @@ class LanceDBConnection(DBConnection):
         """Get the equivalent namespace client for this connection.
 
         Returns a DirectoryNamespace pointing to the same root with the
-        same storage options.
+        same storage options.  The result is cached for the lifetime of
+        this connection.
 
         Returns
         -------
         LanceNamespace
             The namespace client for this connection.
         """
-        return LOOP.run(self._conn.namespace_client())
+        if self._cached_namespace_client is None:
+            self._cached_namespace_client = LOOP.run(self._conn.namespace_client())
+        return self._cached_namespace_client
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
@@ -1353,6 +1390,7 @@ class AsyncConnection(object):
         namespace_path: Optional[List[str]] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -1397,7 +1435,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -1550,6 +1588,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
         else:
             data = data_to_reader(data, schema)
@@ -1560,6 +1599,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
 
         return AsyncTable(new_table)
@@ -1588,7 +1628,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().

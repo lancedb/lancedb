@@ -110,7 +110,7 @@ def connect(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.com/docs/storage/>
+        <https://docs.lancedb.com/storage/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -215,6 +215,85 @@ def connect(
     )
 
 
+WORKER_PROPERTY_PREFIX = "_lancedb_worker_"
+
+
+def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
+    """Apply worker property overrides.
+
+    Any key starting with ``_lancedb_worker_`` is extracted, the prefix
+    is stripped, and the resulting key-value pair is put back into the
+    map (overriding the existing value if present).  The original
+    prefixed key is removed.
+    """
+    worker_keys = [k for k in props if k.startswith(WORKER_PROPERTY_PREFIX)]
+    if not worker_keys:
+        return props
+    result = dict(props)
+    for key in worker_keys:
+        value = result.pop(key)
+        real_key = key[len(WORKER_PROPERTY_PREFIX) :]
+        result[real_key] = value
+    return result
+
+
+def deserialize_conn(
+    data: str,
+    *,
+    for_worker: bool = False,
+) -> DBConnection:
+    """Reconstruct a DBConnection from a serialized string.
+
+    The string must have been produced by
+    :meth:`DBConnection.serialize`.
+
+    Parameters
+    ----------
+    data : str
+        String produced by ``serialize()``.
+    for_worker : bool, default False
+        When ``True``, any namespace client property whose key starts
+        with ``_lancedb_worker_`` has that prefix stripped and the
+        value overrides the corresponding property.  For example,
+        ``_lancedb_worker_uri`` replaces ``uri``.
+
+    Returns
+    -------
+    DBConnection
+        A new connection matching the serialized state.
+    """
+    import json
+
+    parsed = json.loads(data)
+    connection_type = parsed.get("connection_type")
+
+    rci_secs = parsed.get("read_consistency_interval_seconds")
+    rci = timedelta(seconds=rci_secs) if rci_secs is not None else None
+    storage_options = parsed.get("storage_options")
+
+    if connection_type == "namespace":
+        props = dict(parsed.get("namespace_client_properties") or {})
+        if for_worker:
+            props = _apply_worker_overrides(props)
+        return connect_namespace(
+            namespace_client_impl=parsed["namespace_client_impl"],
+            namespace_client_properties=props,
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+            namespace_client_pushdown_operations=parsed.get(
+                "namespace_client_pushdown_operations"
+            ),
+        )
+    elif connection_type == "local":
+        return LanceDBConnection(
+            parsed["uri"],
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+        )
+    else:
+        raise ValueError(f"Unknown connection_type: {connection_type}")
+
+
 async def connect_async(
     uri: URI,
     *,
@@ -257,7 +336,7 @@ async def connect_async(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.com/docs/storage/>
+        <https://docs.lancedb.com/storage/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure

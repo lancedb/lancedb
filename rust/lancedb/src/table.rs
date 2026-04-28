@@ -47,7 +47,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::connection::PushdownOperation;
+use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
@@ -1274,7 +1274,7 @@ pub struct NativeTable {
     pub(crate) namespace_client: Option<Arc<dyn LanceNamespace>>,
     // Operations to push down to the namespace server.
     // pub(crate) so query.rs can access the field for server-side query execution.
-    pub(crate) pushdown_operations: HashSet<PushdownOperation>,
+    pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1361,7 +1361,7 @@ impl NativeTable {
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
         let params = patch_read_params(uri, params.unwrap_or_default()).await?;
@@ -1472,7 +1472,7 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let mut params = params.unwrap_or_default();
@@ -1520,7 +1520,7 @@ impl NativeTable {
         let id = Self::build_id(&namespace, name);
 
         let stored_namespace_client =
-            if pushdown_operations.contains(&PushdownOperation::QueryTable) {
+            if pushdown_operations.contains(&NamespaceClientPushdownOperation::QueryTable) {
                 Some(namespace_client)
             } else {
                 None
@@ -1590,7 +1590,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = patch_write_params(
@@ -1641,7 +1641,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         let data: Box<dyn Scannable> = Box::new(RecordBatch::new_empty(schema));
         Self::create(
@@ -1691,7 +1691,7 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
-        pushdown_operations: HashSet<PushdownOperation>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         // Build table_id from namespace + name for the storage options provider
@@ -1746,7 +1746,7 @@ impl NativeTable {
         let id = Self::build_id(&namespace, name);
 
         let stored_namespace_client =
-            if pushdown_operations.contains(&PushdownOperation::QueryTable) {
+            if pushdown_operations.contains(&NamespaceClientPushdownOperation::QueryTable) {
                 Some(namespace_client)
             } else {
                 None

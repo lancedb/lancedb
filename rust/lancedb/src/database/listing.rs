@@ -20,6 +20,7 @@ use snafu::ResultExt;
 
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
+use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
@@ -73,7 +74,7 @@ pub struct ListingDatabaseOptions {
     /// These are used to create/list tables and they are inherited by all tables
     /// opened by this database.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub storage_options: HashMap<String, String>,
 }
 
@@ -185,7 +186,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.options
             .storage_options
@@ -195,7 +196,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -255,6 +256,9 @@ pub struct ListingDatabase {
 
     // Session for object stores and caching
     session: Arc<lance::session::Session>,
+
+    // Namespace-backed database for child namespace operations
+    namespace_database: Arc<LanceNamespaceDatabase>,
 }
 
 impl std::fmt::Display for ListingDatabase {
@@ -281,6 +285,44 @@ const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl ListingDatabase {
+    fn build_namespace_client_properties(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut properties = namespace_client_properties;
+        properties.insert("root".to_string(), uri.to_string());
+        for (key, value) in storage_options {
+            properties.insert(format!("storage.{}", key), value.clone());
+        }
+        properties
+    }
+
+    async fn connect_namespace_database(
+        uri: &str,
+        storage_options: HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Arc<lance::session::Session>,
+    ) -> Result<Arc<LanceNamespaceDatabase>> {
+        let ns_properties = Self::build_namespace_client_properties(
+            uri,
+            &storage_options,
+            namespace_client_properties,
+        );
+        Ok(Arc::new(
+            LanceNamespaceDatabase::connect(
+                "dir",
+                ns_properties,
+                storage_options,
+                read_consistency_interval,
+                Some(session),
+                HashSet::new(),
+            )
+            .await?,
+        ))
+    }
+
     /// Connect to a listing database
     ///
     /// The URI should be a path to a directory where the tables are stored.
@@ -300,6 +342,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -387,6 +430,15 @@ impl ListingDatabase {
                     None => None,
                 };
 
+                let namespace_database = Self::connect_namespace_database(
+                    &table_base_uri,
+                    options.storage_options.clone(),
+                    request.namespace_client_properties.clone(),
+                    request.read_consistency_interval,
+                    session.clone(),
+                )
+                .await?;
+
                 Ok(Self {
                     uri: table_base_uri,
                     query_string,
@@ -398,6 +450,7 @@ impl ListingDatabase {
                     storage_options_provider: None,
                     new_table_config: options.new_table_config,
                     session,
+                    namespace_database,
                 })
             }
             Err(_) => {
@@ -405,6 +458,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -416,6 +470,7 @@ impl ListingDatabase {
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
+        namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
@@ -429,6 +484,15 @@ impl ListingDatabase {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
 
+        let namespace_database = Self::connect_namespace_database(
+            path,
+            HashMap::new(),
+            namespace_client_properties,
+            read_consistency_interval,
+            session.clone(),
+        )
+        .await?;
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
@@ -440,6 +504,7 @@ impl ListingDatabase {
             storage_options_provider: None,
             new_table_config,
             session,
+            namespace_database,
         })
     }
 
@@ -495,6 +560,10 @@ impl ListingDatabase {
         }
 
         Ok(uri)
+    }
+
+    fn namespace_database(&self) -> Arc<LanceNamespaceDatabase> {
+        self.namespace_database.clone()
     }
 
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
@@ -696,16 +765,7 @@ impl Database for ListingDatabase {
         &self,
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
-        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
-            return Err(Error::NotSupported {
-                message: "Namespace operations are not supported for listing database".into(),
-            });
-        }
-
-        Ok(ListNamespacesResponse {
-            namespaces: Vec::new(),
-            page_token: None,
-        })
+        self.namespace_database().list_namespaces(request).await
     }
 
     fn uri(&self) -> &str {
@@ -726,36 +786,26 @@ impl Database for ListingDatabase {
 
     async fn create_namespace(
         &self,
-        _request: CreateNamespaceRequest,
+        request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
-        Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
-        })
+        self.namespace_database().create_namespace(request).await
     }
 
-    async fn drop_namespace(
-        &self,
-        _request: DropNamespaceRequest,
-    ) -> Result<DropNamespaceResponse> {
-        Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
-        })
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        self.namespace_database().drop_namespace(request).await
     }
 
     async fn describe_namespace(
         &self,
-        _request: DescribeNamespaceRequest,
+        request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
-        Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
-        })
+        self.namespace_database().describe_namespace(request).await
     }
 
+    #[allow(deprecated)]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         if !request.namespace_path.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
-            });
+            return self.namespace_database().table_names(request).await;
         }
         let mut f = self
             .object_store
@@ -788,9 +838,7 @@ impl Database for ListingDatabase {
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
-            });
+            return self.namespace_database().list_tables(request).await;
         }
         let mut f = self
             .object_store
@@ -838,11 +886,8 @@ impl Database for ListingDatabase {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // When namespace is not empty, location must be provided
-        if !request.namespace_path.is_empty() && request.location.is_none() {
-            return Err(Error::InvalidInput {
-                message: "Location must be provided when namespace is not empty".into(),
-            });
+        if !request.namespace_path.is_empty() {
+            return self.namespace_database().create_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
         let table_uri = request
@@ -959,11 +1004,8 @@ impl Database for ListingDatabase {
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // When namespace is not empty, location must be provided
-        if !request.namespace_path.is_empty() && request.location.is_none() {
-            return Err(Error::InvalidInput {
-                message: "Location must be provided when namespace is not empty".into(),
-            });
+        if !request.namespace_path.is_empty() {
+            return self.namespace_database().open_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
         let table_uri = request
@@ -1059,9 +1101,10 @@ impl Database for ListingDatabase {
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
         if !namespace_path.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database.".into(),
-            });
+            return self
+                .namespace_database()
+                .drop_table(name, namespace_path)
+                .await;
         }
         self.drop_tables(vec![name.to_string()]).await
     }
@@ -1070,9 +1113,10 @@ impl Database for ListingDatabase {
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
         // Check if namespace parameter is provided
         if !namespace_path.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database.".into(),
-            });
+            return self
+                .namespace_database()
+                .drop_all_tables(namespace_path)
+                .await;
         }
         let tables = self.table_names(TableNamesRequest::default()).await?;
         self.drop_tables(tables).await
@@ -1083,30 +1127,11 @@ impl Database for ListingDatabase {
     }
 
     async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
-        // Create a DirectoryNamespace pointing to the same root with the same storage options
-        let mut builder = lance_namespace_impls::DirectoryNamespaceBuilder::new(&self.uri);
-
-        // Add storage options
-        if !self.storage_options.is_empty() {
-            builder = builder.storage_options(self.storage_options.clone());
-        }
-
-        // Use the same session
-        builder = builder.session(self.session.clone());
-
-        let namespace = builder.build().await.map_err(|e| Error::Runtime {
-            message: format!("Failed to create namespace client: {}", e),
-        })?;
-        Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
+        self.namespace_database.namespace_client().await
     }
 
     async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
-        let mut properties = HashMap::new();
-        properties.insert("root".to_string(), self.uri.clone());
-        for (key, value) in &self.storage_options {
-            properties.insert(format!("storage.{}", key), value.clone());
-        }
-        Ok(("dir".to_string(), properties))
+        self.namespace_database.namespace_client_config().await
     }
 }
 
@@ -1132,6 +1157,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options: Default::default(),
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1265,6 +1291,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options: options.clone(),
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1799,6 +1826,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1904,6 +1932,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -1975,6 +2004,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options,
+            namespace_client_properties: Default::default(),
             read_consistency_interval: None,
             session: None,
         };
@@ -2107,5 +2137,210 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&"table1".to_string()));
         assert!(tables.contains(&"table2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_namespace_operations() {
+        let (_tempdir, db) = setup_database().await;
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string(), "child".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let root_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                id: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(root_namespaces.namespaces.contains(&"parent".to_string()));
+
+        let child_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                id: Some(vec!["parent".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(child_namespaces.namespaces.contains(&"child".to_string()));
+
+        db.describe_namespace(DescribeNamespaceRequest {
+            id: Some(vec!["parent".to_string(), "child".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))] // TODO: support Windows once directory namespace-backed listing DB tests are supported.
+    async fn test_listing_database_with_namespace_client_properties() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let mut namespace_client_properties = HashMap::new();
+        namespace_client_properties.insert(
+            "table_version_tracking_enabled".to_string(),
+            "true".to_string(),
+        );
+        namespace_client_properties.insert("manifest_enabled".to_string(), "true".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let namespace_path = vec!["test_ns".to_string()];
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "managed_table".to_string(),
+            namespace_path: namespace_path.clone(),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let namespace_client = db.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(vec!["test_ns".to_string(), "managed_table".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(describe.managed_versioning, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_nested_namespace_table_ops() {
+        let (_tempdir, db) = setup_database().await;
+        let namespace_path = vec!["parent".to_string(), "child".to_string()];
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "nested_table".to_string(),
+            namespace_path: namespace_path.clone(),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let namespace_client = db.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(vec![
+                    "parent".to_string(),
+                    "child".to_string(),
+                    "nested_table".to_string(),
+                ]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(describe.location.is_some());
+
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "nested_table".to_string(),
+                namespace_path: namespace_path.clone(),
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "nested_table");
+
+        #[allow(deprecated)]
+        let table_names = db
+            .table_names(TableNamesRequest {
+                namespace_path: namespace_path.clone(),
+                start_after: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table_names, vec!["nested_table".to_string()]);
+
+        let list_tables = db
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(list_tables.tables, vec!["nested_table".to_string()]);
+
+        db.drop_table("nested_table", &namespace_path)
+            .await
+            .unwrap();
+
+        let post_drop = db
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(post_drop.tables.is_empty());
     }
 }

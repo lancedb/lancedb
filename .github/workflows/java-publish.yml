@@ -19,6 +19,9 @@ on:
     paths:
       - .github/workflows/java-publish.yml
 
+permissions:
+  contents: read
+
 jobs:
   publish:
     name: Build and Publish

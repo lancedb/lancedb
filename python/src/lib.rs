@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow::RecordBatchStream;
-use connection::{Connection, connect};
+use connection::{Connection, connect, connect_namespace_client};
 use env_logger::Env;
 use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
@@ -58,6 +58,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPermutationReader>()?;
     m.add_class::<PyExpr>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_namespace_client, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;

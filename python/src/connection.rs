@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
+    connection::NamespaceClientPushdownOperation,
+    database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
@@ -37,6 +43,29 @@ impl Connection {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Connection is closed"))
     }
+}
+
+fn parse_namespace_client_pushdown_operations(
+    operations: Option<Vec<String>>,
+) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
+    let mut parsed = HashSet::new();
+    for operation in operations.unwrap_or_default() {
+        match operation.as_str() {
+            "QueryTable" => {
+                parsed.insert(NamespaceClientPushdownOperation::QueryTable);
+            }
+            "CreateTable" => {
+                parsed.insert(NamespaceClientPushdownOperation::CreateTable);
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid pushdown operation: {}",
+                    operation
+                )));
+            }
+        }
+    }
+    Ok(parsed)
 }
 
 impl Connection {
@@ -536,6 +565,52 @@ pub fn connect(
         }
         Ok(Connection::new(builder.execute().await.infer_error()?))
     })
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    namespace_client,
+    read_consistency_interval=None,
+    storage_options=None,
+    session=None,
+    namespace_client_pushdown_operations=None,
+    namespace_client_impl=None,
+    namespace_client_properties=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_namespace_client(
+    py: Python<'_>,
+    namespace_client: Py<PyAny>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    namespace_client_pushdown_operations: Option<Vec<String>>,
+    namespace_client_impl: Option<String>,
+    namespace_client_properties: Option<HashMap<String, String>>,
+) -> PyResult<Connection> {
+    let namespace_client = extract_namespace_arc(py, namespace_client)?;
+    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
+    let ns_impl = namespace_client_impl.unwrap_or_else(|| "python".to_string());
+    let ns_properties = namespace_client_properties.unwrap_or_default();
+    let storage_options = storage_options.unwrap_or_default();
+    let session = session.map(|s| s.inner.clone());
+
+    let database = LanceNamespaceDatabase::from_namespace_client(
+        namespace_client,
+        ns_impl,
+        ns_properties,
+        storage_options,
+        read_consistency_interval,
+        session,
+        namespace_client_pushdown_operations,
+    );
+
+    Ok(Connection::new(LanceConnection::new(
+        Arc::new(database),
+        Arc::new(lancedb::embeddings::MemoryRegistry::new()),
+    )))
 }
 
 #[derive(FromPyObject)]

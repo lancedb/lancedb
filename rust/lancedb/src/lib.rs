@@ -69,7 +69,7 @@
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.
 //!
-//! For more details, please refer to the [LanceDB documentation](https://lancedb.com/docs).
+//! For more details, please refer to the [LanceDB documentation](https://docs.lancedb.com).
 //!
 //! #### Create a table
 //!
