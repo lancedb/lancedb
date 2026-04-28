@@ -16,9 +16,12 @@ use self::{
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, IvfSqIndexBuilder},
 };
 
+pub mod analyze;
 pub mod scalar;
 pub mod vector;
 pub mod waiter;
+
+pub use analyze::{AnalyzeIndexOptions, analyze_index, analyze_index_schema};
 
 /// Supported index types.
 #[derive(Debug, Clone)]

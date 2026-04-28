@@ -104,6 +104,7 @@ export {
   OptimizeOptions,
   Version,
   ColumnAlteration,
+  AnalyzeIndexOptions,
 } from "./table";
 
 export {

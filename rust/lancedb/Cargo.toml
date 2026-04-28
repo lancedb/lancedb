@@ -20,6 +20,7 @@ arrow-select = { workspace = true }
 arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
+arrow-row = { workspace = true }
 chrono = { workspace = true }
 datafusion-catalog.workspace = true
 datafusion-common.workspace = true

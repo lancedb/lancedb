@@ -54,6 +54,7 @@ use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
+use crate::index::analyze::{AnalyzeIndexOptions, analyze_index};
 use crate::index::vector::VectorIndex;
 use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
@@ -71,6 +72,7 @@ mod add_data;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub(crate) mod knn;
 pub mod merge;
 pub mod optimize;
 pub mod query;
@@ -360,6 +362,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
         Err(Error::NotSupported {
             message: "create_insert_exec not implemented".to_string(),
+        })
+    }
+
+    /// Analyze a vector index. See [`Table::analyze_index`] for details.
+    ///
+    /// Native tables are handled by the wrapper via [`crate::index::analyze::analyze_index`];
+    /// remote tables override this method to POST to the server.
+    async fn analyze_index(
+        &self,
+        _index_name: &str,
+        _options: AnalyzeIndexOptions,
+    ) -> Result<arrow_array::RecordBatch> {
+        Err(Error::NotSupported {
+            message: "analyze_index not implemented for this table type".to_string(),
         })
     }
 }
@@ -1208,6 +1224,27 @@ impl Table {
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
+    }
+
+    /// Analyze a vector index by sweeping ANN parameters against exhaustive
+    /// ground truth on a random sample of queries drawn from the table.
+    ///
+    /// Supports all IVF index variants. Returns a single Arrow
+    /// [`RecordBatch`](arrow_array::RecordBatch) with one row per
+    /// `(nprobes, refine_factor, ef, k)` configuration; see
+    /// [`analyze_index_schema`](crate::index::analyze_index_schema) for the
+    /// schema. Works against both local and remote tables; on remote tables
+    /// the computation runs server-side.
+    pub async fn analyze_index(
+        &self,
+        index_name: &str,
+        options: AnalyzeIndexOptions,
+    ) -> Result<arrow_array::RecordBatch> {
+        if self.inner.as_native().is_some() {
+            analyze_index(self, index_name, options).await
+        } else {
+            self.inner.analyze_index(index_name, options).await
+        }
     }
 }
 

@@ -110,6 +110,37 @@ containing the new version number of the table after altering the columns.
 
 ***
 
+### analyzeIndex()
+
+```ts
+abstract analyzeIndex(name, options?): Promise<RecordBatch<any>>
+```
+
+Analyze a vector index by sweeping ANN parameters against exhaustive
+ground truth on a random sample of queries drawn from the table.
+
+Supports all IVF index variants. Works against local and remote tables;
+on remote tables the computation runs server-side.
+
+The returned record batch has one row per `(nprobes, refine_factor, ef, k)`
+configuration with columns `num_partitions`, `index_type`, `k`, `nprobes`,
+`refine_factor`, `ef`, `recall`, and `latency_{min,p50,p90,p99,max}_ms`.
+`refine_factor` is null for IVF_FLAT; `ef` is null for non-HNSW indexes.
+
+#### Parameters
+
+* **name**: `string`
+    The name of the index to analyze.
+
+* **options?**: `Partial`&lt;[`AnalyzeIndexOptions`](../interfaces/AnalyzeIndexOptions.md)&gt;
+    Sweep and sampling options.
+
+#### Returns
+
+`Promise`&lt;`RecordBatch`&lt;`any`&gt;&gt;
+
+***
+
 ### checkout()
 
 ```ts

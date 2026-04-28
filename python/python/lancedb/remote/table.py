@@ -119,6 +119,29 @@ class RemoteTable(Table):
         """List all the stats of a specified index"""
         return LOOP.run(self._table.index_stats(index_uuid))
 
+    def analyze_index(
+        self,
+        index_name: str,
+        *,
+        sample_size: int = 1000,
+        k: Optional[List[int]] = None,
+        seed: Optional[int] = None,
+        nprobes: Optional[List[int]] = None,
+        refine_factor: Optional[List[int]] = None,
+        ef: Optional[List[int]] = None,
+    ) -> "pa.RecordBatch":
+        return LOOP.run(
+            self._table.analyze_index(
+                index_name,
+                sample_size=sample_size,
+                k=k,
+                seed=seed,
+                nprobes=nprobes,
+                refine_factor=refine_factor,
+                ef=ef,
+            )
+        )
+
     def create_scalar_index(
         self,
         column: str,
