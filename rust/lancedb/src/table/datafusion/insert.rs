@@ -81,7 +81,7 @@ pub struct InsertExec {
     dataset: Arc<Dataset>,
     input: Arc<dyn ExecutionPlan>,
     write_params: WriteParams,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     partial_transactions: Arc<Mutex<Vec<Transaction>>>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -95,12 +95,12 @@ impl InsertExec {
     ) -> Self {
         let schema = COUNT_SCHEMA.clone();
         let num_partitions = input.output_partitioning().partition_count();
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(num_partitions),
             EmissionType::Final,
             Boundedness::Bounded,
-        );
+        ));
 
         Self {
             ds_wrapper,
@@ -136,7 +136,7 @@ impl ExecutionPlan for InsertExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

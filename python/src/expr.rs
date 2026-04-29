@@ -17,7 +17,7 @@ use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunct
 /// [`expr_lit`] and combined with the methods on this struct.  On the Python
 /// side a thin wrapper class (`lancedb.expr.Expr`) delegates to these methods
 /// and adds Python operator overloads.
-#[pyclass(name = "PyExpr")]
+#[pyclass(name = "PyExpr", from_py_object)]
 #[derive(Clone)]
 pub struct PyExpr(pub DfExpr);
 

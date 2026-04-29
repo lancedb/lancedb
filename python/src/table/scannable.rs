@@ -14,7 +14,7 @@ use lancedb::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     data::scannable::Scannable,
 };
-use pyo3::{FromPyObject, Py, PyAny, Python, types::PyAnyMethods};
+use pyo3::{Borrowed, FromPyObject, Py, PyAny, Python, types::PyAnyMethods};
 
 /// Adapter that implements Scannable for a Python reader factory callable.
 ///
@@ -126,8 +126,10 @@ impl Scannable for PyScannable {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyScannable {
-    fn extract_bound(ob: &pyo3::Bound<'py, PyAny>) -> pyo3::PyResult<Self> {
+impl FromPyObject<'_, '_> for PyScannable {
+    type Error = pyo3::PyErr;
+
+    fn extract(ob: Borrowed<'_, '_, PyAny>) -> pyo3::PyResult<Self> {
         // Convert from Scannable dataclass.
         let schema: PyArrowType<Schema> = ob.getattr("schema")?.extract()?;
         let schema = Arc::new(schema.0);

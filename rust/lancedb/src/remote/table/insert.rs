@@ -43,7 +43,7 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     input: Arc<dyn ExecutionPlan>,
     overwrite: bool,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     add_result: Arc<Mutex<Option<AddResult>>>,
     metrics: ExecutionPlanMetricsSet,
     upload_id: Option<String>,
@@ -105,12 +105,12 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             1
         };
         let schema = COUNT_SCHEMA.clone();
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema),
             datafusion_physical_plan::Partitioning::UnknownPartitioning(num_partitions),
             datafusion_physical_plan::execution_plan::EmissionType::Final,
             datafusion_physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
 
         Self {
             table_name,
@@ -232,7 +232,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

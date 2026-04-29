@@ -183,7 +183,7 @@ async fn call_py_method_primitive<Req, Resp>(
 ) -> lance_core::Result<Resp>
 where
     Req: serde::Serialize + Send + 'static,
-    Resp: for<'py> pyo3::FromPyObject<'py> + Send + 'static,
+    Resp: for<'a, 'py> pyo3::FromPyObject<'a, 'py> + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
         lance_core::Error::io(format!(
@@ -203,7 +203,7 @@ where
 
             // Call the Python method
             let result = py_namespace.call_method1(py, method_name, (request_arg,))?;
-            let value: Resp = result.extract(py)?;
+            let value: Resp = result.extract(py).map_err(Into::into)?;
             Ok::<_, PyErr>(value)
         })
     })

@@ -29,7 +29,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 mod scannable;
 
 /// Statistics about a compaction operation.
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct CompactionStats {
     /// The number of fragments removed
@@ -43,7 +43,7 @@ pub struct CompactionStats {
 }
 
 /// Statistics about a cleanup operation
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RemovalStats {
     /// The number of bytes removed
@@ -53,7 +53,7 @@ pub struct RemovalStats {
 }
 
 /// Statistics about an optimize operation
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct OptimizeStats {
     /// Statistics about the compaction operation
@@ -62,7 +62,7 @@ pub struct OptimizeStats {
     pub prune: RemovalStats,
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct UpdateResult {
     pub rows_updated: u64,
@@ -88,7 +88,7 @@ impl From<lancedb::table::UpdateResult> for UpdateResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddResult {
     pub version: u64,
@@ -109,7 +109,7 @@ impl From<lancedb::table::AddResult> for AddResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct DeleteResult {
     pub num_deleted_rows: u64,
@@ -135,7 +135,7 @@ impl From<lancedb::table::DeleteResult> for DeleteResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct MergeResult {
     pub version: u64,
@@ -171,7 +171,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
     pub version: u64,
@@ -192,7 +192,7 @@ impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AlterColumnsResult {
     pub version: u64,
@@ -213,7 +213,7 @@ impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
     }
 }
 
-#[pyclass(get_all)]
+#[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct DropColumnsResult {
     pub version: u64,

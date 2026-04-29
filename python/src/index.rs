@@ -22,7 +22,7 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     let full_name = ob
         .getattr(intern!(ob.py(), "__class__"))?
         .getattr(intern!(ob.py(), "__name__"))?;
-    let full_name = full_name.downcast()?.to_string_lossy();
+    let full_name = full_name.cast()?.to_string_lossy();
 
     match full_name.rsplit_once('.') {
         Some((_, name)) => Ok(name.to_string()),

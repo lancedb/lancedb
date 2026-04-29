@@ -25,12 +25,12 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 fn table_from_py<'a>(table: Bound<'a, PyAny>) -> PyResult<Bound<'a, Table>> {
     if table.hasattr("_inner")? {
-        Ok(table.getattr("_inner")?.downcast_into::<Table>()?)
+        Ok(table.getattr("_inner")?.cast_into::<Table>()?)
     } else if table.hasattr("_table")? {
         Ok(table
             .getattr("_table")?
             .getattr("_inner")?
-            .downcast_into::<Table>()?)
+            .cast_into::<Table>()?)
     } else {
         Err(PyRuntimeError::new_err(
             "Provided table does not appear to be a Table or RemoteTable instance",
@@ -90,9 +90,9 @@ impl PyAsyncPermutationBuilder {
             database
                 .getattr("_conn")?
                 .getattr("_inner")?
-                .downcast_into::<Connection>()?
+                .cast_into::<Connection>()?
         } else {
-            database.getattr("_inner")?.downcast_into::<Connection>()?
+            database.getattr("_inner")?.cast_into::<Connection>()?
         };
         let database = conn.borrow().database()?;
         slf.modify(|builder| builder.persist(database, table_name))
@@ -243,7 +243,7 @@ impl PyPermutationReader {
         let Some(selection) = selection else {
             return Ok(Select::All);
         };
-        let selection = selection.downcast_into::<PyDict>()?;
+        let selection = selection.cast_into::<PyDict>()?;
         let selection = selection
             .iter()
             .map(|(key, value)| {

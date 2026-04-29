@@ -22,6 +22,7 @@ use lancedb::query::{
     VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
+use pyo3::Borrowed;
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::PyAny;
@@ -43,9 +44,11 @@ use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
 
-impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
-    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
-        match class_name(ob)?.as_str() {
+impl FromPyObject<'_, '_> for PyLanceDB<FtsQuery> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        match class_name(&ob)?.as_str() {
             "MatchQuery" => {
                 let query = ob.getattr("query")?.extract()?;
                 let column = ob.getattr("column")?.extract()?;
@@ -424,7 +427,7 @@ impl Query {
                 "Query text is required for nearest_to_text",
             ))?;
 
-        let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
+        let query = if let Ok(query_text) = fts_query.cast::<PyString>() {
             let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
@@ -606,7 +609,7 @@ impl TakeQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct FTSQuery {
     inner: LanceDbQuery,
@@ -735,7 +738,7 @@ impl FTSQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct VectorQuery {
     inner: LanceDbVectorQuery,
