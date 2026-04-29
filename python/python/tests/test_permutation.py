@@ -1095,3 +1095,43 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_map_basic(mem_db):
+    """map() applies fn per row and yields list[dict]."""
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"x": range(10), "y": range(10, 20)})
+    )
+    perm = Permutation.identity(tbl).map(lambda row: {"sum": row["x"] + row["y"]})
+
+    rows = perm.__getitems__([0, 1, 2])
+    assert isinstance(rows, list)
+    assert rows == [{"sum": 10}, {"sum": 12}, {"sum": 14}]
+
+
+def test_map_in_iter(mem_db):
+    """map() integrates with iter() and produces list-of-dicts batches."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(10)}))
+    perm = (
+        Permutation.identity(tbl)
+        .map(lambda row: {"y": row["x"] * 2})
+        .with_batch_size(5)
+    )
+
+    batches = list(perm.iter(5, skip_last_batch=False))
+    assert len(batches) == 2
+    assert batches[0] == [{"y": i * 2} for i in range(5)]
+    assert batches[1] == [{"y": i * 2} for i in range(5, 10)]
+
+
+def test_map_can_add_columns(mem_db):
+    """map() can add or change keys in the row dict."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(3)}))
+    perm = Permutation.identity(tbl).map(
+        lambda row: {"x": row["x"], "doubled": row["x"] * 2}
+    )
+    assert perm.__getitems__([0, 1, 2]) == [
+        {"x": 0, "doubled": 0},
+        {"x": 1, "doubled": 2},
+        {"x": 2, "doubled": 4},
+    ]

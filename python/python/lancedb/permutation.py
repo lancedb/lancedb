@@ -762,6 +762,35 @@ class Permutation:
         assert transform is not None, "transform is required"
         return Permutation(self.reader, self.selection, self.batch_size, transform)
 
+    def map(self, fn: Callable[[dict], dict]) -> "Permutation":
+        """
+        Apply a function to each row of the permutation, like HuggingFace
+        ``dataset.map``.
+
+        ``fn`` receives a single row as a ``dict[str, Any]`` and must return a
+        ``dict[str, Any]``. The transformed batch is exposed as a list of dicts
+        (matching the default "python" format), so it works directly with
+        the PyTorch DataLoader's default collate.
+
+        For column-oriented or zero-copy transforms, use
+        [with_transform](#with_transform) which receives a ``pa.RecordBatch``.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory:///")
+        >>> tbl = db.create_table("tbl", data=[{"x": x} for x in range(5)])
+        >>> perm = Permutation.identity(tbl).map(lambda row: {"x": row["x"] * 2})
+        >>> perm.fetch([0, 1, 2])
+        [{'x': 0}, {'x': 2}, {'x': 4}]
+        """
+        assert fn is not None, "fn is required"
+
+        def batch_transform(batch: pa.RecordBatch) -> list[dict]:
+            return [fn(row) for row in batch.to_pylist()]
+
+        return self.with_transform(batch_transform)
+
     def __getitem__(self, index: int) -> Any:
         """
         Returns a single row from the permutation by offset
