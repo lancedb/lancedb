@@ -3,9 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{
-    arrow::RecordBatchStream, connection::Connection, error::PythonErrorExt, table::Table,
-};
+use crate::{arrow::RecordBatchStream, error::PythonErrorExt, table::Table};
 use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
     dataloader::permutation::{
@@ -80,24 +78,6 @@ impl PyAsyncPermutationBuilder {
 
 #[pymethods]
 impl PyAsyncPermutationBuilder {
-    #[pyo3(signature = (database, table_name))]
-    pub fn persist(
-        slf: PyRefMut<'_, Self>,
-        database: Bound<'_, PyAny>,
-        table_name: String,
-    ) -> PyResult<Self> {
-        let conn = if database.hasattr("_conn")? {
-            database
-                .getattr("_conn")?
-                .getattr("_inner")?
-                .cast_into::<Connection>()?
-        } else {
-            database.getattr("_inner")?.cast_into::<Connection>()?
-        };
-        let database = conn.borrow().database()?;
-        slf.modify(|builder| builder.persist(database, table_name))
-    }
-
     #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
     pub fn split_random(
         slf: PyRefMut<'_, Self>,

@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from deprecation import deprecated
-from lancedb import AsyncConnection, DBConnection
 import pyarrow as pa
 import json
 
@@ -36,10 +35,7 @@ class PermutationBuilder:
     be referenced by name in the future.  If names are not provided then they can only
     be referenced by their ordinal index.  There is no requirement to name every split.
 
-    By default, the permutation will be stored in memory and will be lost when the
-    program exits.  To persist the permutation (for very large datasets or to share
-    the permutation across multiple workers) use the [persist](#persist) method to
-    create a permanent table.
+    The permutation is stored in memory and will be lost when the program exits.
     """
 
     def __init__(self, table: LanceTable):
@@ -50,15 +46,6 @@ class PermutationBuilder:
         rows in the same order as the base table.
         """
         self._async = async_permutation_builder(table)
-
-    def persist(
-        self, database: Union[DBConnection, AsyncConnection], table_name: str
-    ) -> "PermutationBuilder":
-        """
-        Persist the permutation to the given database.
-        """
-        self._async.persist(database, table_name)
-        return self
 
     def split_random(
         self,
@@ -365,6 +352,20 @@ class Transforms:
 DEFAULT_BATCH_SIZE = 100
 
 
+def _serialize_arrow_table(table: pa.Table) -> bytes:
+    """Serialize a pyarrow Table to Arrow IPC stream bytes."""
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+def _deserialize_arrow_table(data: bytes) -> pa.Table:
+    """Read an Arrow IPC stream back into a pyarrow Table."""
+    with pa.ipc.open_stream(pa.BufferReader(data)) as reader:
+        return reader.read_all()
+
+
 class Permutation:
     """
     A Permutation is a view of a dataset that can be used as input to model training
@@ -380,20 +381,72 @@ class Permutation:
 
     def __init__(
         self,
-        reader: PermutationReader,
+        base_table: LanceTable,
+        permutation_table: Optional[LanceTable],
+        split: int,
         selection: dict[str, str],
         batch_size: int,
         transform_fn: Callable[pa.RecordBatch, Any],
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ):
         """
         Internal constructor.  Use [from_tables](#from_tables) instead.
         """
-        assert reader is not None, "reader is required"
+        assert base_table is not None, "base_table is required"
         assert selection is not None, "selection is required"
-        self.reader = reader
+        self.base_table = base_table
+        self.permutation_table = permutation_table
+        self.split = split
         self.selection = selection
         self.transform_fn = transform_fn
         self.batch_size = batch_size
+        self.offset = offset
+        self.limit = limit
+        self._reader: Optional[PermutationReader] = None
+
+    @property
+    def reader(self) -> PermutationReader:
+        """The underlying [PermutationReader].  Built lazily on first access.
+
+        Only safe to call from synchronous code — inside a coroutine submitted
+        to the background loop, use ``_reader_async()`` instead, since this
+        property would otherwise re-enter the loop and deadlock.
+        """
+        if self._reader is None:
+            self._reader = LOOP.run(self._build_reader())
+        return self._reader
+
+    async def _reader_async(self) -> PermutationReader:
+        """Async accessor for the reader; safe to call from any coroutine."""
+        if self._reader is None:
+            self._reader = await self._build_reader()
+        return self._reader
+
+    async def _build_reader(self) -> PermutationReader:
+        reader = await PermutationReader.from_tables(
+            self.base_table, self.permutation_table, self.split
+        )
+        if self.offset is not None:
+            reader = await reader.with_offset(self.offset)
+        if self.limit is not None:
+            reader = await reader.with_limit(self.limit)
+        return reader
+
+    def _clone(self, **overrides: Any) -> "Permutation":
+        """Return a new Permutation with the given fields overridden."""
+        kwargs = {
+            "base_table": self.base_table,
+            "permutation_table": self.permutation_table,
+            "split": self.split,
+            "selection": self.selection,
+            "batch_size": self.batch_size,
+            "transform_fn": self.transform_fn,
+            "offset": self.offset,
+            "limit": self.limit,
+        }
+        kwargs.update(overrides)
+        return Permutation(**kwargs)
 
     def _with_selection(self, selection: dict[str, str]) -> "Permutation":
         """
@@ -402,21 +455,13 @@ class Permutation:
         Does not validation of the selection and it replaces it entirely.  This is not
         intended for public use.
         """
-        return Permutation(self.reader, selection, self.batch_size, self.transform_fn)
-
-    def _with_reader(self, reader: PermutationReader) -> "Permutation":
-        """
-        Creates a new permutation with the given reader
-
-        This is an internal method and should not be used directly.
-        """
-        return Permutation(reader, self.selection, self.batch_size, self.transform_fn)
+        return self._clone(selection=selection)
 
     def with_batch_size(self, batch_size: int) -> "Permutation":
         """
         Creates a new permutation with the given batch size
         """
-        return Permutation(self.reader, self.selection, batch_size, self.transform_fn)
+        return self._clone(batch_size=batch_size)
 
     @classmethod
     def identity(cls, table: LanceTable) -> "Permutation":
@@ -488,16 +533,90 @@ class Permutation:
             )
             schema = await reader.output_schema(None)
             initial_selection = {name: name for name in schema.names}
-            return cls(
-                reader, initial_selection, DEFAULT_BATCH_SIZE, Transforms.arrow2python
+            permutation = cls(
+                base_table,
+                permutation_table,
+                split,
+                initial_selection,
+                DEFAULT_BATCH_SIZE,
+                Transforms.arrow2python,
             )
+            permutation._reader = reader
+            return permutation
 
         return LOOP.run(do_from_tables())
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Build a picklable state dict for this permutation.
+
+        The base table is captured by connection URI + table name so it can be
+        re-opened in a worker process. The permutation table — always an
+        in-memory LanceDB table — is captured as Arrow IPC stream bytes. The
+        cached reader is dropped; it is rebuilt lazily on first access after
+        unpickle.
+        """
+        base_uri = self.base_table._conn.uri
+        if base_uri.startswith("memory://"):
+            # In-memory base tables can't be shared across processes. Fail
+            # eagerly so the user sees a clear error instead of a silent
+            # divergence in the worker.
+            raise ValueError(
+                "Cannot pickle a Permutation whose base table lives in an "
+                "in-memory database; only persisted base tables (file/cloud "
+                "paths) can be shared with other processes."
+            )
+
+        permutation_data: Optional[bytes] = None
+        if self.permutation_table is not None:
+            permutation_data = _serialize_arrow_table(self.permutation_table.to_arrow())
+
+        return {
+            "base_table_uri": base_uri,
+            "base_table_name": self.base_table.name,
+            "base_table_namespace": self.base_table._namespace_path,
+            "base_table_storage_options": self.base_table._conn.storage_options,
+            "permutation_data": permutation_data,
+            "split": self.split,
+            "selection": self.selection,
+            "batch_size": self.batch_size,
+            "transform_fn": self.transform_fn,
+            "offset": self.offset,
+            "limit": self.limit,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        from . import connect
+
+        base_db = connect(
+            state["base_table_uri"],
+            storage_options=state["base_table_storage_options"],
+        )
+        base_table = base_db.open_table(
+            state["base_table_name"],
+            namespace_path=state["base_table_namespace"] or None,
+        )
+
+        permutation_table: Optional[LanceTable] = None
+        if state["permutation_data"] is not None:
+            perm_arrow = _deserialize_arrow_table(state["permutation_data"])
+            mem_db = connect("memory://")
+            permutation_table = mem_db.create_table("permutation", perm_arrow)
+
+        self.base_table = base_table
+        self.permutation_table = permutation_table
+        self.split = state["split"]
+        self.selection = state["selection"]
+        self.batch_size = state["batch_size"]
+        self.transform_fn = state["transform_fn"]
+        self.offset = state["offset"]
+        self.limit = state["limit"]
+        self._reader = None
 
     @property
     def schema(self) -> pa.Schema:
         async def do_output_schema():
-            return await self.reader.output_schema(self.selection)
+            reader = await self._reader_async()
+            return await reader.output_schema(self.selection)
 
         return LOOP.run(do_output_schema())
 
@@ -673,7 +792,8 @@ class Permutation:
         """
 
         async def get_iter():
-            return await self.reader.read(self.selection, batch_size=batch_size)
+            reader = await self._reader_async()
+            return await reader.read(self.selection, batch_size=batch_size)
 
         async_iter = LOOP.run(get_iter())
 
@@ -760,7 +880,7 @@ class Permutation:
         for expensive operations such as image decoding.
         """
         assert transform is not None, "transform is required"
-        return Permutation(self.reader, self.selection, self.batch_size, transform)
+        return self._clone(transform_fn=transform)
 
     def __getitem__(self, index: int) -> Any:
         """
@@ -774,7 +894,8 @@ class Permutation:
         """
 
         async def do_getitems():
-            return await self.reader.take_offsets(indices, selection=self.selection)
+            reader = await self._reader_async()
+            return await reader.take_offsets(indices, selection=self.selection)
 
         batch = LOOP.run(do_getitems())
         return self.transform_fn(batch)
@@ -795,12 +916,11 @@ class Permutation:
         """
         Skip the first `skip` rows of the permutation
         """
-
-        async def do_with_skip():
-            reader = await self.reader.with_offset(skip)
-            return self._with_reader(reader)
-
-        return LOOP.run(do_with_skip())
+        new_perm = self._clone(offset=skip)
+        # Eagerly build the reader so any limit/offset validation errors surface
+        # synchronously, matching the previous behavior.
+        _ = new_perm.reader
+        return new_perm
 
     @deprecated(details="Use with_take instead")
     def take(self, limit: int) -> "Permutation":
@@ -818,12 +938,11 @@ class Permutation:
         """
         Limit the permutation to `limit` rows (following any `skip`)
         """
-
-        async def do_with_take():
-            reader = await self.reader.with_limit(limit)
-            return self._with_reader(reader)
-
-        return LOOP.run(do_with_take())
+        new_perm = self._clone(limit=limit)
+        # Eagerly build the reader so any limit/offset validation errors surface
+        # synchronously, matching the previous behavior.
+        _ = new_perm.reader
+        return new_perm
 
     @deprecated(details="Use with_repeat instead")
     def repeat(self, times: int) -> "Permutation":

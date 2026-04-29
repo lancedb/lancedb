@@ -9,21 +9,6 @@ from lancedb import DBConnection, Table, connect
 from lancedb.permutation import Permutation, Permutations, permutation_builder
 
 
-def test_permutation_persistence(tmp_path):
-    db = connect(tmp_path)
-    tbl = db.create_table("test_table", pa.table({"x": range(100), "y": range(100)}))
-
-    permutation_tbl = (
-        permutation_builder(tbl).shuffle().persist(db, "test_permutation").execute()
-    )
-    assert permutation_tbl.count_rows() == 100
-
-    re_open = db.open_table("test_permutation")
-    assert re_open.count_rows() == 100
-
-    assert permutation_tbl.to_arrow() == re_open.to_arrow()
-
-
 def test_split_random_ratios(mem_db):
     """Test random splitting with ratios."""
     tbl = mem_db.create_table(
