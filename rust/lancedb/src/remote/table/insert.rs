@@ -43,7 +43,7 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     input: Arc<dyn ExecutionPlan>,
     overwrite: bool,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     add_result: Arc<Mutex<Option<AddResult>>>,
     metrics: ExecutionPlanMetricsSet,
     upload_id: Option<String>,
@@ -118,7 +118,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             client,
             input,
             overwrite,
-            properties,
+            properties: Arc::new(properties),
             add_result: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             upload_id,
@@ -232,7 +232,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

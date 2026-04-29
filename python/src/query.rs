@@ -33,7 +33,7 @@ use pyo3::pyfunction;
 use pyo3::pymethods;
 use pyo3::types::PyList;
 use pyo3::types::{PyDict, PyString};
-use pyo3::{FromPyObject, exceptions::PyRuntimeError};
+use pyo3::{Borrowed, FromPyObject, exceptions::PyRuntimeError};
 use pyo3::{PyErr, pyclass};
 use pyo3::{exceptions::PyValueError, intern};
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -43,9 +43,12 @@ use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
 
-impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
-    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
-        match class_name(ob)?.as_str() {
+impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let ob = ob.to_owned();
+        match class_name(&ob)?.as_str() {
             "MatchQuery" => {
                 let query = ob.getattr("query")?.extract()?;
                 let column = ob.getattr("column")?.extract()?;
@@ -424,7 +427,7 @@ impl Query {
                 "Query text is required for nearest_to_text",
             ))?;
 
-        let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
+        let query = if let Ok(query_text) = fts_query.cast::<PyString>() {
             let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
@@ -606,7 +609,7 @@ impl TakeQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct FTSQuery {
     inner: LanceDbQuery,
@@ -735,7 +738,7 @@ impl FTSQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct VectorQuery {
     inner: LanceDbVectorQuery,

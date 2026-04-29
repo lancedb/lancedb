@@ -126,8 +126,11 @@ impl Scannable for PyScannable {
     }
 }
 
-impl<'py> FromPyObject<'py> for PyScannable {
-    fn extract_bound(ob: &pyo3::Bound<'py, PyAny>) -> pyo3::PyResult<Self> {
+impl<'a, 'py> FromPyObject<'a, 'py> for PyScannable {
+    type Error = pyo3::PyErr;
+
+    fn extract(ob: pyo3::Borrowed<'a, 'py, PyAny>) -> pyo3::PyResult<Self> {
+        let ob = ob.to_owned();
         // Convert from Scannable dataclass.
         let schema: PyArrowType<Schema> = ob.getattr("schema")?.extract()?;
         let schema = Arc::new(schema.0);

@@ -13,40 +13,40 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=6.0.0-beta.4", default-features = false, "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=6.0.0-beta.4", "tag" = "v6.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "57.2", optional = false }
-arrow-array = "57.2"
-arrow-data = "57.2"
-arrow-ipc = "57.2"
-arrow-ord = "57.2"
-arrow-schema = "57.2"
-arrow-select = "57.2"
-arrow-cast = "57.2"
+arrow = { version = "58.0.0", optional = false }
+arrow-array = "58.0.0"
+arrow-data = "58.0.0"
+arrow-ipc = "58.0.0"
+arrow-ord = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+arrow-cast = "58.0.0"
 async-trait = "0"
-datafusion = { version = "52.1", default-features = false }
-datafusion-catalog = "52.1"
-datafusion-common = { version = "52.1", default-features = false }
-datafusion-execution = "52.1"
-datafusion-expr = "52.1"
-datafusion-functions = "52.1"
-datafusion-physical-plan = "52.1"
-datafusion-physical-expr = "52.1"
-datafusion-sql = "52.1"
+datafusion = { version = "53.0.0", default-features = false }
+datafusion-catalog = "53.0.0"
+datafusion-common = { version = "53.0.0", default-features = false }
+datafusion-execution = "53.0.0"
+datafusion-expr = "53.0.0"
+datafusion-functions = "53.0.0"
+datafusion-physical-plan = "53.0.0"
+datafusion-physical-expr = "53.0.0"
+datafusion-sql = "53.0.0"
 env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",

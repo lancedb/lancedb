@@ -81,7 +81,7 @@ pub struct InsertExec {
     dataset: Arc<Dataset>,
     input: Arc<dyn ExecutionPlan>,
     write_params: WriteParams,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     partial_transactions: Arc<Mutex<Vec<Transaction>>>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -107,7 +107,7 @@ impl InsertExec {
             dataset,
             input,
             write_params,
-            properties,
+            properties: Arc::new(properties),
             partial_transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
             metrics: ExecutionPlanMetricsSet::new(),
         }
@@ -136,7 +136,7 @@ impl ExecutionPlan for InsertExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

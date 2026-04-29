@@ -15,7 +15,7 @@ name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow = { version = "57.2", features = ["pyarrow"] }
+arrow = { version = "58.0.0", features = ["pyarrow"] }
 async-trait = "0.1"
 bytes = "1"
 lancedb = { path = "../rust/lancedb", default-features = false }
@@ -25,8 +25,8 @@ lance-namespace-impls.workspace = true
 lance-io.workspace = true
 env_logger.workspace = true
 log.workspace = true
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
-pyo3-async-runtimes = { version = "0.26", features = [
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
+pyo3-async-runtimes = { version = "0.28", features = [
     "attributes",
     "tokio-runtime",
 ] }
@@ -38,7 +38,7 @@ snafu.workspace = true
 tokio = { version = "1.40", features = ["sync"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.26", features = [
+pyo3-build-config = { version = "0.28", features = [
     "extension-module",
     "abi3-py39",
 ] }
