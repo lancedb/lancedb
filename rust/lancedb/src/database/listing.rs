@@ -285,7 +285,7 @@ const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl ListingDatabase {
-    fn build_namespace_client_properties(
+    pub(crate) fn build_namespace_client_properties(
         uri: &str,
         storage_options: &HashMap<String, String>,
         namespace_client_properties: HashMap<String, String>,
@@ -295,6 +295,24 @@ impl ListingDatabase {
         for (key, value) in storage_options {
             properties.insert(format!("storage.{}", key), value.clone());
         }
+        properties
+    }
+
+    pub(crate) fn build_manifest_enabled_namespace_client_properties(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut properties = Self::build_namespace_client_properties(
+            uri,
+            storage_options,
+            namespace_client_properties,
+        );
+        properties.insert("manifest_enabled".to_string(), "true".to_string());
+        properties.insert(
+            "dir_listing_to_manifest_migration_enabled".to_string(),
+            "true".to_string(),
+        );
         properties
     }
 
@@ -321,6 +339,120 @@ impl ListingDatabase {
             )
             .await?,
         ))
+    }
+
+    async fn prepare_namespace_root(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        session: Arc<lance::session::Session>,
+    ) -> Result<String> {
+        match url::Url::parse(uri) {
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+            Ok(mut url) => {
+                let mut engine = None;
+                let mut filtered_querys = vec![];
+
+                for (key, value) in url.query_pairs() {
+                    if key == ENGINE {
+                        engine = Some(value.to_string());
+                    } else if key == MIRRORED_STORE {
+                        return Err(Error::NotSupported {
+                            message: "mirrored store is not supported for manifest-enabled namespace connections"
+                                .to_string(),
+                        });
+                    } else {
+                        filtered_querys.push((key.to_string(), value.to_string()));
+                    }
+                }
+
+                url.query_pairs_mut().clear();
+                url.query_pairs_mut().extend_pairs(filtered_querys);
+                url.set_query(None);
+                let plain_uri = url.to_string();
+
+                let table_base_uri = if let Some(store) = engine {
+                    let old_scheme = url.scheme();
+                    let new_scheme = format!("{}+{}", old_scheme, store);
+                    plain_uri.replacen(old_scheme, &new_scheme, 1)
+                } else {
+                    plain_uri.clone()
+                };
+
+                let os_params = ObjectStoreParams {
+                    storage_options_accessor: if storage_options.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                            storage_options.clone(),
+                        )))
+                    },
+                    ..Default::default()
+                };
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    &plain_uri,
+                    &os_params,
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
+                }
+
+                Ok(table_base_uri)
+            }
+            Err(_) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+        }
+    }
+
+    pub(crate) async fn connect_manifest_enabled_namespace_database(
+        request: &ConnectRequest,
+    ) -> Result<LanceNamespaceDatabase> {
+        let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
+        let session = request
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        let namespace_root =
+            Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
+                .await?;
+        let ns_properties = Self::build_manifest_enabled_namespace_client_properties(
+            &namespace_root,
+            &options.storage_options,
+            request.namespace_client_properties.clone(),
+        );
+
+        LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            ns_properties,
+            options.storage_options,
+            request.read_consistency_interval,
+            Some(session),
+            HashSet::new(),
+            options.new_table_config,
+        )
+        .await
     }
 
     /// Connect to a listing database
@@ -1158,6 +1290,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1292,6 +1425,7 @@ mod tests {
             client_config: Default::default(),
             options: options.clone(),
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1827,6 +1961,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1933,6 +2068,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -2005,6 +2141,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -2202,6 +2339,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             namespace_client_properties,
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };

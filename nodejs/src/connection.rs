@@ -67,6 +67,12 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
+        if let Some(manifest_enabled) = options.manifest_enabled {
+            builder = builder.manifest_enabled(manifest_enabled);
+        }
+        if let Some(namespace_client_properties) = options.namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
+        }
 
         // Create client config, optionally with header provider
         let client_config = options.client_config.unwrap_or_default();

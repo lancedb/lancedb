@@ -111,7 +111,12 @@ default = []
 aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
-azure = ["lance/azure", "lance-io/azure", "lance-namespace-impls/dir-azure"]
+azure = [
+    "lance/azure",
+    "lance-io/azure",
+    "lance-namespace-impls/dir-azure",
+    "lance-namespace-impls/credential-vendor-azure",
+]
 huggingface = [
     "lance/huggingface",
     "lance-io/huggingface",

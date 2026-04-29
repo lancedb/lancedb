@@ -590,8 +590,13 @@ class LanceDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        manifest_enabled: bool = False,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
         _inner: Optional[LanceDbConnection] = None,
     ):
+        self.storage_options = storage_options
+        self._manifest_enabled = manifest_enabled
+        self._namespace_client_properties = namespace_client_properties
         if _inner is not None:
             self._conn = _inner
             self._cached_namespace_client = None
@@ -633,6 +638,8 @@ class LanceDBConnection(DBConnection):
                 None,
                 storage_options,
                 session,
+                manifest_enabled,
+                namespace_client_properties,
             )
 
         # TODO: It would be nice if we didn't store self.storage_options but it is
@@ -640,7 +647,6 @@ class LanceDBConnection(DBConnection):
         # work because some paths like LanceDBConnection.from_inner will lose the
         # storage_options.  Also, this class really shouldn't be holding any state
         # beyond _conn.
-        self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
         self._cached_namespace_client: Optional[LanceNamespace] = None
 
@@ -677,6 +683,8 @@ class LanceDBConnection(DBConnection):
                 "connection_type": "local",
                 "uri": self.uri,
                 "storage_options": self.storage_options,
+                "manifest_enabled": self._manifest_enabled,
+                "namespace_client_properties": self._namespace_client_properties,
                 "read_consistency_interval_seconds": (
                     rci.total_seconds() if rci else None
                 ),
