@@ -42,18 +42,16 @@ describe("Scannable", () => {
       expect(scannable.rescannable).toBe(true);
     });
 
-    test("honors numRows override", async () => {
-      const scannable = await Scannable.fromTable(makeTable(), {
-        numRows: 42,
-      });
-      expect(scannable.numRows).toBe(42);
+    test("throws when opts.numRows does not match table.numRows", async () => {
+      await expect(
+        Scannable.fromTable(makeTable(), { numRows: 42 }),
+      ).rejects.toThrow(/does not match table\.numRows/);
     });
 
-    test("honors rescannable override", async () => {
-      const scannable = await Scannable.fromTable(makeTable(), {
-        rescannable: false,
-      });
-      expect(scannable.rescannable).toBe(false);
+    test("throws when opts.rescannable is false", async () => {
+      await expect(
+        Scannable.fromTable(makeTable(), { rescannable: false }),
+      ).rejects.toThrow(/always rescannable/);
     });
   });
 
@@ -148,13 +146,13 @@ describe("Scannable", () => {
   describe("validation", () => {
     test("throws when numRows is negative", async () => {
       await expect(
-        Scannable.fromTable(makeTable(), { numRows: -1 }),
+        Scannable.fromFactory(makeTable().schema, () => [], { numRows: -1 }),
       ).rejects.toThrow(/non-negative/);
     });
 
     test("throws when numRows is not an integer", async () => {
       await expect(
-        Scannable.fromTable(makeTable(), { numRows: 3.5 }),
+        Scannable.fromFactory(makeTable().schema, () => [], { numRows: 3.5 }),
       ).rejects.toThrow(/integer/);
     });
   });

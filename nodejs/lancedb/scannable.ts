@@ -116,16 +116,32 @@ export class Scannable {
   }
 
   /**
-   * Build a Scannable from an in-memory Arrow `Table`. Rescannable by
-   * default — the table's batches are replayed on each scan.
+   * Build a Scannable from an in-memory Arrow `Table`. Always rescannable;
+   * the table's batches are replayed on each scan.
+   *
+   * The table's row count is authoritative: `opts.numRows` must either be
+   * omitted or equal to `table.numRows`. `opts.rescannable` of `false` is
+   * rejected because in-memory Tables are always rescannable.
    */
-  static fromTable(
+  static async fromTable(
     table: ArrowTable,
     opts: ScannableOptions = {},
   ): Promise<Scannable> {
+    if (opts.numRows != null && opts.numRows !== table.numRows) {
+      throw new TypeError(
+        `opts.numRows (${opts.numRows}) does not match table.numRows (${table.numRows}). ` +
+          `The table's row count is authoritative; omit numRows or pass the matching value.`,
+      );
+    }
+    if (opts.rescannable === false) {
+      throw new TypeError(
+        `fromTable does not accept rescannable: false. ` +
+          `In-memory Arrow Tables are always rescannable; omit the option or pass true.`,
+      );
+    }
     return Scannable.fromFactory(table.schema, () => table.batches, {
-      numRows: opts.numRows ?? table.numRows,
-      rescannable: opts.rescannable ?? true,
+      numRows: table.numRows,
+      rescannable: true,
     });
   }
 
