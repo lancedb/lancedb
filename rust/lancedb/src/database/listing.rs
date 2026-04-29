@@ -360,34 +360,30 @@ impl ListingDatabase {
                 Ok(uri.to_string())
             }
             Ok(mut url) => {
-                let mut engine = None;
-                let mut filtered_querys = vec![];
+                if url.scheme().contains('+') {
+                    return Err(Error::NotSupported {
+                        message: "commit engine URI schemes are not supported for manifest-enabled namespace connections".to_string(),
+                    });
+                }
 
                 for (key, value) in url.query_pairs() {
                     if key == ENGINE {
-                        engine = Some(value.to_string());
+                        return Err(Error::NotSupported {
+                            message: format!(
+                                "commit engine '{}' is not supported for manifest-enabled namespace connections",
+                                value
+                            ),
+                        });
                     } else if key == MIRRORED_STORE {
                         return Err(Error::NotSupported {
                             message: "mirrored store is not supported for manifest-enabled namespace connections"
                                 .to_string(),
                         });
-                    } else {
-                        filtered_querys.push((key.to_string(), value.to_string()));
                     }
                 }
 
-                url.query_pairs_mut().clear();
-                url.query_pairs_mut().extend_pairs(filtered_querys);
                 url.set_query(None);
                 let plain_uri = url.to_string();
-
-                let table_base_uri = if let Some(store) = engine {
-                    let old_scheme = url.scheme();
-                    let new_scheme = format!("{}+{}", old_scheme, store);
-                    plain_uri.replacen(old_scheme, &new_scheme, 1)
-                } else {
-                    plain_uri.clone()
-                };
 
                 let os_params = ObjectStoreParams {
                     storage_options_accessor: if storage_options.is_empty() {
@@ -406,10 +402,12 @@ impl ListingDatabase {
                 )
                 .await?;
                 if object_store.is_local() {
-                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
+                        path: plain_uri.clone(),
+                    })?;
                 }
 
-                Ok(table_base_uri)
+                Ok(plain_uri)
             }
             Err(_) => {
                 let (object_store, _) = ObjectStore::from_uri_and_params(
@@ -453,6 +451,7 @@ impl ListingDatabase {
             options.new_table_config,
         )
         .await
+        .map(|db| db.with_uri(request.uri.clone()))
     }
 
     /// Connect to a listing database
@@ -822,15 +821,12 @@ impl ListingDatabase {
             store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
-        write_params.data_storage_version = self
-            .new_table_config
-            .data_storage_version
-            .or(storage_version_override);
+        write_params.data_storage_version = storage_version_override
+            .or(write_params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) = self
-            .new_table_config
-            .enable_v2_manifest_paths
-            .or(v2_manifest_override)
+        if let Some(enable_v2_manifest_paths) =
+            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }

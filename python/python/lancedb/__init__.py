@@ -360,6 +360,13 @@ async def connect_async(
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    manifest_enabled : bool, default False
+        When true for local/native connections, use directory namespace
+        manifests as the source of truth for table metadata. Existing
+        directory-listed root tables are migrated into the manifest on access.
+    namespace_client_properties : dict, optional
+        Additional directory namespace client properties to use with
+        ``manifest_enabled=True``.
 
     Examples
     --------

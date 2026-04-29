@@ -1163,7 +1163,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
-    use crate::database::listing::ListingDatabaseOptions;
+    use crate::database::listing::{ListingDatabaseOptions, OPT_NEW_TABLE_V2_MANIFEST_PATHS};
     use crate::database::namespace::LanceNamespaceDatabase;
     use crate::table::NativeTable;
     use crate::test_utils::connection::new_test_connection;
@@ -1258,6 +1258,7 @@ mod tests {
                 .downcast_ref::<LanceNamespaceDatabase>()
                 .is_some()
         );
+        assert_eq!(db.uri(), uri);
 
         let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
         assert_eq!(ns_impl, "dir");
@@ -1271,6 +1272,31 @@ mod tests {
             Some(&"true".to_string())
         );
         assert_eq!(properties.get("storage.timeout"), Some(&"30s".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_manifest_enabled_rejects_commit_engine_uri() {
+        let Err(err) = connect("s3+ddb://bucket/db?ddbTableName=manifest")
+            .manifest_enabled(true)
+            .execute()
+            .await
+        else {
+            panic!("expected manifest-enabled s3+ddb connection to fail");
+        };
+        assert!(
+            matches!(err, Error::NotSupported { message } if message.contains("commit engine URI schemes"))
+        );
+
+        let Err(err) = connect("s3://bucket/db?engine=ddb&ddbTableName=manifest")
+            .manifest_enabled(true)
+            .execute()
+            .await
+        else {
+            panic!("expected manifest-enabled engine query connection to fail");
+        };
+        assert!(
+            matches!(err, Error::NotSupported { message } if message.contains("commit engine"))
+        );
     }
 
     #[tokio::test]
@@ -1299,7 +1325,7 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
         let options = ListingDatabaseOptions::builder()
-            .enable_v2_manifest_paths(false)
+            .enable_v2_manifest_paths(true)
             .build();
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
 
@@ -1310,6 +1336,7 @@ mod tests {
             .await
             .unwrap()
             .create_empty_table("v1_manifest", schema)
+            .storage_option(OPT_NEW_TABLE_V2_MANIFEST_PATHS, "false")
             .execute()
             .await
             .unwrap();

@@ -81,6 +81,11 @@ impl LanceNamespaceDatabase {
         }
     }
 
+    pub(crate) fn with_uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = uri.into();
+        self
+    }
+
     pub async fn connect(
         ns_impl: &str,
         ns_properties: HashMap<String, String>,
@@ -185,15 +190,12 @@ impl LanceNamespaceDatabase {
         let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
             self.extract_storage_overrides(request)?;
 
-        params.data_storage_version = self
-            .new_table_config
-            .data_storage_version
-            .or(storage_version_override);
+        params.data_storage_version = storage_version_override
+            .or(params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) = self
-            .new_table_config
-            .enable_v2_manifest_paths
-            .or(v2_manifest_override)
+        if let Some(enable_v2_manifest_paths) =
+            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
         {
             params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
