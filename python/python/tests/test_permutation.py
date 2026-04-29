@@ -1095,3 +1095,60 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_from_table_identity(mem_db):
+    """Permutation.from_table without ops behaves like identity."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(10)}))
+    perm = Permutation.from_table(tbl)
+    assert perm.num_rows == 10
+    assert perm.column_names == ["x"]
+
+
+def test_from_table_shuffle_seeded(mem_db):
+    """from_table().shuffle(seed=...) is reproducible and reorders rows."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(100)}))
+    perm = Permutation.from_table(tbl).shuffle(seed=42)
+    rows = [r["x"] for r in perm.__getitems__(list(range(100)))]
+    assert sorted(rows) == list(range(100))
+    assert rows != list(range(100))
+
+    # Same seed → same order
+    rows2 = [
+        r["x"]
+        for r in Permutation.from_table(tbl)
+        .shuffle(seed=42)
+        .__getitems__(list(range(100)))
+    ]
+    assert rows == rows2
+
+
+def test_from_table_filter(mem_db):
+    """from_table().filter(...) limits the rows."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(100)}))
+    perm = Permutation.from_table(tbl).filter("x < 25")
+    assert perm.num_rows == 25
+
+
+def test_from_table_chained_ops(mem_db):
+    """Chained shuffle + filter materializes once."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(100)}))
+    perm = Permutation.from_table(tbl).filter("x >= 50").shuffle(seed=7)
+    assert perm.num_rows == 50
+    rows = [r["x"] for r in perm.__getitems__(list(range(50)))]
+    assert sorted(rows) == list(range(50, 100))
+
+
+def test_from_table_forwards_read_methods(mem_db):
+    """from_table() result transparently forwards Permutation read methods."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(10), "y": range(10)}))
+    perm = Permutation.from_table(tbl).select_columns(["x"])
+    assert perm.column_names == ["x"]
+
+
+def test_from_table_split_random(mem_db):
+    """from_table().split_random(...) returns rows from the first split."""
+    tbl = mem_db.create_table("tbl", pa.table({"x": range(100)}))
+    perm = Permutation.from_table(tbl).split_random(ratios=[0.3, 0.7], seed=1)
+    # Default split is 0 — ratio 0.3 → ~30 rows
+    assert 25 <= perm.num_rows <= 35
