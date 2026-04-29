@@ -4,11 +4,14 @@
 import {
   Table as ArrowTable,
   RecordBatch,
-  RecordBatchFileWriter,
   RecordBatchReader,
-  RecordBatchStreamWriter,
   Schema,
 } from "apache-arrow";
+import {
+  fromRecordBatchToStreamBuffer,
+  fromTableToBuffer,
+  makeEmptyTable,
+} from "./arrow";
 import { NapiScannable } from "./native.js";
 
 export interface ScannableOptions {
@@ -74,7 +77,7 @@ export class Scannable {
    * @param opts - Optional hints. `rescannable` defaults to `true`; set to
    *   `false` if calling `factory()` twice would not reproduce the same data.
    */
-  static fromFactory(
+  static async fromFactory(
     schema: Schema,
     factory: () =>
       | AsyncIterable<RecordBatch>
@@ -82,7 +85,7 @@ export class Scannable {
       | AsyncIterator<RecordBatch>
       | Iterator<RecordBatch>,
     opts: ScannableOptions = {},
-  ): Scannable {
+  ): Promise<Scannable> {
     const numRows = opts.numRows ?? null;
     if (numRows != null && !Number.isInteger(numRows)) {
       throw new TypeError("numRows must be an integer");
@@ -99,10 +102,10 @@ export class Scannable {
         iter = null;
         return null;
       }
-      return encodeBatch(result.value);
+      return fromRecordBatchToStreamBuffer(result.value);
     };
 
-    const schemaBuf = encodeSchema(schema);
+    const schemaBuf = await fromTableToBuffer(makeEmptyTable(schema));
     const native = new NapiScannable(
       schemaBuf,
       numRows,
@@ -116,7 +119,10 @@ export class Scannable {
    * Build a Scannable from an in-memory Arrow `Table`. Rescannable by
    * default — the table's batches are replayed on each scan.
    */
-  static fromTable(table: ArrowTable, opts: ScannableOptions = {}): Scannable {
+  static fromTable(
+    table: ArrowTable,
+    opts: ScannableOptions = {},
+  ): Promise<Scannable> {
     return Scannable.fromFactory(table.schema, () => table.batches, {
       numRows: opts.numRows ?? table.numRows,
       rescannable: opts.rescannable ?? true,
@@ -132,7 +138,7 @@ export class Scannable {
     schema: Schema,
     iter: AsyncIterable<RecordBatch> | Iterable<RecordBatch>,
     opts: ScannableOptions = {},
-  ): Scannable {
+  ): Promise<Scannable> {
     return Scannable.fromFactory(schema, () => iter, {
       numRows: opts.numRows,
       rescannable: opts.rescannable ?? false,
@@ -149,7 +155,7 @@ export class Scannable {
   static fromRecordBatchReader(
     reader: RecordBatchReader,
     opts: ScannableOptions = {},
-  ): Scannable {
+  ): Promise<Scannable> {
     return Scannable.fromFactory(reader.schema, () => reader, {
       numRows: opts.numRows,
       rescannable: opts.rescannable ?? false,
@@ -176,20 +182,4 @@ function normalizeIterator<T>(
     return source as Iterator<T>;
   }
   throw new TypeError("Scannable factory returned a non-iterable value");
-}
-
-async function encodeBatch(batch: RecordBatch): Promise<Buffer> {
-  const writer = RecordBatchStreamWriter.writeAll([batch]);
-  const bytes = await writer.toUint8Array();
-  return Buffer.from(bytes);
-}
-
-// Uses IPC File format (not Stream) because the Rust side parses it with
-// `ipc_file_to_schema`, which expects File format.
-function encodeSchema(schema: Schema): Buffer {
-  const writer = new RecordBatchFileWriter();
-  writer.reset(undefined, schema);
-  writer.finish();
-  writer.close();
-  return Buffer.from(writer.toUint8Array(true));
 }

@@ -1292,6 +1292,18 @@ export async function fromRecordBatchToBuffer(
 }
 
 /**
+ * Create a buffer containing a single record batch using the Arrow IPC Stream
+ * serialization. Each call produces a self-contained Stream message (schema +
+ * batch + EOS) suitable for incremental decode by `arrow_ipc::reader::StreamReader`.
+ */
+export async function fromRecordBatchToStreamBuffer(
+  batch: RecordBatch,
+): Promise<Buffer> {
+  const writer = RecordBatchStreamWriter.writeAll([batch]);
+  return Buffer.from(await writer.toUint8Array());
+}
+
+/**
  * Serialize an Arrow Table into a buffer using the Arrow IPC Stream serialization
  *
  * This function will apply `embeddings` to the table in a manner similar to

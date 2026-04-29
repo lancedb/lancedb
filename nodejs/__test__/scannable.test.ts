@@ -33,22 +33,24 @@ async function makeReader(): Promise<RecordBatchReader> {
 
 describe("Scannable", () => {
   describe("fromTable", () => {
-    test("reflects schema, numRows, and defaults rescannable=true", () => {
+    test("reflects schema, numRows, and defaults rescannable=true", async () => {
       const table = makeTable();
-      const scannable = Scannable.fromTable(table);
+      const scannable = await Scannable.fromTable(table);
 
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.numRows).toBe(table.numRows);
       expect(scannable.rescannable).toBe(true);
     });
 
-    test("honors numRows override", () => {
-      const scannable = Scannable.fromTable(makeTable(), { numRows: 42 });
+    test("honors numRows override", async () => {
+      const scannable = await Scannable.fromTable(makeTable(), {
+        numRows: 42,
+      });
       expect(scannable.numRows).toBe(42);
     });
 
-    test("honors rescannable override", () => {
-      const scannable = Scannable.fromTable(makeTable(), {
+    test("honors rescannable override", async () => {
+      const scannable = await Scannable.fromTable(makeTable(), {
         rescannable: false,
       });
       expect(scannable.rescannable).toBe(false);
@@ -58,7 +60,7 @@ describe("Scannable", () => {
   describe("fromRecordBatchReader", () => {
     test("reflects schema and defaults numRows=null, rescannable=false", async () => {
       const reader = await makeReader();
-      const scannable = Scannable.fromRecordBatchReader(reader);
+      const scannable = await Scannable.fromRecordBatchReader(reader);
 
       expect(scannable.schema).toBe(reader.schema);
       expect(scannable.numRows).toBeNull();
@@ -66,10 +68,13 @@ describe("Scannable", () => {
     });
 
     test("honors numRows and rescannable overrides", async () => {
-      const scannable = Scannable.fromRecordBatchReader(await makeReader(), {
-        numRows: 3,
-        rescannable: true,
-      });
+      const scannable = await Scannable.fromRecordBatchReader(
+        await makeReader(),
+        {
+          numRows: 3,
+          rescannable: true,
+        },
+      );
 
       expect(scannable.numRows).toBe(3);
       expect(scannable.rescannable).toBe(true);
@@ -77,16 +82,19 @@ describe("Scannable", () => {
   });
 
   describe("fromIterable", () => {
-    test("accepts a sync iterable of batches", () => {
+    test("accepts a sync iterable of batches", async () => {
       const table = makeTable();
-      const scannable = Scannable.fromIterable(table.schema, table.batches);
+      const scannable = await Scannable.fromIterable(
+        table.schema,
+        table.batches,
+      );
 
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.numRows).toBeNull();
       expect(scannable.rescannable).toBe(false);
     });
 
-    test("accepts an async iterable of batches", () => {
+    test("accepts an async iterable of batches", async () => {
       const table = makeTable();
       async function* generator(): AsyncGenerator<RecordBatch> {
         for (const batch of table.batches) {
@@ -94,35 +102,39 @@ describe("Scannable", () => {
         }
       }
 
-      const scannable = Scannable.fromIterable(table.schema, generator());
+      const scannable = await Scannable.fromIterable(table.schema, generator());
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.rescannable).toBe(false);
     });
 
-    test("honors rescannable override", () => {
+    test("honors rescannable override", async () => {
       const table = makeTable();
-      const scannable = Scannable.fromIterable(table.schema, table.batches, {
-        rescannable: true,
-      });
+      const scannable = await Scannable.fromIterable(
+        table.schema,
+        table.batches,
+        {
+          rescannable: true,
+        },
+      );
       expect(scannable.rescannable).toBe(true);
     });
   });
 
   describe("fromFactory", () => {
-    test("defaults rescannable=true and does not invoke the factory eagerly", () => {
+    test("defaults rescannable=true and does not invoke the factory eagerly", async () => {
       const table = makeTable();
       const factory = jest.fn(() => table.batches);
 
-      const scannable = Scannable.fromFactory(table.schema, factory);
+      const scannable = await Scannable.fromFactory(table.schema, factory);
 
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.rescannable).toBe(true);
       expect(factory).not.toHaveBeenCalled();
     });
 
-    test("honors rescannable and numRows overrides", () => {
+    test("honors rescannable and numRows overrides", async () => {
       const table = makeTable();
-      const scannable = Scannable.fromFactory(
+      const scannable = await Scannable.fromFactory(
         table.schema,
         () => table.batches,
         { numRows: 7, rescannable: false },
@@ -134,22 +146,22 @@ describe("Scannable", () => {
   });
 
   describe("validation", () => {
-    test("throws when numRows is negative", () => {
-      expect(() => Scannable.fromTable(makeTable(), { numRows: -1 })).toThrow(
-        /non-negative/,
-      );
+    test("throws when numRows is negative", async () => {
+      await expect(
+        Scannable.fromTable(makeTable(), { numRows: -1 }),
+      ).rejects.toThrow(/non-negative/);
     });
 
-    test("throws when numRows is not an integer", () => {
-      expect(() => Scannable.fromTable(makeTable(), { numRows: 3.5 })).toThrow(
-        /integer/,
-      );
+    test("throws when numRows is not an integer", async () => {
+      await expect(
+        Scannable.fromTable(makeTable(), { numRows: 3.5 }),
+      ).rejects.toThrow(/integer/);
     });
   });
 
   describe("native handle", () => {
-    test("exposes a native handle via inner", () => {
-      const scannable = Scannable.fromTable(makeTable());
+    test("exposes a native handle via inner", async () => {
+      const scannable = await Scannable.fromTable(makeTable());
       expect(scannable.inner).toBeDefined();
       expect(typeof scannable.inner).toBe("object");
       expect(scannable.inner).not.toBeNull();
@@ -158,19 +170,19 @@ describe("Scannable", () => {
 
   // Schema-variety construction tests. Each asserts that construction
   // succeeds against a richer Arrow schema, which transitively exercises
-  // `encodeSchema` and the Rust-side `ipc_file_to_schema` for types beyond
-  // flat primitives.
+  // schema serialization and the Rust-side `ipc_file_to_schema` for types
+  // beyond flat primitives.
   describe("schema variety", () => {
-    test("accepts an empty table", () => {
+    test("accepts an empty table", async () => {
       const schema = new Schema([new Field("id", new Int32(), true)]);
       const table = makeEmptyTable(schema);
-      const scannable = Scannable.fromTable(table);
+      const scannable = await Scannable.fromTable(table);
 
       expect(scannable.numRows).toBe(0);
       expect(scannable.schema).toBe(table.schema);
     });
 
-    test("accepts nested struct and list columns", () => {
+    test("accepts nested struct and list columns", async () => {
       const table = makeArrowTable(
         [
           { id: 1, point: { x: 0, y: 0 }, tags: ["a", "b"] },
@@ -178,13 +190,13 @@ describe("Scannable", () => {
         ],
         { vectorColumns: {} },
       );
-      const scannable = Scannable.fromTable(table);
+      const scannable = await Scannable.fromTable(table);
 
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.numRows).toBe(2);
     });
 
-    test("accepts a FixedSizeList (vector) column", () => {
+    test("accepts a FixedSizeList (vector) column", async () => {
       const table = makeArrowTable(
         [
           { id: 1, vec: [1, 2, 3] },
@@ -192,17 +204,17 @@ describe("Scannable", () => {
         ],
         { vectorColumns: { vec: { type: new Float16() } } },
       );
-      const scannable = Scannable.fromTable(table);
+      const scannable = await Scannable.fromTable(table);
 
       expect(scannable.schema).toBe(table.schema);
       expect(scannable.numRows).toBe(2);
     });
 
-    test("accepts a table with many columns", () => {
+    test("accepts a table with many columns", async () => {
       const row: Record<string, number> = {};
       for (let i = 0; i < 50; i++) row[`c${i}`] = i;
       const table = makeArrowTable([row, row], { vectorColumns: {} });
-      const scannable = Scannable.fromTable(table);
+      const scannable = await Scannable.fromTable(table);
 
       expect(scannable.schema.fields.length).toBe(50);
       expect(scannable.numRows).toBe(2);
