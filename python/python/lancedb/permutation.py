@@ -779,6 +779,25 @@ class Permutation:
         batch = LOOP.run(do_getitems())
         return self.transform_fn(batch)
 
+    def fetch(self, indices: list[int]) -> Any:
+        """
+        Fetch rows from the permutation by offset.
+
+        This is the public batch-access API. It returns the rows for the given
+        offsets in the same shape as configured by
+        [with_format](#with_format) / [with_transform](#with_transform).
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory:///")
+        >>> tbl = db.create_table("tbl", data=[{"x": x} for x in range(10)])
+        >>> perm = Permutation.identity(tbl)
+        >>> perm.fetch([0, 5, 9])
+        [{'x': 0}, {'x': 5}, {'x': 9}]
+        """
+        return self.__getitems__(indices)
+
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
         """

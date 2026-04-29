@@ -1095,3 +1095,23 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_fetch_matches_getitems(some_permutation: Permutation):
+    """Public fetch() should be equivalent to __getitems__."""
+    indices = [0, 1, 2, 10, 100]
+    assert some_permutation.fetch(indices) == some_permutation.__getitems__(indices)
+
+
+def test_fetch_respects_format(some_permutation: Permutation):
+    """fetch() applies the configured format/transform."""
+    arrow_perm = some_permutation.with_format("arrow")
+    result = arrow_perm.fetch([0, 1, 2])
+    assert isinstance(result, pa.RecordBatch)
+    assert result.num_rows == 3
+
+
+def test_fetch_invalid_offset(some_permutation: Permutation):
+    """fetch() with an out-of-range offset raises an error."""
+    with pytest.raises(Exception):
+        some_permutation.fetch([999999])
