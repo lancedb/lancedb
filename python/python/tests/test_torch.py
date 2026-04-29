@@ -27,7 +27,17 @@ def test_permutation_dataloader(mem_db):
     for batch in dataloader:
         assert batch["a"].size(0) == 10
 
+    # New "torch" format: per-row dicts of tensors, default collate yields
+    # dict[str, Tensor] (HuggingFace style).
     permutation = permutation.with_format("torch")
+    dataloader = torch.utils.data.DataLoader(permutation, batch_size=10, shuffle=True)
+    for batch in dataloader:
+        assert isinstance(batch, dict)
+        assert "a" in batch
+        assert batch["a"].size() == (10,)
+
+    # Previous "torch" semantics is preserved under the "torch_row" name.
+    permutation = permutation.with_format("torch_row")
     dataloader = torch.utils.data.DataLoader(permutation, batch_size=10, shuffle=True)
     for batch in dataloader:
         assert batch.size(0) == 10

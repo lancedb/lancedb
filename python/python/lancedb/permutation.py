@@ -9,7 +9,7 @@ import json
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_rows
+from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -697,6 +697,7 @@ class Permutation:
             "pandas",
             "arrow",
             "torch",
+            "torch_row",
             "torch_col",
             "polars",
         ],
@@ -712,8 +713,17 @@ class Permutation:
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a list of tensors, one per row
-        - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
+        - "torch" - a list of per-row dicts whose values are torch tensors. When
+          used with ``torch.utils.data.DataLoader`` (default collate), each
+          batch yielded by the loader is ``dict[str, Tensor]`` — one tensor per
+          column, with column names preserved. This matches HuggingFace
+          ``dataset.set_format("torch")`` semantics.
+        - "torch_row" - a list of 1-D torch tensors, one per row. Each tensor
+          stacks all column values into a single row vector and column names
+          are not preserved. (This was the previous "torch" behavior.)
+        - "torch_col" - a 2-D torch tensor of shape ``(n_cols, n_rows)``. Column
+          names are not preserved. Requires ``collate_fn=lambda x: x`` if used
+          with ``DataLoader``.
         - "polars" - the batch will be a polars DataFrame
 
         Conversion may or may not involve a data copy.  Lance uses Arrow internally
@@ -741,6 +751,8 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
+            return self.with_transform(batch_to_tensor_dict)
+        elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":
             return self.with_transform(batch_to_tensor)

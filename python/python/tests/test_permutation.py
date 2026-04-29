@@ -950,14 +950,27 @@ def test_transform_fn(mem_db):
     try:
         import torch
 
+        # "torch" format: list of per-row dicts of tensors (HF-compatible).
         torch_result = list(
             permutation.with_format("torch").iter(10, skip_last_batch=False)
         )[0]
         assert isinstance(torch_result, list)
         assert len(torch_result) == 10
-        assert isinstance(torch_result[0], torch.Tensor)
-        assert torch_result[0].shape == (2,)
-        assert torch_result[0].dtype == torch.int64
+        assert isinstance(torch_result[0], dict)
+        assert set(torch_result[0].keys()) == {"id", "value"}
+        assert isinstance(torch_result[0]["id"], torch.Tensor)
+        assert torch_result[0]["id"].shape == ()
+        assert torch_result[0]["id"].dtype == torch.int64
+
+        # "torch_row" format: list of 1-D row tensors (previous "torch" behavior).
+        torch_row_result = list(
+            permutation.with_format("torch_row").iter(10, skip_last_batch=False)
+        )[0]
+        assert isinstance(torch_row_result, list)
+        assert len(torch_row_result) == 10
+        assert isinstance(torch_row_result[0], torch.Tensor)
+        assert torch_row_result[0].shape == (2,)
+        assert torch_row_result[0].dtype == torch.int64
     except ImportError:
         # Skip check if torch is not installed
         pass

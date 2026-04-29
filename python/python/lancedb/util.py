@@ -448,3 +448,29 @@ def batch_to_tensor_rows(batch: pa.RecordBatch):
     stacked = torch.tensor(numpy.column_stack(columns))
     rows = list(stacked.unbind(dim=0))
     return rows
+
+
+def batch_to_tensor_dict(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch into a list of per-row dicts whose values
+    are PyTorch tensors.
+
+    Each column is converted to a tensor in one shot (zero-copy via DLPack
+    when supported), then sliced per row. The result is shaped to work with
+    PyTorch's default DataLoader collate, which stacks the per-row dicts
+    into a single ``dict[str, Tensor]`` per batch — matching the
+    HuggingFace ``dataset.set_format("torch")`` convention.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    columns: dict[str, "torch.Tensor"] = {}
+    for i, name in enumerate(batch.schema.names):
+        col = batch.column(i)
+        try:
+            columns[name] = torch.from_dlpack(col)
+        except Exception:
+            columns[name] = torch.tensor(col.to_numpy(zero_copy_only=False))
+    n = batch.num_rows
+    return [{name: t[i] for name, t in columns.items()} for i in range(n)]
