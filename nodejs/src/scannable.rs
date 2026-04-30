@@ -7,8 +7,9 @@
 //! `RecordBatch` encoded as a self-contained Arrow IPC Stream message (schema
 //! message + record batch message + EOS marker) wrapped in a `Buffer`, or
 //! `null` when the stream is exhausted. The Rust side parses each buffer with
-//! `arrow_ipc::reader::StreamReader`, validates the schema on the first batch,
-//! and yields decoded `RecordBatch`es as a [`SendableRecordBatchStream`].
+//! `arrow_ipc::reader::StreamReader`, validates every standalone batch stream
+//! against the declared schema, and yields decoded `RecordBatch`es as a
+//! [`SendableRecordBatchStream`].
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -120,12 +121,11 @@ impl LanceScannable for NapiScannable {
         let declared_schema = schema.clone();
 
         // State threaded through the unfold: (tsfn, next_batch_index,
-        // declared_schema, validated_first_schema, errored).
+        // declared_schema, errored).
         let initial = State {
             tsfn,
             batch_index: 0,
             declared_schema,
-            validated: false,
             errored: false,
         };
 
@@ -144,9 +144,8 @@ impl LanceScannable for NapiScannable {
                 }
             };
 
-            match decode_one_batch(buf.as_ref(), &state.declared_schema, state.validated) {
+            match decode_one_batch(buf.as_ref(), &state.declared_schema) {
                 Ok(batch) => {
-                    state.validated = true;
                     state.batch_index += 1;
                     Some((Ok(batch), state))
                 }
@@ -179,7 +178,6 @@ struct State {
     tsfn: Arc<GetNextBatchFn>,
     batch_index: usize,
     declared_schema: SchemaRef,
-    validated: bool,
     errored: bool,
 }
 
@@ -201,27 +199,21 @@ async fn pull_next(tsfn: &GetNextBatchFn) -> LanceResult<Option<Buffer>> {
 }
 
 /// Decode one IPC Stream buffer (schema + batch + EOS) into a `RecordBatch`.
-/// On the first call for a scan, validates that the stream's schema matches
-/// the one declared at construction.
-fn decode_one_batch(
-    buf: &[u8],
-    declared: &SchemaRef,
-    already_validated: bool,
-) -> LanceResult<RecordBatch> {
+/// Each buffer is a standalone IPC stream, so every decoded stream schema must
+/// match the one declared at construction.
+fn decode_one_batch(buf: &[u8], declared: &SchemaRef) -> LanceResult<RecordBatch> {
     let reader = StreamReader::try_new(Cursor::new(buf), None).map_err(|e| Error::Runtime {
         message: format!("failed to open IPC stream reader: {}", e),
     })?;
 
-    if !already_validated {
-        let actual = reader.schema();
-        if actual.as_ref() != declared.as_ref() {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "declared schema does not match stream schema: declared={:?} actual={:?}",
-                    declared, actual
-                ),
-            });
-        }
+    let actual = reader.schema();
+    if actual.as_ref() != declared.as_ref() {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "declared schema does not match stream schema: declared={:?} actual={:?}",
+                declared, actual
+            ),
+        });
     }
 
     let mut iter = reader;
