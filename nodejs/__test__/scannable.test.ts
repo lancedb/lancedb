@@ -65,17 +65,39 @@ describe("Scannable", () => {
       expect(scannable.rescannable).toBe(false);
     });
 
-    test("honors numRows and rescannable overrides", async () => {
+    test("honors numRows override", async () => {
       const scannable = await Scannable.fromRecordBatchReader(
         await makeReader(),
-        {
-          numRows: 3,
-          rescannable: true,
-        },
+        { numRows: 3 },
       );
 
       expect(scannable.numRows).toBe(3);
-      expect(scannable.rescannable).toBe(true);
+      expect(scannable.rescannable).toBe(false);
+    });
+
+    test("rescannable: false explicit does not throw", async () => {
+      const reader = await makeReader();
+      const scannable = await Scannable.fromRecordBatchReader(reader, {
+        rescannable: false,
+      });
+      expect(scannable.rescannable).toBe(false);
+    });
+
+    test("throws when opts.rescannable is true", async () => {
+      const reader = await makeReader();
+      await expect(
+        Scannable.fromRecordBatchReader(reader, { rescannable: true }),
+      ).rejects.toThrow(/does not accept rescannable/);
+    });
+
+    test("throws when opts.rescannable is true even alongside numRows", async () => {
+      const reader = await makeReader();
+      await expect(
+        Scannable.fromRecordBatchReader(reader, {
+          numRows: 3,
+          rescannable: true,
+        }),
+      ).rejects.toThrow(/does not accept rescannable/);
     });
   });
 

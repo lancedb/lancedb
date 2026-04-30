@@ -186,15 +186,32 @@ export class Scannable {
    * be consumed once; `rescannable` defaults to `false`.
    *
    * The reader must already be opened (via `.open()`) so its `.schema` is
-   * populated — `RecordBatchReader.from(...)` returns an unopened reader.
+   * populated. `RecordBatchReader.from(...)` returns an unopened reader.
+   *
+   * `opts.rescannable: true` is rejected because `RecordBatchReader` is a
+   * self-iterator (its `[Symbol.iterator]()` returns itself), and this
+   * constructor does not call `reader.reset()` between scans, so a second
+   * scan would always see an exhausted reader. For genuinely replayable
+   * sources, use
+   * `fromFactory(schema, () => openReader(), { rescannable: true })`,
+   * which mints a fresh reader on each scan.
    */
-  static fromRecordBatchReader(
+  static async fromRecordBatchReader(
     reader: RecordBatchReader,
     opts: ScannableOptions = {},
   ): Promise<Scannable> {
+    if (opts.rescannable === true) {
+      throw new TypeError(
+        `fromRecordBatchReader does not accept rescannable: true. ` +
+          `RecordBatchReader is a self-iterator (its [Symbol.iterator]() ` +
+          `returns itself) and would be exhausted after the first scan. ` +
+          `Use fromFactory(schema, () => openReader(), { rescannable: true }) ` +
+          `for sources where each call mints a fresh reader.`,
+      );
+    }
     return Scannable.fromFactory(reader.schema, () => reader, {
       numRows: opts.numRows,
-      rescannable: opts.rescannable ?? false,
+      rescannable: false,
     });
   }
 }
