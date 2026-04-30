@@ -389,6 +389,7 @@ class Permutation:
         transform_fn: Callable[pa.RecordBatch, Any],
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        connection_factory: Optional[Callable[[str], LanceTable]] = None,
     ):
         """
         Internal constructor.  Use [from_tables](#from_tables) instead.
@@ -403,6 +404,7 @@ class Permutation:
         self.batch_size = batch_size
         self.offset = offset
         self.limit = limit
+        self.connection_factory = connection_factory
         self._reader: Optional[PermutationReader] = None
 
     @property
@@ -444,6 +446,7 @@ class Permutation:
             "transform_fn": self.transform_fn,
             "offset": self.offset,
             "limit": self.limit,
+            "connection_factory": self.connection_factory,
         }
         kwargs.update(overrides)
         return Permutation(**kwargs)
@@ -462,6 +465,81 @@ class Permutation:
         Creates a new permutation with the given batch size
         """
         return self._clone(batch_size=batch_size)
+
+    def with_connection_factory(
+        self, connection_factory: Callable[[str], LanceTable]
+    ) -> "Permutation":
+        """
+        Creates a new permutation that will use ``connection_factory`` to reopen
+        the base table when this permutation is unpickled in a worker process.
+
+        The factory is a callable that takes a single argument — the base table
+        name — and returns a [LanceTable]. It must be picklable; the worker
+        will pickle it via standard ``pickle`` and call it to recover the base
+        table. Picklable callables in practice means top-level (module-level)
+        functions, ``functools.partial`` of such functions, or instances of
+        picklable classes implementing ``__call__``. Lambdas and closures over
+        local variables don't pickle with the default protocol.
+
+        Setting a factory is necessary when the URI alone is not enough to
+        re-open the connection — most importantly for LanceDB Cloud (``db://``)
+        connections, where ``api_key`` and ``region`` aren't recoverable from
+        the connection object after construction.
+
+        For local file or cloud-storage paths the factory is optional: if not
+        set, ``__getstate__`` falls back to capturing
+        ``(uri, storage_options, namespace_path)`` and re-opening via
+        ``lancedb.connect(uri, storage_options=...)``.
+
+        Examples
+        --------
+        Basic native (file-system path), parameterized via ``functools.partial``::
+
+            import functools, lancedb
+            from lancedb.permutation import Permutation
+
+            def open_native_table(uri: str, table_name: str):
+                return lancedb.connect(uri).open_table(table_name)
+
+            factory = functools.partial(open_native_table, "/data/lance_db")
+            permutation = Permutation.identity(
+                factory("training")
+            ).with_connection_factory(factory)
+
+        Native with a namespace path::
+
+            def open_namespaced_table(
+                uri: str, namespace_path: list[str], table_name: str,
+            ):
+                return lancedb.connect(uri).open_table(
+                    table_name, namespace_path=namespace_path,
+                )
+
+            factory = functools.partial(
+                open_namespaced_table,
+                "/data/lance_db",
+                ["analytics", "training"],
+            )
+
+        LanceDB Cloud, reading credentials from env vars at worker startup
+        so secrets aren't pickled into the dataset::
+
+            import os, lancedb
+
+            def open_remote_table(table_name: str):
+                db = lancedb.connect(
+                    "db://my-database",
+                    api_key=os.environ["LANCEDB_API_KEY"],
+                    region=os.environ.get("LANCEDB_REGION", "us-east-1"),
+                )
+                return db.open_table(table_name)
+
+            permutation = Permutation.identity(
+                open_remote_table("training")
+            ).with_connection_factory(open_remote_table)
+        """
+        assert connection_factory is not None, "connection_factory is required"
+        return self._clone(connection_factory=connection_factory)
 
     @classmethod
     def identity(cls, table: LanceTable) -> "Permutation":
@@ -549,13 +627,53 @@ class Permutation:
     def __getstate__(self) -> dict[str, Any]:
         """Build a picklable state dict for this permutation.
 
-        The base table is captured by connection URI + table name so it can be
-        re-opened in a worker process. The permutation table — always an
-        in-memory LanceDB table — is captured as Arrow IPC stream bytes. The
-        cached reader is dropped; it is rebuilt lazily on first access after
+        The base table is captured either via a user-supplied
+        ``connection_factory`` (see [with_connection_factory]) or, as a
+        fallback, by introspecting ``(uri, storage_options, namespace_path)``
+        on the connection. The permutation table — always an in-memory
+        LanceDB table — is captured as Arrow IPC stream bytes. The cached
+        reader is dropped; it is rebuilt lazily on first access after
         unpickle.
         """
-        base_uri = self.base_table._conn.uri
+        permutation_data: Optional[bytes] = None
+        if self.permutation_table is not None:
+            permutation_data = _serialize_arrow_table(self.permutation_table.to_arrow())
+
+        common = {
+            "base_table_name": self.base_table.name,
+            "permutation_data": permutation_data,
+            "split": self.split,
+            "selection": self.selection,
+            "batch_size": self.batch_size,
+            "transform_fn": self.transform_fn,
+            "offset": self.offset,
+            "limit": self.limit,
+            "connection_factory": self.connection_factory,
+        }
+
+        if self.connection_factory is not None:
+            # The factory carries enough state to recover the base table on
+            # its own; we don't need to capture the URI / storage options /
+            # namespace from the existing connection.
+            return common
+
+        # URI-introspection fallback: only viable for native (OSS) connections
+        # where (uri, storage_options) is enough to reopen. Remote / cloud
+        # connections don't expose recoverable api_key / region — those users
+        # must call with_connection_factory().
+        try:
+            base_uri = self.base_table._conn.uri
+            storage_options = self.base_table._conn.storage_options
+        except AttributeError as e:
+            raise ValueError(
+                "Cannot pickle this Permutation: the base table's connection "
+                "does not expose a uri/storage_options, which usually means it "
+                "is a remote (LanceDB Cloud) connection. Call "
+                "Permutation.with_connection_factory(...) first to provide a "
+                "picklable callable that re-opens the base table from a worker "
+                "process."
+            ) from e
+
         if base_uri.startswith("memory://"):
             # In-memory base tables can't be shared across processes. Fail
             # eagerly so the user sees a clear error instead of a silent
@@ -566,35 +684,28 @@ class Permutation:
                 "paths) can be shared with other processes."
             )
 
-        permutation_data: Optional[bytes] = None
-        if self.permutation_table is not None:
-            permutation_data = _serialize_arrow_table(self.permutation_table.to_arrow())
-
         return {
+            **common,
             "base_table_uri": base_uri,
-            "base_table_name": self.base_table.name,
             "base_table_namespace": self.base_table._namespace_path,
-            "base_table_storage_options": self.base_table._conn.storage_options,
-            "permutation_data": permutation_data,
-            "split": self.split,
-            "selection": self.selection,
-            "batch_size": self.batch_size,
-            "transform_fn": self.transform_fn,
-            "offset": self.offset,
-            "limit": self.limit,
+            "base_table_storage_options": storage_options,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         from . import connect
 
-        base_db = connect(
-            state["base_table_uri"],
-            storage_options=state["base_table_storage_options"],
-        )
-        base_table = base_db.open_table(
-            state["base_table_name"],
-            namespace_path=state["base_table_namespace"] or None,
-        )
+        connection_factory = state["connection_factory"]
+        if connection_factory is not None:
+            base_table = connection_factory(state["base_table_name"])
+        else:
+            base_db = connect(
+                state["base_table_uri"],
+                storage_options=state["base_table_storage_options"],
+            )
+            base_table = base_db.open_table(
+                state["base_table_name"],
+                namespace_path=state["base_table_namespace"] or None,
+            )
 
         permutation_table: Optional[LanceTable] = None
         if state["permutation_data"] is not None:
@@ -610,6 +721,7 @@ class Permutation:
         self.transform_fn = state["transform_fn"]
         self.offset = state["offset"]
         self.limit = state["limit"]
+        self.connection_factory = connection_factory
         self._reader = None
 
     @property

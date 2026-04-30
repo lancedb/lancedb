@@ -1,14 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import functools
 import pickle
 
+import lancedb
 import pyarrow as pa
 import pytest
 from lancedb.util import tbl_to_tensor
 from lancedb.permutation import Permutation, Permutations, permutation_builder
 
 torch = pytest.importorskip("torch")
+
+
+def _open_native_table(uri: str, table_name: str):
+    """Top-level connection factory used by the explicit-factory pickle test.
+
+    Defined at module scope so that pickle can resolve it by name in the
+    worker / unpickling process.
+    """
+    return lancedb.connect(uri).open_table(table_name)
 
 
 def test_table_dataloader(mem_db):
@@ -78,6 +89,27 @@ def test_permutation_dataloader_multiprocessing(tmp_db):
         assert batch["a"].size(0) == 10
         seen += batch["a"].size(0)
     assert seen == 1000
+
+
+def test_permutation_pickle_with_connection_factory(tmp_path):
+    """When the user provides a connection_factory, pickling should round-trip
+    through that factory rather than introspecting the connection URI. Useful
+    for remote / cloud connections where the URI alone isn't reopenable."""
+    db = lancedb.connect(tmp_path)
+    db.create_table("test_table", pa.table({"a": range(50)}))
+
+    factory = functools.partial(_open_native_table, str(tmp_path))
+    permutation = Permutation.identity(factory("test_table")).with_connection_factory(
+        factory
+    )
+
+    restored = pickle.loads(pickle.dumps(permutation))
+
+    assert len(restored) == 50
+    # The factory survives pickling and is what powered base-table reopen.
+    assert restored.connection_factory is not None
+    assert restored.connection_factory.func is _open_native_table
+    assert restored.__getitems__([0, 1, 2]) == [{"a": 0}, {"a": 1}, {"a": 2}]
 
 
 def test_permutation_with_builder_is_picklable(tmp_db):
