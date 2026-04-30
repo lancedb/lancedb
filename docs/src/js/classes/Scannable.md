@@ -49,7 +49,7 @@ readonly schema: Schema<any>;
 static fromFactory(
    schema,
    factory,
-   opts): Scannable
+   opts): Promise<Scannable>
 ```
 
 Build a Scannable from an explicit schema and a factory that returns a
@@ -75,7 +75,7 @@ source whose batches are produced lazily.
 
 #### Returns
 
-[`Scannable`](Scannable.md)
+`Promise`&lt;[`Scannable`](Scannable.md)&gt;
 
 ***
 
@@ -85,12 +85,23 @@ source whose batches are produced lazily.
 static fromIterable(
    schema,
    iter,
-   opts): Scannable
+   opts): Promise<Scannable>
 ```
 
-Build a Scannable from an iterable of `RecordBatch`es. The iterable is
-consumed once; `rescannable` defaults to `false`. Pass an explicit
-schema so the consumer can validate before any batch is pulled.
+Build a Scannable from an iterable of `RecordBatch`es. `rescannable`
+defaults to `false`. Pass an explicit schema so the consumer can
+validate before any batch is pulled.
+
+`opts.rescannable: true` is honest for replayable iterables (Arrays,
+Sets, or custom iterables whose `[Symbol.iterator]()` returns a fresh
+iterator each call). It is rejected for one-shot iterables (generators,
+async generators, or already-an-iterator inputs) because their
+`[Symbol.iterator]()` returns the same exhausted object on the second
+scan. For replayable sources outside this shape, use
+`fromFactory(schema, () => createIter(), { rescannable: true })`.
+
+Note: when `opts.rescannable` is `true`, the constructor calls
+`[Symbol.iterator]()` once on the input to perform the structural check.
 
 #### Parameters
 
@@ -102,21 +113,29 @@ schema so the consumer can validate before any batch is pulled.
 
 #### Returns
 
-[`Scannable`](Scannable.md)
+`Promise`&lt;[`Scannable`](Scannable.md)&gt;
 
 ***
 
 ### fromRecordBatchReader()
 
 ```ts
-static fromRecordBatchReader(reader, opts): Scannable
+static fromRecordBatchReader(reader, opts): Promise<Scannable>
 ```
 
 Build a Scannable from an Arrow `RecordBatchReader`. A reader can only
 be consumed once; `rescannable` defaults to `false`.
 
 The reader must already be opened (via `.open()`) so its `.schema` is
-populated — `RecordBatchReader.from(...)` returns an unopened reader.
+populated. `RecordBatchReader.from(...)` returns an unopened reader.
+
+`opts.rescannable: true` is rejected because `RecordBatchReader` is a
+self-iterator (its `[Symbol.iterator]()` returns itself), and this
+constructor does not call `reader.reset()` between scans, so a second
+scan would always see an exhausted reader. For genuinely replayable
+sources, use
+`fromFactory(schema, () => openReader(), { rescannable: true })`,
+which mints a fresh reader on each scan.
 
 #### Parameters
 
@@ -126,18 +145,22 @@ populated — `RecordBatchReader.from(...)` returns an unopened reader.
 
 #### Returns
 
-[`Scannable`](Scannable.md)
+`Promise`&lt;[`Scannable`](Scannable.md)&gt;
 
 ***
 
 ### fromTable()
 
 ```ts
-static fromTable(table, opts): Scannable
+static fromTable(table, opts): Promise<Scannable>
 ```
 
-Build a Scannable from an in-memory Arrow `Table`. Rescannable by
-default — the table's batches are replayed on each scan.
+Build a Scannable from an in-memory Arrow `Table`. Always rescannable;
+the table's batches are replayed on each scan.
+
+The table's row count is authoritative: `opts.numRows` must either be
+omitted or equal to `table.numRows`. `opts.rescannable` of `false` is
+rejected because in-memory Tables are always rescannable.
 
 #### Parameters
 
@@ -147,4 +170,4 @@ default — the table's batches are replayed on each scan.
 
 #### Returns
 
-[`Scannable`](Scannable.md)
+`Promise`&lt;[`Scannable`](Scannable.md)&gt;
