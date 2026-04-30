@@ -146,15 +146,35 @@ export class Scannable {
   }
 
   /**
-   * Build a Scannable from an iterable of `RecordBatch`es. The iterable is
-   * consumed once; `rescannable` defaults to `false`. Pass an explicit
-   * schema so the consumer can validate before any batch is pulled.
+   * Build a Scannable from an iterable of `RecordBatch`es. `rescannable`
+   * defaults to `false`. Pass an explicit schema so the consumer can
+   * validate before any batch is pulled.
+   *
+   * `opts.rescannable: true` is honest for replayable iterables (Arrays,
+   * Sets, or custom iterables whose `[Symbol.iterator]()` returns a fresh
+   * iterator each call). It is rejected for one-shot iterables (generators,
+   * async generators, or already-an-iterator inputs) because their
+   * `[Symbol.iterator]()` returns the same exhausted object on the second
+   * scan. For replayable sources outside this shape, use
+   * `fromFactory(schema, () => createIter(), { rescannable: true })`.
+   *
+   * Note: when `opts.rescannable` is `true`, the constructor calls
+   * `[Symbol.iterator]()` once on the input to perform the structural check.
    */
-  static fromIterable(
+  static async fromIterable(
     schema: Schema,
     iter: AsyncIterable<RecordBatch> | Iterable<RecordBatch>,
     opts: ScannableOptions = {},
   ): Promise<Scannable> {
+    if (opts.rescannable === true && isOneShotIterable(iter)) {
+      throw new TypeError(
+        `fromIterable: rescannable: true is not honest for one-shot iterables ` +
+          `(generators, async generators, or iterators where [Symbol.iterator]() ` +
+          `returns the same object). The source would be exhausted after the first scan. ` +
+          `Use fromFactory(schema, () => createIter(), { rescannable: true }) for sources ` +
+          `where each call mints a fresh iterator.`,
+      );
+    }
     return Scannable.fromFactory(schema, () => iter, {
       numRows: opts.numRows,
       rescannable: opts.rescannable ?? false,
@@ -198,4 +218,35 @@ function normalizeIterator<T>(
     return source as Iterator<T>;
   }
   throw new TypeError("Scannable factory returned a non-iterable value");
+}
+
+// A "self-iterator" returns the same object from `[Symbol.iterator]()` /
+// `[Symbol.asyncIterator]()`. Generators behave this way, so they exhaust
+// after one pass. Replayable iterables (Array, Set, custom) return a fresh
+// iterator each call. Detection mirrors `normalizeIterator`'s ordering so
+// classification matches scan-time behavior.
+function isOneShotIterable(
+  source: AsyncIterable<unknown> | Iterable<unknown>,
+): boolean {
+  // null/undefined are not one-shot in any meaningful sense; let
+  // `normalizeIterator` raise the actual error at scan time.
+  if (source == null) return false;
+  const ref = source as unknown;
+  if (
+    typeof (source as AsyncIterable<unknown>)[Symbol.asyncIterator] ===
+    "function"
+  ) {
+    const it = (source as AsyncIterable<unknown>)[
+      Symbol.asyncIterator
+    ]() as unknown;
+    return it === ref;
+  }
+  if (typeof (source as Iterable<unknown>)[Symbol.iterator] === "function") {
+    const it = (source as Iterable<unknown>)[Symbol.iterator]() as unknown;
+    return it === ref;
+  }
+  // Already-an-iterator (has `.next` but no `Symbol.iterator`) is by
+  // definition one-shot.
+  if (typeof (source as { next?: unknown }).next === "function") return true;
+  return false;
 }
