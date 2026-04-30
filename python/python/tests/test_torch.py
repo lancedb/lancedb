@@ -70,6 +70,20 @@ def test_permutation_is_picklable(tmp_db):
     assert rows == [{"a": 0}, {"a": 1}, {"a": 2}]
 
 
+def test_permutation_with_memory_base_is_picklable(mem_db):
+    """An in-memory base table is inlined into the pickle as Arrow IPC bytes
+    and rebuilt on the other side as an in-memory LanceTable, so the
+    Permutation round-trips even though the original database can't be
+    reopened across processes."""
+    table = mem_db.create_table("test_table", pa.table({"a": range(50)}))
+    permutation = Permutation.identity(table)
+
+    restored = pickle.loads(pickle.dumps(permutation))
+
+    assert len(restored) == 50
+    assert restored.__getitems__([0, 10, 49]) == [{"a": 0}, {"a": 10}, {"a": 49}]
+
+
 def test_permutation_dataloader_multiprocessing(tmp_db):
     """Using a Permutation with a PyTorch DataLoader that has num_workers > 0
     must work end-to-end. Each worker process gets a pickled copy of the

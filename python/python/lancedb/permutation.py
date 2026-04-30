@@ -675,14 +675,15 @@ class Permutation:
             ) from e
 
         if base_uri.startswith("memory://"):
-            # In-memory base tables can't be shared across processes. Fail
-            # eagerly so the user sees a clear error instead of a silent
-            # divergence in the worker.
-            raise ValueError(
-                "Cannot pickle a Permutation whose base table lives in an "
-                "in-memory database; only persisted base tables (file/cloud "
-                "paths) can be shared with other processes."
-            )
+            # In-memory base tables don't exist in any worker process by
+            # default, so dump the entire base table into the pickle as
+            # Arrow IPC stream bytes. This can be expensive for large
+            # datasets — users with large in-memory base tables should
+            # either persist them or set a connection_factory.
+            return {
+                **common,
+                "base_table_data": _serialize_arrow_table(self.base_table.to_arrow()),
+            }
 
         return {
             **common,
@@ -697,6 +698,12 @@ class Permutation:
         connection_factory = state["connection_factory"]
         if connection_factory is not None:
             base_table = connection_factory(state["base_table_name"])
+        elif "base_table_data" in state:
+            # In-memory base table inlined into the pickle; rebuild the same
+            # way we rebuild the in-memory permutation table.
+            base_arrow = _deserialize_arrow_table(state["base_table_data"])
+            mem_db = connect("memory://")
+            base_table = mem_db.create_table(state["base_table_name"], base_arrow)
         else:
             base_db = connect(
                 state["base_table_uri"],
