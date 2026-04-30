@@ -104,6 +104,22 @@ class TestNamespaceConnection:
         assert len(result) == 0
         assert list(result.columns) == ["id", "vector"]
 
+    def test_serialize_table_through_namespace(self):
+        """Test serializing and reopening a namespace table."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_namespace(["test_ns"])
+        data = [
+            {"id": 1, "vector": [1.0, 2.0]},
+            {"id": 2, "vector": [3.0, 4.0]},
+        ]
+
+        table = db.create_table("test_table", data=data, namespace_path=["test_ns"])
+        restored = lancedb.deserialize_table(table.serialize())
+
+        assert restored.name == "test_table"
+        assert restored.namespace == ["test_ns"]
+        assert restored.to_arrow() == table.to_arrow()
+
     def test_drop_table_through_namespace(self):
         """Test dropping a table through namespace."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})

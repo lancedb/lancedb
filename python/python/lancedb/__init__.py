@@ -309,6 +309,46 @@ def deserialize_conn(
         raise ValueError(f"Unknown connection_type: {connection_type}")
 
 
+def deserialize_table(
+    data: str,
+    *,
+    for_worker: bool = False,
+) -> Table:
+    """Reconstruct a Table from a serialized string.
+
+    The string must have been produced by :meth:`Table.serialize`.
+
+    Parameters
+    ----------
+    data : str
+        String produced by ``Table.serialize()``.
+    for_worker : bool, default False
+        Forwarded to :func:`deserialize_conn` so worker endpoint overrides
+        stored in the serialized connection can be applied.
+
+    Returns
+    -------
+    Table
+        A table reopened through the serialized LanceDB connection.
+    """
+    import json
+
+    parsed = json.loads(data)
+    version = parsed.get("serialization_version")
+    if version != 1:
+        raise ValueError(f"Unknown table serialization_version: {version}")
+
+    conn = deserialize_conn(parsed["connection"], for_worker=for_worker)
+    table = conn.open_table(
+        parsed["name"],
+        namespace_path=parsed.get("namespace_path") or [],
+    )
+    table_version = parsed.get("table_version")
+    if table_version is not None:
+        table.checkout(table_version)
+    return table
+
+
 async def connect_async(
     uri: URI,
     *,
@@ -420,6 +460,8 @@ __all__ = [
     "connect_async",
     "connect_namespace",
     "connect_namespace_async",
+    "deserialize_conn",
+    "deserialize_table",
     "AsyncConnection",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",

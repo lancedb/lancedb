@@ -686,6 +686,15 @@ class Table(ABC):
         """The number of rows in this Table"""
         return self.count_rows(None)
 
+    def serialize(self) -> str:
+        """Serialize this table so it can be reopened elsewhere.
+
+        The returned string can be passed to :func:`lancedb.deserialize_table`.
+        Implementations should include enough connection and table identity
+        state to reopen an equivalent table.
+        """
+        raise NotImplementedError("serialize is not supported for this table type")
+
     @property
     @abstractmethod
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
@@ -1851,6 +1860,26 @@ class LanceTable(Table):
         if self._namespace_path:
             return "$".join(self._namespace_path + [self.name])
         return self.name
+
+    def serialize(self) -> str:
+        """Serialize this table so it can be reopened elsewhere.
+
+        The payload is intentionally connection-centric: it stores the
+        serialized LanceDB connection plus the table identifier.  Connection
+        details such as namespace implementation and worker endpoint overrides
+        stay owned by the LanceDB connection serializer.
+        """
+        import json
+
+        return json.dumps(
+            {
+                "serialization_version": 1,
+                "connection": self._conn.serialize(),
+                "name": self.name,
+                "namespace_path": self._namespace_path,
+                "table_version": self.version,
+            }
+        )
 
     @classmethod
     def from_inner(cls, tbl: LanceDBTable):

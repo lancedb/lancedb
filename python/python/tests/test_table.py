@@ -47,6 +47,35 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+def test_table_serialize_roundtrip(tmp_db: DBConnection):
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+    table = tmp_db.create_table("serialize_roundtrip", data=data)
+
+    restored = lancedb.deserialize_table(table.serialize())
+
+    assert restored.name == "serialize_roundtrip"
+    assert restored.namespace == []
+    assert restored.version == table.version
+    assert restored.to_arrow() == table.to_arrow()
+
+
+def test_table_serialize_preserves_checked_out_version(tmp_db: DBConnection):
+    table = tmp_db.create_table(
+        "serialize_version",
+        data=[{"vector": [3.1, 4.1], "item": "foo"}],
+    )
+    table.add([{"vector": [5.9, 26.5], "item": "bar"}])
+    table.checkout(1)
+
+    restored = lancedb.deserialize_table(table.serialize())
+
+    assert restored.version == 1
+    assert restored.count_rows() == 1
+
+
 def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     data = [{"vector": [0, 300]}]
 
