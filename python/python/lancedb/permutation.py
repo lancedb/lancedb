@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import copy
+import json
+
 from deprecation import deprecated
 import pyarrow as pa
-import json
 
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
@@ -379,14 +381,6 @@ class Permutation:
     not require materializing the entire dataset in memory.
     """
 
-    # Fields whose value participates in [PermutationReader] construction.
-    # Overrides on any of these in `_clone` force a fresh reader; everything
-    # else (selection, batch_size, transform_fn, connection_factory) shares
-    # the existing reader.
-    _READER_AFFECTING_FIELDS = frozenset(
-        {"base_table", "permutation_table", "split", "offset", "limit"}
-    )
-
     def __init__(
         self,
         base_table: LanceTable,
@@ -428,28 +422,6 @@ class Permutation:
             reader = await reader.with_limit(self.limit)
         return reader
 
-    def _clone(self, **overrides: Any) -> "Permutation":
-        """Return a new Permutation with the given fields overridden.
-
-        If the overrides leave reader-affecting state untouched, the existing
-        reader is shared with the clone instead of being rebuilt.
-        """
-        kwargs = {
-            "base_table": self.base_table,
-            "permutation_table": self.permutation_table,
-            "split": self.split,
-            "selection": self.selection,
-            "batch_size": self.batch_size,
-            "transform_fn": self.transform_fn,
-            "offset": self.offset,
-            "limit": self.limit,
-            "connection_factory": self.connection_factory,
-        }
-        kwargs.update(overrides)
-        if not (self._READER_AFFECTING_FIELDS & overrides.keys()):
-            kwargs["_reader"] = self.reader
-        return Permutation(**kwargs)
-
     def _with_selection(self, selection: dict[str, str]) -> "Permutation":
         """
         Creates a new permutation with the given selection
@@ -457,13 +429,17 @@ class Permutation:
         Does not validation of the selection and it replaces it entirely.  This is not
         intended for public use.
         """
-        return self._clone(selection=selection)
+        new = copy.copy(self)
+        new.selection = selection
+        return new
 
     def with_batch_size(self, batch_size: int) -> "Permutation":
         """
         Creates a new permutation with the given batch size
         """
-        return self._clone(batch_size=batch_size)
+        new = copy.copy(self)
+        new.batch_size = batch_size
+        return new
 
     def with_connection_factory(
         self, connection_factory: Callable[[str], LanceTable]
@@ -538,7 +514,9 @@ class Permutation:
             ).with_connection_factory(open_remote_table)
         """
         assert connection_factory is not None, "connection_factory is required"
-        return self._clone(connection_factory=connection_factory)
+        new = copy.copy(self)
+        new.connection_factory = connection_factory
+        return new
 
     @classmethod
     def identity(cls, table: LanceTable) -> "Permutation":
@@ -995,7 +973,9 @@ class Permutation:
         for expensive operations such as image decoding.
         """
         assert transform is not None, "transform is required"
-        return self._clone(transform_fn=transform)
+        new = copy.copy(self)
+        new.transform_fn = transform
+        return new
 
     def __getitem__(self, index: int) -> Any:
         """
@@ -1030,7 +1010,10 @@ class Permutation:
         """
         Skip the first `skip` rows of the permutation
         """
-        return self._clone(offset=skip)
+        new = copy.copy(self)
+        new.offset = skip
+        new.reader = LOOP.run(new._build_reader())
+        return new
 
     @deprecated(details="Use with_take instead")
     def take(self, limit: int) -> "Permutation":
@@ -1048,7 +1031,10 @@ class Permutation:
         """
         Limit the permutation to `limit` rows (following any `skip`)
         """
-        return self._clone(limit=limit)
+        new = copy.copy(self)
+        new.limit = limit
+        new.reader = LOOP.run(new._build_reader())
+        return new
 
     @deprecated(details="Use with_repeat instead")
     def repeat(self, times: int) -> "Permutation":
