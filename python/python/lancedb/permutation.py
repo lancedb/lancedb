@@ -379,6 +379,14 @@ class Permutation:
     not require materializing the entire dataset in memory.
     """
 
+    # Fields whose value participates in [PermutationReader] construction.
+    # Overrides on any of these in `_clone` force a fresh reader; everything
+    # else (selection, batch_size, transform_fn, connection_factory) shares
+    # the existing reader.
+    _READER_AFFECTING_FIELDS = frozenset(
+        {"base_table", "permutation_table", "split", "offset", "limit"}
+    )
+
     def __init__(
         self,
         base_table: LanceTable,
@@ -390,6 +398,7 @@ class Permutation:
         offset: Optional[int] = None,
         limit: Optional[int] = None,
         connection_factory: Optional[Callable[[str], LanceTable]] = None,
+        _reader: Optional[PermutationReader] = None,
     ):
         """
         Internal constructor.  Use [from_tables](#from_tables) instead.
@@ -405,25 +414,9 @@ class Permutation:
         self.offset = offset
         self.limit = limit
         self.connection_factory = connection_factory
-        self._reader: Optional[PermutationReader] = None
-
-    @property
-    def reader(self) -> PermutationReader:
-        """The underlying [PermutationReader].  Built lazily on first access.
-
-        Only safe to call from synchronous code — inside a coroutine submitted
-        to the background loop, use ``_reader_async()`` instead, since this
-        property would otherwise re-enter the loop and deadlock.
-        """
-        if self._reader is None:
-            self._reader = LOOP.run(self._build_reader())
-        return self._reader
-
-    async def _reader_async(self) -> PermutationReader:
-        """Async accessor for the reader; safe to call from any coroutine."""
-        if self._reader is None:
-            self._reader = await self._build_reader()
-        return self._reader
+        if _reader is None:
+            _reader = LOOP.run(self._build_reader())
+        self.reader: PermutationReader = _reader
 
     async def _build_reader(self) -> PermutationReader:
         reader = await PermutationReader.from_tables(
@@ -436,7 +429,11 @@ class Permutation:
         return reader
 
     def _clone(self, **overrides: Any) -> "Permutation":
-        """Return a new Permutation with the given fields overridden."""
+        """Return a new Permutation with the given fields overridden.
+
+        If the overrides leave reader-affecting state untouched, the existing
+        reader is shared with the clone instead of being rebuilt.
+        """
         kwargs = {
             "base_table": self.base_table,
             "permutation_table": self.permutation_table,
@@ -449,6 +446,8 @@ class Permutation:
             "connection_factory": self.connection_factory,
         }
         kwargs.update(overrides)
+        if not (self._READER_AFFECTING_FIELDS & overrides.keys()):
+            kwargs["_reader"] = self.reader
         return Permutation(**kwargs)
 
     def _with_selection(self, selection: dict[str, str]) -> "Permutation":
@@ -611,16 +610,15 @@ class Permutation:
             )
             schema = await reader.output_schema(None)
             initial_selection = {name: name for name in schema.names}
-            permutation = cls(
+            return cls(
                 base_table,
                 permutation_table,
                 split,
                 initial_selection,
                 DEFAULT_BATCH_SIZE,
                 Transforms.arrow2python,
+                _reader=reader,
             )
-            permutation._reader = reader
-            return permutation
 
         return LOOP.run(do_from_tables())
 
@@ -631,9 +629,9 @@ class Permutation:
         ``connection_factory`` (see [with_connection_factory]) or, as a
         fallback, by introspecting ``(uri, storage_options, namespace_path)``
         on the connection. The permutation table — always an in-memory
-        LanceDB table — is captured as Arrow IPC stream bytes. The cached
-        reader is dropped; it is rebuilt lazily on first access after
-        unpickle.
+        LanceDB table — is captured as Arrow IPC stream bytes. The reader is
+        dropped from the wire format; ``__setstate__`` rebuilds it from the
+        restored tables.
         """
         permutation_data: Optional[bytes] = None
         if self.permutation_table is not None:
@@ -729,13 +727,12 @@ class Permutation:
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
-        self._reader = None
+        self.reader = LOOP.run(self._build_reader())
 
     @property
     def schema(self) -> pa.Schema:
         async def do_output_schema():
-            reader = await self._reader_async()
-            return await reader.output_schema(self.selection)
+            return await self.reader.output_schema(self.selection)
 
         return LOOP.run(do_output_schema())
 
@@ -911,8 +908,7 @@ class Permutation:
         """
 
         async def get_iter():
-            reader = await self._reader_async()
-            return await reader.read(self.selection, batch_size=batch_size)
+            return await self.reader.read(self.selection, batch_size=batch_size)
 
         async_iter = LOOP.run(get_iter())
 
@@ -1013,8 +1009,7 @@ class Permutation:
         """
 
         async def do_getitems():
-            reader = await self._reader_async()
-            return await reader.take_offsets(indices, selection=self.selection)
+            return await self.reader.take_offsets(indices, selection=self.selection)
 
         batch = LOOP.run(do_getitems())
         return self.transform_fn(batch)
@@ -1035,11 +1030,7 @@ class Permutation:
         """
         Skip the first `skip` rows of the permutation
         """
-        new_perm = self._clone(offset=skip)
-        # Eagerly build the reader so any limit/offset validation errors surface
-        # synchronously, matching the previous behavior.
-        _ = new_perm.reader
-        return new_perm
+        return self._clone(offset=skip)
 
     @deprecated(details="Use with_take instead")
     def take(self, limit: int) -> "Permutation":
@@ -1057,11 +1048,7 @@ class Permutation:
         """
         Limit the permutation to `limit` rows (following any `skip`)
         """
-        new_perm = self._clone(limit=limit)
-        # Eagerly build the reader so any limit/offset validation errors surface
-        # synchronously, matching the previous behavior.
-        _ = new_perm.reader
-        return new_perm
+        return self._clone(limit=limit)
 
     @deprecated(details="Use with_repeat instead")
     def repeat(self, times: int) -> "Permutation":
