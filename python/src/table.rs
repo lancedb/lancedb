@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use std::{collections::HashMap, sync::Arc};
 
+use crate::runtime::future_into_py;
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -24,7 +25,6 @@ use pyo3::{
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
 
 mod scannable;
 

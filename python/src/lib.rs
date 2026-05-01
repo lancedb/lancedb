@@ -28,6 +28,7 @@ pub mod index;
 pub mod namespace;
 pub mod permutation;
 pub mod query;
+pub mod runtime;
 pub mod session;
 pub mod table;
 pub mod util;

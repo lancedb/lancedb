@@ -4,6 +4,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::expr::PyExpr;
+use crate::runtime::future_into_py;
+use crate::util::parse_distance_type;
+use crate::{arrow::RecordBatchStream, util::PyLanceDB};
+use crate::{error::PythonErrorExt, index::class_name};
 use arrow::array::Array;
 use arrow::array::ArrayData;
 use arrow::array::make_array;
@@ -36,12 +41,6 @@ use pyo3::types::{PyDict, PyString};
 use pyo3::{Borrowed, FromPyObject, exceptions::PyRuntimeError};
 use pyo3::{PyErr, pyclass};
 use pyo3::{exceptions::PyValueError, intern};
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::expr::PyExpr;
-use crate::util::parse_distance_type;
-use crate::{arrow::RecordBatchStream, util::PyLanceDB};
-use crate::{error::PythonErrorExt, index::class_name};
 
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
     type Error = PyErr;

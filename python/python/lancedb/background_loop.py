@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import asyncio
+import os
 import threading
 
 
@@ -13,6 +14,9 @@ class BackgroundEventLoop:
     """
 
     def __init__(self):
+        self._start()
+
+    def _start(self):
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(
             target=self.loop.run_forever,
@@ -31,3 +35,16 @@ class BackgroundEventLoop:
 
 
 LOOP = BackgroundEventLoop()
+
+
+def _reset_after_fork():
+    # Threads do not survive fork(), so the asyncio loop in LOOP.thread is
+    # dead in the child. Re-initialize the singleton in place so existing
+    # `from .background_loop import LOOP` references in other modules see
+    # the new state. The Rust-side tokio runtime is reset analogously by a
+    # pthread_atfork hook installed in the _lancedb extension.
+    LOOP._start()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
