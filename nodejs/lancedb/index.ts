@@ -64,8 +64,6 @@ export {
   TableNamesOptions,
   OpenTableRefOptions,
   OpenTableOptions,
-  OpenTableTagRefOptions,
-  OpenTableVersionRefOptions,
 } from "./connection";
 
 export { Session } from "./native.js";

@@ -11,10 +11,9 @@ use napi_derive::*;
 use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
-use crate::reference::{JsBranchReference, parse_optional_reference};
+use crate::reference::JsOpenTableBranchReference;
 use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
-use lancedb::table::Reference;
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -203,7 +202,7 @@ impl Connection {
         namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
-        reference: Option<Either3<i64, String, JsBranchReference>>,
+        reference: Option<JsOpenTableBranchReference>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
@@ -217,30 +216,10 @@ impl Connection {
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
         }
-        let tbl = match parse_optional_reference(reference)? {
-            Some(Reference::VersionNumber(version)) => {
-                builder.version(version).execute().await.default_error()?
-            }
-            Some(Reference::Tag(tag)) => builder.tag(tag).execute().await.default_error()?,
-            Some(Reference::Version(Some(branch_name), branch_version_number)) => {
-                let builder = builder.branch(branch_name);
-                if let Some(version_number) = branch_version_number {
-                    builder
-                        .version_number(version_number)
-                        .execute()
-                        .await
-                        .default_error()?
-                } else {
-                    builder.execute().await.default_error()?
-                }
-            }
-            Some(Reference::Version(None, _)) => {
-                return Err(napi::Error::from_reason(
-                    "open_table reference must include a branch name when using a branch selector",
-                ));
-            }
-            None => builder.execute().await.default_error()?,
-        };
+        if let Some(reference) = reference {
+            builder = builder.branch(reference.branch);
+        }
+        let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))
     }
 

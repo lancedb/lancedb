@@ -409,24 +409,27 @@ impl Table {
     ) -> napi::Result<()> {
         let reference = parse_optional_reference(from)?;
 
-        self.inner_ref()?
-            .create_branch(branch.as_str(), reference)
+        let table = self.inner_ref()?;
+        let mut branches = table.branches().await.default_error()?;
+        branches
+            .create(branch.as_str(), reference)
             .await
             .default_error()
     }
 
     #[napi(catch_unwind)]
     pub async fn delete_branch(&self, branch: String) -> napi::Result<()> {
-        self.inner_ref()?
-            .delete_branch(branch.as_str())
-            .await
-            .default_error()
+        let table = self.inner_ref()?;
+        let mut branches = table.branches().await.default_error()?;
+        branches.delete(branch.as_str()).await.default_error()
     }
 
     #[napi(catch_unwind)]
     pub async fn list_branches(&self) -> napi::Result<HashMap<String, BranchContents>> {
-        self.inner_ref()?
-            .list_branches()
+        let table = self.inner_ref()?;
+        let branches = table.branches().await.default_error()?;
+        branches
+            .list()
             .await
             .map(|branches| {
                 branches

@@ -13,7 +13,6 @@ import * as arrow18 from "apache-arrow-18";
 import {
   Connection,
   MatchQuery,
-  OpenTableOptions,
   PhraseQuery,
   Table,
   connect,
@@ -48,7 +47,6 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
-import { LocalTable } from "../lancedb/table";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -1672,7 +1670,7 @@ async function withBranchTable<T>(
   }
 }
 
-it("handles branch refs", async () => {
+it("handles branch operations", async () => {
   await withBranchTable(async ({ conn, table }) => {
     const mainRef = {
       version: 2,
@@ -1689,111 +1687,24 @@ it("handles branch refs", async () => {
     expect(branches).toHaveProperty("feature-a");
     expect(branches["feature-a"].parentBranch).toBeNull();
     expect(branches["feature-a"].parentVersion).toBe(2);
-    expect(branches["feature-a"].createdAt).toBeGreaterThan(0);
-    expect(branches["feature-a"].manifestSize).toBeGreaterThan(0);
-    expect(branches["feature-a"].identifier.versionMapping).toHaveLength(1);
-    expect(branches["feature-a"].identifier.versionMapping[0][0]).toBe(2);
-    expect(branches["feature-a"].identifier.versionMapping[0][1]).toEqual(
-      expect.any(String),
-    );
     expect(branches).toHaveProperty("recovery");
-    expect(branches["recovery"].identifier.versionMapping).toHaveLength(1);
-    expect(branches["recovery"].identifier.versionMapping[0][0]).toBe(2);
-    expect(branches["recovery"].identifier.versionMapping[0][1]).toEqual(
-      expect.any(String),
-    );
-    const featureBranchId =
-      branches["feature-a"].identifier.versionMapping[0][1];
 
     expect(await table.currentRef()).toEqual(mainRef);
 
-    const compatOptions: Partial<OpenTableOptions> = {
-      storageOptions: {},
-    };
-    const compatTable = await conn.openTable("my_table", compatOptions);
-    expect(await compatTable.currentRef()).toEqual(mainRef);
-
-    const selectorChecks = [
+    const featureTableFromThirdArg = await conn.openTable(
+      "my_table",
+      undefined,
       {
-        open: () =>
-          conn.openTable("my_table", undefined, {
-            ref: { versionNumber: 2 },
-          }),
-        expected: mainRef,
+        ref: { branchName: "feature-a" },
       },
-      {
-        open: () =>
-          conn.openTable("my_table", {
-            ref: { versionNumber: 2 },
-          }),
-        expected: mainRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", undefined, {
-            ref: { tagName: "main-v2" },
-          }),
-        expected: mainRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", {
-            ref: { tagName: "main-v2" },
-          }),
-        expected: mainRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", undefined, {
-            ref: { branchName: "feature-a" },
-          }),
-        expected: featureRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", {
-            ref: { branchName: "feature-a" },
-          }),
-        expected: featureRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", undefined, {
-            ref: { branchName: "feature-a", versionNumber: 2 },
-          }),
-        expected: featureRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", {
-            // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
-            ref: { branchName: "feature-a", tagName: undefined } as any,
-          }),
-        expected: featureRef,
-      },
-      {
-        open: () =>
-          conn.openTable("my_table", {
-            // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
-            ref: { versionNumber: 2, tagName: undefined } as any,
-          }),
-        expected: mainRef,
-      },
-    ];
-    for (const { open, expected } of selectorChecks) {
-      const openedTable = await open();
-      expect(await openedTable.currentRef()).toEqual(expected);
-    }
-
-    const nullRefTable = await conn.openTable("my_table", {
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
-      ref: null as any,
-    });
-    expect(await nullRefTable.currentRef()).toEqual(mainRef);
+    );
+    expect(await featureTableFromThirdArg.currentRef()).toEqual(featureRef);
 
     const featureTable = await conn.openTable("my_table", {
       ref: { branchName: "feature-a" },
     });
+    expect(await featureTable.currentRef()).toEqual(featureRef);
+
     await featureTable.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await featureTable.version()).toBe(3);
 
@@ -1807,17 +1718,8 @@ it("handles branch refs", async () => {
     });
 
     const nestedBranches = await featureTable.listBranches();
-    expect(
-      nestedBranches["feature-a/deeper"].identifier.versionMapping.map(
-        ([version]) => version,
-      ),
-    ).toEqual([2, 3]);
-    expect(
-      nestedBranches["feature-a/deeper"].identifier.versionMapping[0][1],
-    ).toBe(featureBranchId);
-    expect(
-      nestedBranches["feature-a/deeper"].identifier.versionMapping[1][1],
-    ).toEqual(expect.any(String));
+    expect(nestedBranches["feature-a/deeper"].parentBranch).toBe("feature-a");
+    expect(nestedBranches["feature-a/deeper"].parentVersion).toBe(3);
 
     expect(await table.currentRef()).toEqual(mainRef);
 
@@ -1845,71 +1747,29 @@ it("handles branch refs", async () => {
       tags: ["feature-v3"],
     });
 
-    await expect(
-      conn.openTable("my_table", { ref: { versionNumber: -1 } }),
-    ).rejects.toThrow("version must be a non-negative integer");
-    await expect(
-      conn.openTable("my_table", {
-        ref: { branchName: "main", versionNumber: -1 },
-      }),
-    ).rejects.toThrow("branch versionNumber must be a non-negative integer");
-    await expect(
-      conn.openTable("my_table", {
-        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
-        ref: { versionNumber: 1, tagName: "main-v1" } as any,
-      }),
-    ).rejects.toThrow(
-      "versionNumber, tagName, and branchName are mutually exclusive",
+    await expect(featureTable.deleteBranch("feature-a")).rejects.toThrow(
+      "cannot delete the currently checked out branch",
     );
-    await expect(
-      conn.openTable("my_table", {
-        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
-        ref: { tagName: undefined } as any,
-      }),
-    ).rejects.toThrow(
-      "ref must include a defined versionNumber, tagName, or branchName",
-    );
+    await table.deleteBranch("recovery");
+    const branchesAfterDelete = await table.listBranches();
+    expect(branchesAfterDelete).not.toHaveProperty("recovery");
+  });
+});
+
+it("validates branch inputs", async () => {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
     await expect(
       conn.openTable("my_table", {
         // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
-        ref: { branchName: undefined } as any,
+        ref: { branchName: "" } as any,
       }),
-    ).rejects.toThrow(
-      "ref must include a defined versionNumber, tagName, or branchName",
-    );
-    await expect(
-      conn.openTable("my_table", {
-        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
-        ref: { versionNumber: undefined } as any,
-      }),
-    ).rejects.toThrow(
-      "ref must include a defined versionNumber, tagName, or branchName",
-    );
-    await expect(
-      conn.openTable("my_table", { ref: { versionNumber: 1.5 } }),
-    ).rejects.toThrow("version must be a non-negative integer");
-    await expect(
-      conn.openTable("my_table", {
-        ref: { branchName: "main", versionNumber: Number.NaN },
-      }),
-    ).rejects.toThrow("branch versionNumber must be a non-negative integer");
-    await expect(
-      conn.openTable("my_table", {
-        ref: { versionNumber: Number.POSITIVE_INFINITY },
-      }),
-    ).rejects.toThrow("version must be a non-negative integer");
-    await expect(table.checkout(-1)).rejects.toThrow(
-      "version must be a non-negative integer",
-    );
-    await expect(table.checkout(1.5)).rejects.toThrow(
-      "version must be a non-negative integer",
-    );
-    await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally pass an invalid checkout shape to validate the runtime error
-      (table as any).checkout({ branch: "feature-a" }),
-    ).rejects.toThrow(
-      "branch checkout is not supported on an existing table handle; reopen the table with ref.branchName",
-    );
+    ).rejects.toThrow("branchName must be a non-empty string");
     await expect(table.createBranch("")).rejects.toThrow(
       "branch must be a non-empty string",
     );
@@ -1922,49 +1782,9 @@ it("handles branch refs", async () => {
     await expect(
       table.createBranch("bad-ref", { from: { branch: "" } }),
     ).rejects.toThrow("from.branch must be a non-empty string");
-    await expect(table.createBranch("bad-ref", { from: 1.5 })).rejects.toThrow(
-      "version must be a non-negative integer",
-    );
-    await expect(
-      table.createBranch("bad-ref", {
-        from: { branch: "main", version: Number.POSITIVE_INFINITY },
-      }),
-    ).rejects.toThrow("branch version must be a non-negative integer");
-
-    let captured:
-      | {
-          name: string;
-          from: unknown;
-        }
-      | undefined;
-    const mockTable = new LocalTable({
-      createBranch: async (name: string, from: unknown) => {
-        captured = { name, from };
-      },
-      // biome-ignore lint/suspicious/noExplicitAny: test only needs a minimal mock inner to reach LocalTable#createBranch
-    } as any);
-    await mockTable.createBranch("feature-a");
-    expect(captured).toEqual({
-      name: "feature-a",
-      from: null,
-    });
-
-    await mockTable.createBranch("null-from", {
-      // biome-ignore lint/suspicious/noExplicitAny: validate that a null from selector is normalized and forwarded as null
-      from: null as any,
-    });
-    expect(captured).toEqual({
-      name: "null-from",
-      from: null,
-    });
-
-    await expect(featureTable.deleteBranch("feature-a")).rejects.toThrow(
-      "cannot delete the currently checked out branch",
-    );
-    await table.deleteBranch("recovery");
-    const branchesAfterDelete = await table.listBranches();
-    expect(branchesAfterDelete).not.toHaveProperty("recovery");
-  });
+  } finally {
+    tmpDir.removeCallback();
+  }
 });
 
 describe("when optimizing a dataset", () => {

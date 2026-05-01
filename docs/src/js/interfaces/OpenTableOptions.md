@@ -37,8 +37,8 @@ at the expense of more RAM
 optional ref: OpenTableRefOptions;
 ```
 
-Optional reference selector used to choose the initial table timeline or
-snapshot when opening a table.
+Optional branch selector used to choose the initial table timeline when
+opening a table.
 
 Branches are selected here. After the table is opened, [Table.checkout](../classes/Table.md#checkout)
 only supports version numbers and tags on the current branch timeline.

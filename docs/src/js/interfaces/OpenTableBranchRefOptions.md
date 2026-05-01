@@ -15,21 +15,3 @@ branchName: string;
 ```
 
 Open a specific branch when the table handle is created.
-
-***
-
-### tagName?
-
-```ts
-optional tagName: undefined;
-```
-
-***
-
-### versionNumber?
-
-```ts
-optional versionNumber: number;
-```
-
-An optional version number within the selected branch.

@@ -76,8 +76,6 @@
 - [MergeResult](interfaces/MergeResult.md)
 - [OpenTableBranchRefOptions](interfaces/OpenTableBranchRefOptions.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
-- [OpenTableTagRefOptions](interfaces/OpenTableTagRefOptions.md)
-- [OpenTableVersionRefOptions](interfaces/OpenTableVersionRefOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)

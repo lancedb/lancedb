@@ -280,7 +280,7 @@ impl Database for LanceNamespaceDatabase {
             self.read_consistency_interval,
             self.pushdown_operations.clone(),
             self.session.clone(),
-            request.reference,
+            request.branch,
         )
         .await?;
 
@@ -358,7 +358,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     /// Helper function to create test data
     fn create_test_data() -> RecordBatch {
@@ -371,6 +371,32 @@ mod tests {
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
         RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    async fn connect_test_namespace(pushdown_query: bool) -> (crate::Connection, TempDir) {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let mut builder = connect_namespace("dir", properties);
+        if pushdown_query {
+            builder = builder.pushdown_operation(PushdownOperation::QueryTable);
+        }
+        let conn = builder
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        (conn, tmp_dir)
     }
 
     #[tokio::test]
@@ -567,24 +593,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_namespace_ref_modes() {
-        let tmp_dir = tempdir().unwrap();
-        let root_path = tmp_dir.path().to_str().unwrap().to_string();
-
-        let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path);
-
-        let conn = connect_namespace("dir", properties)
-            .execute()
-            .await
-            .expect("Failed to connect to namespace");
-
-        conn.create_namespace(CreateNamespaceRequest {
-            id: Some(vec!["test_ns".into()]),
-            ..Default::default()
-        })
-        .await
-        .expect("Failed to create namespace");
+    async fn test_namespace_branch_open() {
+        let (conn, _tmp_dir) = connect_test_namespace(false).await;
 
         let table = conn
             .create_table("ref_test", create_test_data())
@@ -598,12 +608,11 @@ mod tests {
             .await
             .expect("Failed to append data");
 
-        let mut tags = table.tags().await.expect("Failed to open tags");
-        tags.create("main-v2", 2)
-            .await
-            .expect("Failed to create tag");
         table
-            .create_branch("feature-a", None)
+            .branches()
+            .await
+            .expect("Failed to open branches")
+            .create("feature-a", None)
             .await
             .expect("Failed to create branch");
 
@@ -620,24 +629,6 @@ mod tests {
             .await
             .expect("Failed to append feature branch data");
 
-        let version_table = conn
-            .open_table("ref_test")
-            .namespace(vec!["test_ns".into()])
-            .version(2)
-            .execute()
-            .await
-            .expect("Failed to open version 2");
-        assert_eq!(version_table.count_rows(None).await.unwrap(), 10);
-
-        let tag_table = conn
-            .open_table("ref_test")
-            .namespace(vec!["test_ns".into()])
-            .tag("main-v2")
-            .execute()
-            .await
-            .expect("Failed to open tagged version");
-        assert_eq!(tag_table.count_rows(None).await.unwrap(), 10);
-
         let branch_table = conn
             .open_table("ref_test")
             .namespace(vec!["test_ns".into()])
@@ -646,41 +637,20 @@ mod tests {
             .await
             .expect("Failed to open latest feature branch");
         assert_eq!(branch_table.count_rows(None).await.unwrap(), 15);
-
-        let branch_version_table = conn
-            .open_table("ref_test")
-            .namespace(vec!["test_ns".into()])
-            .branch("feature-a")
-            .version_number(2)
-            .execute()
-            .await
-            .expect("Failed to open feature branch version");
-        assert_eq!(branch_version_table.count_rows(None).await.unwrap(), 10);
+        let branch_ref = branch_table.current_ref().await.unwrap();
+        assert_eq!(branch_ref.version, 3);
+        assert_eq!(branch_ref.branch.as_deref(), Some("feature-a"));
 
         branch_table
             .checkout(2)
             .await
             .expect("Failed to checkout feature branch version");
         assert_eq!(branch_table.count_rows(None).await.unwrap(), 10);
+    }
 
-        let tmp_dir = tempdir().unwrap();
-        let root_path = tmp_dir.path().to_str().unwrap().to_string();
-
-        let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path);
-
-        let conn = connect_namespace("dir", properties)
-            .pushdown_operation(PushdownOperation::QueryTable)
-            .execute()
-            .await
-            .expect("Failed to connect to namespace");
-
-        conn.create_namespace(CreateNamespaceRequest {
-            id: Some(vec!["test_ns".into()]),
-            ..Default::default()
-        })
-        .await
-        .expect("Failed to create namespace");
+    #[tokio::test]
+    async fn test_namespace_pushdown_rejects_branch_open() {
+        let (conn, _tmp_dir) = connect_test_namespace(true).await;
 
         let table = conn
             .create_table("ref_test", create_test_data())
@@ -689,38 +659,12 @@ mod tests {
             .await
             .expect("Failed to create table");
         table
-            .add(create_test_data())
-            .execute()
+            .branches()
             .await
-            .expect("Failed to append data");
-
-        let mut tags = table.tags().await.expect("Failed to open tags");
-        tags.create("main-v2", 2)
-            .await
-            .expect("Failed to create tag");
-        table
-            .create_branch("feature-a", None)
+            .expect("Failed to open branches")
+            .create("feature-a", None)
             .await
             .expect("Failed to create branch");
-
-        let version_result = conn
-            .open_table("ref_test")
-            .namespace(vec!["test_ns".into()])
-            .version(2)
-            .execute()
-            .await;
-        assert!(matches!(
-            version_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let tag_result = conn
-            .open_table("ref_test")
-            .namespace(vec!["test_ns".into()])
-            .tag("main-v2")
-            .execute()
-            .await;
-        assert!(matches!(tag_result, Err(crate::Error::NotSupported { .. })));
 
         let branch_result = conn
             .open_table("ref_test")

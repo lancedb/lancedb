@@ -7,5 +7,5 @@
 # Type Alias: OpenTableRefOptions
 
 ```ts
-type OpenTableRefOptions: OpenTableVersionRefOptions | OpenTableTagRefOptions | OpenTableBranchRefOptions;
+type OpenTableRefOptions: OpenTableBranchRefOptions;
 ```

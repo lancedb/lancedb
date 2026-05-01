@@ -472,7 +472,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             location: None,
                             namespace_client: None,
                             managed_versioning: None,
-                            reference: None,
+                            branch: None,
                         };
                         let req = (callback)(req);
                         self.open_table(req).await
@@ -563,10 +563,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if request.reference.is_some() {
+        if request.branch.is_some() {
             return Err(Error::NotSupported {
-                message: "Opening a remote table at a specific reference is not supported"
-                    .to_string(),
+                message: "Opening a remote table on a branch is not supported".to_string(),
             });
         }
 
@@ -964,21 +963,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remote_rejects_refs() {
+    async fn test_remote_rejects_branch_open() {
         let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
-            panic!("open_table with a reference should fail before issuing an HTTP request");
+            panic!("open_table with a branch should fail before issuing an HTTP request");
         });
-
-        let version_result = conn.open_table("table1").version(1).execute().await;
-        assert!(matches!(version_result, Err(Error::NotSupported { .. })));
-
-        let tag_result = conn.open_table("table1").tag("prod").execute().await;
-        assert!(matches!(tag_result, Err(Error::NotSupported { .. })));
 
         let branch_result = conn
             .open_table("table1")
             .branch("feature-a")
-            .version_number(1)
             .execute()
             .await;
         assert!(matches!(branch_result, Err(Error::NotSupported { .. })));

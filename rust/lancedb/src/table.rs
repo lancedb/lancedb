@@ -231,6 +231,18 @@ pub trait Tags: Send + Sync {
     async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
 }
 
+#[async_trait]
+pub trait Branches: Send + Sync {
+    /// List the branches of the table.
+    async fn list(&self) -> Result<HashMap<String, BranchContents>>;
+
+    /// Create a new branch for the table.
+    async fn create(&mut self, branch: &str, from: Option<Reference>) -> Result<()>;
+
+    /// Delete a branch from the table.
+    async fn delete(&mut self, branch: &str) -> Result<()>;
+}
+
 pub use self::merge::MergeResult;
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -308,6 +320,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<MergeResult>;
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
+    /// Gets the table branch manager.
+    async fn branches(&self) -> Result<Box<dyn Branches + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
     /// Add columns to the table.
@@ -1220,28 +1234,9 @@ impl Table {
         self.inner.tags().await
     }
 
-    /// Create a new branch for this table.
-    pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
-        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
-            message: "Branch management is not supported for remote tables".to_string(),
-        })?;
-        native.create_branch(branch, from).await
-    }
-
-    /// Delete a branch from this table.
-    pub async fn delete_branch(&self, branch: &str) -> Result<()> {
-        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
-            message: "Branch management is not supported for remote tables".to_string(),
-        })?;
-        native.delete_branch(branch).await
-    }
-
-    /// List branches for this table.
-    pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
-        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
-            message: "Branch management is not supported for remote tables".to_string(),
-        })?;
-        native.list_branches().await
+    /// Get the branches manager.
+    pub async fn branches(&self) -> Result<Box<dyn Branches + '_>> {
+        self.inner.branches().await
     }
 
     /// Retrieve the current version / branch / tags for this table handle.
@@ -1261,6 +1256,7 @@ impl Table {
 pub struct NativeTags {
     dataset: dataset::DatasetConsistencyWrapper,
 }
+
 #[async_trait]
 impl Tags for NativeTags {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
@@ -1289,6 +1285,25 @@ impl Tags for NativeTags {
         let dataset = self.dataset.get().await?;
         dataset.tags().update(tag, version).await?;
         Ok(())
+    }
+}
+
+pub struct NativeBranches {
+    table: NativeTable,
+}
+
+#[async_trait]
+impl Branches for NativeBranches {
+    async fn list(&self) -> Result<HashMap<String, BranchContents>> {
+        self.table.list_branches().await
+    }
+
+    async fn create(&mut self, branch: &str, from: Option<Reference>) -> Result<()> {
+        self.table.create_branch(branch, from).await
+    }
+
+    async fn delete(&mut self, branch: &str) -> Result<()> {
+        self.table.delete_branch(branch).await
     }
 }
 
@@ -1418,7 +1433,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<PushdownOperation>,
         managed_versioning: Option<bool>,
-        reference: Option<Reference>,
+        branch: Option<String>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1468,14 +1483,8 @@ impl NativeTable {
             builder = builder.with_commit_handler(commit_handler);
         }
 
-        if let Some(reference) = reference.clone() {
-            builder = match reference {
-                Reference::VersionNumber(version) => builder.with_version(version),
-                Reference::Tag(tag) => builder.with_tag(tag.as_str()),
-                Reference::Version(branch, version) => {
-                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
-                }
-            };
+        if let Some(branch) = branch {
+            builder = builder.with_branch(&branch, None);
         }
 
         let dataset = builder.load().await.map_err(|e| match e {
@@ -1501,7 +1510,7 @@ impl NativeTable {
         })
     }
 
-    pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
+    async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
         Self::validate_branch_name(branch, "branch")?;
         if let Some(Reference::Version(Some(branch), _)) = from.as_ref() {
             Self::validate_branch_name(branch, "from.branch")?;
@@ -1523,7 +1532,7 @@ impl NativeTable {
         Ok(())
     }
 
-    pub async fn delete_branch(&self, branch: &str) -> Result<()> {
+    async fn delete_branch(&self, branch: &str) -> Result<()> {
         Self::validate_branch_name(branch, "branch")?;
         let mut dataset = (*self.dataset.get().await?).clone();
         let current_branch = dataset
@@ -1540,12 +1549,12 @@ impl NativeTable {
         Ok(())
     }
 
-    pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
+    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
         let dataset = self.dataset.get().await?;
         dataset.list_branches().await.map_err(Into::into)
     }
 
-    pub async fn current_ref(&self) -> Result<CurrentRef> {
+    async fn current_ref(&self) -> Result<CurrentRef> {
         let dataset = self.dataset.get().await?;
         let current_version = dataset.version().version;
         let current_branch = dataset
@@ -1602,7 +1611,7 @@ impl NativeTable {
     /// * `pushdown_operations` - Operations to push down to the namespace server.
     ///   When `QueryTable` is included, queries will be executed on the namespace server.
     /// * `session` - Optional session for object stores and caching
-    /// * `reference` - Optional version, tag, or branch selector used when opening the table
+    /// * `branch` - Optional branch selector used when opening the table
     ///
     /// # Returns
     ///
@@ -1617,7 +1626,7 @@ impl NativeTable {
         read_consistency_interval: Option<std::time::Duration>,
         pushdown_operations: HashSet<PushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
-        reference: Option<Reference>,
+        branch: Option<String>,
     ) -> Result<Self> {
         let mut params = params.unwrap_or_default();
 
@@ -1636,9 +1645,9 @@ impl NativeTable {
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
 
-        if pushdown_operations.contains(&PushdownOperation::QueryTable) && reference.is_some() {
+        if pushdown_operations.contains(&PushdownOperation::QueryTable) && branch.is_some() {
             return Err(Error::NotSupported {
-                message: "Opening a namespace-backed table at a specific reference is not supported when server-side query is enabled".to_string(),
+                message: "Opening a namespace-backed table on a branch is not supported when server-side query is enabled".to_string(),
             });
         }
 
@@ -1653,14 +1662,8 @@ impl NativeTable {
                 e => e.into(),
             })?;
 
-        let builder = if let Some(reference) = reference.clone() {
-            match reference {
-                Reference::VersionNumber(version) => builder.with_version(version),
-                Reference::Tag(tag) => builder.with_tag(tag.as_str()),
-                Reference::Version(branch, version) => {
-                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
-                }
-            }
+        let builder = if let Some(branch) = branch {
+            builder.with_branch(&branch, None)
         } else {
             builder
         };
@@ -2349,6 +2352,7 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         let current_branch = dataset.manifest().branch.clone();
         let tag_contents = dataset.tags().get(tag).await?;
+        // Branch selection is an open-table property; tag checkout should not switch branch timelines.
         if tag_contents.branch != current_branch {
             return Err(Error::InvalidInput {
                 message: "cannot checkout a tag from a different branch on this table handle"
@@ -2589,6 +2593,12 @@ impl BaseTable for NativeTable {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(NativeTags {
             dataset: self.dataset.clone(),
+        }))
+    }
+
+    async fn branches(&self) -> Result<Box<dyn Branches + '_>> {
+        Ok(Box::new(NativeBranches {
+            table: self.clone(),
         }))
     }
 
@@ -3095,20 +3105,19 @@ mod tests {
         let mut tags_manager = table.tags().await.unwrap();
         tags_manager.create("main-v2", 2).await.unwrap();
 
-        table.create_branch("feature-a", None).await.unwrap();
-        table
-            .create_branch("recovery", Some(Reference::Tag("main-v2".to_string())))
+        let mut main_branches = table.branches().await.unwrap();
+        main_branches.create("feature-a", None).await.unwrap();
+        main_branches
+            .create("recovery", Some(Reference::Tag("main-v2".to_string())))
             .await
             .unwrap();
 
-        let branches = table.list_branches().await.unwrap();
-        assert!(branches.contains_key("feature-a"));
-        assert_eq!(branches["feature-a"].parent_branch, None);
-        assert_eq!(branches["feature-a"].parent_version, 2);
-        assert!(branches["feature-a"].create_at > 0);
-        assert!(branches["feature-a"].manifest_size > 0);
-        assert!(branches.contains_key("recovery"));
-        assert_eq!(branches["recovery"].parent_version, 2);
+        let branch_list = main_branches.list().await.unwrap();
+        assert!(branch_list.contains_key("feature-a"));
+        assert_eq!(branch_list["feature-a"].parent_branch, None);
+        assert_eq!(branch_list["feature-a"].parent_version, 2);
+        assert!(branch_list.contains_key("recovery"));
+        assert_eq!(branch_list["recovery"].parent_version, 2);
 
         let feature_table = conn
             .open_table("my_table")
@@ -3125,57 +3134,64 @@ mod tests {
             }
         );
 
-        let feature_v2_table = conn
-            .open_table("my_table")
-            .branch("feature-a")
-            .version_number(2)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            feature_v2_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("feature-a".to_string()),
-                tags: vec![],
-            }
-        );
-
         feature_table
             .add(some_sample_data())
             .execute()
             .await
             .unwrap();
         assert_eq!(feature_table.version().await.unwrap(), 3);
+        assert_eq!(feature_table.count_rows(None).await.unwrap(), 3);
+        assert_eq!(
+            table.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some(MAIN_BRANCH.to_string()),
+                tags: vec!["main-v2".to_string()],
+            }
+        );
 
-        feature_table
-            .create_branch("feature-a/deeper", None)
+        feature_table.checkout(2).await.unwrap();
+        assert_eq!(
+            feature_table.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some("feature-a".to_string()),
+                tags: vec![],
+            }
+        );
+        assert_eq!(feature_table.count_rows(None).await.unwrap(), 2);
+        feature_table.checkout_latest().await.unwrap();
+        assert_eq!(feature_table.version().await.unwrap(), 3);
+
+        let mut feature_branches = feature_table.branches().await.unwrap();
+        feature_branches
+            .create("feature-a/deeper", None)
             .await
             .unwrap();
 
-        let branches = feature_table.list_branches().await.unwrap();
+        let branches = feature_branches.list().await.unwrap();
         assert_eq!(
             branches["feature-a/deeper"].parent_branch,
             Some("feature-a".to_string())
         );
         assert_eq!(branches["feature-a/deeper"].parent_version, 3);
 
-        let err = table.create_branch("", None).await.unwrap_err();
+        let err = main_branches.create("", None).await.unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidInput { message } if message == "branch must be a non-empty string"
         ));
 
-        let err = feature_table.delete_branch("feature-a").await.unwrap_err();
+        let err = feature_branches.delete("feature-a").await.unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidInput { message }
                 if message == "cannot delete the currently checked out branch"
         ));
 
-        table.delete_branch("recovery").await.unwrap();
-        let branches = table.list_branches().await.unwrap();
-        assert!(!branches.contains_key("recovery"));
+        main_branches.delete("recovery").await.unwrap();
+        let branch_list = main_branches.list().await.unwrap();
+        assert!(!branch_list.contains_key("recovery"));
     }
 
     #[tokio::test]
@@ -3196,11 +3212,89 @@ mod tests {
         fresh_table.add(some_sample_data()).execute().await.unwrap();
         assert_eq!(fresh_table.version().await.unwrap(), 3);
 
-        stale_table.create_branch("feature-a", None).await.unwrap();
+        stale_table
+            .branches()
+            .await
+            .unwrap()
+            .create("feature-a", None)
+            .await
+            .unwrap();
 
-        let branches = fresh_table.list_branches().await.unwrap();
+        let branches = fresh_table.branches().await.unwrap().list().await.unwrap();
         assert_eq!(branches["feature-a"].parent_branch, None);
         assert_eq!(branches["feature-a"].parent_version, 3);
+    }
+
+    #[tokio::test]
+    async fn test_branch_tracks_latest_version() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 2);
+
+        table
+            .branches()
+            .await
+            .unwrap()
+            .create("feature-a", None)
+            .await
+            .unwrap();
+
+        let feature_reader = conn
+            .open_table("my_table")
+            .branch("feature-a")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            feature_reader.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some("feature-a".to_string()),
+                tags: vec![],
+            }
+        );
+
+        let feature_writer = conn
+            .open_table("my_table")
+            .branch("feature-a")
+            .execute()
+            .await
+            .unwrap();
+        feature_writer
+            .add(some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(feature_writer.version().await.unwrap(), 3);
+
+        assert_eq!(
+            feature_reader.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 3,
+                branch: Some("feature-a".to_string()),
+                tags: vec![],
+            }
+        );
+        assert_eq!(
+            table.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some("main".to_string()),
+                tags: vec![],
+            }
+        );
     }
 
     #[tokio::test]

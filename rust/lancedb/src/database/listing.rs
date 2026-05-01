@@ -671,7 +671,7 @@ impl ListingDatabase {
                     location: None,
                     namespace_client: None,
                     managed_versioning: None,
-                    reference: None,
+                    branch: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -1031,7 +1031,7 @@ impl Database for ListingDatabase {
                 request.namespace_client,
                 HashSet::new(), // listing database doesn't support server-side queries
                 request.managed_versioning, // Pass through managed_versioning from request
-                request.reference,
+                request.branch,
             )
             .await?,
         );

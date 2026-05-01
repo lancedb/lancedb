@@ -6,6 +6,11 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 #[napi(object)]
+pub struct JsOpenTableBranchReference {
+    pub branch: String,
+}
+
+#[napi(object)]
 pub struct JsBranchReference {
     pub branch: String,
     pub version: Option<i64>,

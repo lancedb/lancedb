@@ -17,11 +17,8 @@ import {
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
 import { sanitizeTable } from "./sanitize";
-import { cleanseStorageOptions } from "./storage_options";
-import { LocalTable, Table, type Reference as TableReference } from "./table";
-import { assertValidSelectorName, assertValidVersionNumber } from "./util";
-
-export { cleanseStorageOptions } from "./storage_options";
+import { LocalTable, Table, type BranchReference } from "./table";
+import { assertValidSelectorName } from "./util";
 
 export interface CreateTableOptions {
   /**
@@ -75,40 +72,14 @@ export interface CreateTableOptions {
   embeddingFunction?: EmbeddingFunctionConfig;
 }
 
-export interface OpenTableVersionRefOptions {
-  /**
-   * Open a specific version number on the current table timeline.
-   */
-  versionNumber: number;
-  tagName?: never;
-  branchName?: never;
-}
-
-export interface OpenTableTagRefOptions {
-  versionNumber?: never;
-  /**
-   * Open a specific tag.
-   */
-  tagName: string;
-  branchName?: never;
-}
-
 export interface OpenTableBranchRefOptions {
   /**
    * Open a specific branch when the table handle is created.
    */
   branchName: string;
-  /**
-   * An optional version number within the selected branch.
-   */
-  versionNumber?: number;
-  tagName?: never;
 }
 
-export type OpenTableRefOptions =
-  | OpenTableVersionRefOptions
-  | OpenTableTagRefOptions
-  | OpenTableBranchRefOptions;
+export type OpenTableRefOptions = OpenTableBranchRefOptions;
 
 export interface OpenTableOptions {
   /**
@@ -136,8 +107,8 @@ export interface OpenTableOptions {
    */
   indexCacheSize?: number;
   /**
-   * Optional reference selector used to choose the initial table timeline or
-   * snapshot when opening a table.
+   * Optional branch selector used to choose the initial table timeline when
+   * opening a table.
    *
    * Branches are selected here. After the table is opened, {@link Table.checkout}
    * only supports version numbers and tags on the current branch timeline.
@@ -357,66 +328,26 @@ export abstract class Connection {
 
 function normalizeOpenTableSelector(
   options?: Partial<OpenTableOptions>,
-): TableReference | null {
+): BranchReference | null {
   const ref = options?.ref;
   if (ref == null) {
     return null;
   }
 
-  const hasBranchNameKey = Object.prototype.hasOwnProperty.call(
-    ref,
-    "branchName",
-  );
-  const hasTagNameKey = Object.prototype.hasOwnProperty.call(ref, "tagName");
-  const hasVersionNumberKey = Object.prototype.hasOwnProperty.call(
-    ref,
-    "versionNumber",
-  );
   const branchName = (ref as { branchName?: unknown }).branchName;
-  const tagName = (ref as { tagName?: unknown }).tagName;
-  const versionNumber = (ref as { versionNumber?: unknown }).versionNumber;
-
-  const hasBranchName = branchName !== undefined;
-  const hasTagName = tagName !== undefined;
-  const hasVersionNumber = versionNumber !== undefined;
-
-  const selectorCount = [
-    hasBranchName,
-    hasTagName,
-    hasVersionNumber && !hasBranchName,
-  ].filter(Boolean).length;
-  if (selectorCount > 1) {
-    throw new Error(
-      "versionNumber, tagName, and branchName are mutually exclusive",
-    );
+  const refRecord = ref as unknown as Record<string, unknown>;
+  const unsupportedKeys = Object.keys(ref).filter(
+    (key) => key !== "branchName" && refRecord[key] !== undefined,
+  );
+  if (unsupportedKeys.length > 0) {
+    throw new Error("openTable ref contains unsupported fields");
+  }
+  if (branchName === undefined) {
+    throw new Error("ref must include a defined branchName");
   }
 
-  if (selectorCount === 0) {
-    if (hasBranchNameKey || hasTagNameKey || hasVersionNumberKey) {
-      throw new Error(
-        "ref must include a defined versionNumber, tagName, or branchName",
-      );
-    }
-    throw new Error("ref must include a versionNumber, tagName, or branchName");
-  }
-
-  if (hasBranchName) {
-    assertValidSelectorName(branchName, "branchName");
-    if (hasVersionNumber) {
-      assertValidVersionNumber(versionNumber, "branch versionNumber");
-    }
-    return hasVersionNumber
-      ? { branch: branchName, version: versionNumber }
-      : { branch: branchName };
-  }
-
-  if (hasTagName) {
-    assertValidSelectorName(tagName, "tagName");
-    return tagName;
-  }
-
-  assertValidVersionNumber(versionNumber, "version");
-  return versionNumber;
+  assertValidSelectorName(branchName, "branchName");
+  return { branch: branchName };
 }
 
 /** @hideconstructor */
@@ -651,6 +582,46 @@ export class LocalConnection extends Connection {
   async dropAllTables(namespacePath?: string[]): Promise<void> {
     return this.inner.dropAllTables(namespacePath ?? []);
   }
+}
+
+/**
+ * Takes storage options and makes all the keys snake case.
+ */
+export function cleanseStorageOptions(
+  options?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined) {
+      const newKey = camelToSnakeCase(key);
+      result[newKey] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Convert a string to snake case. It might already be snake case, in which case it is
+ * returned unchanged.
+ */
+function camelToSnakeCase(camel: string): string {
+  if (camel.includes("_")) {
+    // Assume if there is at least one underscore, it is already snake case
+    return camel;
+  }
+  if (camel.toLocaleUpperCase() === camel) {
+    // Assume if the string is all uppercase, it is already snake case
+    return camel;
+  }
+
+  let result = camel.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  if (result.startsWith("_")) {
+    result = result.slice(1);
+  }
+  return result;
 }
 
 async function parseTableData(
