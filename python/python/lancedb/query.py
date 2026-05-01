@@ -1643,7 +1643,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
             raise ValueError(
-                "You can either provide a string query in search() method"
+                "You can either provide a string query in search() method "
                 "or set `vector()` and `text()` explicitly for hybrid search."
                 "But not both."
             )
