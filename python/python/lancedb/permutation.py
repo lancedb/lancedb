@@ -481,19 +481,22 @@ class Permutation:
                 factory("training")
             ).with_connection_factory(factory)
 
-        Native with a namespace path::
+        Native via :func:`lancedb.connect_namespace` (e.g. a directory- or
+        REST-backed namespace client). The factory takes the
+        implementation name and properties dict as partial-bound args so
+        the worker can rebuild the same namespace connection::
 
-            def open_namespaced_table(
-                uri: str, namespace_path: list[str], table_name: str,
+            def open_via_namespace(
+                impl: str, properties: dict[str, str], table_name: str,
             ):
-                return lancedb.connect(uri).open_table(
-                    table_name, namespace_path=namespace_path,
+                return lancedb.connect_namespace(impl, properties).open_table(
+                    table_name,
                 )
 
             factory = functools.partial(
-                open_namespaced_table,
-                "/data/lance_db",
-                ["analytics", "training"],
+                open_via_namespace,
+                "dir",
+                {"root": "/data/lance_db"},
             )
 
         LanceDB Cloud, reading credentials from env vars at worker startup
