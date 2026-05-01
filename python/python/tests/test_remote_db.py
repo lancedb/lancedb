@@ -6,6 +6,7 @@ import contextlib
 from datetime import timedelta
 import http.server
 import json
+import multiprocessing as mp
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -1230,3 +1231,75 @@ def test_background_loop_cancellation(exception):
         with pytest.raises(exception):
             loop.run(None)
         mock_future.cancel.assert_called_once()
+
+
+def _remote_fork_child(port: int, queue) -> None:
+    # Build a fresh Connection in the child so we exercise the at-fork-child
+    # tokio runtime reset rather than relying on an inherited reqwest client.
+    db = lancedb.connect(
+        "db://dev",
+        api_key="fake",
+        host_override=f"http://localhost:{port}",
+        client_config={
+            "retry_config": {"retries": 0},
+            "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+        },
+    )
+    queue.put(db.table_names())
+
+
+def test_remote_connection_after_fork():
+    """A freshly-built remote Connection in a forked child should not hang.
+
+    The pyo3-async-runtimes tokio runtime would otherwise be inherited from
+    the parent with dead worker threads; the at-fork-child handler in our
+    runtime module rebuilds it on first use in the child.
+    """
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"tables": []}')
+
+    server = http.server.HTTPServer(("localhost", 0), make_mock_http_handler(handler))
+    port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    try:
+        # Hit the server in the parent first so the runtime + LOOP are warm
+        # before fork; a fresh child must still succeed.
+        parent_db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=f"http://localhost:{port}",
+            client_config={
+                "retry_config": {"retries": 0},
+                "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+            },
+        )
+        assert parent_db.table_names() == []
+
+        ctx = mp.get_context("fork")
+        queue = ctx.Queue()
+        proc = ctx.Process(target=_remote_fork_child, args=(port, queue))
+        proc.start()
+        proc.join(timeout=15)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            pytest.fail("Remote connection hung after fork")
+
+        assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
+        assert not queue.empty(), "child produced no result"
+        assert queue.get() == []
+
+        # Parent connection must still be usable after the child returned.
+        assert parent_db.table_names() == []
+    finally:
+        server.shutdown()
+        server_thread.join()
