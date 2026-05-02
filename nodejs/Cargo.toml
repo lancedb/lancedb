@@ -22,11 +22,11 @@ arrow-schema.workspace = true
 env_logger.workspace = true
 futures.workspace = true
 lancedb = { path = "../rust/lancedb", default-features = false }
-napi = { version = "3.8.3", default-features = false, features = [
+napi = { version = "3.8.6", default-features = false, features = [
     "napi9",
     "async"
 ] }
-napi-derive = "3.5.2"
+napi-derive = "3.5.5"
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "0.1", features = ["static"] }
 log.workspace = true
