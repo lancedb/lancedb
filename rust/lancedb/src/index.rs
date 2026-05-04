@@ -425,8 +425,6 @@ pub struct IndexConfig {
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexMetadata {
     pub metric_type: Option<DistanceType>,
-    // Sometimes the index type is provided at this level.
-    pub index_type: Option<IndexType>,
 }
 
 // This struct is used to deserialize the JSON data returned from the Lance API
@@ -437,8 +435,6 @@ pub(crate) struct IndexStatisticsImpl {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
     pub indices: Vec<IndexMetadata>,
-    // Sometimes, the index type is provided at this level.
-    pub index_type: Option<IndexType>,
     pub num_indices: Option<u32>,
 }
 
