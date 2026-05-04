@@ -7,6 +7,7 @@ from datetime import timedelta
 import http.server
 import json
 import multiprocessing as mp
+import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -1248,6 +1249,13 @@ def _remote_fork_child(port: int, queue) -> None:
     queue.put(db.table_names())
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
 def test_remote_connection_after_fork():
     """A freshly-built remote Connection in a forked child should not hang.
 

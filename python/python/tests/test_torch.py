@@ -4,6 +4,7 @@
 import functools
 import multiprocessing as mp
 import pickle
+import sys
 
 import lancedb
 import pyarrow as pa
@@ -170,6 +171,13 @@ def _multiworker_dataloader_target(db_uri: str, result_queue):
     result_queue.put(count)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
 def test_permutation_dataloader_fork_workers(tmp_path):
     """A Permutation used by a fork-based DataLoader should not hang.
 
