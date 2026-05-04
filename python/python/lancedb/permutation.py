@@ -354,20 +354,6 @@ class Transforms:
 DEFAULT_BATCH_SIZE = 100
 
 
-def _serialize_arrow_table(table: pa.Table) -> bytes:
-    """Serialize a pyarrow Table to Arrow IPC stream bytes."""
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
-
-
-def _deserialize_arrow_table(data: bytes) -> pa.Table:
-    """Read an Arrow IPC stream back into a pyarrow Table."""
-    with pa.ipc.open_stream(pa.BufferReader(data)) as reader:
-        return reader.read_all()
-
-
 class Permutation:
     """
     A Permutation is a view of a dataset that can be used as input to model training
@@ -610,13 +596,13 @@ class Permutation:
         ``connection_factory`` (see [with_connection_factory]) or, as a
         fallback, by introspecting ``(uri, storage_options, namespace_path)``
         on the connection. The permutation table — always an in-memory
-        LanceDB table — is captured as Arrow IPC stream bytes. The reader is
-        dropped from the wire format; ``__setstate__`` rebuilds it from the
-        restored tables.
+        LanceDB table — is captured as a pyarrow Table (which pickles via
+        Arrow IPC natively). The reader is dropped from the wire format;
+        ``__setstate__`` rebuilds it from the restored tables.
         """
-        permutation_data: Optional[bytes] = None
+        permutation_data: Optional[pa.Table] = None
         if self.permutation_table is not None:
-            permutation_data = _serialize_arrow_table(self.permutation_table.to_arrow())
+            permutation_data = self.permutation_table.to_arrow()
 
         common = {
             "base_table_name": self.base_table.name,
@@ -655,13 +641,13 @@ class Permutation:
 
         if base_uri.startswith("memory://"):
             # In-memory base tables don't exist in any worker process by
-            # default, so dump the entire base table into the pickle as
-            # Arrow IPC stream bytes. This can be expensive for large
-            # datasets — users with large in-memory base tables should
-            # either persist them or set a connection_factory.
+            # default, so dump the entire base table into the pickle. This
+            # can be expensive for large datasets — users with large
+            # in-memory base tables should either persist them or set a
+            # connection_factory.
             return {
                 **common,
-                "base_table_data": _serialize_arrow_table(self.base_table.to_arrow()),
+                "base_table_data": self.base_table.to_arrow(),
             }
 
         return {
@@ -680,9 +666,10 @@ class Permutation:
         elif "base_table_data" in state:
             # In-memory base table inlined into the pickle; rebuild the same
             # way we rebuild the in-memory permutation table.
-            base_arrow = _deserialize_arrow_table(state["base_table_data"])
             mem_db = connect("memory://")
-            base_table = mem_db.create_table(state["base_table_name"], base_arrow)
+            base_table = mem_db.create_table(
+                state["base_table_name"], state["base_table_data"]
+            )
         else:
             base_db = connect(
                 state["base_table_uri"],
@@ -695,9 +682,10 @@ class Permutation:
 
         permutation_table: Optional[LanceTable] = None
         if state["permutation_data"] is not None:
-            perm_arrow = _deserialize_arrow_table(state["permutation_data"])
             mem_db = connect("memory://")
-            permutation_table = mem_db.create_table("permutation", perm_arrow)
+            permutation_table = mem_db.create_table(
+                "permutation", state["permutation_data"]
+            )
 
         self.base_table = base_table
         self.permutation_table = permutation_table
