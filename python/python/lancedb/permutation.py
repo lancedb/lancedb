@@ -781,11 +781,10 @@ class Permutation:
 
     def fetch(self, indices: list[int]) -> Any:
         """
-        Fetch rows from the permutation by offset.
+        Fetch rows from the permutation
 
-        This is the public batch-access API. It returns the rows for the given
-        offsets in the same shape as configured by
-        [with_format](#with_format) / [with_transform](#with_transform).
+        returns the rows for the given permutation in the same shape as configured by
+        with_format / with_transform.
 
         Examples
         --------
