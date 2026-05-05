@@ -4698,6 +4698,7 @@ dependencies = [
  "lance-namespace",
  "lance-namespace-impls",
  "lancedb",
+ "libc",
  "log",
  "pin-project",
  "pyo3",

@@ -7,6 +7,12 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    error::PythonErrorExt,
+    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
+    runtime::future_into_py,
+    table::Table,
+};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
@@ -19,13 +25,6 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-};
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::{
-    error::PythonErrorExt,
-    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
-    table::Table,
 };
 
 #[pyclass]

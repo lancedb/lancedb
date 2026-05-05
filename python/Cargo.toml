@@ -35,7 +35,8 @@ futures.workspace = true
 serde = "1"
 serde_json = "1"
 snafu.workspace = true
-tokio = { version = "1.40", features = ["sync"] }
+tokio = { version = "1.40", features = ["sync", "rt-multi-thread"] }
+libc = "0.2"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = [

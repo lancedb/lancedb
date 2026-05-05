@@ -3,7 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{arrow::RecordBatchStream, error::PythonErrorExt, table::Table};
+use crate::{
+    arrow::RecordBatchStream, error::PythonErrorExt, runtime::future_into_py, table::Table,
+};
 use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
     dataloader::permutation::{
@@ -19,7 +21,6 @@ use pyo3::{
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
 
 fn table_from_py<'a>(table: Bound<'a, PyAny>) -> PyResult<Bound<'a, Table>> {
     if table.hasattr("_inner")? {

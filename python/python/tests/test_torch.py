@@ -2,13 +2,15 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import functools
+import multiprocessing as mp
 import pickle
+import sys
 
 import lancedb
 import pyarrow as pa
 import pytest
-from lancedb.util import tbl_to_tensor
 from lancedb.permutation import Permutation, Permutations, permutation_builder
+from lancedb.util import tbl_to_tensor
 
 torch = pytest.importorskip("torch")
 
@@ -146,3 +148,63 @@ def test_permutation_with_builder_is_picklable(tmp_db):
 
     assert len(restored) == len(permutation)
     assert restored.__getitems__(indices) == expected
+
+
+def _multiworker_dataloader_target(db_uri: str, result_queue):
+    import lancedb
+    from lancedb.permutation import Permutation
+
+    db = lancedb.connect(db_uri)
+    table = db.open_table("test_table")
+    permutation = Permutation.identity(table)
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation,
+        batch_size=10,
+        num_workers=2,
+        multiprocessing_context="fork",
+    )
+    count = 0
+    for batch in dataloader:
+        assert batch["a"].size(0) == 10
+        count += 1
+    result_queue.put(count)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
+def test_permutation_dataloader_fork_workers(tmp_path):
+    """A Permutation used by a fork-based DataLoader should not hang.
+
+    PyTorch's DataLoader uses fork-based multiprocessing by default on Linux.
+    LanceDB drives async work through a background asyncio thread that does
+    not survive a fork, so any LOOP.run() in a worker blocks forever.
+    """
+    import lancedb
+
+    db_uri = str(tmp_path / "db")
+    db = lancedb.connect(db_uri)
+    db.create_table("test_table", pa.table({"a": list(range(1000))}))
+
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue()
+    proc = ctx.Process(target=_multiworker_dataloader_target, args=(db_uri, queue))
+    proc.start()
+    proc.join(timeout=30)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        pytest.fail("Permutation hung when iterated in a fork-based DataLoader worker")
+
+    assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
+    assert not queue.empty(), "child produced no batches"
+    assert queue.get() == 100

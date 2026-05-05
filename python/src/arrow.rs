@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use crate::error::PythonErrorExt;
+use crate::runtime::future_into_py;
 use arrow::{
     datatypes::SchemaRef,
     pyarrow::{IntoPyArrow, ToPyArrow},
@@ -12,9 +14,6 @@ use lancedb::arrow::SendableRecordBatchStream;
 use pyo3::{
     Bound, Py, PyAny, PyRef, PyResult, Python, exceptions::PyStopAsyncIteration, pyclass, pymethods,
 };
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::error::PythonErrorExt;
 
 #[pyclass]
 pub struct RecordBatchStream {
