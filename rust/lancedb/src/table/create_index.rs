@@ -589,6 +589,7 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -646,6 +647,7 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -690,6 +692,10 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::IvfHnswFlat);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
+        let stats = table.index_stats(&index.name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
