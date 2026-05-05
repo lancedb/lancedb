@@ -2531,17 +2531,10 @@ impl BaseTable for NativeTable {
             return Ok(None);
         };
 
-        let index_type: crate::index::IndexType =
-            description
-                .index_type()
-                .parse()
-                .map_err(|e| Error::InvalidInput {
-                    message: format!(
-                        "unrecognized index type {}: {}",
-                        description.index_type(),
-                        e
-                    ),
-                })?;
+        let index_type: crate::index::IndexType = description
+            .index_type()
+            .parse()
+            .unwrap_or(crate::index::IndexType::Unknown);
 
         let is_vector = matches!(
             index_type,
