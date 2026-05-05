@@ -715,7 +715,7 @@ impl ListingDatabase {
         let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
-            let full_path = self.base_path.child(dir_name.clone());
+            let full_path = self.base_path.clone().join(dir_name.clone());
 
             commit_handler.delete(&full_path).await?;
 
