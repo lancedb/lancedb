@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=6.0.0-beta.7", default-features = false, "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=6.0.0-beta.7", "tag" = "v6.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=7.0.0-beta.4", default-features = false, "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=7.0.0-beta.4", default-features = false, "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=7.0.0-beta.4", default-features = false, "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=7.0.0-beta.4", "tag" = "v7.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
@@ -54,7 +54,7 @@ half = { "version" = "2.7.1", default-features = false, features = [
 futures = "0"
 log = "0.4"
 moka = { version = "0.12", features = ["future"] }
-object_store = "0.12.0"
+object_store = "0.13.2"
 pin-project = "1.0.7"
 rand = "0.9"
 snafu = "0.8"
