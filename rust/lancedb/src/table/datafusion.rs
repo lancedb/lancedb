@@ -3,6 +3,8 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod bad_vector_dimensions;
+pub mod bad_vector_values;
 pub mod cast;
 pub mod insert;
 pub mod reject_nan;

@@ -2411,7 +2411,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_preprocessing() {
-        use crate::table::NaNVectorBehavior;
+        use crate::table::BadVectorValueHandling;
         use arrow_array::{FixedSizeListArray, Float32Array, Int64Array};
 
         // The table schema: {id: Int64, vec: FixedSizeList<Float32>[3]}
@@ -2518,7 +2518,7 @@ mod tests {
 
         table
             .add(cast_data)
-            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .on_bad_vector_values(BadVectorValueHandling::Keep)
             .execute()
             .await
             .unwrap();
