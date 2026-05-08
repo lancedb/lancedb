@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.28.0-beta.9",
+  "version": "0.28.0-beta.11",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -75,7 +75,6 @@
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
     "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
     "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
-    "postbuild:release": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
     "build": "npm run build:debug && npm run tsc",
     "build-release": "npm run build:release && npm run tsc",
     "tsc": "tsc -b",

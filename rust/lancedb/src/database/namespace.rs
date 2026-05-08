@@ -24,6 +24,10 @@ use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
+use crate::database::listing::{
+    NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, OPT_NEW_TABLE_STORAGE_VERSION,
+    OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+};
 use crate::error::{Error, Result};
 use crate::table::NativeTable;
 use lance::dataset::WriteMode;
@@ -50,6 +54,8 @@ pub struct LanceNamespaceDatabase {
     ns_impl: String,
     // Namespace properties used to construct the namespace client
     ns_properties: HashMap<String, String>,
+    // Options for tables created by this connection
+    new_table_config: NewTableConfig,
 }
 
 impl LanceNamespaceDatabase {
@@ -71,7 +77,13 @@ impl LanceNamespaceDatabase {
             pushdown_operations: namespace_client_pushdown_operations,
             ns_impl: namespace_client_impl,
             ns_properties: namespace_client_properties,
+            new_table_config: NewTableConfig::default(),
         }
+    }
+
+    pub(crate) fn with_uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = uri.into();
+        self
     }
 
     pub async fn connect(
@@ -81,6 +93,27 @@ impl LanceNamespaceDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    ) -> Result<Self> {
+        Self::connect_with_new_table_config(
+            ns_impl,
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            pushdown_operations,
+            NewTableConfig::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn connect_with_new_table_config(
+        ns_impl: &str,
+        ns_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+        new_table_config: NewTableConfig,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -102,7 +135,78 @@ impl LanceNamespaceDatabase {
             pushdown_operations,
             ns_impl: ns_impl.to_string(),
             ns_properties,
+            new_table_config,
         })
+    }
+
+    fn extract_storage_overrides(
+        &self,
+        request: &DbCreateTableRequest,
+    ) -> Result<(
+        Option<lance_encoding::version::LanceFileVersion>,
+        Option<bool>,
+        Option<bool>,
+    )> {
+        let storage_options = request
+            .write_options
+            .lance_write_params
+            .as_ref()
+            .and_then(|p| p.store_params.as_ref())
+            .and_then(|sp| sp.storage_options());
+
+        let storage_version_override = storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
+            .map(|s| s.parse::<lance_encoding::version::LanceFileVersion>())
+            .transpose()?;
+
+        let v2_manifest_override = storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_v2_manifest_paths must be a boolean".to_string(),
+            })?;
+
+        let stable_row_ids_override = storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?;
+
+        Ok((
+            storage_version_override,
+            v2_manifest_override,
+            stable_row_ids_override,
+        ))
+    }
+
+    fn apply_new_table_config(
+        &self,
+        params: &mut lance::dataset::WriteParams,
+        request: &DbCreateTableRequest,
+    ) -> Result<()> {
+        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
+            self.extract_storage_overrides(request)?;
+
+        params.data_storage_version = storage_version_override
+            .or(params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
+
+        if let Some(enable_v2_manifest_paths) =
+            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
+        {
+            params.enable_v2_manifest_paths = enable_v2_manifest_paths;
+        }
+
+        if let Some(enable_stable_row_ids) =
+            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        {
+            params.enable_stable_row_ids = enable_stable_row_ids;
+        }
+
+        Ok(())
     }
 }
 
@@ -299,7 +403,12 @@ impl Database for LanceNamespaceDatabase {
         };
 
         // Build write params with storage options and commit handler
-        let mut params = request.write_options.lance_write_params.unwrap_or_default();
+        let mut params = request
+            .write_options
+            .lance_write_params
+            .clone()
+            .unwrap_or_default();
+        self.apply_new_table_config(&mut params, &request)?;
 
         if matches!(request.mode, CreateTableMode::Overwrite) {
             params.mode = WriteMode::Overwrite;

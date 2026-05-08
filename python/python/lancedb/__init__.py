@@ -7,7 +7,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List
-import warnings
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -73,6 +72,7 @@ def connect(
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    manifest_enabled: bool = False,
     namespace_client_impl: Optional[str] = None,
     namespace_client_properties: Optional[Dict[str, str]] = None,
     namespace_client_pushdown_operations: Optional[List[str]] = None,
@@ -111,6 +111,10 @@ def connect(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
+    manifest_enabled : bool, default False
+        When true for local/native connections, use directory namespace
+        manifests as the source of truth for table metadata. Existing
+        directory-listed root tables are migrated into the manifest on access.
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -158,11 +162,11 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    if namespace_client_impl is not None or namespace_client_properties is not None:
-        if namespace_client_impl is None or namespace_client_properties is None:
+    if namespace_client_impl is not None:
+        if namespace_client_properties is None:
             raise ValueError(
-                "Both namespace_client_impl and "
-                "namespace_client_properties must be provided"
+                "namespace_client_properties must be provided when "
+                "namespace_client_impl is set"
             )
         if kwargs:
             raise ValueError(f"Unknown keyword arguments: {kwargs}")
@@ -173,6 +177,12 @@ def connect(
             storage_options=storage_options,
             session=session,
             namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        )
+
+    if namespace_client_properties is not None and not manifest_enabled:
+        raise ValueError(
+            "namespace_client_impl must be provided when using "
+            "namespace_client_properties unless manifest_enabled=True"
         )
 
     if namespace_client_pushdown_operations is not None:
@@ -212,6 +222,8 @@ def connect(
         read_consistency_interval=read_consistency_interval,
         storage_options=storage_options,
         session=session,
+        manifest_enabled=manifest_enabled,
+        namespace_client_properties=namespace_client_properties,
     )
 
 
@@ -289,6 +301,8 @@ def deserialize_conn(
             parsed["uri"],
             read_consistency_interval=rci,
             storage_options=storage_options,
+            manifest_enabled=parsed.get("manifest_enabled", False),
+            namespace_client_properties=parsed.get("namespace_client_properties"),
         )
     else:
         raise ValueError(f"Unknown connection_type: {connection_type}")
@@ -304,6 +318,8 @@ async def connect_async(
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -343,6 +359,13 @@ async def connect_async(
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    manifest_enabled : bool, default False
+        When true for local/native connections, use directory namespace
+        manifests as the source of truth for table metadata. Existing
+        directory-listed root tables are migrated into the manifest on access.
+    namespace_client_properties : dict, optional
+        Additional directory namespace client properties to use with
+        ``manifest_enabled=True``.
 
     Examples
     --------
@@ -385,6 +408,8 @@ async def connect_async(
             client_config,
             storage_options,
             session,
+            manifest_enabled,
+            namespace_client_properties,
         )
     )
 
@@ -412,13 +437,3 @@ __all__ = [
     "Table",
     "__version__",
 ]
-
-
-def __warn_on_fork():
-    warnings.warn(
-        "lance is not fork-safe. If you are using multiprocessing, use spawn instead.",
-    )
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before=__warn_on_fork)  # type: ignore[attr-defined]

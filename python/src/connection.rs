@@ -7,6 +7,12 @@ use std::{
     time::Duration,
 };
 
+use crate::{
+    error::PythonErrorExt,
+    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
+    runtime::future_into_py,
+    table::Table,
+};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
@@ -19,13 +25,6 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-};
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::{
-    error::PythonErrorExt,
-    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
-    table::Table,
 };
 
 #[pyclass]
@@ -525,7 +524,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -537,6 +536,8 @@ pub fn connect(
     client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
     session: Option<crate::session::Session>,
+    manifest_enabled: bool,
+    namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -555,6 +556,12 @@ pub fn connect(
         }
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+        if manifest_enabled {
+            builder = builder.manifest_enabled(true);
+        }
+        if let Some(namespace_client_properties) = namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
         }
         #[cfg(feature = "remote")]
         if let Some(client_config) = client_config {

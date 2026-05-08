@@ -20,7 +20,7 @@ pub(crate) struct ScannableExec {
     // We don't require Scannable to be Sync, so we wrap it in a Mutex to allow safe concurrent access.
     source: Mutex<Box<dyn Scannable>>,
     num_rows: Option<usize>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     tracker: Option<Arc<WriteProgressTracker>>,
 }
 
@@ -49,7 +49,7 @@ impl ScannableExec {
         Self {
             source,
             num_rows,
-            properties,
+            properties: Arc::new(properties),
             tracker,
         }
     }
@@ -70,7 +70,7 @@ impl ExecutionPlan for ScannableExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

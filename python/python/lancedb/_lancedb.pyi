@@ -242,6 +242,8 @@ async def connect(
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],
     session: Optional[Session],
+    manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
 ) -> Connection: ...
 
 class RecordBatchStream:
@@ -440,7 +442,7 @@ class AsyncPermutationBuilder:
     async def execute(self) -> Table: ...
 
 def async_permutation_builder(
-    table: Table, dest_table_name: str
+    table: Table,
 ) -> AsyncPermutationBuilder: ...
 def fts_query_to_json(query: Any) -> str: ...
 

@@ -9,7 +9,10 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - deny.toml
       - rust/**
+      - nodejs/Cargo.toml
+      - python/Cargo.toml
       - .github/workflows/rust.yml
 
 permissions:
@@ -55,6 +58,17 @@ jobs:
         run: cargo clippy --profile ci --workspace --tests --all-features -- -D warnings
       - name: Run clippy (without remote feature)
         run: cargo clippy --profile ci --workspace --tests -- -D warnings
+
+  deny:
+    # Supply-chain checks: advisories, licenses, banned crates, and source
+    # restrictions. Configuration lives in `deny.toml` at the workspace root.
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
 
   build-no-lock:
     runs-on: ubuntu-24.04

@@ -21,6 +21,9 @@ jobs:
   linux:
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
     timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       matrix:
         config:
@@ -60,10 +63,12 @@ jobs:
       - uses: ./.github/workflows/upload_wheel
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   mac:
     timeout-minutes: 90
+    permissions:
+      id-token: write
+      contents: read
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
@@ -88,10 +93,12 @@ jobs:
       - uses: ./.github/workflows/upload_wheel
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   windows:
     timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +117,6 @@ jobs:
       - uses: ./.github/workflows/upload_wheel
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   gh-release:
     if: startsWith(github.ref, 'refs/tags/python-v')

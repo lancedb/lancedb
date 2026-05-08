@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    arrow::RecordBatchStream, connection::Connection, error::PythonErrorExt, table::Table,
+    arrow::RecordBatchStream, error::PythonErrorExt, runtime::future_into_py, table::Table,
 };
 use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
@@ -21,16 +21,15 @@ use pyo3::{
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
 
 fn table_from_py<'a>(table: Bound<'a, PyAny>) -> PyResult<Bound<'a, Table>> {
     if table.hasattr("_inner")? {
-        Ok(table.getattr("_inner")?.downcast_into::<Table>()?)
+        Ok(table.getattr("_inner")?.cast_into::<Table>()?)
     } else if table.hasattr("_table")? {
         Ok(table
             .getattr("_table")?
             .getattr("_inner")?
-            .downcast_into::<Table>()?)
+            .cast_into::<Table>()?)
     } else {
         Err(PyRuntimeError::new_err(
             "Provided table does not appear to be a Table or RemoteTable instance",
@@ -80,24 +79,6 @@ impl PyAsyncPermutationBuilder {
 
 #[pymethods]
 impl PyAsyncPermutationBuilder {
-    #[pyo3(signature = (database, table_name))]
-    pub fn persist(
-        slf: PyRefMut<'_, Self>,
-        database: Bound<'_, PyAny>,
-        table_name: String,
-    ) -> PyResult<Self> {
-        let conn = if database.hasattr("_conn")? {
-            database
-                .getattr("_conn")?
-                .getattr("_inner")?
-                .downcast_into::<Connection>()?
-        } else {
-            database.getattr("_inner")?.downcast_into::<Connection>()?
-        };
-        let database = conn.borrow().database()?;
-        slf.modify(|builder| builder.persist(database, table_name))
-    }
-
     #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
     pub fn split_random(
         slf: PyRefMut<'_, Self>,
@@ -243,7 +224,7 @@ impl PyPermutationReader {
         let Some(selection) = selection else {
             return Ok(Select::All);
         };
-        let selection = selection.downcast_into::<PyDict>()?;
+        let selection = selection.cast_into::<PyDict>()?;
         let selection = selection
             .iter()
             .map(|(key, value)| {

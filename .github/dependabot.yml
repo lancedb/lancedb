@@ -1,0 +1,18 @@
+version: 2
+
+# Scope: the root Cargo workspace, which produces the Rust binaries we
+# ship to users (the Node.js and Python native extensions). The
+# `rust/lancedb` library crate shares the same lockfile; its consumers
+# pick their own dependency versions, but bumping transitive deps here
+# keeps the binaries we ship current.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      rust-minor-patch:
+        update-types:
+          - minor
+          - patch

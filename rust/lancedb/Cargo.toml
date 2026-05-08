@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.28.0-beta.9"
+version = "0.28.0-beta.11"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -108,10 +108,20 @@ test-log = "0.2"
 
 [features]
 default = []
-aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
+aws = [
+    "lance/aws",
+    "lance-io/aws",
+    "lance-namespace-impls/dir-aws",
+    "object_store/aws",
+]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
-azure = ["lance/azure", "lance-io/azure", "lance-namespace-impls/dir-azure"]
+azure = [
+    "lance/azure",
+    "lance-io/azure",
+    "lance-namespace-impls/dir-azure",
+    "lance-namespace-impls/credential-vendor-azure",
+]
 huggingface = [
     "lance/huggingface",
     "lance-io/huggingface",

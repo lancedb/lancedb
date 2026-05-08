@@ -285,7 +285,7 @@ const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl ListingDatabase {
-    fn build_namespace_client_properties(
+    pub(crate) fn build_namespace_client_properties(
         uri: &str,
         storage_options: &HashMap<String, String>,
         namespace_client_properties: HashMap<String, String>,
@@ -295,6 +295,24 @@ impl ListingDatabase {
         for (key, value) in storage_options {
             properties.insert(format!("storage.{}", key), value.clone());
         }
+        properties
+    }
+
+    pub(crate) fn build_manifest_enabled_namespace_client_properties(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut properties = Self::build_namespace_client_properties(
+            uri,
+            storage_options,
+            namespace_client_properties,
+        );
+        properties.insert("manifest_enabled".to_string(), "true".to_string());
+        properties.insert(
+            "dir_listing_to_manifest_migration_enabled".to_string(),
+            "true".to_string(),
+        );
         properties
     }
 
@@ -321,6 +339,119 @@ impl ListingDatabase {
             )
             .await?,
         ))
+    }
+
+    async fn prepare_namespace_root(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        session: Arc<lance::session::Session>,
+    ) -> Result<String> {
+        match url::Url::parse(uri) {
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+            Ok(mut url) => {
+                if url.scheme().contains('+') {
+                    return Err(Error::NotSupported {
+                        message: "commit engine URI schemes are not supported for manifest-enabled namespace connections".to_string(),
+                    });
+                }
+
+                for (key, value) in url.query_pairs() {
+                    if key == ENGINE {
+                        return Err(Error::NotSupported {
+                            message: format!(
+                                "commit engine '{}' is not supported for manifest-enabled namespace connections",
+                                value
+                            ),
+                        });
+                    } else if key == MIRRORED_STORE {
+                        return Err(Error::NotSupported {
+                            message: "mirrored store is not supported for manifest-enabled namespace connections"
+                                .to_string(),
+                        });
+                    }
+                }
+
+                url.set_query(None);
+                let plain_uri = url.to_string();
+
+                let os_params = ObjectStoreParams {
+                    storage_options_accessor: if storage_options.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                            storage_options.clone(),
+                        )))
+                    },
+                    ..Default::default()
+                };
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    &plain_uri,
+                    &os_params,
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
+                        path: plain_uri.clone(),
+                    })?;
+                }
+
+                Ok(plain_uri)
+            }
+            Err(_) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+        }
+    }
+
+    pub(crate) async fn connect_manifest_enabled_namespace_database(
+        request: &ConnectRequest,
+    ) -> Result<LanceNamespaceDatabase> {
+        let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
+        let session = request
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        let namespace_root =
+            Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
+                .await?;
+        let ns_properties = Self::build_manifest_enabled_namespace_client_properties(
+            &namespace_root,
+            &options.storage_options,
+            request.namespace_client_properties.clone(),
+        );
+
+        LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            ns_properties,
+            options.storage_options,
+            request.read_consistency_interval,
+            Some(session),
+            HashSet::new(),
+            options.new_table_config,
+        )
+        .await
+        .map(|db| db.with_uri(request.uri.clone()))
     }
 
     /// Connect to a listing database
@@ -374,8 +505,15 @@ impl ListingDatabase {
                 // Filter out the commit store query param -- it's a lancedb param
                 url.query_pairs_mut().clear();
                 url.query_pairs_mut().extend_pairs(filtered_querys);
-                // Take a copy of the query string so we can propagate it to lance
-                let query_string = url.query().map(|s| s.to_string());
+                // Take a copy of the query string so we can propagate it to lance.
+                // `query_pairs_mut()` leaves the URL with `Some("")` even when no
+                // pairs survive (or none existed in the first place), so an empty
+                // string here must be treated the same as "no query" — otherwise
+                // every table URI ends up with a trailing `?`, which makes downstream
+                // sub-paths (e.g. MemWAL gen paths) re-parse as path=<base table> +
+                // query=<sub-path>, causing Lance to find the base table dataset
+                // when looking up the sub-path.
+                let query_string = url.query().filter(|q| !q.is_empty()).map(|s| s.to_string());
                 // clear the query string so we can use the url as the base uri
                 // use .set_query(None) instead of .set_query("") because the latter
                 // will add a trailing '?' to the url
@@ -584,7 +722,7 @@ impl ListingDatabase {
         let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
-            let full_path = self.base_path.child(dir_name.clone());
+            let full_path = self.base_path.clone().join(dir_name.clone());
 
             commit_handler.delete(&full_path).await?;
 
@@ -690,15 +828,12 @@ impl ListingDatabase {
             store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
-        write_params.data_storage_version = self
-            .new_table_config
-            .data_storage_version
-            .or(storage_version_override);
+        write_params.data_storage_version = storage_version_override
+            .or(write_params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) = self
-            .new_table_config
-            .enable_v2_manifest_paths
-            .or(v2_manifest_override)
+        if let Some(enable_v2_manifest_paths) =
+            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
@@ -1158,6 +1293,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1292,6 +1428,7 @@ mod tests {
             client_config: Default::default(),
             options: options.clone(),
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1827,6 +1964,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -1933,6 +2071,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -2005,6 +2144,7 @@ mod tests {
             client_config: Default::default(),
             options,
             namespace_client_properties: Default::default(),
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
@@ -2078,6 +2218,133 @@ mod tests {
         let expected = pb.to_str().unwrap();
         let uri = db.table_uri("test").ok().unwrap();
         assert_eq!(uri, expected);
+    }
+
+    /// Regression: connecting via a URL-style URI (which goes through
+    /// `url::Url::parse` and the `query_pairs_mut()` path) must not
+    /// append a trailing `?` to per-table URIs when the input URI has
+    /// no query string.
+    ///
+    /// Earlier, `query_pairs_mut().clear()` left the URL with
+    /// `query=Some("")`, which then propagated as a trailing `?` on
+    /// every table URI. Sub-path lookups against that URI (e.g. MemWAL
+    /// `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parsed as
+    /// `path=<base table>` + `query=/_mem_wal/...`, causing
+    /// `Dataset::write` to find the base table dataset and falsely
+    /// report `Dataset already exists`.
+    /// Mirrors the URL-mutation step from
+    /// [`ListingDatabase::connect_with_options`] so we can assert the
+    /// fix without going through filesystem setup (which is awkward
+    /// across platforms — see the `file://` test below).
+    fn capture_query_like_connect(input_uri: &str) -> Option<String> {
+        let mut url = url::Url::parse(input_uri).unwrap();
+        let mut filtered_querys = Vec::new();
+        for (key, value) in url.query_pairs() {
+            if key == ENGINE || key == MIRRORED_STORE {
+                continue;
+            }
+            filtered_querys.push((key.to_string(), value.to_string()));
+        }
+        url.query_pairs_mut().clear();
+        url.query_pairs_mut().extend_pairs(filtered_querys);
+        url.query().filter(|q| !q.is_empty()).map(|s| s.to_string())
+    }
+
+    #[test]
+    fn test_capture_query_treats_empty_as_none() {
+        // No query at all. With the bug, `query_pairs_mut()` left the
+        // URL with `query=Some("")` and we used to propagate that.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/"),
+            None,
+            "empty query after mutation must be treated as no query"
+        );
+
+        // Real query is propagated.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/?foo=bar"),
+            Some("foo=bar".to_string())
+        );
+
+        // lancedb-internal `engine=` is stripped; nothing remains, so
+        // query_string is None — not Some("").
+        assert_eq!(
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem", ENGINE)),
+            None
+        );
+
+        // Mixed: drop `engine=`, keep the rest.
+        let captured =
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem&foo=bar", ENGINE));
+        assert_eq!(captured.as_deref(), Some("foo=bar"));
+    }
+
+    /// Regression: connecting via a URL-style URI (which goes through
+    /// `url::Url::parse` and the `query_pairs_mut()` path) must not
+    /// append a trailing `?` to per-table URIs when the input URI has
+    /// no query string. Sub-path lookups against such a URI (e.g.
+    /// MemWAL `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// as `path=<base table>` + `query=/_mem_wal/...`, causing
+    /// `Dataset::write` to find the base table dataset and falsely
+    /// report `Dataset already exists`.
+    ///
+    /// Skipped on Windows: `try_create_dir` does not understand
+    /// `file:///C:/…` paths so `connect_with_options` fails before
+    /// even reaching the URL-mutation logic. The pure URL-mutation
+    /// invariant is covered by
+    /// `test_capture_query_treats_empty_as_none` above, which runs
+    /// on all platforms.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn test_table_uri_url_path_has_no_trailing_question_mark() {
+        let tempdir = tempdir().unwrap();
+        let uri = format!("file://{}", tempdir.path().to_str().unwrap());
+
+        let request = ConnectRequest {
+            uri: uri.clone(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.query_string, None,
+            "no input query → no captured query_string"
+        );
+
+        let table_uri = db.table_uri("test").unwrap();
+        assert!(
+            !table_uri.ends_with('?'),
+            "table_uri must not have a trailing `?`: {}",
+            table_uri
+        );
+        assert_eq!(table_uri, format!("{}/test.lance", uri));
+
+        // A real query string should still be propagated.
+        let with_query = format!("{}?foo=bar", uri);
+        let request_with_query = ConnectRequest {
+            uri: with_query,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db_with_query = ListingDatabase::connect_with_options(&request_with_query)
+            .await
+            .unwrap();
+        assert_eq!(db_with_query.query_string.as_deref(), Some("foo=bar"));
+        let table_uri = db_with_query.table_uri("test").unwrap();
+        assert_eq!(table_uri, format!("{}/test.lance?foo=bar", uri));
     }
 
     #[tokio::test]
@@ -2202,6 +2469,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             namespace_client_properties,
+            manifest_enabled: false,
             read_consistency_interval: None,
             session: None,
         };
