@@ -15,7 +15,10 @@
 #  limitations under the License.
 import os
 import random
+import shutil
 from unittest import mock
+from pathlib import Path
+import zipfile
 
 import lancedb as ldb
 from lancedb.db import DBConnection
@@ -35,6 +38,8 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 from utils import exception_output
+
+TEST_LANGUAGE_MODEL_HOME = Path(__file__).parent / "models"
 
 
 @pytest.fixture
@@ -87,6 +92,40 @@ def table(tmp_path) -> ldb.table.LanceTable:
         ),
     )
     return table
+
+
+@pytest.fixture
+def language_model_home(monkeypatch, tmp_path):
+    model_home = tmp_path / "language-models"
+    shutil.copytree(TEST_LANGUAGE_MODEL_HOME, model_home)
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(model_home))
+    return model_home
+
+
+@pytest.fixture
+def lindera_ipadic(language_model_home):
+    model_path = language_model_home / "lindera" / "ipadic"
+    extracted_model = model_path / "main"
+    config_path = model_path / "config.yml"
+
+    if extracted_model.exists():
+        shutil.rmtree(extracted_model)
+
+    with zipfile.ZipFile(model_path / "main.zip", "r") as zip_ref:
+        zip_ref.extractall(model_path)
+    config_path.write_text(
+        "segmenter:\n"
+        '  mode: "normal"\n'
+        "  dictionary:\n"
+        f'    path: "{extracted_model.resolve().as_posix()}"\n',
+        encoding="utf-8",
+    )
+
+    try:
+        yield
+    finally:
+        if extracted_model.exists():
+            shutil.rmtree(extracted_model)
 
 
 @pytest_asyncio.fixture
@@ -682,6 +721,90 @@ def test_fts_ngram(mem_db: DBConnection):
     results = table.search("la", query_type="fts").limit(10).to_list()
     assert len(results) == 2
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+
+def test_fts_jieba_tokenizer(mem_db: DBConnection, language_model_home):
+    data = pa.table({"text": ["我们都有光明的前途", "光明的前途"]})
+    table = mem_db.create_table("test_jieba", data=data)
+    table.create_fts_index(
+        "text",
+        base_tokenizer="jieba/default",
+        stem=False,
+        remove_stop_words=False,
+        ascii_folding=False,
+    )
+
+    results = table.search("我们", query_type="fts").limit(10).to_list()
+    assert [row["text"] for row in results] == ["我们都有光明的前途"]
+
+
+def test_fts_jieba_missing_language_model_note(
+    mem_db: DBConnection, monkeypatch, tmp_path
+):
+    missing_root = tmp_path / "missing-language-models"
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(missing_root))
+    table = mem_db.create_table(
+        "test_missing_jieba_model",
+        data=pa.table({"text": ["我们都有光明的前途"]}),
+    )
+
+    with pytest.raises((ValueError, RuntimeError)) as e:
+        table.create_fts_index(
+            "text",
+            base_tokenizer="jieba/default",
+            stem=False,
+            remove_stop_words=False,
+            ascii_folding=False,
+        )
+
+    output = exception_output(e)
+    assert "Invalid directory path:" in output
+    assert "LANCE_LANGUAGE_MODEL_HOME" in output
+    assert "jieba/default" in output
+
+
+@pytest.mark.asyncio
+async def test_fts_jieba_missing_language_model_note_async(monkeypatch, tmp_path):
+    missing_root = tmp_path / "missing-language-models"
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(missing_root))
+    db = await ldb.connect_async(tmp_path / "async-db")
+    table = await db.create_table(
+        "test_missing_jieba_model_async",
+        data=pa.table({"text": ["我们都有光明的前途"]}),
+    )
+
+    with pytest.raises((ValueError, RuntimeError)) as e:
+        await table.create_index(
+            "text",
+            config=FTS(
+                base_tokenizer="jieba/default",
+                stem=False,
+                remove_stop_words=False,
+                ascii_folding=False,
+            ),
+        )
+
+    output = exception_output(e)
+    assert "Invalid directory path:" in output
+    assert "LANCE_LANGUAGE_MODEL_HOME" in output
+    assert "jieba/default" in output
+
+
+def test_fts_lindera_tokenizer(
+    mem_db: DBConnection, language_model_home, lindera_ipadic
+):
+    data = pa.table({"text": ["成田国際空港", "東京国際空港", "羽田空港"]})
+    table = mem_db.create_table("test_lindera", data=data)
+    table.create_fts_index(
+        "text",
+        base_tokenizer="lindera/ipadic",
+        stem=False,
+        remove_stop_words=False,
+        ascii_folding=False,
+    )
+
+    results = table.search("成田", query_type="fts").limit(10).to_list()
+    assert [row["text"] for row in results] == ["成田国際空港"]
 
 
 def test_fts_query_to_json():

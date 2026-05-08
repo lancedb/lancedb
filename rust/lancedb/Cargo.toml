@@ -40,7 +40,7 @@ lance-datafusion.workspace = true
 lance-datagen = { workspace = true }
 lance-file = { workspace = true }
 lance-io = { workspace = true }
-lance-index = { workspace = true }
+lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lindera"] }
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }

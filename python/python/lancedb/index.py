@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from ._lancedb import (
     IndexConfig,
 )
+from .types import BaseTokenizerType
 
 lang_mapping = {
     "ar": "Arabic",
@@ -111,8 +112,12 @@ class FTS:
         - "simple": Splits text by whitespace and punctuation.
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
+        - "ngram": N-gram tokenizer for substring-style matching.
+        - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
+        - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
     language : str, default "English"
-        The language to use for tokenization.
+        The language to use for stemming and stop-word removal. This is not the
+        primary way to enable CJK tokenization.
     max_token_length : int, default 40
         The maximum token length to index. Tokens longer than this length will be
         ignored.
@@ -127,10 +132,17 @@ class FTS:
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+
+    Notes
+    -----
+    Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
+    require tokenizer models in Lance's language model home. Set
+    ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
+    directory under ``lance/language_models``.
     """
 
     with_position: bool = False
-    base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple"
+    base_tokenizer: BaseTokenizerType = "simple"
     language: str = "English"
     max_token_length: Optional[int] = 40
     lower_case: bool = True
