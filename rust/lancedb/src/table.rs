@@ -2262,9 +2262,9 @@ impl BaseTable for NativeTable {
             n
         };
 
-        let output = add.into_plan(&table_schema, &table_def)?;
+        let output = add.into_plan(&table_schema, &table_def, false)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -2274,6 +2274,15 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if let Some(tracker) = output.tracker.clone() {
+            lance_params.write_progress =
+                Some(lance::dataset::progress::WriteProgressFn::new(move |stats| {
+                    tracker.record_write_stats(
+                        stats.rows_written as usize,
+                        stats.bytes_written as usize,
+                    );
+                }));
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {

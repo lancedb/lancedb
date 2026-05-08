@@ -142,6 +142,19 @@ impl WriteProgressTracker {
         cb(&progress);
     }
 
+     pub fn record_write_stats(&self, rows_written: usize, bytes_written: usize) {
+       let mut cb = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .rows_and_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.0 = guard.0.max(rows_written);
+        guard.1 = guard.1.max(bytes_written);
+        let progress = self.snapshot(guard.0, guard.1, false);
+        drop(guard);
+        cb(&progress);
+    }
+
     /// Record wire bytes from the insert layer (e.g. IPC-encoded bytes for
     /// remote writes). When wire bytes are recorded, they take precedence over
     /// the in-memory Arrow bytes tracked by [`record_batch`].
@@ -427,5 +440,30 @@ mod tests {
 
         // finish should not panic
         tracker.finish();
+    }
+
+    #[test]
+    fn test_record_write_stats_is_cumulative_and_monotonic() {
+        use super::{ProgressCallback, WriteProgressTracker};
+        use std::sync::Mutex;
+
+        let seen = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let seen_clone = seen.clone();
+        let callback: ProgressCallback = Arc::new(Mutex::new(move |p: &super::WriteProgress| {
+            seen_clone
+                .lock()
+                .unwrap()
+                .push((p.output_rows(), p.output_bytes()));
+        }));
+        let tracker = WriteProgressTracker::new(callback, Some(100));
+
+        tracker.record_write_stats(10, 1000);
+        tracker.record_write_stats(8, 900);
+        tracker.record_write_stats(25, 2500);
+
+        let values = seen.lock().unwrap();
+        assert_eq!(values[0], (10, 1000));
+        assert_eq!(values[1], (10, 1000));
+        assert_eq!(values[2], (25, 2500));
     }
 }

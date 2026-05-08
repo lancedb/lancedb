@@ -157,6 +157,7 @@ impl AddDataBuilder {
         mut self,
         table_schema: &Schema,
         table_def: &TableDefinition,
+        track_scan_progress: bool,
     ) -> Result<PreprocessingOutput> {
         let overwrite = self
             .write_options
@@ -176,8 +177,13 @@ impl AddDataBuilder {
         let tracker = self
             .progress_callback
             .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
+        let scan_tracker = if track_scan_progress {
+            tracker.clone()
+        } else {
+            None
+        };
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
-            Arc::new(ScannableExec::new(self.data, tracker.clone()));
+            Arc::new(ScannableExec::new(self.data, scan_tracker));
         // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
             plan
