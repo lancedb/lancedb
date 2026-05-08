@@ -113,8 +113,8 @@ class FTS:
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
         - "ngram": N-gram tokenizer for substring-style matching.
-        - "jieba/*": Jieba tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
-        - "lindera/*": Lindera tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
+        - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
+        - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
     language : str, default "English"
         The language to use for stemming and stop-word removal. This is not the
         primary way to enable CJK tokenization.
@@ -136,7 +136,9 @@ class FTS:
     Notes
     -----
     Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
-    require tokenizer models under ``LANCE_LANGUAGE_MODEL_HOME``.
+    require tokenizer models in Lance's language model home. Set
+    ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
+    directory under ``lance/language_models``.
     """
 
     with_position: bool = False

@@ -132,9 +132,11 @@ def _maybe_add_fts_error_note(
     _add_unique_note(
         exception,
         "Model-backed tokenizers such as 'jieba/default' and 'lindera/ipadic' "
-        "require tokenizer models under LANCE_LANGUAGE_MODEL_HOME. Expected "
-        "layouts include '$LANCE_LANGUAGE_MODEL_HOME/jieba/default/...' and "
-        "'$LANCE_LANGUAGE_MODEL_HOME/lindera/ipadic/...'.",
+        "require tokenizer models in Lance's language model home. Set "
+        "LANCE_LANGUAGE_MODEL_HOME to override the default platform data "
+        "directory under 'lance/language_models'. Expected layouts include "
+        "'<model-home>/jieba/default/...' and "
+        "'<model-home>/lindera/ipadic/...'.",
     )
 
 
@@ -1009,8 +1011,10 @@ class Table(ABC):
         tokenizer_name: str, default "default"
             A compatibility alias for native tokenizer configs. Can be "raw",
             "default" or the 2 letter language code followed by "_stem". So
-            for english it would be "en_stem". Prefer ``base_tokenizer`` for
-            new code.
+            for english it would be "en_stem". For new native FTS indexes, use
+            ``base_tokenizer`` directly; ``tokenizer_name`` is a legacy
+            compatibility alias and does not expose model-backed tokenizer names
+            such as ``jieba/default`` or ``lindera/ipadic``.
         use_tantivy: bool, default False
             Deprecated legacy Tantivy parameter. Setting this to True raises an
             error.
@@ -1024,8 +1028,8 @@ class Table(ABC):
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
             - "ngram": N-Gram tokenizer.
-            - "jieba/*": Jieba tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
-            - "lindera/*": Lindera tokenizer loaded from ``LANCE_LANGUAGE_MODEL_HOME``.
+            - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
+            - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
         language : str, default "English"
             The language to use for stemming and stop-word removal. This is not
             the primary way to enable CJK tokenization.
@@ -1058,7 +1062,9 @@ class Table(ABC):
         Notes
         -----
         Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
-        require tokenizer models under ``LANCE_LANGUAGE_MODEL_HOME``.
+        require tokenizer models in Lance's language model home. Set
+        ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
+        directory under ``lance/language_models``.
         """
         raise NotImplementedError
 
