@@ -2232,6 +2232,69 @@ mod tests {
     /// `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.
+    /// Mirrors the URL-mutation step from
+    /// [`ListingDatabase::connect_with_options`] so we can assert the
+    /// fix without going through filesystem setup (which is awkward
+    /// across platforms — see the `file://` test below).
+    fn capture_query_like_connect(input_uri: &str) -> Option<String> {
+        let mut url = url::Url::parse(input_uri).unwrap();
+        let mut filtered_querys = Vec::new();
+        for (key, value) in url.query_pairs() {
+            if key == ENGINE || key == MIRRORED_STORE {
+                continue;
+            }
+            filtered_querys.push((key.to_string(), value.to_string()));
+        }
+        url.query_pairs_mut().clear();
+        url.query_pairs_mut().extend_pairs(filtered_querys);
+        url.query().filter(|q| !q.is_empty()).map(|s| s.to_string())
+    }
+
+    #[test]
+    fn test_capture_query_treats_empty_as_none() {
+        // No query at all. With the bug, `query_pairs_mut()` left the
+        // URL with `query=Some("")` and we used to propagate that.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/"),
+            None,
+            "empty query after mutation must be treated as no query"
+        );
+
+        // Real query is propagated.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/?foo=bar"),
+            Some("foo=bar".to_string())
+        );
+
+        // lancedb-internal `engine=` is stripped; nothing remains, so
+        // query_string is None — not Some("").
+        assert_eq!(
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem", ENGINE)),
+            None
+        );
+
+        // Mixed: drop `engine=`, keep the rest.
+        let captured =
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem&foo=bar", ENGINE));
+        assert_eq!(captured.as_deref(), Some("foo=bar"));
+    }
+
+    /// Regression: connecting via a URL-style URI (which goes through
+    /// `url::Url::parse` and the `query_pairs_mut()` path) must not
+    /// append a trailing `?` to per-table URIs when the input URI has
+    /// no query string. Sub-path lookups against such a URI (e.g.
+    /// MemWAL `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// as `path=<base table>` + `query=/_mem_wal/...`, causing
+    /// `Dataset::write` to find the base table dataset and falsely
+    /// report `Dataset already exists`.
+    ///
+    /// Skipped on Windows: `try_create_dir` does not understand
+    /// `file:///C:/…` paths so `connect_with_options` fails before
+    /// even reaching the URL-mutation logic. The pure URL-mutation
+    /// invariant is covered by
+    /// `test_capture_query_treats_empty_as_none` above, which runs
+    /// on all platforms.
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn test_table_uri_url_path_has_no_trailing_question_mark() {
         let tempdir = tempdir().unwrap();
