@@ -24,6 +24,7 @@ use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_index::IndexCriteria;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -2517,18 +2518,49 @@ impl BaseTable for NativeTable {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
-        let stats = match self
-            .dataset
-            .get()
-            .await?
-            .index_statistics(index_name.as_ref())
-            .await
-        {
-            Ok(stats) => stats,
-            Err(lance_core::Error::IndexNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(Error::from(e)),
+        // The full index_statistics() call is expensive (loads index files and serializes
+        // low-level info). describe_indices() reads only manifest-level metadata, so we use
+        // it as the fast path and only fall back to index_statistics() for vector indices,
+        // which need distance_type and loss that aren't available from the description.
+        let dataset = self.dataset.get().await?;
+
+        let mut descriptions = dataset
+            .describe_indices(Some(IndexCriteria::default().with_name(index_name)))
+            .await?;
+        let Some(description) = descriptions.pop() else {
+            return Ok(None);
         };
 
+        let index_type: crate::index::IndexType = description
+            .index_type()
+            .parse()
+            .unwrap_or(crate::index::IndexType::Unknown);
+
+        let is_vector = matches!(
+            index_type,
+            crate::index::IndexType::IvfFlat
+                | crate::index::IndexType::IvfSq
+                | crate::index::IndexType::IvfPq
+                | crate::index::IndexType::IvfRq
+                | crate::index::IndexType::IvfHnswPq
+                | crate::index::IndexType::IvfHnswSq
+        );
+
+        if !is_vector {
+            let num_indexed_rows = description.rows_indexed() as usize;
+            let total_rows = dataset.count_rows(None).await?;
+            let num_unindexed_rows = total_rows.saturating_sub(num_indexed_rows);
+            return Ok(Some(IndexStatistics {
+                num_indexed_rows,
+                num_unindexed_rows,
+                index_type,
+                distance_type: None,
+                num_indices: Some(description.metadata().len() as u32),
+                loss: None,
+            }));
+        }
+
+        let stats = dataset.index_statistics(index_name).await?;
         let mut stats: IndexStatisticsImpl =
             serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
                 message: format!("error deserializing index statistics: {}", e),
@@ -2537,21 +2569,13 @@ impl BaseTable for NativeTable {
         let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
             message: "index statistics is empty".to_string(),
         })?;
-        // Index type should be present at one of the levels.
-        let index_type =
-            stats
-                .index_type
-                .or(first_index.index_type)
-                .ok_or_else(|| Error::InvalidInput {
-                    message: "index statistics was missing index type".to_string(),
-                })?;
         let loss = stats
             .indices
             .iter()
             .map(|index| index.loss.unwrap_or_default())
             .sum::<f64>();
-
         let loss = first_index.loss.map(|first_loss| first_loss + loss);
+
         Ok(Some(IndexStatistics {
             num_indexed_rows: stats.num_indexed_rows,
             num_unindexed_rows: stats.num_unindexed_rows,
