@@ -268,6 +268,21 @@ impl Connection {
             .default_error()
     }
 
+    /// Rename a table in the given namespace.
+    #[napi(catch_unwind)]
+    pub async fn rename_table(
+        &self,
+        old_name: String,
+        new_name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .rename_table(&old_name, &new_name, &ns, &ns)
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind)]
     pub async fn drop_all_tables(&self, namespace_path: Option<Vec<String>>) -> napi::Result<()> {
         let ns = namespace_path.unwrap_or_default();
