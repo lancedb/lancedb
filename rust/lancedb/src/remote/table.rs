@@ -1540,6 +1540,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
             Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
             Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
+            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
             Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
             Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
             Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
@@ -2068,7 +2069,8 @@ mod tests {
     use serde_json::json;
 
     use crate::index::vector::{
-        IvfFlatIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
+        IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder,
+        IvfSqIndexBuilder,
     };
     use crate::remote::JSON_CONTENT_TYPE;
     use crate::remote::db::DEFAULT_SERVER_VERSION;
@@ -3317,6 +3319,35 @@ mod tests {
                     IvfHnswSqIndexBuilder::default()
                         .distance_type(DistanceType::L2)
                         .num_partitions(128)
+                        .num_edges(40)
+                        .ef_construction(500),
+                ),
+            ),
+            (
+                "IVF_HNSW_FLAT",
+                json!({
+                    "metric_type": "l2",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                    "m": 20,
+                    "ef_construction": 300,
+                }),
+                Index::IvfHnswFlat(Default::default()),
+            ),
+            (
+                "IVF_HNSW_FLAT",
+                json!({
+                    "metric_type": "cosine",
+                    "num_partitions": 64,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                    "m": 40,
+                    "ef_construction": 500,
+                }),
+                Index::IvfHnswFlat(
+                    IvfHnswFlatIndexBuilder::default()
+                        .distance_type(DistanceType::Cosine)
+                        .num_partitions(64)
                         .num_edges(40)
                         .ef_construction(500),
                 ),

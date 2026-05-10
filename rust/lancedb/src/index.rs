@@ -13,7 +13,10 @@ use crate::{DistanceType, Error, Result, table::BaseTable};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, IvfSqIndexBuilder},
+    vector::{
+        IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+        IvfSqIndexBuilder,
+    },
 };
 
 pub mod scalar;
@@ -67,6 +70,10 @@ pub enum Index {
     /// IVF-HNSW index with Scalar Quantization
     /// It is a variant of the HNSW algorithm that uses scalar quantization to compress the vectors.
     IvfHnswSq(IvfHnswSqIndexBuilder),
+
+    /// IVF-HNSW index without quantization.
+    /// Stores raw vectors, providing the highest recall at the cost of more memory and disk space.
+    IvfHnswFlat(IvfHnswFlatIndexBuilder),
 }
 
 /// Builder for the create_index operation
@@ -290,6 +297,8 @@ pub enum IndexType {
     IvfHnswPq,
     #[serde(alias = "IVF_HNSW_SQ")]
     IvfHnswSq,
+    #[serde(alias = "IVF_HNSW_FLAT")]
+    IvfHnswFlat,
     // Scalar
     #[serde(alias = "BTREE")]
     BTree,
@@ -311,6 +320,7 @@ impl std::fmt::Display for IndexType {
             Self::IvfRq => write!(f, "IVF_RQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
+            Self::IvfHnswFlat => write!(f, "IVF_HNSW_FLAT"),
             Self::BTree => write!(f, "BTREE"),
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
@@ -334,6 +344,7 @@ impl std::str::FromStr for IndexType {
             "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
+            "IVF_HNSW_FLAT" => Ok(Self::IvfHnswFlat),
             _ => Err(Error::InvalidInput {
                 message: format!("the input value {} is not a valid IndexType", value),
             }),

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import HnswPq, HnswSq, IvfPq
+from lancedb.index import HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -911,6 +911,21 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         ef_construction=10,
     )
     expected_config = HnswSq(
+        distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
+    )
+    mock_create_index.assert_called_with(
+        "my_vector", replace=True, config=expected_config, name=None, train=True
+    )
+
+    table.create_index(
+        vector_column_name="my_vector",
+        metric="cosine",
+        index_type="IVF_HNSW_FLAT",
+        sample_rate=0.1,
+        m=29,
+        ef_construction=10,
+    )
+    expected_config = HnswFlat(
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(

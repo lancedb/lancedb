@@ -57,6 +57,7 @@ from .index import (
     LabelList,
     HnswPq,
     HnswSq,
+    HnswFlat,
     FTS,
 )
 from .merge import LanceMergeInsertBuilder
@@ -2236,7 +2237,13 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
         index_type: Literal[
-            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+            "IVF_FLAT",
+            "IVF_SQ",
+            "IVF_PQ",
+            "IVF_RQ",
+            "IVF_HNSW_SQ",
+            "IVF_HNSW_PQ",
+            "IVF_HNSW_FLAT",
         ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -2315,6 +2322,16 @@ class LanceTable(Table):
             )
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_HNSW_FLAT":
+            config = HnswFlat(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -3873,7 +3890,18 @@ class AsyncTable:
         *,
         replace: Optional[bool] = None,
         config: Optional[
-            Union[IvfFlat, IvfPq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+            Union[
+                IvfFlat,
+                IvfPq,
+                IvfRq,
+                HnswPq,
+                HnswSq,
+                HnswFlat,
+                BTree,
+                Bitmap,
+                LabelList,
+                FTS,
+            ]
         ] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
@@ -3920,6 +3948,7 @@ class AsyncTable:
                     IvfRq,
                     HnswPq,
                     HnswSq,
+                    HnswFlat,
                     BTree,
                     Bitmap,
                     LabelList,
@@ -5090,6 +5119,7 @@ class IndexStatistics:
         "IVF_RQ",
         "IVF_HNSW_SQ",
         "IVF_HNSW_PQ",
+        "IVF_HNSW_FLAT",
         "FTS",
         "BTREE",
         "BITMAP",

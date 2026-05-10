@@ -16,11 +16,13 @@ from lancedb.index import (
     IvfSq,
     IvfHnswPq,
     IvfHnswSq,
+    IvfHnswFlat,
     IvfRq,
     Bitmap,
     LabelList,
     HnswPq,
     HnswSq,
+    HnswFlat,
     FTS,
 )
 from lancedb.table import IndexStatistics
@@ -251,6 +253,21 @@ async def test_create_hnswpq_alias_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_create_hnswflat_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=HnswFlat(num_partitions=10))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_hnswflat_alias_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfHnswFlat(num_partitions=5))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type in {"HnswFlat", "IvfHnswFlat"}
+
+
+@pytest.mark.asyncio
 async def test_create_ivfsq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=IvfSq(num_partitions=10))
     indices = await some_table.list_indices()
@@ -295,6 +312,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "IVF_RQ",
         "IVF_HNSW_SQ",
         "IVF_HNSW_PQ",
+        "IVF_HNSW_FLAT",
         "FTS",
         "BTREE",
         "BITMAP",
