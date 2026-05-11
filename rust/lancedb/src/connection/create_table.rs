@@ -433,6 +433,185 @@ mod tests {
         assert_eq!(storage_format.resolve(), data_storage_version.resolve());
     }
 
+    /// Helper to get the auto cleanup config keys from a table's manifest
+    async fn get_auto_cleanup_config(table: &crate::Table) -> (Option<String>, Option<String>) {
+        let native_table = table.as_native().unwrap();
+        let config = &native_table.manifest().await.unwrap().config;
+        (
+            config.get("lance.auto_cleanup.interval").cloned(),
+            config.get("lance.auto_cleanup.older_than").cloned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_defaults() {
+        // With no configuration, lance defaults should be applied
+        // (interval=20, older_than=14 days)
+        let db = connect("memory://").execute().await.unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("default_cleanup", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert_eq!(interval.unwrap(), "20");
+        assert_eq!(older_than.unwrap(), "14days");
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_custom_interval() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(10),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("custom_interval", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert_eq!(interval.unwrap(), "10");
+        // older_than should still be the default (14 days)
+        assert_eq!(older_than.unwrap(), "14days");
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_custom_older_than() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_older_than_secs: Some(3600),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("custom_older_than", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        // interval should still be the default (20)
+        assert_eq!(interval.unwrap(), "20");
+        assert_eq!(older_than.unwrap(), "1h");
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_custom_both() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(5),
+                    auto_cleanup_older_than_secs: Some(86400),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("custom_both", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert_eq!(interval.unwrap(), "5");
+        assert_eq!(older_than.unwrap(), "1day");
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_disabled() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("disabled_cleanup", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert!(interval.is_none());
+        assert!(older_than.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_via_storage_options() {
+        // Users can also pass these as storage_options strings (the Python/Node path)
+        let db = connect("memory://")
+            .storage_options([
+                ("auto_cleanup_interval", "50"),
+                ("auto_cleanup_older_than_secs", "7200"),
+            ])
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("storage_opts_cleanup", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert_eq!(interval.unwrap(), "50");
+        assert_eq!(older_than.unwrap(), "2h");
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_disabled_via_storage_options() {
+        let db = connect("memory://")
+            .storage_options([("auto_cleanup_interval", "0")])
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("storage_opts_disabled", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert!(interval.is_none());
+        assert!(older_than.is_none());
+    }
+
     #[tokio::test]
     async fn test_create_table_with_embedding() {
         // Register the mock embedding function
