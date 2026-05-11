@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::index::vector::{IvfFlatIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder};
+use lancedb::index::vector::{
+    IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
+};
 use lancedb::index::{
     Index as LanceDbIndex,
     scalar::{BTreeIndexBuilder, FtsIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -162,8 +164,26 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
             }
+            "HnswFlat" => {
+                let params = source.extract::<IvfHnswFlatParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut hnsw_flat_builder = IvfHnswFlatIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate)
+                    .num_edges(params.m)
+                    .ef_construction(params.ef_construction);
+                if let Some(num_partitions) = params.num_partitions {
+                    hnsw_flat_builder = hnsw_flat_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_flat_builder =
+                        hnsw_flat_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
+            }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfSq, IvfHnswPq, or IvfHnswSq",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
@@ -241,6 +261,17 @@ struct IvfHnswPqParams {
 
 #[derive(FromPyObject)]
 struct IvfHnswSqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    max_iterations: u32,
+    sample_rate: u32,
+    m: u32,
+    ef_construction: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfHnswFlatParams {
     distance_type: String,
     num_partitions: Option<u32>,
     max_iterations: u32,

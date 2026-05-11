@@ -22,6 +22,7 @@ from lancedb.index import (
     FTS,
     BTree,
     Bitmap,
+    HnswFlat,
     HnswSq,
     IvfFlat,
     IvfPq,
@@ -285,13 +286,15 @@ class RemoteTable(Table):
             )
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(distance_type=metric, num_partitions=num_partitions)
+        elif index_type == "IVF_HNSW_FLAT":
+            config = HnswFlat(distance_type=metric, num_partitions=num_partitions)
         elif index_type == "IVF_FLAT":
             config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
                 " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
-                " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ', 'IVF_HNSW_FLAT'"
             )
 
         LOOP.run(

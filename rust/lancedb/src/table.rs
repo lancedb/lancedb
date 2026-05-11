@@ -2033,6 +2033,24 @@ impl NativeTable {
                 );
                 Ok(Box::new(lance_idx_params))
             }
+            Index::IvfHnswFlat(index) => {
+                Self::validate_index_type(field, "IVF HNSW FLAT", supported_vector_data_type)?;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let hnsw_params = HnswBuildParams::default()
+                    .num_edges(index.m as usize)
+                    .ef_construction(index.ef_construction as usize);
+                let lance_idx_params = VectorIndexParams::ivf_hnsw(
+                    index.distance_type.into(),
+                    ivf_params,
+                    hnsw_params,
+                );
+                Ok(Box::new(lance_idx_params))
+            }
         }
     }
 
@@ -2058,7 +2076,8 @@ impl NativeTable {
             | Index::IvfPq(_)
             | Index::IvfRq(_)
             | Index::IvfHnswPq(_)
-            | Index::IvfHnswSq(_) => IndexType::Vector,
+            | Index::IvfHnswSq(_)
+            | Index::IvfHnswFlat(_) => IndexType::Vector,
         }
     }
 
@@ -3174,6 +3193,56 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_ivf_hnsw_flat() {
+        use arrow_array::RecordBatch;
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+        use rand;
+        use std::iter::repeat_with;
+
+        use crate::index::vector::IvfHnswFlatIndexBuilder;
+        use arrow_array::Float32Array;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let dimension = 16;
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        )]));
+
+        let float_arr = Float32Array::from(
+            repeat_with(rand::random::<f32>)
+                .take(512 * dimension as usize)
+                .collect::<Vec<f32>>(),
+        );
+
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap();
+
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+
+        let index = IvfHnswFlatIndexBuilder::default();
+        table
+            .create_index(&["embeddings"], Index::IvfHnswFlat(index))
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswFlat);
+        assert_eq!(index.columns, vec!["embeddings".to_string()]);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {

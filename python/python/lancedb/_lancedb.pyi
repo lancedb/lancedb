@@ -12,6 +12,7 @@ from .index import (
     LabelList,
     HnswPq,
     HnswSq,
+    HnswFlat,
     FTS,
 )
 from lance_namespace import (
@@ -25,6 +26,7 @@ from .remote import ClientConfig
 
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
+IvfHnswFlat: type[HnswFlat] = HnswFlat
 
 class PyExpr:
     """A type-safe DataFusion expression node (Rust-side handle)."""
@@ -180,6 +182,7 @@ class Table:
             IvfPq,
             HnswPq,
             HnswSq,
+            HnswFlat,
             BTree,
             Bitmap,
             LabelList,
