@@ -74,7 +74,7 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
-    "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
+    "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/ && node -e \"require('fs').writeFileSync('dist/package.json', JSON.stringify({name:'@lancedb/lancedb',type:'commonjs'}))\"",
     "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
     "build": "pnpm build:debug && pnpm tsc",
     "build-release": "pnpm build:release && pnpm tsc",
