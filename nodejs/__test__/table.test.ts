@@ -1870,6 +1870,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results.length).toBe(3);
     });
 
+    test("prewarmData errors on local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "alpha", vector: [0.1, 0.2, 0.3] },
+        { text: "beta", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("prewarm_data_test", data);
+
+      // prewarmData is only supported on remote tables. We verify the call
+      // is wired through napi and surfaces the expected error for both
+      // arg shapes (undefined and string[]).
+      await expect(table.prewarmData()).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
+      await expect(table.prewarmData(["text"])).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
+    });
+
     test("full text index on list", async () => {
       const db = await connect(tmpDir.name);
       const data = [

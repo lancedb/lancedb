@@ -501,6 +501,34 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ***
 
+### prewarmData()
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Prewarm one or more columns of data in the table.
+
+#### Parameters
+
+* **columns?**: `string`[]
+    The columns to prewarm. If undefined, all columns are prewarmed.
+    This will load the column data into the page cache so that future queries that
+    read those columns avoid the initial cold-start latency.  This call initiates
+    prewarming and returns once the request is accepted; the warming itself may
+    continue in the background.  Calling it on already-prewarmed columns is a
+    no-op on the server.
+    Prewarming is generally useful for columns used in filters or projections.
+    Large columns (e.g. high-dimensional vectors or binary data) may not be
+    practical to prewarm.
+    This feature is currently only supported on remote tables.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### prewarmIndex()
 
 ```ts

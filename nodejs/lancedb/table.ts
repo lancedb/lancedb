@@ -286,6 +286,25 @@ export abstract class Table {
   abstract prewarmIndex(name: string): Promise<void>;
 
   /**
+   * Prewarm one or more columns of data in the table.
+   *
+   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
+   *
+   * This will load the column data into the page cache so that future queries that
+   * read those columns avoid the initial cold-start latency.  This call initiates
+   * prewarming and returns once the request is accepted; the warming itself may
+   * continue in the background.  Calling it on already-prewarmed columns is a
+   * no-op on the server.
+   *
+   * Prewarming is generally useful for columns used in filters or projections.
+   * Large columns (e.g. high-dimensional vectors or binary data) may not be
+   * practical to prewarm.
+   *
+   * This feature is currently only supported on remote tables.
+   */
+  abstract prewarmData(columns?: string[]): Promise<void>;
+
+  /**
    * Waits for asynchronous indexing to complete on the table.
    *
    * @param indexNames The name of the indices to wait for
@@ -708,6 +727,10 @@ export class LocalTable extends Table {
 
   async prewarmIndex(name: string): Promise<void> {
     await this.inner.prewarmIndex(name);
+  }
+
+  async prewarmData(columns?: string[]): Promise<void> {
+    await this.inner.prewarmData(columns);
   }
 
   async waitForIndex(
