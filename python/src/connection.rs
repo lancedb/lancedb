@@ -539,7 +539,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -553,6 +553,7 @@ pub fn connect(
     session: Option<crate::session::Session>,
     manifest_enabled: bool,
     namespace_client_properties: Option<HashMap<String, String>>,
+    oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -581,6 +582,11 @@ pub fn connect(
         #[cfg(feature = "remote")]
         if let Some(client_config) = client_config {
             builder = builder.client_config(client_config.into());
+        }
+        if let Some(oauth_config) = oauth_config {
+            let config: lancedb::remote::oauth::OAuthConfig =
+                oauth_config.try_into().infer_error()?;
+            builder = builder.oauth_config(config);
         }
         if let Some(session) = session {
             builder = builder.session(session.inner.clone());

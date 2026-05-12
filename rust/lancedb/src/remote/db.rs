@@ -194,6 +194,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     uri: String,
     /// Headers to pass to the namespace client for authentication
     namespace_headers: HashMap<String, String>,
+    has_dynamic_header_provider: bool,
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
 }
@@ -247,6 +248,7 @@ impl RemoteDatabase {
             table_cache,
             uri: uri.to_owned(),
             namespace_headers,
+            has_dynamic_header_provider: client_config.header_provider.is_some(),
             tls_config: client_config.tls_config,
         })
     }
@@ -271,6 +273,7 @@ mod test_utils {
                 table_cache: Cache::new(0),
                 uri: "http://localhost".to_string(),
                 namespace_headers: HashMap::new(),
+                has_dynamic_header_provider: false,
                 tls_config: None,
             }
         }
@@ -286,6 +289,7 @@ mod test_utils {
                 table_cache: Cache::new(0),
                 uri: "http://localhost".to_string(),
                 namespace_headers: config.extra_headers.clone(),
+                has_dynamic_header_provider: config.header_provider.is_some(),
                 tls_config: config.tls_config.clone(),
             }
         }
@@ -756,10 +760,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        if self.has_dynamic_header_provider {
+            return Err(Error::NotSupported {
+                message:
+                    "Cannot create a namespace client when dynamic headers are configured; use LanceDB connection namespace methods instead"
+                        .to_string(),
+            });
+        }
+
         // Create a RestNamespace pointing to the same remote host with the same authentication headers
         let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
             .delimiter(&self.client.id_delimiter)
-            // TODO: support header provider
             .headers(self.namespace_headers.clone());
 
         // Apply mTLS configuration if present
@@ -781,6 +792,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        if self.has_dynamic_header_provider {
+            return Err(Error::NotSupported {
+                message:
+                    "Cannot export a namespace client config when dynamic headers are configured; use LanceDB connection namespace methods instead"
+                        .to_string(),
+            });
+        }
+
         let mut properties = HashMap::new();
         properties.insert("uri".to_string(), self.client.host().to_string());
         properties.insert("delimiter".to_string(), self.client.id_delimiter.clone());
@@ -1700,6 +1719,51 @@ mod tests {
         // Get the namespace client - it should be created with the extra headers
         let namespace_client = conn.namespace_client().await;
         assert!(namespace_client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client_rejects_dynamic_headers() {
+        #[derive(Debug)]
+        struct TestHeaderProvider;
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for TestHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                Ok(HashMap::from([(
+                    "authorization".to_string(),
+                    "Bearer token".to_string(),
+                )]))
+            }
+        }
+
+        let client_config = ClientConfig {
+            header_provider: Some(Arc::new(TestHeaderProvider) as Arc<dyn HeaderProvider>),
+            ..Default::default()
+        };
+
+        let conn = Connection::new_with_handler_and_config(
+            |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": []}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        match conn.namespace_client().await {
+            Err(Error::NotSupported { message })
+                if message.contains("dynamic headers are configured") => {}
+            Err(err) => panic!("expected NotSupported, got {err:?}"),
+            Ok(_) => panic!("expected namespace_client to reject dynamic headers"),
+        }
+
+        match conn.namespace_client_config().await {
+            Err(Error::NotSupported { message })
+                if message.contains("dynamic headers are configured") => {}
+            Err(err) => panic!("expected NotSupported, got {err:?}"),
+            Ok(_) => panic!("expected namespace_client_config to reject dynamic headers"),
+        }
     }
 
     /// Integration tests using RestAdapter to run RemoteDatabase against a real namespace server

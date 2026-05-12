@@ -459,12 +459,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         config: &ClientConfig,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-api-key"),
-            HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
-                message: "non-ascii api key provided".to_string(),
-            })?,
-        );
+        if !api_key.is_empty() {
+            headers.insert(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+                    message: "non-ascii api key provided".to_string(),
+                })?,
+            );
+        }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
@@ -1035,6 +1037,35 @@ mod tests {
                 message: "Failed to get headers".to_string(),
             })
         }
+    }
+
+    #[test]
+    fn test_default_headers_skip_empty_api_key() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db",
+            false,
+            &RemoteOptions(HashMap::new()),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+
+        assert!(!headers.contains_key("x-api-key"));
+
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "api-key",
+            "us-east-1",
+            "db",
+            false,
+            &RemoteOptions(HashMap::new()),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
     }
 
     #[tokio::test]
