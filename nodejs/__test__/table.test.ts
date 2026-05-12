@@ -385,9 +385,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       ]);
       const db = await connect(tmpDir.name);
       const table = await db.createEmptyTable("testNull", schema);
+      await table.createIndex("id", { config: Index.btree() });
+      const indices = await table.listIndices();
+      expect(indices.length).toBe(1);
       await table.add([{ id: 1, y: 2 }]);
       await table.add([{ id: 2 }]);
 
+      // incorrectly removes index
       await table
         .mergeInsert("id")
         .whenNotMatchedInsertAll()
@@ -395,6 +399,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           { id: 3, z: 3 },
           { id: 4, z: 5 },
         ]);
+
+      const indices2 = await table.listIndices();
+      expect(indices2.length).toBe(1);
 
       const res = await table.query().toArrow();
       expect(res.getChild("id")?.toJSON()).toEqual([1, 2, 3, 4]);
@@ -663,6 +670,87 @@ describe("When creating an index", () => {
     tbl = await db.createTable("test", data);
   });
   afterEach(() => tmpDir.removeCallback());
+
+  it('tests "offset" for "vectorSearch"', async () => {
+    const vectorSearch = (offset: number, limit = 1) =>
+      tbl
+        .vectorSearch(queryVec)
+        .limit(limit)
+        .offset(offset)
+        .select("id")
+        .toArray();
+    const rowsFirstTwo = await vectorSearch(0, 2);
+    expect(rowsFirstTwo.length).toBe(2);
+    const rowsFirst = await vectorSearch(0);
+    expect(rowsFirst.length).toBe(1);
+    const rowsSecond = await vectorSearch(1);
+    expect(rowsSecond.length).toBe(1);
+    expect([rowsFirst[0].id, rowsSecond[0]?.id]).toEqual(
+      rowsFirstTwo.map((v) => v.id),
+    );
+  });
+
+  it("runs full text search w/ initially empty table", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new arrow.Schema([
+      new arrow.Field("text", new arrow.Utf8()),
+    ]);
+    const table = await db.createEmptyTable(
+      "full-text-search-with-initially-empty-table",
+      schema,
+      {
+        mode: "overwrite",
+        existOk: true,
+      },
+    );
+    const data: { text: string }[] = [
+      { text: "hello world" },
+      { text: "goodbye world" },
+    ];
+    await table.add([data[0]]); // add multiple rows (i.e. do a batch) in real life; adding rows one by one is just for testing here
+    await table.createIndex("text", { config: Index.fts() }); // index must be created after there's at least one row; otherwise, an index is automatically removed when the first row is added
+    await table.add([data[1]]); // add multiple rows (i.e. do a batch) in real life; adding rows one by one is just for testing here
+
+    const runSearch = () =>
+      table.search("world", "fts", "text").fastSearch().toArray();
+
+    const results1 = await runSearch();
+    /** @todo the commented out test must pass */
+    // expect(results1.length).toBe(1); // since we use ".fastSearch", the "data[1]" row doesn't exist
+    /** @todo this must fail */ expect(
+      results1.map((v) => ({ text: v.text })),
+    ).toEqual(data.reverse());
+
+    const indices = await table.listIndices();
+    expect(indices.length).toBe(1);
+    const textIndexStats = (await table.indexStats("text_idx"))!;
+    expect(textIndexStats.numIndexedRows).toBe(1);
+
+    await table.optimize();
+    const textIndexStats2 = (await table.indexStats("text_idx"))!;
+    expect(textIndexStats2.numIndexedRows).toBe(2);
+    expect(textIndexStats2.numUnindexedRows).toBe(0);
+
+    const results2 = await runSearch();
+    expect(results2.length).toBe(2); // all data is now indexed
+    expect(results2.map((v) => ({ text: v.text }))).toEqual(data);
+
+    const searchWithOffset = (offset: number, limit = 1) =>
+      table
+        .search("world", "fts", "text")
+        .limit(limit)
+        .offset(offset)
+        .toArray();
+    const rowsFirstTwo = await searchWithOffset(0, 2);
+    expect(rowsFirstTwo.length).toBe(2);
+    const rowsFirst = await searchWithOffset(0);
+    expect(rowsFirst.length).toBe(1);
+    const rowsSecond = await searchWithOffset(1);
+    expect(rowsSecond.length).toBe(1);
+    expect([rowsFirst[0].text, rowsSecond[0]?.text]).toEqual(
+      rowsFirstTwo.map((v) => v.text),
+    );
+  });
 
   it("should create a vector index on vector columns", async () => {
     await tbl.createIndex("vec");
