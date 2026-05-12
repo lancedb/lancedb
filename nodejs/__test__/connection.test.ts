@@ -373,4 +373,27 @@ describe("namespaces", () => {
     await db.createNamespace(["dup"]);
     await expect(db.createNamespace(["dup"])).rejects.toThrow();
   });
+
+  it("should reject an unrecognized createNamespace mode with a clear error", async () => {
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.createNamespace(["x"], { mode: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid mode 'frobnicate'/);
+  });
+
+  it("should reject an unrecognized dropNamespace mode with a clear error", async () => {
+    await db.createNamespace(["x"]);
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.dropNamespace(["x"], { mode: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid mode 'frobnicate'/);
+  });
+
+  it("should reject an unrecognized dropNamespace behavior with a clear error", async () => {
+    await db.createNamespace(["x"]);
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.dropNamespace(["x"], { behavior: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid behavior 'frobnicate'/);
+  });
 });

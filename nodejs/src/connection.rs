@@ -353,12 +353,17 @@ impl Connection {
         mode: Option<String>,
         properties: Option<HashMap<String, String>>,
     ) -> napi::Result<CreateNamespaceResponse> {
-        let mode_str = mode.and_then(|m| match m.to_lowercase().as_str() {
-            "create" => Some("Create".to_string()),
-            "exist_ok" => Some("ExistOk".to_string()),
-            "overwrite" => Some("Overwrite".to_string()),
-            _ => None,
-        });
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "create" => Ok("Create".to_string()),
+                "exist_ok" => Ok("ExistOk".to_string()),
+                "overwrite" => Ok("Overwrite".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'create', 'exist_ok', 'overwrite'",
+                    m
+                ))),
+            })
+            .transpose()?;
         let req = CreateNamespaceRequest {
             id: Some(namespace_path),
             mode: mode_str,
@@ -384,16 +389,26 @@ impl Connection {
         mode: Option<String>,
         behavior: Option<String>,
     ) -> napi::Result<DropNamespaceResponse> {
-        let mode_str = mode.and_then(|m| match m.to_lowercase().as_str() {
-            "skip" => Some("Skip".to_string()),
-            "fail" => Some("Fail".to_string()),
-            _ => None,
-        });
-        let behavior_str = behavior.and_then(|b| match b.to_lowercase().as_str() {
-            "restrict" => Some("Restrict".to_string()),
-            "cascade" => Some("Cascade".to_string()),
-            _ => None,
-        });
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "skip" => Ok("Skip".to_string()),
+                "fail" => Ok("Fail".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'skip', 'fail'",
+                    m
+                ))),
+            })
+            .transpose()?;
+        let behavior_str = behavior
+            .map(|b| match b.to_lowercase().as_str() {
+                "restrict" => Ok("Restrict".to_string()),
+                "cascade" => Ok("Cascade".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid behavior '{}': expected one of 'restrict', 'cascade'",
+                    b
+                ))),
+            })
+            .transpose()?;
         let req = DropNamespaceRequest {
             id: Some(namespace_path),
             mode: mode_str,
