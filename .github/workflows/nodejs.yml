@@ -120,10 +120,12 @@ jobs:
         # We run this as part of the job because the binary needs to be built
         # first to export the types of the native code.
         set -e
-        pnpm docs
+        # `pnpm docs` would invoke pnpm's built-in `docs` command, not
+        # the script — use `pnpm run docs`.
+        pnpm run docs
         if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
           echo "Docs need to be updated"
-          echo "Run 'pnpm docs', fix any warnings, and commit the changes."
+          echo "Run 'pnpm run docs', fix any warnings, and commit the changes."
           exit 1
         fi
     - uses: actions/setup-node@v4
