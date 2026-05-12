@@ -16,14 +16,14 @@ importers:
         version: 0.2.2
     devDependencies:
       '@aws-sdk/client-dynamodb':
-        specifier: ^3.33.0
-        version: 3.1045.0
+        specifier: 3.1003.0
+        version: 3.1003.0
       '@aws-sdk/client-kms':
-        specifier: ^3.33.0
-        version: 3.1045.0
+        specifier: 3.1003.0
+        version: 3.1003.0
       '@aws-sdk/client-s3':
-        specifier: ^3.33.0
-        version: 3.1045.0
+        specifier: 3.1003.0
+        version: 3.1003.0
       '@biomejs/biome':
         specifier: ^1.7.3
         version: 1.9.4
@@ -117,16 +117,16 @@ packages:
   '@aws-crypto/util@5.2.0':
     resolution: {integrity: sha512-4RkU9EsI6ZpBve5fseQlGNUWKMa1RLPQ1dnjnQoe07ldfIzcsGb5hC5W0Dm7u423KWzawlrpbjXBrXCEv9zazQ==}
 
-  '@aws-sdk/client-dynamodb@3.1045.0':
-    resolution: {integrity: sha512-TxZmhpziFxWD3pdXGbuwntKOX5OkW14yvCITYsRz+QDM5EUL4cIygu2xRGHiKDvKmb3QUOA4yKetAQcIMLe2zw==}
+  '@aws-sdk/client-dynamodb@3.1003.0':
+    resolution: {integrity: sha512-tUN5kKCvaXeXnw3nqckhRq9m3bAKsYL2WaNotYEFrKQrFW3WAEu6jxRwsRr+pasSEEYvX4B03J9tlaxfPR8rZA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-kms@3.1045.0':
-    resolution: {integrity: sha512-IWnBhZ/tOi/gCc7xaTCBQQYZWb8z1z8uQnARtT3j8y1jBJ6/1o2/YVXiW2Lkakh0vcXtI8b40n0KSqhXXEx4Tw==}
+  '@aws-sdk/client-kms@3.1003.0':
+    resolution: {integrity: sha512-XO11qsl/p+WTzOTf4o9w6aZZ0lh2QHwwpuv9en2fgtVL4PnibndWC4Ln/5CB9fJpeUsQo8dLAys1PVhTh4lcGQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-s3@3.1045.0':
-    resolution: {integrity: sha512-fsuO3Y6t+3Ro9Bsg41DKj4Sfy53CGSrhnMldNplWmG8Tx0UbYk+YDa4RD1hVlJpERw4JBmPkl0+J9qlxMh1pcA==}
+  '@aws-sdk/client-s3@3.1003.0':
+    resolution: {integrity: sha512-on8GvIWeH1pD0l53NuKbPO84bEC1mk/9zskgU+dVKcVoGxOZI94fVddCJb+IwIUN6rfBHCfXPCVbgVyzsHTAVg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.974.8':
@@ -3379,7 +3379,7 @@ snapshots:
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-dynamodb@3.1045.0':
+  '@aws-sdk/client-dynamodb@3.1003.0':
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
@@ -3426,7 +3426,7 @@ snapshots:
     transitivePeerDependencies:
       - aws-crt
 
-  '@aws-sdk/client-kms@3.1045.0':
+  '@aws-sdk/client-kms@3.1003.0':
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
@@ -3470,7 +3470,7 @@ snapshots:
     transitivePeerDependencies:
       - aws-crt
 
-  '@aws-sdk/client-s3@3.1045.0':
+  '@aws-sdk/client-s3@3.1003.0':
     dependencies:
       '@aws-crypto/sha1-browser': 5.2.0
       '@aws-crypto/sha256-browser': 5.2.0
