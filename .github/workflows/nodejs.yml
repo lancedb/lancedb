@@ -147,11 +147,11 @@ jobs:
       env:
         OPENAI_API_KEY: test
         OPENAI_BASE_URL: http://0.0.0.0:8000
+        NODE_OPTIONS: "--experimental-vm-modules"
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        node --experimental-vm-modules node_modules/.bin/jest \
-          --testEnvironment jest-environment-node-single-context --verbose
+        npx jest --testEnvironment jest-environment-node-single-context --verbose
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
