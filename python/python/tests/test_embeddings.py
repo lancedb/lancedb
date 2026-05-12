@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+from types import SimpleNamespace
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -485,6 +486,118 @@ def test_retry(mock_sleep):
     result = test_function()
     assert mock_sleep.call_count == 9
     assert result == "result"
+
+
+def _mock_openai_embeddings(monkeypatch, responses):
+    import lancedb.embeddings.openai as openai_module
+
+    calls = []
+
+    class MockAuthenticationError(Exception):
+        pass
+
+    class MockBadRequestError(Exception):
+        pass
+
+    class MockEmbeddingsClient:
+        def create(self, **kwargs):
+            input_key = tuple(kwargs["input"])
+            calls.append(input_key)
+            response = responses[input_key]
+            if (
+                isinstance(response, tuple)
+                and len(response) == 2
+                and response[0] == "bad_request"
+            ):
+                raise MockBadRequestError(response[1])
+            if isinstance(response, Exception):
+                raise response
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(embedding=embedding) for embedding in response
+                ]
+            )
+
+    mock_client = SimpleNamespace(embeddings=MockEmbeddingsClient())
+    mock_openai = SimpleNamespace(
+        AuthenticationError=MockAuthenticationError,
+        BadRequestError=MockBadRequestError,
+        OpenAI=lambda **kwargs: mock_client,
+        AzureOpenAI=lambda **kwargs: mock_client,
+    )
+    monkeypatch.setattr(
+        openai_module,
+        "attempt_import_or_raise",
+        lambda *_args, **_kwargs: mock_openai,
+    )
+    return calls, MockBadRequestError
+
+
+def test_openai_bad_request_falls_back_to_row_level_requests(monkeypatch, caplog):
+    calls, _ = _mock_openai_embeddings(
+        monkeypatch,
+        {
+            ("valid text", "bad text"): ("bad_request", "batch contains invalid row"),
+            ("valid text",): [[0.1, 0.2]],
+            ("bad text",): ("bad_request", "invalid row"),
+        },
+    )
+
+    model = get_registry().get("openai").create(
+        name="text-embedding-3-small",
+        dim=2,
+        max_retries=0,
+    )
+
+    caplog.set_level("WARNING")
+    embeddings = model.generate_embeddings(["valid text", "bad text", ""])
+
+    assert calls == [
+        ("valid text", "bad text"),
+        ("valid text",),
+        ("bad text",),
+    ]
+    assert embeddings == [[0.1, 0.2], None, None]
+    assert "row-by-row" in caplog.text
+    assert "row 1" in caplog.text
+
+
+def test_openai_bad_request_can_store_null_embeddings(monkeypatch, tmp_path):
+    vector = [0.1, 0.2]
+    _mock_openai_embeddings(
+        monkeypatch,
+        {
+            ("valid text", "bad text"): ("bad_request", "batch contains invalid row"),
+            ("valid text",): [vector],
+            ("bad text",): ("bad_request", "invalid row"),
+        },
+    )
+
+    model = get_registry().get("openai").create(
+        name="text-embedding-3-small",
+        dim=2,
+        max_retries=0,
+    )
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("words", schema=TextModel, mode="overwrite")
+    table.alter_columns(dict(path="vector", nullable=True))
+
+    table.add(
+        [{"text": "valid text"}, {"text": "bad text"}],
+        on_bad_vectors="null",
+    )
+
+    actual = table.to_arrow()
+    vectors = actual["vector"].to_pylist()
+
+    assert actual["text"].to_pylist() == ["valid text", "bad text"]
+    assert vectors[0] == pytest.approx(vector)
+    assert vectors[1] is None
 
 
 @pytest.mark.skipif(
