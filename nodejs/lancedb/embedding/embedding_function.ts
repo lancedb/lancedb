@@ -16,6 +16,7 @@ import {
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { getRegistry } from "./registry";
+import { RateLimiter, retryWithExponentialBackoff } from "./utils";
 
 /**
  * Options for a given embedding function
@@ -63,6 +64,13 @@ export abstract class EmbeddingFunction<
   readonly TOptions!: M;
 
   #config: Partial<M>;
+  private rateLimiterOptions?: { maxCalls: number; period: number };
+  private retryOptions?: {
+    initialDelay: number;
+    exponentialBase: number;
+    jitter: boolean;
+    maxRetries: number;
+  };
 
   /**
    * Get the original arguments to the constructor, to serialize them so they
@@ -75,6 +83,37 @@ export abstract class EmbeddingFunction<
 
   constructor() {
     this.#config = {};
+  }
+
+  /**
+   * Add rate limiting to the embedding function
+   * 
+   * @param maxCalls Maximum number of calls allowed in the period
+   * @param period Period in seconds
+   * @returns This embedding function for chaining
+   */
+  rateLimit(maxCalls: number = 0.9, period: number = 1.0): this {
+    this.rateLimiterOptions = { maxCalls, period };
+    return this;
+  }
+
+  /**
+   * Add retry with exponential backoff to the embedding function
+   * 
+   * @param initialDelay Initial delay in seconds (default is 1)
+   * @param exponentialBase The base for exponential backoff (default is 2)
+   * @param jitter Whether to add jitter to the delay (default is true)
+   * @param maxRetries Maximum number of retries (default is 7)
+   * @returns This embedding function for chaining
+   */
+  retry(
+    initialDelay: number = 1,
+    exponentialBase: number = 2,
+    jitter: boolean = true,
+    maxRetries: number = 7
+  ): this {
+    this.retryOptions = { initialDelay, exponentialBase, jitter, maxRetries };
+    return this;
   }
 
   /**
@@ -232,10 +271,56 @@ export abstract class EmbeddingFunction<
   ): Promise<number[][] | Float32Array[] | Float64Array[]>;
 
   /**
+   * Compute source embeddings with retry and rate limiting.
+   * 
+   * @param data The data to create embeddings for
+   * @returns The embeddings
+   */
+  async computeSourceEmbeddingsWithRetry(
+    data: T[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]> {
+    let embedFunc = () => this.computeSourceEmbeddings(data);
+    
+    // Apply rate limiting if configured
+    if (this.rateLimiterOptions) {
+      const limiter = new RateLimiter(
+        this.rateLimiterOptions.maxCalls,
+        this.rateLimiterOptions.period
+      );
+      embedFunc = limiter.wrap(embedFunc);
+    }
+    
+    // Apply retry if configured
+    if (this.retryOptions) {
+      return retryWithExponentialBackoff(
+        embedFunc,
+        this.retryOptions.initialDelay,
+        this.retryOptions.exponentialBase,
+        this.retryOptions.jitter,
+        this.retryOptions.maxRetries
+      );
+    }
+    
+    return embedFunc();
+  }
+
+  /**
   Compute the embeddings for a single query
  */
   async computeQueryEmbeddings(data: T): Promise<Awaited<IntoVector>> {
     return this.computeSourceEmbeddings([data]).then(
+      (embeddings) => embeddings[0],
+    );
+  }
+
+  /**
+   * Compute query embeddings with retry and rate limiting.
+   * 
+   * @param data The query to create embeddings for
+   * @returns The embeddings
+   */
+  async computeQueryEmbeddingsWithRetry(data: T): Promise<Awaited<IntoVector>> {
+    return this.computeSourceEmbeddingsWithRetry([data]).then(
       (embeddings) => embeddings[0],
     );
   }
