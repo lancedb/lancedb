@@ -108,7 +108,9 @@ jobs:
     - name: Build
       run: |
         pnpm install --frozen-lockfile
-        pnpm build:debug -- --profile ci
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
         pnpm tsc
     - name: Setup examples
       working-directory: nodejs/examples
@@ -174,7 +176,9 @@ jobs:
     - name: Build
       run: |
         pnpm install --frozen-lockfile
-        pnpm build:debug -- --profile ci
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
         pnpm tsc
     - name: Test
       run: |
