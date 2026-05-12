@@ -96,7 +96,7 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "3.0.2",
-    "openai": "^4.29.2"
+    "openai": "4.29.2"
   },
   "peerDependencies": {
     "apache-arrow": ">=15.0.0 <=18.1.0"
