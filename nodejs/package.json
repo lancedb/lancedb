@@ -68,6 +68,7 @@
   "engines": {
     "node": ">= 18"
   },
+  "packageManager": "pnpm@11.1.1",
   "cpu": ["x64", "arm64"],
   "os": ["darwin", "linux", "win32"],
   "scripts": {
@@ -75,8 +76,8 @@
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
     "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
     "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
-    "build": "npm run build:debug && npm run tsc",
-    "build-release": "npm run build:release && npm run tsc",
+    "build": "pnpm build:debug && pnpm tsc",
+    "build-release": "pnpm build:release && pnpm tsc",
     "tsc": "tsc -b",
     "posttsc": "shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",
@@ -86,7 +87,7 @@
     "lint-fix": "biome check --write . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "jest --verbose",
-    "integration": "S3_TEST=1 npm run test",
+    "integration": "S3_TEST=1 pnpm test",
     "universal": "napi universalize",
     "version": "napi version"
   },

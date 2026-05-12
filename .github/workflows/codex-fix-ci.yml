@@ -79,10 +79,14 @@ jobs:
           java-version: '11'
           cache: maven
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
       - name: Install Node.js dependencies for TypeScript bindings
         run: |
           cd nodejs
-          npm ci
+          pnpm install --frozen-lockfile
 
       - name: Configure git user
         run: |
@@ -137,7 +141,7 @@ jobs:
                - For Rust test failures: Run the specific test with "cargo test -p <crate> <test_name>"
                - For Python test failures: Build with "cd python && maturin develop" then run "pytest <specific_test_file>::<test_name>"
                - For Java test failures: Run "cd java && mvn test -Dtest=<TestClass>#<testMethod>"
-               - For TypeScript test failures: Run "cd nodejs && npm run build && npm test -- --testNamePattern='<test_name>'"
+               - For TypeScript test failures: Run "cd nodejs && pnpm build && pnpm test -- --testNamePattern='<test_name>'"
                - Do NOT run the full test suite - only run the tests that were failing
 
           7. If the additional guidelines are provided, follow them as well.

@@ -1,0 +1,5 @@
+allowBuilds:
+  '@biomejs/biome': true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true

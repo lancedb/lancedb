@@ -11,11 +11,12 @@
     "test": "node --experimental-vm-modules node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose",
     "lint": "biome check *.ts && biome format *.ts",
     "lint-ci": "biome ci .",
-    "lint-fix": "biome check --write *.ts && npm run format",
+    "lint-fix": "biome check --write *.ts && pnpm format",
     "format": "biome format --write *.ts"
   },
   "author": "Lance Devs",
   "license": "Apache-2.0",
+  "packageManager": "pnpm@11.1.1",
   "dependencies": {
     "@huggingface/transformers": "^3.0.2",
     "@lancedb/lancedb": "file:../dist",
