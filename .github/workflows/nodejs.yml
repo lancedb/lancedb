@@ -138,6 +138,8 @@ jobs:
     - name: Test
       env:
         S3_TEST: "1"
+        # Newer @smithy/core uses dynamic ESM imports.
+        NODE_OPTIONS: "--experimental-vm-modules"
       # Invoke jest directly because pnpm 11 itself requires Node 22+.
       run: npx jest --verbose
     - name: Test examples
@@ -171,6 +173,7 @@ jobs:
         node-version: 22
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
+    - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
