@@ -622,6 +622,8 @@ pub struct ConnectRequest {
 pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    #[cfg(feature = "remote")]
+    oauth_config: Option<crate::remote::oauth::OAuthConfig>,
 }
 
 #[cfg(feature = "remote")]
@@ -643,6 +645,8 @@ impl ConnectBuilder {
                 session: None,
             },
             embedding_registry: None,
+            #[cfg(feature = "remote")]
+            oauth_config: None,
         }
     }
 
@@ -728,6 +732,19 @@ impl ConnectBuilder {
     #[cfg(feature = "remote")]
     pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.request.client_config = config;
+        self
+    }
+
+    /// Configure OAuth authentication for LanceDB Cloud/Enterprise.
+    ///
+    /// This creates an [`OAuthHeaderProvider`](crate::remote::OAuthHeaderProvider)
+    /// from the given config and sets it as the header provider, replacing any
+    /// previously configured header provider or API key.
+    ///
+    /// Token acquisition and refresh are handled entirely in Rust.
+    #[cfg(feature = "remote")]
+    pub fn oauth_config(mut self, config: crate::remote::oauth::OAuthConfig) -> Self {
+        self.oauth_config = Some(config);
         self
     }
 
@@ -874,9 +891,29 @@ impl ConnectBuilder {
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
         })?;
-        let api_key = options.api_key.ok_or_else(|| Error::InvalidInput {
-            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
-        })?;
+
+        // When OAuth is configured, api_key is not required
+        let api_key = match (&self.oauth_config, &options.api_key) {
+            (Some(_), None) => String::new(),
+            (Some(_), Some(key)) => key.clone(),
+            (None, Some(key)) => key.clone(),
+            (None, None) => {
+                return Err(Error::InvalidInput {
+                    message:
+                        "An api_key or oauth_config is required when connecting to LanceDb Cloud"
+                            .to_string(),
+                });
+            }
+        };
+
+        let mut client_config = self.request.client_config;
+
+        // Apply OAuth header provider if configured
+        if let Some(oauth_config) = self.oauth_config {
+            let provider = crate::remote::oauth::OAuthHeaderProvider::new(oauth_config)?;
+            client_config.header_provider =
+                Some(Arc::new(provider) as Arc<dyn crate::remote::client::HeaderProvider>);
+        }
 
         let storage_options = StorageOptions(options.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
@@ -884,7 +921,7 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
-            self.request.client_config,
+            client_config,
             storage_options.into(),
         )?);
         Ok(Connection {

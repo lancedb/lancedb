@@ -112,6 +112,11 @@ impl Connection {
 
         builder = builder.client_config(rust_config);
 
+        if let Some(oauth_config) = options.oauth_config {
+            let config: lancedb::remote::oauth::OAuthConfig = oauth_config.into();
+            builder = builder.oauth_config(config);
+        }
+
         if let Some(api_key) = options.api_key {
             builder = builder.api_key(&api_key);
         }
