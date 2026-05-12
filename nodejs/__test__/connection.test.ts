@@ -306,3 +306,71 @@ describe("clone table functionality", () => {
     ).rejects.toThrow("Deep clone is not yet implemented");
   });
 });
+
+describe("namespaces", () => {
+  let tmpDir: tmp.DirResult;
+  let db: Connection;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    // The local DirectoryNamespace backend only supports child namespaces
+    // when manifest mode is enabled (see lance-namespace-impls/src/dir.rs).
+    db = await connect(tmpDir.name, {
+      // biome-ignore lint/style/useNamingConvention: opaque backend property key, must match Rust
+      namespaceClientProperties: { manifest_enabled: "true" },
+    });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should create and describe a namespace", async () => {
+    await db.createNamespace(["myns"]);
+    const desc = await db.describeNamespace(["myns"]);
+    expect(desc).toBeDefined();
+  });
+
+  it("should list namespaces created at the root", async () => {
+    await db.createNamespace(["alpha"]);
+    await db.createNamespace(["beta"]);
+    const list = await db.listNamespaces();
+    expect(list.namespaces).toEqual(expect.arrayContaining(["alpha", "beta"]));
+  });
+
+  it("should list child namespaces under a parent", async () => {
+    await db.createNamespace(["parent"]);
+    await db.createNamespace(["parent", "child"]);
+    const list = await db.listNamespaces(["parent"]);
+    expect(list.namespaces).toContain("child");
+  });
+
+  it("should drop a namespace", async () => {
+    await db.createNamespace(["ephemeral"]);
+    await db.dropNamespace(["ephemeral"]);
+    const list = await db.listNamespaces();
+    expect(list.namespaces).not.toContain("ephemeral");
+  });
+
+  it("should raise an error on any namespace op after close", async () => {
+    await db.close();
+    await expect(db.describeNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+    await expect(db.listNamespaces()).rejects.toThrow("Connection is closed");
+    await expect(db.createNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+    await expect(db.dropNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+  });
+
+  it("should raise an understandable error when describing a non-existent namespace", async () => {
+    await expect(db.describeNamespace(["does-not-exist"])).rejects.toThrow(
+      /not found/i,
+    );
+  });
+
+  it("should raise an error when creating a namespace that already exists", async () => {
+    await db.createNamespace(["dup"]);
+    await expect(db.createNamespace(["dup"])).rejects.toThrow();
+  });
+});
