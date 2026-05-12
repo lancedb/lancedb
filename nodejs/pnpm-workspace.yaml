@@ -1,3 +1,8 @@
+# Flat node_modules layout. The @napi-rs/cli build step fails to locate
+# the cdylib artifact under pnpm's isolated layout; the hoisted linker
+# mirrors npm's structure and unblocks the native build.
+nodeLinker: hoisted
+
 allowBuilds:
   '@biomejs/biome': true
   onnxruntime-node: true
