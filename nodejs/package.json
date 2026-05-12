@@ -46,7 +46,7 @@
     "@napi-rs/cli": "3.5.1",
     "@types/axios": "^0.14.0",
     "@types/jest": "^29.1.2",
-    "@types/node": "^22.7.4",
+    "@types/node": "22.7.4",
     "@types/tmp": "^0.2.6",
     "apache-arrow-15": "npm:apache-arrow@15.0.0",
     "apache-arrow-16": "npm:apache-arrow@16.0.0",
@@ -59,7 +59,7 @@
     "ts-jest": "^29.1.2",
     "typedoc": "^0.26.4",
     "typedoc-plugin-markdown": "^4.2.1",
-    "typescript": "^5.5.4",
+    "typescript": "5.5.4",
     "typescript-eslint": "^7.1.0"
   },
   "ava": {
@@ -95,7 +95,7 @@
     "reflect-metadata": "^0.2.2"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^3.0.2",
+    "@huggingface/transformers": "3.0.2",
     "openai": "^4.29.2"
   },
   "peerDependencies": {
