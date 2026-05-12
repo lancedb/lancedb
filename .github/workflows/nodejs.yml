@@ -47,7 +47,9 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
+        # pnpm 11 requires Node >= 22.13. The library itself still
+        # supports Node >= 18 (see test matrix below).
+        node-version: 22
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -89,11 +91,11 @@ jobs:
       with:
         version: 11.1.1
     - uses: actions/setup-node@v4
-      name: Setup Node.js 20 for build
+      name: Setup Node.js 22 for build
       with:
-        # @napi-rs/cli v3 requires Node >= 20.12 (via @inquirer/prompts@8).
-        # Build always on Node 20; tests run on the matrix version below.
-        node-version: 20
+        # pnpm 11 requires Node >= 22.13. Build/install runs on Node 22;
+        # tests run on the matrix version below using direct jest invocation.
+        node-version: 22
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
@@ -105,22 +107,33 @@ jobs:
       run: |
         pnpm install --frozen-lockfile
         pnpm build:debug -- --profile ci
+        pnpm tsc
+    - name: Setup examples
+      working-directory: nodejs/examples
+      run: pnpm install --frozen-lockfile
+    - name: Check docs
+      run: |
+        # We run this as part of the job because the binary needs to be built
+        # first to export the types of the native code.
+        set -e
+        pnpm docs
+        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
+          echo "Docs need to be updated"
+          echo "Run 'pnpm docs', fix any warnings, and commit the changes."
+          exit 1
+        fi
     - uses: actions/setup-node@v4
       name: Setup Node.js ${{ matrix.node-version }} for test
       with:
         node-version: ${{ matrix.node-version }}
-    - name: Compile TypeScript
-      run: pnpm tsc
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
     - name: Test
       env:
         S3_TEST: "1"
-      run: pnpm test
-    - name: Setup examples
-      working-directory: nodejs/examples
-      run: pnpm install --frozen-lockfile
+      # Invoke jest directly because pnpm 11 itself requires Node 22+.
+      run: npx jest --verbose
     - name: Test examples
       working-directory: ./
       env:
@@ -129,19 +142,8 @@ jobs:
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        pnpm test
-    - name: Check docs
-      run: |
-        # We run this as part of the job because the binary needs to be built
-        # first to export the types of the native code.
-        set -e
-        pnpm install --frozen-lockfile
-        pnpm docs
-        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
-          echo "Docs need to be updated"
-          echo "Run 'pnpm docs', fix any warnings, and commit the changes."
-          exit 1
-        fi
+        node --experimental-vm-modules node_modules/.bin/jest \
+          --testEnvironment jest-environment-node-single-context --verbose
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
@@ -159,7 +161,8 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
+        # pnpm 11 requires Node >= 22.13.
+        node-version: 22
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
