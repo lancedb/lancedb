@@ -108,12 +108,7 @@ test-log = "0.2"
 
 [features]
 default = []
-aws = [
-    "lance/aws",
-    "lance-io/aws",
-    "lance-namespace-impls/dir-aws",
-    "object_store/aws",
-]
+aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
 azure = [

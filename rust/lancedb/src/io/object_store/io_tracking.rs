@@ -10,9 +10,9 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use lance::io::WrappingObjectStore;
 use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result as OSResult,
-    UploadPart, path::Path,
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OSResult, UploadPart,
+    path::Path,
 };
 
 #[derive(Debug, Default)]
@@ -81,6 +81,11 @@ impl IoTrackingStore {
 #[async_trait::async_trait]
 #[deny(clippy::missing_trait_methods)]
 impl ObjectStore for IoTrackingStore {
+    async fn put(&self, location: &Path, bytes: PutPayload) -> OSResult<PutResult> {
+        self.record_write(bytes.content_length() as u64);
+        self.target.put(location, bytes).await
+    }
+
     async fn put_opts(
         &self,
         location: &Path,
@@ -89,6 +94,14 @@ impl ObjectStore for IoTrackingStore {
     ) -> OSResult<PutResult> {
         self.record_write(bytes.content_length() as u64);
         self.target.put_opts(location, bytes, opts).await
+    }
+
+    async fn put_multipart(&self, location: &Path) -> OSResult<Box<dyn MultipartUpload>> {
+        let target = self.target.put_multipart(location).await?;
+        Ok(Box::new(IoTrackingMultipartUpload {
+            target,
+            stats: self.stats.clone(),
+        }))
     }
 
     async fn put_multipart_opts(
@@ -103,11 +116,28 @@ impl ObjectStore for IoTrackingStore {
         }))
     }
 
+    async fn get(&self, location: &Path) -> OSResult<GetResult> {
+        let result = self.target.get(location).await;
+        if let Ok(result) = &result {
+            let num_bytes = result.range.end - result.range.start;
+            self.record_read(num_bytes);
+        }
+        result
+    }
+
     async fn get_opts(&self, location: &Path, options: GetOptions) -> OSResult<GetResult> {
         let result = self.target.get_opts(location, options).await;
         if let Ok(result) = &result {
             let num_bytes = result.range.end - result.range.start;
             self.record_read(num_bytes);
+        }
+        result
+    }
+
+    async fn get_range(&self, location: &Path, range: std::ops::Range<u64>) -> OSResult<Bytes> {
+        let result = self.target.get_range(location, range).await;
+        if let Ok(result) = &result {
+            self.record_read(result.len() as u64);
         }
         result
     }
@@ -124,11 +154,20 @@ impl ObjectStore for IoTrackingStore {
         result
     }
 
-    fn delete_stream(
-        &self,
-        locations: BoxStream<'static, OSResult<Path>>,
-    ) -> BoxStream<'static, OSResult<Path>> {
+    async fn head(&self, location: &Path) -> OSResult<ObjectMeta> {
+        self.record_read(0);
+        self.target.head(location).await
+    }
+
+    async fn delete(&self, location: &Path) -> OSResult<()> {
         self.record_write(0);
+        self.target.delete(location).await
+    }
+
+    fn delete_stream<'a>(
+        &'a self,
+        locations: BoxStream<'a, OSResult<Path>>,
+    ) -> BoxStream<'a, OSResult<Path>> {
         self.target.delete_stream(locations)
     }
 
@@ -151,14 +190,24 @@ impl ObjectStore for IoTrackingStore {
         self.target.list_with_delimiter(prefix).await
     }
 
-    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> OSResult<()> {
+    async fn copy(&self, from: &Path, to: &Path) -> OSResult<()> {
         self.record_write(0);
-        self.target.copy_opts(from, to, options).await
+        self.target.copy(from, to).await
     }
 
-    async fn rename_opts(&self, from: &Path, to: &Path, options: RenameOptions) -> OSResult<()> {
+    async fn rename(&self, from: &Path, to: &Path) -> OSResult<()> {
         self.record_write(0);
-        self.target.rename_opts(from, to, options).await
+        self.target.rename(from, to).await
+    }
+
+    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> OSResult<()> {
+        self.record_write(0);
+        self.target.rename_if_not_exists(from, to).await
+    }
+
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> OSResult<()> {
+        self.record_write(0);
+        self.target.copy_if_not_exists(from, to).await
     }
 }
 

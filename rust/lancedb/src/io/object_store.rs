@@ -5,12 +5,11 @@
 
 use std::{fmt::Formatter, sync::Arc};
 
-use futures::{StreamExt, TryFutureExt, stream::BoxStream};
+use futures::{TryFutureExt, stream::BoxStream};
 use lance::io::WrappingObjectStore;
 use object_store::{
-    CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
-    ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
-    UploadPart, path::Path,
+    Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart, path::Path,
 };
 
 use async_trait::async_trait;
@@ -94,6 +93,20 @@ impl ObjectStore for MirroringObjectStore {
         self.primary.get_opts(location, options).await
     }
 
+    async fn head(&self, location: &Path) -> Result<ObjectMeta> {
+        self.primary.head(location).await
+    }
+
+    async fn delete(&self, location: &Path) -> Result<()> {
+        if !location.primary_only() {
+            match self.secondary.delete(location).await {
+                Err(Error::NotFound { .. }) | Ok(_) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.primary.delete(location).await
+    }
+
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         self.primary.list(prefix)
     }
@@ -102,40 +115,21 @@ impl ObjectStore for MirroringObjectStore {
         self.primary.list_with_delimiter(prefix).await
     }
 
-    fn delete_stream(
-        &self,
-        locations: BoxStream<'static, Result<Path>>,
-    ) -> BoxStream<'static, Result<Path>> {
-        let primary = self.primary.clone();
-        let secondary = self.secondary.clone();
-        locations
-            .map(move |location| {
-                let primary = primary.clone();
-                let secondary = secondary.clone();
-                async move {
-                    let location = location?;
-                    if !location.primary_only() {
-                        match secondary.delete(&location).await {
-                            Err(Error::NotFound { .. }) | Ok(_) => {}
-                            Err(e) => return Err(e),
-                        }
-                    }
-                    primary.delete(&location).await?;
-                    Ok(location)
-                }
-            })
-            .buffered(10)
-            .boxed()
-    }
-
-    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+    async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
         if to.primary_only() {
-            self.primary.copy_opts(from, to, options).await
+            self.primary.copy(from, to).await
         } else {
-            self.secondary.copy_opts(from, to, options.clone()).await?;
-            self.primary.copy_opts(from, to, options).await?;
+            self.secondary.copy(from, to).await?;
+            self.primary.copy(from, to).await?;
             Ok(())
         }
+    }
+
+    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
+        if !to.primary_only() {
+            self.secondary.copy(from, to).await?;
+        }
+        self.primary.copy_if_not_exists(from, to).await
     }
 }
 
