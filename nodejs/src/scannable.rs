@@ -3,13 +3,18 @@
 
 //! NodeJS binding for the [`lancedb::data::scannable::Scannable`] trait.
 //!
-//! The JS side supplies a `getNextBatch` callback that returns the next Arrow
-//! `RecordBatch` encoded as a self-contained Arrow IPC Stream message (schema
-//! message + record batch message + EOS marker) wrapped in a `Buffer`, or
-//! `null` when the stream is exhausted. The Rust side parses each buffer with
-//! `arrow_ipc::reader::StreamReader`, validates every standalone batch stream
-//! against the declared schema, and yields decoded `RecordBatch`es as a
-//! [`SendableRecordBatchStream`].
+//! The JS side supplies a `getNextBatch(isStart)` callback that returns the
+//! next Arrow `RecordBatch` encoded as a self-contained Arrow IPC Stream
+//! message (schema message + record batch message + EOS marker) wrapped in a
+//! `Buffer`, or `null` when the stream is exhausted. The Rust side parses
+//! each buffer with `arrow_ipc::reader::StreamReader`, validates every
+//! standalone batch stream against the declared schema, and yields decoded
+//! `RecordBatch`es as a [`SendableRecordBatchStream`].
+//!
+//! `isStart` is `true` on the first `getNextBatch` call of each new
+//! `scan_as_stream` and `false` thereafter. JS uses it to drop any cached
+//! iterator and re-invoke its factory at scan boundaries, so retries
+//! triggered by mid-stream failures restart at batch 0.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -26,10 +31,11 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 
-/// Threadsafe handle to the JS `getNextBatch` callback. The callback takes no
-/// arguments and returns a Promise that resolves to a `Buffer` containing one
-/// IPC Stream message, or `null` at end-of-stream.
-type GetNextBatchFn = ThreadsafeFunction<(), Promise<Option<Buffer>>, (), Status, false>;
+/// Threadsafe handle to the JS `getNextBatch` callback. The callback takes a
+/// single boolean `isStart` (`true` on the first call of each new scan) and
+/// returns a Promise that resolves to a `Buffer` containing one IPC Stream
+/// message, or `null` at end-of-stream.
+type GetNextBatchFn = ThreadsafeFunction<bool, Promise<Option<Buffer>>, bool, Status, false>;
 
 /// A Rust-side view of a JS-constructed `Scannable`.
 ///
@@ -58,14 +64,16 @@ impl NapiScannable {
     /// - `num_rows` — optional row count hint; not validated against the stream.
     /// - `rescannable` — whether `get_next_batch` may be re-driven after the
     ///   scan completes.
-    /// - `get_next_batch` — JS callback that yields the next batch as an Arrow
-    ///   IPC Stream message wrapped in a `Buffer`, or `null` at EOF.
+    /// - `get_next_batch` -- JS callback that yields the next batch as an Arrow
+    ///   IPC Stream message wrapped in a `Buffer`, or `null` at EOF. The
+    ///   `isStart` argument is `true` on the first call of each new scan;
+    ///   JS uses it to discard any cached iterator before pulling.
     #[napi(constructor)]
     pub fn new(
         schema_buf: Buffer,
         num_rows: Option<i64>,
         rescannable: bool,
-        get_next_batch: Function<(), Promise<Option<Buffer>>>,
+        get_next_batch: Function<bool, Promise<Option<Buffer>>>,
     ) -> napi::Result<Self> {
         let schema = ipc_file_to_schema(schema_buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Invalid schema buffer: {}", e)))?;
@@ -120,13 +128,15 @@ impl LanceScannable for NapiScannable {
         let tsfn = Arc::clone(&self.get_next_batch);
         let declared_schema = schema.clone();
 
-        // State threaded through the unfold: (tsfn, next_batch_index,
-        // declared_schema, errored).
+        // State threaded through the unfold. `is_first_pull` starts true so
+        // the first call into JS signals a new-scan boundary; JS uses it to
+        // reset any cached iterator before factory()-ing a fresh one.
         let initial = State {
             tsfn,
             batch_index: 0,
             declared_schema,
             errored: false,
+            is_first_pull: true,
         };
 
         let stream = futures::stream::unfold(initial, |mut state| async move {
@@ -134,8 +144,12 @@ impl LanceScannable for NapiScannable {
                 return None;
             }
 
-            // Pull the next IPC Stream buffer from JS.
-            let buf = match pull_next(&state.tsfn).await {
+            // Pull the next IPC Stream buffer from JS. `is_first_pull` is
+            // consumed here and cleared so subsequent pulls continue the
+            // same scan rather than restarting it.
+            let is_start = state.is_first_pull;
+            state.is_first_pull = false;
+            let buf = match pull_next(&state.tsfn, is_start).await {
                 Ok(Some(buf)) => buf,
                 Ok(None) => return None,
                 Err(e) => {
@@ -179,17 +193,27 @@ struct State {
     batch_index: usize,
     declared_schema: SchemaRef,
     errored: bool,
+    /// True for the very first pull of a new scan. Forwarded to JS so the
+    /// callback can drop any cached iterator and call its factory fresh,
+    /// which makes rescannable sources restart at batch 0 even when the
+    /// previous scan ended mid-stream.
+    is_first_pull: bool,
 }
 
-/// Invoke the JS callback and await its Promise. Errors on the JS side surface
-/// here as rejected promises and are tunneled back as `lancedb::Error::Runtime`.
-async fn pull_next(tsfn: &GetNextBatchFn) -> LanceResult<Option<Buffer>> {
-    let promise = tsfn.call_async(()).await.map_err(|e| Error::Runtime {
-        message: format!(
-            "[scannable/js-factory] napi error status={}, reason={}",
-            e.status, e.reason
-        ),
-    })?;
+/// Invoke the JS callback and await its Promise. `is_start` is forwarded to
+/// the JS side as the `isStart` argument so it can reset its iterator at the
+/// scan boundary. Errors on the JS side surface here as rejected promises
+/// and are tunneled back as `lancedb::Error::Runtime`.
+async fn pull_next(tsfn: &GetNextBatchFn, is_start: bool) -> LanceResult<Option<Buffer>> {
+    let promise = tsfn
+        .call_async(is_start)
+        .await
+        .map_err(|e| Error::Runtime {
+            message: format!(
+                "[scannable/js-factory] napi error status={}, reason={}",
+                e.status, e.reason
+            ),
+        })?;
     promise.await.map_err(|e| Error::Runtime {
         message: format!(
             "[scannable/js-iterator] napi error status={}, reason={}",

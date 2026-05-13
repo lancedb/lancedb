@@ -93,7 +93,12 @@ export class Scannable {
     const rescannable = opts.rescannable ?? true;
 
     let iter: AsyncIterator<RecordBatch> | Iterator<RecordBatch> | null = null;
-    const getNextBatch = async (): Promise<Buffer | null> => {
+    const getNextBatch = async (isStart: boolean): Promise<Buffer | null> => {
+      // `isStart` is true on the first pull of every new scan_as_stream.
+      // Drop any cached iterator so factory() is re-invoked for the next scan
+      if (isStart) {
+        iter = null;
+      }
       if (iter === null) {
         iter = normalizeIterator(factory());
       }
