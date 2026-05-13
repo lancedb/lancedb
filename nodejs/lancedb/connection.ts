@@ -144,6 +144,19 @@ export interface DropNamespaceOptions {
   behavior?: "restrict" | "cascade";
 }
 
+export interface RenameTableOptions {
+  /**
+   * The namespace path of the table being renamed. Defaults to the root
+   * namespace (`[]`) when omitted.
+   */
+  namespacePath?: string[];
+  /**
+   * The namespace path to move the table to as part of the rename. When
+   * omitted the table stays in `namespacePath`.
+   */
+  newNamespacePath?: string[];
+}
+
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -391,6 +404,24 @@ export abstract class Connection {
       isShallow?: boolean;
     },
   ): Promise<Table>;
+
+  /**
+   * Rename a table.
+   *
+   * Currently only supported by LanceDB Cloud. Local OSS connections and
+   * namespace-backed connections (via {@link connectNamespace}) reject with
+   * a "not supported" error.
+   *
+   * @param {string} currentName - The current name of the table.
+   * @param {string} newName - The new name for the table.
+   * @param {RenameTableOptions} options - Optional namespace paths. When
+   *   `newNamespacePath` is omitted the table stays in `namespacePath`.
+   */
+  abstract renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void>;
 }
 
 /** @hideconstructor */
@@ -649,6 +680,19 @@ export class LocalConnection extends Connection {
       namespacePath,
       options?.mode,
       options?.behavior,
+    );
+  }
+
+  async renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void> {
+    return this.inner.renameTable(
+      currentName,
+      newName,
+      options?.namespacePath ?? [],
+      options?.newNamespacePath,
     );
   }
 }
