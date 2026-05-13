@@ -47,9 +47,10 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        # pnpm 11 requires Node >= 22.13. The library itself still
-        # supports Node >= 18 (see test matrix below).
-        node-version: 22
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October. The library itself still supports Node >= 18
+        # (see test matrix below).
+        node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -93,11 +94,12 @@ jobs:
       with:
         version: 11.1.1
     - uses: actions/setup-node@v4
-      name: Setup Node.js 22 for build
+      name: Setup Node.js 24 for build
       with:
-        # pnpm 11 requires Node >= 22.13. Build/install runs on Node 22;
-        # tests run on the matrix version below using direct jest invocation.
-        node-version: 22
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October. Build/install runs on Node 24; tests run on the
+        # matrix version below using direct jest invocation.
+        node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
@@ -140,7 +142,8 @@ jobs:
         S3_TEST: "1"
         # Newer @smithy/core uses dynamic ESM imports.
         NODE_OPTIONS: "--experimental-vm-modules"
-      # Invoke jest directly because pnpm 11 itself requires Node 22+.
+      # Invoke jest directly because pnpm 11 itself requires Node 22+
+      # while the matrix tests on older Node versions.
       run: npx jest --verbose
     - name: Test examples
       working-directory: ./
@@ -169,8 +172,9 @@ jobs:
         version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        # pnpm 11 requires Node >= 22.13.
-        node-version: 22
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October.
+        node-version: 24
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: dtolnay/rust-toolchain@stable

@@ -18,7 +18,7 @@ Typescript.
 
 To set up your development environment, you will need to install the following:
 
-1. Node.js 18 or later
+1. Node.js 22 or later (required by pnpm 11)
 2. [pnpm](https://pnpm.io/installation) 11 or later (or run via `corepack enable`,
    which uses the `packageManager` field in `package.json`)
 3. Rust's package manager, Cargo. Use [rustup](https://rustup.rs/) to install.

@@ -45,8 +45,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          # pnpm 11 (used by the nodejs install step below) requires Node >= 22.13.
-          node-version: 22
+          # pnpm 11 (used by the nodejs install step below) requires
+          # Node >= 22.13; use 24 since 22 hits EOL in October.
+          node-version: 24
 
       - name: Install Codex CLI
         run: npm install -g @openai/codex

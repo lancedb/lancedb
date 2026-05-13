@@ -178,8 +178,9 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          # pnpm 11 requires Node >= 22.13.
-          node-version: 22
+          # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+          # in October.
+          node-version: 24
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
       - name: Install
@@ -291,11 +292,12 @@ jobs:
         uses: pnpm/action-setup@v4
         with:
           version: 11.1.1
-      - name: Setup Node.js 22 for install
+      - name: Setup Node.js 24 for install
         uses: actions/setup-node@v4
         with:
-          # pnpm 11 requires Node >= 22.13.
-          node-version: 22
+          # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+          # in October.
+          node-version: 24
           cache: pnpm
           cache-dependency-path: nodejs/pnpm-lock.yaml
       - name: Install dependencies
@@ -324,7 +326,8 @@ jobs:
       - name: Move built files
         run: cp dist/native.d.ts dist/native.js dist/*.node lancedb/
       - name: Test bindings
-        # Invoke jest directly because pnpm 11 itself requires Node 22+.
+        # Invoke jest directly because pnpm 11 itself requires Node 22+
+        # while the matrix tests on older Node versions.
         run: npx jest --verbose
   publish:
     name: Publish
