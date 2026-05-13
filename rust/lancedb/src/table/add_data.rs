@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::data::scannable::Scannable;
 use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
+use crate::table::datafusion::bad_vector_dimensions::handle_bad_vector_dimensions;
+use crate::table::datafusion::bad_vector_values::handle_bad_vector_values;
 use crate::table::datafusion::cast::cast_to_table_schema;
-use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::table::write_progress::ProgressCallback;
 use crate::table::write_progress::WriteProgress;
@@ -38,6 +39,44 @@ pub struct AddResult {
     pub version: u64,
 }
 
+/// Configures how vectors with NaN values are handled during [`crate::table::Table::add`].
+///
+/// See [`AddDataBuilder::on_bad_vector_values`] for details.
+#[derive(Debug, Default, Clone)]
+pub enum BadVectorValueHandling {
+    /// Reject any row whose vector contains a NaN (the default).
+    #[default]
+    Error,
+    /// Drop rows whose vector contains a NaN.
+    Drop,
+    /// Replace vectors containing NaN with null.
+    Null,
+    /// Replace NaN elements within the vector with the given fill value.
+    Fill(f64),
+    /// Allow NaN values through unchanged (legacy; not searchable).
+    #[doc(hidden)]
+    Keep,
+}
+
+/// Configures how vectors with the wrong number of dimensions are handled
+/// during [`crate::table::Table::add`].
+///
+/// See [`AddDataBuilder::on_bad_vector_dimensions`] for details.
+#[derive(Debug, Default, Clone)]
+pub enum BadVectorDimensionHandling {
+    /// Reject any row whose vector has the wrong number of dimensions (the default).
+    #[default]
+    Error,
+    /// Drop rows whose vector has the wrong number of dimensions.
+    Drop,
+    /// Replace wrong-dimension vectors with null.
+    Null,
+    /// Replace wrong-dimension vectors with a vector of the correct size filled with the given value.
+    Fill(f64),
+}
+
+/// Kept for backward compatibility. Prefer [`BadVectorValueHandling`] via
+/// [`AddDataBuilder::on_bad_vector_values`].
 #[derive(Debug, Default, Clone, Copy)]
 pub enum NaNVectorBehavior {
     /// Reject any vectors containing NaN values (the default)
@@ -53,7 +92,8 @@ pub struct AddDataBuilder {
     pub(crate) data: Box<dyn Scannable>,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
-    pub(crate) on_nan_vectors: NaNVectorBehavior,
+    pub(crate) on_bad_vector_values: BadVectorValueHandling,
+    pub(crate) on_bad_vector_dimensions: BadVectorDimensionHandling,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     pub(crate) progress_callback: Option<ProgressCallback>,
     pub(crate) write_parallelism: Option<usize>,
@@ -80,7 +120,8 @@ impl AddDataBuilder {
             data,
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
-            on_nan_vectors: NaNVectorBehavior::default(),
+            on_bad_vector_values: BadVectorValueHandling::default(),
+            on_bad_vector_dimensions: BadVectorDimensionHandling::default(),
             embedding_registry,
             progress_callback: None,
             write_parallelism: None,
@@ -97,14 +138,41 @@ impl AddDataBuilder {
         self
     }
 
+    /// Configure how to handle vectors containing NaN values.
+    ///
+    /// By default ([`BadVectorValueHandling::Error`]), any row whose vector
+    /// contains NaN is rejected. Use `Drop` to silently discard those rows,
+    /// `Null` to store them as null, or `Fill(v)` to replace NaN elements with
+    /// `v`.
+    pub fn on_bad_vector_values(mut self, handling: BadVectorValueHandling) -> Self {
+        self.on_bad_vector_values = handling;
+        self
+    }
+
+    /// Configure how to handle vectors with the wrong number of dimensions.
+    ///
+    /// This applies to variable-length list columns (e.g. `List<f64>`) that
+    /// will be cast to a `FixedSizeList` in the table schema. By default
+    /// ([`BadVectorDimensionHandling::Error`]) a mismatch is an error. Use
+    /// `Drop` to discard those rows, `Null` to store null, or `Fill(v)` to
+    /// substitute a correctly-sized vector filled with `v`.
+    ///
+    /// This step runs before the `List → FixedSizeList` cast, so wrong-length
+    /// rows are handled before the cast would fail on them.
+    pub fn on_bad_vector_dimensions(mut self, handling: BadVectorDimensionHandling) -> Self {
+        self.on_bad_vector_dimensions = handling;
+        self
+    }
+
     /// Configure how to handle NaN values in vector columns.
     ///
-    /// By default, any vectors containing NaN values will be rejected with an
-    /// error, since NaNs cannot be indexed for search. Setting this to `Keep`
-    /// will allow NaN values to be added to the table, but they will not be
-    /// indexed and will not be searchable.
+    /// Deprecated: use [`Self::on_bad_vector_values`] instead.
+    #[deprecated(since = "0.29.0", note = "use on_bad_vector_values() instead")]
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
-        self.on_nan_vectors = behavior;
+        self.on_bad_vector_values = match behavior {
+            NaNVectorBehavior::Error => BadVectorValueHandling::Error,
+            NaNVectorBehavior::Keep => BadVectorValueHandling::Keep,
+        };
         self
     }
 
@@ -178,15 +246,15 @@ impl AddDataBuilder {
             .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
             Arc::new(ScannableExec::new(self.data, tracker.clone()));
-        // Skip casting when overwriting — the input schema replaces the table schema.
+        // Skip casting and dimension/value checks when overwriting — the input
+        // schema replaces the table schema entirely.
         let plan = if overwrite {
             plan
         } else {
-            cast_to_table_schema(plan, table_schema)?
-        };
-        let plan = match self.on_nan_vectors {
-            NaNVectorBehavior::Error => reject_nan_vectors(plan)?,
-            NaNVectorBehavior::Keep => plan,
+            let plan =
+                handle_bad_vector_dimensions(plan, table_schema, &self.on_bad_vector_dimensions)?;
+            let plan = cast_to_table_schema(plan, table_schema)?;
+            handle_bad_vector_values(plan, &self.on_bad_vector_values)?
         };
 
         Ok(PreprocessingOutput {
@@ -267,10 +335,11 @@ mod tests {
         EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry,
     };
     use crate::query::{ExecutableQuery, QueryBase, Select};
-    use crate::table::add_data::NaNVectorBehavior;
+    use crate::table::add_data::{BadVectorDimensionHandling, BadVectorValueHandling};
     use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
     use crate::test_utils::TestCustomError;
     use crate::test_utils::embeddings::MockEmbed;
+    use arrow_array::Array;
 
     use super::AddDataMode;
 
@@ -648,13 +717,214 @@ mod tests {
 
         table
             .add(batch)
-            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .on_bad_vector_values(BadVectorValueHandling::Keep)
             .execute()
             .await
             .unwrap();
 
         let row_count = table.count_rows(None).await.unwrap();
         assert_eq!(row_count, 1);
+    }
+
+    async fn make_nan_table() -> (Table, RecordBatch) {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            true,
+        )]));
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("nan_test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                FixedSizeListArray::try_new(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    4,
+                    Arc::new(Float32Array::from(vec![
+                        1.0,
+                        2.0,
+                        3.0,
+                        4.0, // row 0 – valid
+                        0.1,
+                        f32::NAN,
+                        0.3,
+                        0.4, // row 1 – NaN
+                    ])),
+                    None,
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        (table, batch)
+    }
+
+    #[tokio::test]
+    async fn test_bad_value_drop() {
+        let (table, batch) = make_nan_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_values(BadVectorValueHandling::Drop)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bad_value_null() {
+        let (table, batch) = make_nan_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_values(BadVectorValueHandling::Null)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(
+            table
+                .count_rows(Some("embedding IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bad_value_fill() {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let (table, batch) = make_nan_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_values(BadVectorValueHandling::Fill(0.0))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+
+        // The NaN row should have its NaN replaced with 0.0
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2);
+        for batch in &results {
+            let col = batch.column(0);
+            assert_eq!(col.null_count(), 0);
+            let fsl = col.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            for i in 0..fsl.len() {
+                let row = fsl.value(i);
+                let floats = row.as_any().downcast_ref::<Float32Array>().unwrap();
+                for v in floats.iter().flatten() {
+                    assert!(!v.is_nan(), "expected no NaN after Fill, got {v}");
+                }
+            }
+        }
+    }
+
+    async fn make_bad_dim_table() -> (Table, RecordBatch) {
+        use arrow::datatypes::Float64Type;
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            true,
+        )]));
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            true,
+        )]));
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("dim_test", table_schema)
+            .execute()
+            .await
+            .unwrap();
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![0.1, 0.2, 0.3, 0.4].into_iter().map(Some)), // correct dim
+                    Some(vec![0.5, 0.6, 0.8].into_iter().map(Some)),      // wrong dim (3)
+                ]),
+            )],
+        )
+        .unwrap();
+        (table, batch)
+    }
+
+    #[tokio::test]
+    async fn test_bad_dimension_drop() {
+        let (table, batch) = make_bad_dim_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_dimensions(BadVectorDimensionHandling::Drop)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bad_dimension_null() {
+        let (table, batch) = make_bad_dim_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_dimensions(BadVectorDimensionHandling::Null)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(
+            table
+                .count_rows(Some("embedding IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bad_dimension_fill() {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let (table, batch) = make_bad_dim_table().await;
+        table
+            .add(batch)
+            .on_bad_vector_dimensions(BadVectorDimensionHandling::Fill(0.0))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let total: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2);
+        for batch in &results {
+            let col = batch.column(0);
+            assert_eq!(col.null_count(), 0, "no nulls expected after Fill");
+            let fsl = col.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            assert_eq!(fsl.value_length(), 4, "all rows should have dim=4");
+        }
     }
 
     #[tokio::test]

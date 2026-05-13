@@ -4,7 +4,10 @@
 use core::fmt;
 use std::sync::{Arc, Mutex};
 
-use datafusion_common::{DataFusionError, Result as DFResult, Statistics, stats::Precision};
+use datafusion_common::{
+    DataFusionError, Result as DFResult, Statistics,
+    stats::{ColumnStatistics, Precision},
+};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
@@ -122,13 +125,14 @@ impl ExecutionPlan for ScannableExec {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
+        let num_cols = self.schema().fields().len();
         Ok(Statistics {
             num_rows: self
                 .num_rows
                 .map(Precision::Exact)
                 .unwrap_or(Precision::Absent),
             total_byte_size: Precision::Absent,
-            column_statistics: vec![],
+            column_statistics: vec![ColumnStatistics::new_unknown(); num_cols],
         })
     }
 }

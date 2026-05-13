@@ -80,7 +80,10 @@ pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
-pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
+pub use add_data::{
+    AddDataBuilder, AddDataMode, AddResult, BadVectorDimensionHandling, BadVectorValueHandling,
+    NaNVectorBehavior,
+};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -165,22 +168,6 @@ impl TableDefinition {
             .insert("lancedb::column_definitions".to_string(), lancedb_metadata);
         Arc::new(schema_with_metadata)
     }
-}
-
-/// Describes what happens when a vector either contains NaN or
-/// does not have enough values
-#[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
-enum BadVectorHandling {
-    /// An error is returned
-    #[default]
-    Error,
-    /// The offending row is droppped
-    Drop,
-    /// The invalid/missing items are replaced by fill_value
-    Fill(f32),
-    /// The invalid items are replaced by NULL
-    None,
 }
 
 /// Options to use when writing data
