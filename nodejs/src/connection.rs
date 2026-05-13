@@ -8,11 +8,12 @@ use lancedb::database::{CreateTableMode, Database};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
+use crate::ConnectNamespaceOptions;
 use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
 use crate::table::Table;
-use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
 
 use lance_namespace::models::{
     CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
@@ -125,6 +126,39 @@ impl Connection {
             builder = builder.host_override(&host_override);
         }
 
+        if let Some(session) = options.session {
+            builder = builder.session(session.inner.clone());
+        }
+
+        Ok(Self::inner_new(builder.execute().await.default_error()?))
+    }
+
+    /// Create a new Connection instance backed by a namespace implementation.
+    #[napi(factory)]
+    pub async fn new_with_namespace(
+        impl_name: String,
+        properties: HashMap<String, String>,
+        options: ConnectNamespaceOptions,
+    ) -> napi::Result<Self> {
+        if impl_name.is_empty() {
+            return Err(napi::Error::from_reason(
+                "implName must be a non-empty string",
+            ));
+        }
+
+        let mut builder = connect_namespace(&impl_name, properties);
+        if let Some(interval) = options.read_consistency_interval {
+            builder =
+                builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
+        }
+        if let Some(storage_options) = options.storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
+        if let Some(namespace_client_properties) = options.namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
+        }
         if let Some(session) = options.session {
             builder = builder.session(session.inner.clone());
         }

@@ -8,6 +8,7 @@ import {
 } from "./connection";
 
 import {
+  ConnectNamespaceOptions,
   ConnectionOptions,
   Connection as LanceDbConnection,
   JsHeaderProvider as NativeJsHeaderProvider,
@@ -22,6 +23,7 @@ export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 export {
   AddColumnsSql,
   ConnectionOptions,
+  ConnectNamespaceOptions,
   IndexStatistics,
   IndexConfig,
   ClientConfig,
@@ -297,6 +299,48 @@ export async function connect(
     uri,
     finalOptions,
     nativeProvider,
+  );
+  return new LocalConnection(nativeConn);
+}
+
+/**
+ * Connect to a LanceDB database through a namespace.
+ *
+ * Unlike {@link connect}, which routes by URI scheme (local path vs.
+ * `db://` cloud), `connectNamespace` always returns a namespace-backed
+ * connection. The `implName` selects the namespace implementation:
+ *
+ * - `"dir"` — directory namespace (local or object storage; configured by
+ *   `properties.root`).
+ * - `"rest"` — remote namespace catalog reached over HTTP (Unity, Glue,
+ *   REST, etc.; configured via `properties`).
+ * - A full module path for a custom implementation.
+ *
+ * @param implName    The namespace implementation name.
+ * @param properties  Configuration for the namespace implementation.
+ * @param options     Optional connection settings.
+ *
+ * @example
+ * ```ts
+ * const db = await connectNamespace("dir", { root: "/path/to/db" });
+ * await db.createTable("users", [{ id: 1 }]);
+ * ```
+ */
+export async function connectNamespace(
+  implName: string,
+  properties: Record<string, string>,
+  options?: Partial<ConnectNamespaceOptions>,
+): Promise<Connection> {
+  const finalOptions: ConnectNamespaceOptions = (options ??
+    {}) as ConnectNamespaceOptions;
+  finalOptions.storageOptions = cleanseStorageOptions(
+    finalOptions.storageOptions,
+  );
+
+  const nativeConn = await LanceDbConnection.newWithNamespace(
+    implName,
+    properties,
+    finalOptions,
   );
   return new LocalConnection(nativeConn);
 }

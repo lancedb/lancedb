@@ -4,7 +4,7 @@
 import { readdirSync } from "fs";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import { Connection, Table, connect } from "../lancedb";
+import { Connection, Table, connect, connectNamespace } from "../lancedb";
 import { LocalTable } from "../lancedb/table";
 
 describe("when connecting", () => {
@@ -395,5 +395,39 @@ describe("namespaces", () => {
       // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
       db.dropNamespace(["x"], { behavior: "frobnicate" as any }),
     ).rejects.toThrow(/Invalid behavior 'frobnicate'/);
+  });
+});
+
+describe("connectNamespace", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("connects via the dir implementation and supports table ops", async () => {
+    const db = await connectNamespace("dir", { root: tmpDir.name });
+    await db.createTable("users", [{ id: 1 }, { id: 2 }]);
+    await expect(db.tableNames()).resolves.toContain("users");
+  });
+
+  it("throws a clear error when implName is empty", async () => {
+    await expect(connectNamespace("", {})).rejects.toThrow(
+      "implName must be a non-empty string",
+    );
+  });
+
+  it("throws when the namespace implementation is unknown", async () => {
+    await expect(connectNamespace("not-a-real-impl", {})).rejects.toThrow();
+  });
+
+  it("passes storage options through to the namespace", async () => {
+    const db = await connectNamespace(
+      "dir",
+      { root: tmpDir.name },
+      { storageOptions: { newTableDataStorageVersion: "stable" } },
+    );
+    await db.createTable("plumbing", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("plumbing");
   });
 });

@@ -67,6 +67,26 @@ pub struct OpenTableOptions {
     pub storage_options: Option<HashMap<String, String>>,
 }
 
+#[napi(object)]
+#[derive(Debug)]
+pub struct ConnectNamespaceOptions {
+    /// The interval, in seconds, at which to check for updates to the table
+    /// from other processes. If None, then consistency is not checked. For
+    /// performance reasons, this is the default. For strong consistency, set
+    /// this to zero seconds. Then every read will check for updates from other
+    /// processes. As a compromise, you can set this to a non-zero value for
+    /// eventual consistency.
+    pub read_consistency_interval: Option<f64>,
+    /// Configuration for object storage. The available options are described
+    /// at https://docs.lancedb.com/storage/
+    pub storage_options: Option<HashMap<String, String>>,
+    /// Extra properties for the backing namespace client.
+    pub namespace_client_properties: Option<HashMap<String, String>>,
+    /// The session to use for this connection. Holds shared caches and other
+    /// session-specific state.
+    pub session: Option<session::Session>,
+}
+
 #[napi_derive::module_init]
 fn init() {
     let env = Env::new()

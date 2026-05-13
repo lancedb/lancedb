@@ -51,6 +51,7 @@
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [CompactionStats](interfaces/CompactionStats.md)
+- [ConnectNamespaceOptions](interfaces/ConnectNamespaceOptions.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [CreateNamespaceOptions](interfaces/CreateNamespaceOptions.md)
 - [CreateNamespaceResponse](interfaces/CreateNamespaceResponse.md)
@@ -114,6 +115,7 @@
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [connect](functions/connect.md)
+- [connectNamespace](functions/connectNamespace.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
