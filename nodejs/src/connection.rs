@@ -14,11 +14,37 @@ use crate::header::JsHeaderProvider;
 use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
 
+use lance_namespace::models::{
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
+};
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
 #[napi]
 pub struct Connection {
     inner: Option<LanceDBConnection>,
+}
+
+#[napi(object)]
+pub struct DescribeNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+}
+
+#[napi(object)]
+pub struct ListNamespacesResponse {
+    pub namespaces: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
+pub struct CreateNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+    pub transaction_id: Option<String>,
+}
+
+#[napi(object)]
+pub struct DropNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+    pub transaction_id: Option<Vec<String>>,
 }
 
 impl Connection {
@@ -272,5 +298,131 @@ impl Connection {
     pub async fn drop_all_tables(&self, namespace_path: Option<Vec<String>>) -> napi::Result<()> {
         let ns = namespace_path.unwrap_or_default();
         self.get_inner()?.drop_all_tables(&ns).await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    /// Describe a namespace and return its properties.
+    pub async fn describe_namespace(
+        &self,
+        namespace_path: Vec<String>,
+    ) -> napi::Result<DescribeNamespaceResponse> {
+        let req = DescribeNamespaceRequest {
+            id: Some(namespace_path),
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .describe_namespace(req)
+            .await
+            .default_error()?;
+        Ok(DescribeNamespaceResponse {
+            properties: resp.properties,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// List child namespaces under the given namespace path
+    pub async fn list_namespaces(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListNamespacesResponse> {
+        let req = ListNamespacesRequest {
+            id: namespace_path,
+            page_token,
+            limit: limit.map(|l| l as i32),
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .list_namespaces(req)
+            .await
+            .default_error()?;
+        Ok(ListNamespacesResponse {
+            namespaces: resp.namespaces,
+            page_token: resp.page_token,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// Create a new namespace with optional properties.
+    pub async fn create_namespace(
+        &self,
+        namespace_path: Vec<String>,
+        mode: Option<String>,
+        properties: Option<HashMap<String, String>>,
+    ) -> napi::Result<CreateNamespaceResponse> {
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "create" => Ok("Create".to_string()),
+                "exist_ok" => Ok("ExistOk".to_string()),
+                "overwrite" => Ok("Overwrite".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'create', 'exist_ok', 'overwrite'",
+                    m
+                ))),
+            })
+            .transpose()?;
+        let req = CreateNamespaceRequest {
+            id: Some(namespace_path),
+            mode: mode_str,
+            properties,
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .create_namespace(req)
+            .await
+            .default_error()?;
+        Ok(CreateNamespaceResponse {
+            properties: resp.properties,
+            transaction_id: resp.transaction_id,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// Drop a namespace.
+    pub async fn drop_namespace(
+        &self,
+        namespace_path: Vec<String>,
+        mode: Option<String>,
+        behavior: Option<String>,
+    ) -> napi::Result<DropNamespaceResponse> {
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "skip" => Ok("Skip".to_string()),
+                "fail" => Ok("Fail".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'skip', 'fail'",
+                    m
+                ))),
+            })
+            .transpose()?;
+        let behavior_str = behavior
+            .map(|b| match b.to_lowercase().as_str() {
+                "restrict" => Ok("Restrict".to_string()),
+                "cascade" => Ok("Cascade".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid behavior '{}': expected one of 'restrict', 'cascade'",
+                    b
+                ))),
+            })
+            .transpose()?;
+        let req = DropNamespaceRequest {
+            id: Some(namespace_path),
+            mode: mode_str,
+            behavior: behavior_str,
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .drop_namespace(req)
+            .await
+            .default_error()?;
+        Ok(DropNamespaceResponse {
+            properties: resp.properties,
+            transaction_id: resp.transaction_id,
+        })
     }
 }

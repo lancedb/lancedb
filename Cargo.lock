@@ -5099,6 +5099,7 @@ dependencies = [
  "env_logger",
  "futures",
  "half",
+ "lance-namespace",
  "lancedb",
  "log",
  "lzma-sys",

@@ -62,6 +62,13 @@ export {
   CreateTableOptions,
   TableNamesOptions,
   OpenTableOptions,
+  ListNamespacesOptions,
+  CreateNamespaceOptions,
+  DropNamespaceOptions,
+  ListNamespacesResponse,
+  CreateNamespaceResponse,
+  DropNamespaceResponse,
+  DescribeNamespaceResponse,
 } from "./connection";
 
 export { Session } from "./native.js";
