@@ -1,3 +1,11 @@
+# Block resolution of versions less than 24h old (Shai-Hulud window).
+# This is the pnpm 11 default but pinned here so it's visible to
+# reviewers and survives a future pnpm major flipping the default.
+minimumReleaseAge: 1440
+
+# Fail install if a transitive dep tries to run an unapproved script.
+strictDepBuilds: true
+
 allowBuilds:
   '@biomejs/biome': true
   onnxruntime-node: true
