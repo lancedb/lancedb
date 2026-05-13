@@ -47,6 +47,14 @@ describe("given a connection", () => {
     await db.close();
     expect(db.isOpen()).toBe(false);
     await expect(db.tableNames()).rejects.toThrow("Connection is closed");
+    await expect(db.renameTable("a", "b")).rejects.toThrow(
+      "Connection is closed",
+    );
+  });
+
+  it("should report renameTable as unsupported on an OSS connection", async () => {
+    await db.createTable("a", [{ id: 1 }]);
+    await expect(db.renameTable("a", "b")).rejects.toThrow(/not supported/);
   });
   it("should be able to create a table from an object arg `createTable(options)`, or args `createTable(name, data, options)`", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);

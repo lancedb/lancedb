@@ -437,6 +437,39 @@ Open a table in the database.
 
 ***
 
+### renameTable()
+
+```ts
+abstract renameTable(
+   currentName,
+   newName,
+   options?): Promise<void>
+```
+
+Rename a table.
+
+Currently only supported by LanceDB Cloud. Local OSS connections and
+namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
+a "not supported" error.
+
+#### Parameters
+
+* **currentName**: `string`
+    The current name of the table.
+
+* **newName**: `string`
+    The new name for the table.
+
+* **options?**: [`RenameTableOptions`](../interfaces/RenameTableOptions.md)
+    Optional namespace paths. When
+    `newNamespacePath` is omitted the table stays in `namespacePath`.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### tableNames()
 
 #### tableNames(options)

@@ -84,6 +84,7 @@
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
 - [RemovalStats](interfaces/RemovalStats.md)
+- [RenameTableOptions](interfaces/RenameTableOptions.md)
 - [RestNamespaceConfig](interfaces/RestNamespaceConfig.md)
 - [RetryConfig](interfaces/RetryConfig.md)
 - [ShuffleOptions](interfaces/ShuffleOptions.md)
