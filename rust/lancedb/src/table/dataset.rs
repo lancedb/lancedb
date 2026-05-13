@@ -132,11 +132,6 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    /// Checkout a branch and track its HEAD for new versions.
-    pub async fn as_branch(&self, _branch: impl Into<String>) -> Result<()> {
-        todo!("Branch support not yet implemented")
-    }
-
     /// Check that the dataset is in a mutable mode (Latest).
     pub fn ensure_mutable(&self) -> Result<()> {
         let state = self.state.lock()?;

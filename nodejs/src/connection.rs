@@ -11,6 +11,7 @@ use napi_derive::*;
 use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
+use crate::reference::JsOpenTableBranchReference;
 use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
 
@@ -233,6 +234,7 @@ impl Connection {
         namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
+        reference: Option<JsOpenTableBranchReference>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
@@ -245,6 +247,9 @@ impl Connection {
         }
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
+        }
+        if let Some(reference) = reference {
+            builder = builder.branch(reference.branch);
         }
         let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))

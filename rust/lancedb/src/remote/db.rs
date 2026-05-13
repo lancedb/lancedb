@@ -472,6 +472,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             location: None,
                             namespace_client: None,
                             managed_versioning: None,
+                            branch: None,
                         };
                         let req = (callback)(req);
                         self.open_table(req).await
@@ -562,6 +563,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if request.branch.is_some() {
+            return Err(Error::NotSupported {
+                message: "Opening a remote table on a branch is not supported".to_string(),
+            });
+        }
+
         let identifier = build_table_identifier(
             &request.name,
             &request.namespace_path,
@@ -979,6 +986,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_remote_rejects_branch_open() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("open_table with a branch should fail before issuing an HTTP request");
+        });
+
+        let branch_result = conn
+            .open_table("table1")
+            .branch("feature-a")
+            .execute()
+            .await;
+        assert!(matches!(branch_result, Err(Error::NotSupported { .. })));
     }
 
     #[tokio::test]

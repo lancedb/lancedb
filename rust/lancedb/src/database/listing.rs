@@ -875,6 +875,7 @@ impl ListingDatabase {
                     location: None,
                     namespace_client: None,
                     managed_versioning: None,
+                    branch: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -1130,8 +1131,9 @@ impl Database for ListingDatabase {
             None,
             self.read_consistency_interval,
             request.namespace_client,
-            HashSet::new(), // listing database doesn't support server-side queries
-            None,           // managed_versioning - will be queried if namespace_client is provided
+            HashSet::new(),
+            None, // managed_versioning - will be queried if namespace_client is provided
+            None,
         )
         .await?;
 
@@ -1206,6 +1208,7 @@ impl Database for ListingDatabase {
                 request.namespace_client,
                 HashSet::new(), // listing database doesn't support server-side queries
                 request.managed_versioning, // Pass through managed_versioning from request
+                request.branch,
             )
             .await?,
         );

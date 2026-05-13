@@ -37,7 +37,6 @@ pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
-
 mod create_table;
 
 fn merge_storage_options(
@@ -137,6 +136,7 @@ impl OpenTableBuilder {
                 location: None,
                 namespace_client: None,
                 managed_versioning: None,
+                branch: None,
             },
             embedding_registry,
         }
@@ -259,7 +259,10 @@ impl OpenTableBuilder {
         self
     }
 
-    /// Open the table
+    /// Open the table.
+    ///
+    /// Branch selection happens here. Once a table handle has been opened on a
+    /// branch, later checkout operations stay on that branch timeline.
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
         Ok(Table::new_with_embedding_registry(
@@ -267,6 +270,15 @@ impl OpenTableBuilder {
             self.parent,
             self.embedding_registry,
         ))
+    }
+
+    /// Open the table at the latest version of a specific branch.
+    ///
+    /// To read a different branch later, open a new table handle with this
+    /// selector again. Existing table handles do not support branch checkout.
+    pub fn branch(mut self, branch: impl Into<String>) -> Self {
+        self.request.branch = Some(branch.into());
+        self
     }
 }
 

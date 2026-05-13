@@ -19,6 +19,7 @@ use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
+use crate::table::Branches;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
@@ -1655,6 +1656,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(RemoteTags { inner: self }))
     }
+
+    async fn branches(&self) -> Result<Box<dyn Branches + '_>> {
+        Err(Error::NotSupported {
+            message: "Branch management is not supported for remote tables".to_string(),
+        })
+    }
+
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
         let tags = self.tags().await?;
         let version = tags.get_version(tag).await?;

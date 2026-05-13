@@ -29,7 +29,8 @@ export type {
   ListNamespacesResponse,
 };
 import { sanitizeTable } from "./sanitize";
-import { LocalTable, Table } from "./table";
+import { LocalTable, Table, type BranchReference } from "./table";
+import { assertValidSelectorName } from "./util";
 
 export interface CreateTableOptions {
   /**
@@ -83,6 +84,15 @@ export interface CreateTableOptions {
   embeddingFunction?: EmbeddingFunctionConfig;
 }
 
+export interface OpenTableBranchRefOptions {
+  /**
+   * Open a specific branch when the table handle is created.
+   */
+  branchName: string;
+}
+
+export type OpenTableRefOptions = OpenTableBranchRefOptions;
+
 export interface OpenTableOptions {
   /**
    * Configuration for object storage.
@@ -108,6 +118,14 @@ export interface OpenTableOptions {
    * at the expense of more RAM
    */
   indexCacheSize?: number;
+  /**
+   * Optional branch selector used to choose the initial table timeline when
+   * opening a table.
+   *
+   * Branches are selected here. After the table is opened, {@link Table.checkout}
+   * only supports version numbers and tags on the current branch timeline.
+   */
+  ref?: OpenTableRefOptions;
 }
 
 export interface TableNamesOptions {
@@ -213,8 +231,20 @@ export abstract class Connection {
   /**
    * Open a table in the database.
    * @param {string} name - The name of the table
+   * @param {Partial<OpenTableOptions>} options - Additional options. Use
+   * `options.ref.branchName` to open a non-main branch.
+   */
+  abstract openTable(
+    name: string,
+    options?: Partial<OpenTableOptions>,
+  ): Promise<Table>;
+
+  /**
+   * Open a table in the database.
+   * @param {string} name - The name of the table
    * @param {string[]} namespacePath - The namespace path of the table (defaults to root namespace)
-   * @param {Partial<OpenTableOptions>} options - Additional options
+   * @param {Partial<OpenTableOptions>} options - Additional options. Use
+   * `options.ref.branchName` to open a non-main branch.
    */
   abstract openTable(
     name: string,
@@ -393,6 +423,30 @@ export abstract class Connection {
   ): Promise<Table>;
 }
 
+function normalizeOpenTableSelector(
+  options?: Partial<OpenTableOptions>,
+): BranchReference | null {
+  const ref = options?.ref;
+  if (ref == null) {
+    return null;
+  }
+
+  const branchName = (ref as { branchName?: unknown }).branchName;
+  const refRecord = ref as unknown as Record<string, unknown>;
+  const unsupportedKeys = Object.keys(ref).filter(
+    (key) => key !== "branchName" && refRecord[key] !== undefined,
+  );
+  if (unsupportedKeys.length > 0) {
+    throw new Error("openTable ref contains unsupported fields");
+  }
+  if (branchName === undefined) {
+    throw new Error("ref must include a defined branchName");
+  }
+
+  assertValidSelectorName(branchName, "branchName");
+  return { branch: branchName };
+}
+
 /** @hideconstructor */
 export class LocalConnection extends Connection {
   readonly inner: LanceDbConnection;
@@ -442,14 +496,27 @@ export class LocalConnection extends Connection {
 
   async openTable(
     name: string,
-    namespacePath?: string[],
+    namespaceOrOptions?: string[] | Partial<OpenTableOptions>,
     options?: Partial<OpenTableOptions>,
   ): Promise<Table> {
+    let namespace: string[] | undefined;
+    let openTableOptions: Partial<OpenTableOptions> | undefined;
+
+    if (Array.isArray(namespaceOrOptions)) {
+      namespace = namespaceOrOptions;
+      openTableOptions = options;
+    } else {
+      namespace = undefined;
+      openTableOptions = namespaceOrOptions ?? options;
+    }
+
+    const selector = normalizeOpenTableSelector(openTableOptions);
     const innerTable = await this.inner.openTable(
       name,
-      namespacePath ?? [],
-      cleanseStorageOptions(options?.storageOptions),
-      options?.indexCacheSize,
+      namespace ?? [],
+      cleanseStorageOptions(openTableOptions?.storageOptions),
+      openTableOptions?.indexCacheSize,
+      selector,
     );
 
     return new LocalTable(innerTable);

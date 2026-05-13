@@ -60,7 +60,9 @@ export {
 export {
   Connection,
   CreateTableOptions,
+  OpenTableBranchRefOptions,
   TableNamesOptions,
+  OpenTableRefOptions,
   OpenTableOptions,
   ListNamespacesOptions,
   CreateNamespaceOptions,
@@ -110,6 +112,12 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  BranchReference,
+  CheckoutReference,
+  Reference,
+  BranchIdentifier,
+  BranchContents,
+  CurrentRef,
   ColumnAlteration,
 } from "./table";
 

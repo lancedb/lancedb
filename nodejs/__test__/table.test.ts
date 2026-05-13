@@ -1643,6 +1643,150 @@ describe("when dealing with tags", () => {
   });
 });
 
+async function withBranchTable<T>(
+  callback: (context: { conn: Connection; table: Table }) => Promise<T>,
+): Promise<T> {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    await table.add([{ id: 2n, vector: [0.3, 0.4] }]);
+    expect(await table.version()).toBe(2);
+
+    const tagsManager = await table.tags();
+    await tagsManager.create("main-v2", 2);
+
+    await table.createBranch("feature-a");
+    await table.createBranch("recovery", { from: "main-v2" });
+
+    return await callback({ conn, table });
+  } finally {
+    tmpDir.removeCallback();
+  }
+}
+
+it("handles branch operations", async () => {
+  await withBranchTable(async ({ conn, table }) => {
+    const mainRef = {
+      version: 2,
+      branch: "main",
+      tags: ["main-v2"],
+    };
+    const featureRef = {
+      version: 2,
+      branch: "feature-a",
+      tags: [],
+    };
+
+    const branches = await table.listBranches();
+    expect(branches).toHaveProperty("feature-a");
+    expect(branches["feature-a"].parentBranch).toBeNull();
+    expect(branches["feature-a"].parentVersion).toBe(2);
+    expect(branches).toHaveProperty("recovery");
+
+    expect(await table.currentRef()).toEqual(mainRef);
+
+    const featureTableFromThirdArg = await conn.openTable(
+      "my_table",
+      undefined,
+      {
+        ref: { branchName: "feature-a" },
+      },
+    );
+    expect(await featureTableFromThirdArg.currentRef()).toEqual(featureRef);
+
+    const featureTable = await conn.openTable("my_table", {
+      ref: { branchName: "feature-a" },
+    });
+    expect(await featureTable.currentRef()).toEqual(featureRef);
+
+    await featureTable.add([{ id: 3n, vector: [0.5, 0.6] }]);
+    expect(await featureTable.version()).toBe(3);
+
+    const featureTags = await featureTable.tags();
+    await featureTags.create("feature-v3", 3);
+    await featureTable.createBranch("feature-a/deeper");
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+
+    const nestedBranches = await featureTable.listBranches();
+    expect(nestedBranches["feature-a/deeper"].parentBranch).toBe("feature-a");
+    expect(nestedBranches["feature-a/deeper"].parentVersion).toBe(3);
+
+    expect(await table.currentRef()).toEqual(mainRef);
+
+    await featureTable.checkout(2);
+    expect(await featureTable.currentRef()).toEqual({
+      version: 2,
+      branch: "feature-a",
+      tags: [],
+    });
+    expect(await featureTable.countRows()).toBe(2);
+
+    await featureTable.checkout("feature-v3");
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+    await expect(featureTable.checkout("main-v2")).rejects.toThrow(
+      "cannot checkout a tag from a different branch on this table handle",
+    );
+    await featureTable.checkoutLatest();
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+
+    await expect(featureTable.deleteBranch("feature-a")).rejects.toThrow(
+      "cannot delete the currently checked out branch",
+    );
+    await table.deleteBranch("recovery");
+    const branchesAfterDelete = await table.listBranches();
+    expect(branchesAfterDelete).not.toHaveProperty("recovery");
+  });
+});
+
+it("validates branch inputs", async () => {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    await expect(
+      conn.openTable("my_table", {
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
+        ref: { branchName: "" } as any,
+      }),
+    ).rejects.toThrow("branchName must be a non-empty string");
+    await expect(table.createBranch("")).rejects.toThrow(
+      "branch must be a non-empty string",
+    );
+    await expect(table.deleteBranch("")).rejects.toThrow(
+      "branch must be a non-empty string",
+    );
+    await expect(
+      table.createBranch("bad-ref", { from: { branch: "main", version: -1 } }),
+    ).rejects.toThrow("branch version must be a non-negative integer");
+    await expect(
+      table.createBranch("bad-ref", { from: { branch: "" } }),
+    ).rejects.toThrow("from.branch must be a non-empty string");
+  } finally {
+    tmpDir.removeCallback();
+  }
+});
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
