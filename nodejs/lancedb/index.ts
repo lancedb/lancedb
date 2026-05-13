@@ -304,33 +304,150 @@ export async function connect(
 }
 
 /**
+ * Configuration for the built-in directory namespace (`"dir"`).
+ *
+ * The directory namespace stores tables under a single root path (local
+ * filesystem or object storage URI). See
+ * {@link https://docs.lancedb.com/namespaces} for the documented surface;
+ * less-common knobs live under {@link DirNamespaceConfig.extraProperties}.
+ */
+export interface DirNamespaceConfig {
+  /** Root path or URI containing the LanceDB tables. */
+  root: string;
+  /**
+   * Whether to maintain a namespace manifest at the root. Required for
+   * child namespaces. Defaults to true on the impl side.
+   */
+  manifestEnabled?: boolean;
+  /**
+   * Additional raw properties passed verbatim to the namespace
+   * implementation (e.g. `storage.*`, `credential_vendor.*`). Typed
+   * fields above take precedence on key collision.
+   */
+  extraProperties?: Record<string, string>;
+}
+
+/**
+ * Configuration for the built-in REST namespace (`"rest"`).
+ *
+ * The REST namespace talks to a remote catalog server over HTTP. See
+ * {@link https://docs.lancedb.com/namespaces} for the documented surface;
+ * less-common knobs (TLS, metrics) live under
+ * {@link RestNamespaceConfig.extraProperties}.
+ */
+export interface RestNamespaceConfig {
+  /** Catalog endpoint URL. */
+  uri: string;
+  /**
+   * HTTP headers forwarded with each request. Keys are passed through
+   * as-is (e.g. `"x-api-key"`, `"Authorization"`).
+   */
+  headers?: Record<string, string>;
+  /**
+   * Additional raw properties passed verbatim to the namespace
+   * implementation (e.g. `tls.*`, `ops_metrics_enabled`, `delimiter`).
+   * Typed fields above take precedence on key collision.
+   */
+  extraProperties?: Record<string, string>;
+}
+
+function dirConfigToProperties(
+  config: DirNamespaceConfig,
+): Record<string, string> {
+  const properties: Record<string, string> = {
+    ...(config.extraProperties ?? {}),
+  };
+  properties.root = config.root;
+  if (config.manifestEnabled !== undefined) {
+    properties.manifest_enabled = String(config.manifestEnabled);
+  }
+  return properties;
+}
+
+function restConfigToProperties(
+  config: RestNamespaceConfig,
+): Record<string, string> {
+  const properties: Record<string, string> = {
+    ...(config.extraProperties ?? {}),
+  };
+  properties.uri = config.uri;
+  if (config.headers) {
+    for (const [name, value] of Object.entries(config.headers)) {
+      properties[`headers.${name}`] = value;
+    }
+  }
+  return properties;
+}
+
+/**
  * Connect to a LanceDB database through a namespace.
  *
  * Unlike {@link connect}, which routes by URI scheme (local path vs.
  * `db://` cloud), `connectNamespace` always returns a namespace-backed
  * connection. The `implName` selects the namespace implementation:
  *
- * - `"dir"` — directory namespace (local or object storage; configured by
- *   `properties.root`).
- * - `"rest"` — remote namespace catalog reached over HTTP (Unity, Glue,
- *   REST, etc.; configured via `properties`).
- * - A full module path for a custom implementation.
+ * - `"dir"` — directory namespace, configured with {@link DirNamespaceConfig}.
+ * - `"rest"` — remote REST catalog, configured with {@link RestNamespaceConfig}.
+ * - Any other string — full module path for a custom implementation,
+ *   configured with a free-form string-keyed `properties` map.
  *
- * @param implName    The namespace implementation name.
- * @param properties  Configuration for the namespace implementation.
- * @param options     Optional connection settings.
- *
- * @example
+ * @example Typed dir namespace
  * ```ts
  * const db = await connectNamespace("dir", { root: "/path/to/db" });
  * await db.createTable("users", [{ id: 1 }]);
  * ```
+ *
+ * @example Typed REST namespace with auth headers
+ * ```ts
+ * const db = await connectNamespace("rest", {
+ *   uri: "https://catalog.example.com",
+ *   headers: { "x-api-key": process.env.CATALOG_KEY ?? "" },
+ * });
+ * ```
+ *
+ * @example Custom implementation with raw properties
+ * ```ts
+ * const db = await connectNamespace("my.custom.Namespace", {
+ *   endpoint: "...",
+ * });
+ * ```
  */
-export async function connectNamespace(
+export function connectNamespace(
+  implName: "dir",
+  config: DirNamespaceConfig,
+  options?: Partial<ConnectNamespaceOptions>,
+): Promise<Connection>;
+export function connectNamespace(
+  implName: "rest",
+  config: RestNamespaceConfig,
+  options?: Partial<ConnectNamespaceOptions>,
+): Promise<Connection>;
+export function connectNamespace(
   implName: string,
   properties: Record<string, string>,
   options?: Partial<ConnectNamespaceOptions>,
+): Promise<Connection>;
+export async function connectNamespace(
+  implName: string,
+  configOrProperties:
+    | DirNamespaceConfig
+    | RestNamespaceConfig
+    | Record<string, string>,
+  options?: Partial<ConnectNamespaceOptions>,
 ): Promise<Connection> {
+  let properties: Record<string, string>;
+  if (implName === "dir") {
+    properties = dirConfigToProperties(
+      configOrProperties as DirNamespaceConfig,
+    );
+  } else if (implName === "rest") {
+    properties = restConfigToProperties(
+      configOrProperties as RestNamespaceConfig,
+    );
+  } else {
+    properties = configOrProperties as Record<string, string>;
+  }
+
   const finalOptions: ConnectNamespaceOptions = (options ??
     {}) as ConnectNamespaceOptions;
   finalOptions.storageOptions = cleanseStorageOptions(

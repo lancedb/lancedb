@@ -430,4 +430,36 @@ describe("connectNamespace", () => {
     await db.createTable("plumbing", [{ id: 1 }]);
     await expect(db.tableNames()).resolves.toContain("plumbing");
   });
+
+  it("supports child namespaces when manifestEnabled is true on the dir config", async () => {
+    const writer = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await writer.createNamespace(["analytics"]);
+    await writer.createTable("orders", [{ id: 1 }, { id: 2 }], ["analytics"]);
+    await writer.close();
+
+    const reader = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await expect(reader.tableNames(["analytics"])).resolves.toContain("orders");
+    const orders = await reader.openTable("orders", ["analytics"]);
+    await expect(orders.countRows()).resolves.toBe(2);
+  });
+
+  it("merges extraProperties into the dir config and is overridden by typed fields", async () => {
+    const db = await connectNamespace("dir", {
+      root: tmpDir.name,
+      // root in extraProperties is overridden by the typed `root` above.
+      extraProperties: {
+        root: "/should/be/overridden",
+        // biome-ignore lint/style/useNamingConvention: backend property key
+        dir_listing_enabled: "true",
+      },
+    });
+    await db.createTable("escape_hatch", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("escape_hatch");
+  });
 });
