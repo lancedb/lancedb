@@ -3,11 +3,11 @@ The core Rust library is in the `../rust/lancedb` directory, the rust binding
 code is in the `src/` directory and the typescript bindings are in
 the `lancedb/` directory.
 
-Whenever you change the Rust code, you will need to recompile: `npm run build`.
+Whenever you change the Rust code, you will need to recompile: `pnpm build`.
 
 Common commands:
-* Build: `npm run build`
-* Lint: `npm run lint`
-* Fix lints: `npm run lint-fix`
-* Test: `npm test`
-* Run single test file: `npm test __test__/arrow.test.ts`
+* Build: `pnpm build`
+* Lint: `pnpm lint`
+* Fix lints: `pnpm lint-fix`
+* Test: `pnpm test`
+* Run single test file: `pnpm test __test__/arrow.test.ts`

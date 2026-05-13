@@ -42,11 +42,17 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October. The library itself still supports Node >= 18
+        # (see test matrix below).
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         components: rustfmt, clippy
@@ -61,11 +67,13 @@ jobs:
       run: cargo clippy --profile ci --all --all-features -- -D warnings
     - name: Lint Typescript
       run: |
-        npm ci
-        npm run lint-ci
+        pnpm install --frozen-lockfile
+        pnpm lint-ci
     - name: Lint examples
       working-directory: nodejs/examples
-      run: npm ci && npm run lint-ci
+      # The `@lancedb/lancedb` dep points at file:../dist; pnpm errors if
+      # that dir is missing, so create an empty one for lint-only runs.
+      run: mkdir -p ../dist && pnpm install --frozen-lockfile && pnpm lint-ci
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30
@@ -82,14 +90,18 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
-    - uses: actions/setup-node@v4
-      name: Setup Node.js 20 for build
+    - uses: pnpm/action-setup@v4
       with:
-        # @napi-rs/cli v3 requires Node >= 20.12 (via @inquirer/prompts@8).
-        # Build always on Node 20; tests run on the matrix version below.
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
+        version: 11.1.1
+    - uses: actions/setup-node@v4
+      name: Setup Node.js 24 for build
+      with:
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October. Build/install runs on Node 24; tests run on the
+        # matrix version below using direct jest invocation.
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
@@ -97,45 +109,52 @@ jobs:
         sudo apt install -y protobuf-compiler libssl-dev
     - name: Build
       run: |
-        npm ci --include=optional
-        npm run build:debug -- --profile ci
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+        pnpm tsc
+    - name: Setup examples
+      working-directory: nodejs/examples
+      run: pnpm install --frozen-lockfile
+    - name: Check docs
+      run: |
+        # We run this as part of the job because the binary needs to be built
+        # first to export the types of the native code.
+        set -e
+        # `pnpm docs` would invoke pnpm's built-in `docs` command, not
+        # the script — use `pnpm run docs`.
+        pnpm run docs
+        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
+          echo "Docs need to be updated"
+          echo "Run 'pnpm run docs', fix any warnings, and commit the changes."
+          exit 1
+        fi
     - uses: actions/setup-node@v4
       name: Setup Node.js ${{ matrix.node-version }} for test
       with:
         node-version: ${{ matrix.node-version }}
-    - name: Compile TypeScript
-      run: npm run tsc
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
     - name: Test
       env:
         S3_TEST: "1"
-      run: npm run test
-    - name: Setup examples
-      working-directory: nodejs/examples
-      run: npm ci
+        # Newer @smithy/core uses dynamic ESM imports.
+        NODE_OPTIONS: "--experimental-vm-modules"
+      # Invoke jest directly because pnpm 11 itself requires Node 22+
+      # while the matrix tests on older Node versions.
+      run: npx jest --verbose
     - name: Test examples
       working-directory: ./
       env:
         OPENAI_API_KEY: test
         OPENAI_BASE_URL: http://0.0.0.0:8000
+        NODE_OPTIONS: "--experimental-vm-modules"
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        npm test
-    - name: Check docs
-      run: |
-        # We run this as part of the job because the binary needs to be built
-        # first to export the types of the native code.
-        set -e
-        npm ci
-        npm run docs
-        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
-          echo "Docs need to be updated"
-          echo "Run 'npm run docs', fix any warnings, and commit the changes."
-          exit 1
-        fi
+        npx jest --testEnvironment jest-environment-node-single-context --verbose
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
@@ -148,20 +167,28 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 11.1.1
     - uses: actions/setup-node@v4
       with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
+        # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
+        # in October.
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
+    - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
         brew install protobuf
     - name: Build
       run: |
-        npm ci --include=optional
-        npm run build:debug -- --profile ci
-        npm run tsc
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+        pnpm tsc
     - name: Test
       run: |
-        npm run test
+        pnpm test
