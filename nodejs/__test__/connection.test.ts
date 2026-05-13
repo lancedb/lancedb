@@ -4,7 +4,7 @@
 import { readdirSync } from "fs";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import { Connection, Table, connect } from "../lancedb";
+import { Connection, Table, connect, connectNamespace } from "../lancedb";
 import { LocalTable } from "../lancedb/table";
 
 describe("when connecting", () => {
@@ -395,5 +395,97 @@ describe("namespaces", () => {
       // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
       db.dropNamespace(["x"], { behavior: "frobnicate" as any }),
     ).rejects.toThrow(/Invalid behavior 'frobnicate'/);
+  });
+});
+
+describe("connectNamespace", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("connects via the dir implementation and supports table ops", async () => {
+    const db = await connectNamespace("dir", { root: tmpDir.name });
+    await db.createTable("users", [{ id: 1 }, { id: 2 }]);
+    await expect(db.tableNames()).resolves.toContain("users");
+  });
+
+  it("throws a clear error when implName is empty", async () => {
+    await expect(connectNamespace("", {})).rejects.toThrow(
+      "implName must be a non-empty string",
+    );
+  });
+
+  it("throws when the namespace implementation is unknown", async () => {
+    await expect(connectNamespace("not-a-real-impl", {})).rejects.toThrow();
+  });
+
+  it("passes storage options through to the namespace", async () => {
+    const db = await connectNamespace(
+      "dir",
+      { root: tmpDir.name },
+      { storageOptions: { newTableDataStorageVersion: "stable" } },
+    );
+    await db.createTable("plumbing", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("plumbing");
+  });
+
+  it("supports child namespaces when manifestEnabled is true on the dir config", async () => {
+    const writer = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await writer.createNamespace(["analytics"]);
+    await writer.createTable("orders", [{ id: 1 }, { id: 2 }], ["analytics"]);
+    await writer.close();
+
+    const reader = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await expect(reader.tableNames(["analytics"])).resolves.toContain("orders");
+    const orders = await reader.openTable("orders", ["analytics"]);
+    await expect(orders.countRows()).resolves.toBe(2);
+  });
+
+  it("merges extraProperties into the dir config and is overridden by typed fields", async () => {
+    // Two observable assertions:
+    // - Typed `root` overrides extraProperties.root: createTable would fail
+    //   under the bogus path if the override didn't happen.
+    // - extraProperties.manifest_enabled="false" is honored end-to-end. Child
+    //   namespaces require manifest mode (default true), so explicitly
+    //   disabling it via extraProperties must make createNamespace reject. If
+    //   extraProperties pass-through were silently broken, the default would
+    //   let createNamespace succeed.
+    const db = await connectNamespace("dir", {
+      root: tmpDir.name,
+      extraProperties: {
+        root: "/should/be/overridden",
+        // biome-ignore lint/style/useNamingConvention: backend property key
+        manifest_enabled: "false",
+      },
+    });
+    await db.createTable("base", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("base");
+    await expect(db.createNamespace(["analytics"])).rejects.toThrow();
+  });
+
+  it("flows unknown top-level keys through when implName is dynamic (no silent drop)", async () => {
+    // Routes via the third overload because `impl` is `string`, not the
+    // literal `"dir"`. The dispatcher still notices the runtime value is
+    // "dir", but unknown keys like `manifest_enabled` must not be silently
+    // dropped during the conversion.
+    //
+    // Asserting a *negative* outcome (manifest disabled -> createNamespace
+    // rejects) is required for observability, since the backend default for
+    // `manifest_enabled` is true.
+    const impl: string = "dir";
+    const db = await connectNamespace(impl, {
+      root: tmpDir.name,
+      // biome-ignore lint/style/useNamingConvention: backend property key
+      manifest_enabled: "false",
+    });
+    await expect(db.createNamespace(["mixed"])).rejects.toThrow();
   });
 });
