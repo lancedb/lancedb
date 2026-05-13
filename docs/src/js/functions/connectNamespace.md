@@ -67,6 +67,12 @@ function connectNamespace(
    options?): Promise<Connection>
 ```
 
+Connect through the built-in REST namespace.
+
+Configured with [RestNamespaceConfig](../interfaces/RestNamespaceConfig.md). See the function-level
+documentation above for the full surface, examples, and how this
+relates to [connect](connect.md).
+
 ### Parameters
 
 * **implName**: `"rest"`
@@ -79,6 +85,15 @@ function connectNamespace(
 
 `Promise`&lt;[`Connection`](../classes/Connection.md)&gt;
 
+### Example
+
+```ts
+const db = await connectNamespace("rest", {
+  uri: "https://catalog.example.com",
+  headers: { "x-api-key": process.env.CATALOG_KEY ?? "" },
+});
+```
+
 ## connectNamespace(implName, properties, options)
 
 ```ts
@@ -87,6 +102,13 @@ function connectNamespace(
    properties,
    options?): Promise<Connection>
 ```
+
+Connect through a custom namespace implementation by full module path,
+configured with a free-form string-keyed `properties` map. Use the
+typed overloads above for the built-in `"dir"` and `"rest"` impls.
+
+See the function-level documentation above for examples and how this
+relates to [connect](connect.md).
 
 ### Parameters
 
@@ -99,3 +121,11 @@ function connectNamespace(
 ### Returns
 
 `Promise`&lt;[`Connection`](../classes/Connection.md)&gt;
+
+### Example
+
+```ts
+const db = await connectNamespace("my.custom.Namespace", {
+  endpoint: "...",
+});
+```

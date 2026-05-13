@@ -450,16 +450,42 @@ describe("connectNamespace", () => {
   });
 
   it("merges extraProperties into the dir config and is overridden by typed fields", async () => {
+    // Two observable assertions:
+    // - Typed `root` overrides extraProperties.root: createTable would fail
+    //   under the bogus path if the override didn't happen.
+    // - extraProperties.manifest_enabled="false" is honored end-to-end. Child
+    //   namespaces require manifest mode (default true), so explicitly
+    //   disabling it via extraProperties must make createNamespace reject. If
+    //   extraProperties pass-through were silently broken, the default would
+    //   let createNamespace succeed.
     const db = await connectNamespace("dir", {
       root: tmpDir.name,
-      // root in extraProperties is overridden by the typed `root` above.
       extraProperties: {
         root: "/should/be/overridden",
         // biome-ignore lint/style/useNamingConvention: backend property key
-        dir_listing_enabled: "true",
+        manifest_enabled: "false",
       },
     });
-    await db.createTable("escape_hatch", [{ id: 1 }]);
-    await expect(db.tableNames()).resolves.toContain("escape_hatch");
+    await db.createTable("base", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("base");
+    await expect(db.createNamespace(["analytics"])).rejects.toThrow();
+  });
+
+  it("flows unknown top-level keys through when implName is dynamic (no silent drop)", async () => {
+    // Routes via the third overload because `impl` is `string`, not the
+    // literal `"dir"`. The dispatcher still notices the runtime value is
+    // "dir", but unknown keys like `manifest_enabled` must not be silently
+    // dropped during the conversion.
+    //
+    // Asserting a *negative* outcome (manifest disabled -> createNamespace
+    // rejects) is required for observability, since the backend default for
+    // `manifest_enabled` is true.
+    const impl: string = "dir";
+    const db = await connectNamespace(impl, {
+      root: tmpDir.name,
+      // biome-ignore lint/style/useNamingConvention: backend property key
+      manifest_enabled: "false",
+    });
+    await expect(db.createNamespace(["mixed"])).rejects.toThrow();
   });
 });
