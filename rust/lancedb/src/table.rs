@@ -48,7 +48,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::connection::NamespaceClientPushdownOperation;
-use crate::data::sanitize::maybe_infer_fsl_scannable;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
@@ -195,17 +194,24 @@ pub struct WriteOptions {
     /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
     /// precedence over their counterparts in `WriteOptions` (e.g. [WriteParams::mode]).
     pub lance_write_params: Option<WriteParams>,
-    /// If true (the default), variable-length list columns whose names contain "vector"
-    /// or "embedding" will be automatically converted to FixedSizeList when their
-    /// dimension can be inferred from the data. Set to false to disable this behavior.
-    pub infer_schema: bool,
+    /// If true (the default), variable-length list columns whose names contain
+    /// "vector" or "embedding" (case-insensitive substring) will be converted to
+    /// `FixedSizeList` when a uniform dimension can be inferred from the first
+    /// batch.
+    ///
+    /// This applies when writing a new table schema (`create_table` and
+    /// `Table::add` with [`AddDataMode::Overwrite`]). It does not run on
+    /// [`AddDataMode::Append`], where the existing schema is used instead.
+    ///
+    /// Set to `false` to disable.
+    pub infer_vector_columns: bool,
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             lance_write_params: None,
-            infer_schema: true,
+            infer_vector_columns: true,
         }
     }
 }
@@ -2268,12 +2274,7 @@ impl BaseTable for NativeTable {
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         let table_def = self.table_definition().await?;
 
-        // For overwrite, infer FSL schema from the incoming data. The table schema is
-        // not yet established, so we can't cast to it. For append, the table schema
-        // already exists and schema casting handles type alignment.
-        if matches!(add.mode, AddDataMode::Overwrite) && add.write_options.infer_schema {
-            add.data = maybe_infer_fsl_scannable(add.data).await?;
-        }
+        crate::data::sanitize::maybe_infer_for_overwrite(&mut add).await?;
 
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
@@ -2748,6 +2749,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance_arrow::FixedSizeListArrayExt;
     use tempfile::tempdir;
 
     use super::*;
@@ -4045,5 +4047,206 @@ mod tests {
             "expected FixedSizeList(_, 3), got {:?}",
             vector_field.data_type()
         );
+
+        // Row count and value readback.
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        use arrow_array::Array;
+        use arrow_array::cast::AsArray;
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2);
+        for b in &batches {
+            let fsl = b.column_by_name("vector").unwrap().as_fixed_size_list();
+            assert_eq!(fsl.value_length(), 3);
+            for row in 0..fsl.len() {
+                let values = fsl.value(row);
+                let floats = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap();
+                assert_eq!(floats.values().to_vec(), vec![0.1f32, 0.2, 0.3]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite_infers_fsl_disabled() {
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use arrow_schema::DataType;
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let init_schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]));
+        let init_batch = RecordBatch::try_new(
+            init_schema.clone(),
+            vec![Arc::new(arrow_array::Int32Array::from(vec![0]))],
+        )
+        .unwrap();
+        let db = crate::connect(uri).execute().await.unwrap();
+        db.create_table("test", init_batch).execute().await.unwrap();
+
+        let new_schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int32, false),
+            arrow_schema::Field::new(
+                "vector",
+                DataType::List(Arc::new(arrow_schema::Field::new(
+                    "item",
+                    DataType::Float32,
+                    true,
+                ))),
+                true,
+            ),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1, 2])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..2).map(|_| Some(vec![Some(0.1f32), Some(0.2), Some(0.3)])),
+                )),
+            ],
+        )
+        .unwrap();
+        let table = db.open_table("test").execute().await.unwrap();
+        table
+            .add(new_batch)
+            .mode(crate::table::AddDataMode::Overwrite)
+            .write_options(WriteOptions {
+                infer_vector_columns: false,
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let stored_schema = table.schema().await.unwrap();
+        let vector_field = stored_schema.field_with_name("vector").unwrap();
+        assert!(
+            matches!(vector_field.data_type(), DataType::List(_)),
+            "expected List (inference disabled), got {:?}",
+            vector_field.data_type()
+        );
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_append_does_not_infer_fsl() {
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use arrow_schema::DataType;
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // Create a table with an FSL-typed vector column upfront.
+        let init_schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int32, false),
+            arrow_schema::Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(arrow_schema::Field::new("item", DataType::Float32, true)),
+                    4,
+                ),
+                true,
+            ),
+        ]));
+        let init_batch = RecordBatch::try_new(
+            init_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![0])),
+                Arc::new(
+                    FixedSizeListArray::try_new_from_values(
+                        arrow_array::Float32Array::from(vec![0.0f32, 0.1, 0.2, 0.3]),
+                        4,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let db = crate::connect(uri).execute().await.unwrap();
+        let table = db.create_table("test", init_batch).execute().await.unwrap();
+
+        // Append data whose vector column is List<Float32> with uniform length 4.
+        // This should succeed via the existing schema-cast path, NOT by re-inferring.
+        let append_schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int32, false),
+            arrow_schema::Field::new(
+                "vector",
+                DataType::List(Arc::new(arrow_schema::Field::new(
+                    "item",
+                    DataType::Float32,
+                    true,
+                ))),
+                true,
+            ),
+        ]));
+        let append_batch = RecordBatch::try_new(
+            append_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1, 2])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..2).map(|_| Some(vec![Some(1.0f32), Some(2.0), Some(3.0), Some(4.0)])),
+                )),
+            ],
+        )
+        .unwrap();
+        table.add(append_batch).execute().await.unwrap();
+
+        // The schema must remain FixedSizeList — no re-inference happened.
+        let stored_schema = table.schema().await.unwrap();
+        let vector_field = stored_schema.field_with_name("vector").unwrap();
+        assert!(
+            matches!(vector_field.data_type(), DataType::FixedSizeList(_, 4)),
+            "expected FixedSizeList(_, 4), got {:?}",
+            vector_field.data_type()
+        );
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Now prove inference truly did not run on Append: send a uniform length-5
+        // batch. If inference were running, it would produce FSL(_, 5) and a new
+        // table would happily accept it. Because the existing table schema is
+        // FSL(_, 4), the coercion path must reject this with a dimension mismatch.
+        let mismatched = RecordBatch::try_new(
+            append_schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![3])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(vec![
+                    Some(vec![
+                        Some(9.0f32),
+                        Some(8.0),
+                        Some(7.0),
+                        Some(6.0),
+                        Some(5.0),
+                    ]),
+                ])),
+            ],
+        )
+        .unwrap();
+        let err = table
+            .add(mismatched)
+            .execute()
+            .await
+            .expect_err("appending length-5 lists into FSL(4) table must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("FixedSizeList(4)") && msg.contains("length 5"),
+            "error should report dimension mismatch, got: {msg}",
+        );
+        // Row count unchanged — the failed append did not commit any rows.
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 }

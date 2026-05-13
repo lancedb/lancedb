@@ -441,7 +441,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if request.write_options.infer_schema {
+        if request.write_options.infer_vector_columns {
             request.data = maybe_infer_fsl_scannable(request.data).await?;
         }
         let body = stream_as_body(request.data.scan_as_stream())?;
@@ -1020,6 +1020,136 @@ mod tests {
         .unwrap();
         let table = conn.create_table("table1", data).execute().await.unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    async fn collect_request_body(body: reqwest::Body) -> Vec<u8> {
+        use futures::StreamExt;
+        use http_body::Body as _;
+        use std::pin::Pin;
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        futures::stream::poll_fn(|cx| body_pin.as_mut().poll_frame(cx))
+            .for_each(|frame| {
+                let frame = frame.unwrap();
+                if let Some(d) = frame.data_ref() {
+                    data.extend_from_slice(d);
+                }
+                futures::future::ready(())
+            })
+            .await;
+        data
+    }
+
+    #[tokio::test]
+    async fn test_create_table_infers_fsl_from_list() {
+        // When create_table receives a List<Float32> column named "embedding"
+        // with uniform row lengths, the request body sent to the server must
+        // already carry the inferred FixedSizeList schema.
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use reqwest::Body;
+
+        let data_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                true,
+            ),
+        ]));
+        let data = RecordBatch::try_new(
+            data_schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..3).map(|_| Some(vec![Some(1.0f32), Some(2.0), Some(3.0), Some(4.0)])),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let conn = Connection::new_with_handler(move |mut request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/embedding_table/create/");
+            let mut body_out = Body::from(Vec::new());
+            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+            sender.send(body_out).unwrap();
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        conn.create_table("embedding_table", data)
+            .execute()
+            .await
+            .unwrap();
+
+        // Read the body sent to the server and inspect its IPC stream schema.
+        let body = receiver.recv().unwrap();
+        let bytes = collect_request_body(body).await;
+        let cursor = std::io::Cursor::new(bytes);
+        let reader = arrow_ipc::reader::StreamReader::try_new(cursor, None).unwrap();
+        let sent_schema = reader.schema();
+        let embedding_field = sent_schema.field_with_name("embedding").unwrap();
+        assert!(
+            matches!(embedding_field.data_type(), DataType::FixedSizeList(_, 4)),
+            "expected FixedSizeList(_, 4) in sent body, got {:?}",
+            embedding_field.data_type()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_table_infers_fsl_disabled() {
+        // When infer_vector_columns is disabled via WriteOptions, the body sent to the
+        // server should keep the List<Float32> schema as-is.
+        use crate::table::WriteOptions;
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use reqwest::Body;
+
+        let data_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+            true,
+        )]));
+        let data = RecordBatch::try_new(
+            data_schema.clone(),
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..2).map(|_| Some(vec![Some(1.0f32), Some(2.0)])),
+                ),
+            )],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let conn = Connection::new_with_handler(move |mut request| {
+            let mut body_out = Body::from(Vec::new());
+            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+            sender.send(body_out).unwrap();
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        conn.create_table("embedding_table", data)
+            .write_options(WriteOptions {
+                infer_vector_columns: false,
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let body = receiver.recv().unwrap();
+        let bytes = collect_request_body(body).await;
+        let cursor = std::io::Cursor::new(bytes);
+        let reader = arrow_ipc::reader::StreamReader::try_new(cursor, None).unwrap();
+        let sent_schema = reader.schema();
+        let embedding_field = sent_schema.field_with_name("embedding").unwrap();
+        assert!(
+            matches!(embedding_field.data_type(), DataType::List(_)),
+            "expected List in sent body, got {:?}",
+            embedding_field.data_type()
+        );
     }
 
     #[tokio::test]

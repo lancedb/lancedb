@@ -1042,7 +1042,7 @@ impl Database for ListingDatabase {
 
         let data_schema = request.data.schema();
         let mut data = request.data;
-        if request.write_options.infer_schema {
+        if request.write_options.infer_vector_columns {
             data = maybe_infer_fsl_scannable(data).await?;
         }
 
@@ -1282,7 +1282,7 @@ mod tests {
     use crate::data::scannable::Scannable;
     use crate::database::{CreateTableMode, CreateTableRequest};
     use crate::table::WriteOptions;
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{Array, Int32Array, RecordBatch, StringArray, cast::AsArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -2664,6 +2664,53 @@ mod tests {
             "expected FixedSizeList(_, 4), got {:?}",
             embedding_field.data_type()
         );
+
+        // Row count and value preservation.
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+        let db = Arc::new(db);
+        let table_obj = Table::new(table.clone(), db);
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+        let batches: Vec<RecordBatch> = table_obj
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        // Concatenate id column and check values.
+        let mut ids: Vec<i32> = Vec::new();
+        for b in &batches {
+            let col = b
+                .column_by_name("id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            ids.extend(col.values().iter().copied());
+        }
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 3]);
+        // Check embedding values: every row should be [1.0, 2.0, 3.0, 4.0].
+        for b in &batches {
+            let fsl = b.column_by_name("embedding").unwrap().as_fixed_size_list();
+            assert_eq!(fsl.value_length(), 4);
+            for row in 0..fsl.len() {
+                let values = fsl.value(row);
+                let floats = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap();
+                assert_eq!(
+                    floats.values().to_vec(),
+                    vec![1.0f32, 2.0, 3.0, 4.0],
+                    "embedding row {row}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -2698,7 +2745,7 @@ mod tests {
                 data: Box::new(vec![batch]),
                 mode: CreateTableMode::Create,
                 write_options: WriteOptions {
-                    infer_schema: false,
+                    infer_vector_columns: false,
                     ..Default::default()
                 },
                 location: None,
@@ -2714,5 +2761,33 @@ mod tests {
             "expected List (inference disabled), got {:?}",
             embedding_field.data_type()
         );
+
+        // Row count and value preservation: data should still be intact.
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        let db = Arc::new(db);
+        let table_obj = Table::new(table.clone(), db);
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+        let batches: Vec<RecordBatch> = table_obj
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2);
+        for b in &batches {
+            let list = b.column_by_name("embedding").unwrap().as_list::<i32>();
+            for row in 0..list.len() {
+                let values = list.value(row);
+                let floats = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap();
+                assert_eq!(floats.values().to_vec(), vec![1.0f32, 2.0]);
+            }
+        }
     }
 }

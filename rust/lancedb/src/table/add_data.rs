@@ -22,10 +22,19 @@ use super::{BaseTable, TableDefinition, WriteOptions};
 
 #[derive(Debug, Clone, Default)]
 pub enum AddDataMode {
-    /// Rows will be appended to the table (the default)
+    /// Rows will be appended to the table (the default).
+    ///
+    /// The incoming data is cast to the existing table schema. Vector-column
+    /// schema inference (see [`WriteOptions::infer_vector_columns`]) does **not**
+    /// run in this mode — the table schema is already established.
     #[default]
     Append,
-    /// The existing table will be overwritten with the new data
+    /// The existing table will be overwritten with the new data.
+    ///
+    /// Vector-column schema inference runs in this mode (when enabled), the same
+    /// way it does for `create_table`. Users have reported being surprised when
+    /// this was not the case (see issue #3183); the rule is: any path that
+    /// produces a new table schema also re-runs inference.
     Overwrite,
 }
 
