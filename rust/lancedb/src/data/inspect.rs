@@ -336,7 +336,10 @@ mod tests {
                 Int32ArrayType,
                 _,
                 _,
-            >(vec![Some(vec![Some(0i32), Some(300)])]))],
+            >(vec![Some(vec![
+                Some(0i32),
+                Some(300),
+            ])]))],
         )
         .unwrap();
 
