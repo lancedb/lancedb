@@ -56,6 +56,18 @@ export interface AddDataOptions {
    * If "overwrite" then the new data will replace the existing data in the table.
    */
   mode: "append" | "overwrite";
+  /**
+   * If true, skip the automatic cleanup of old dataset versions that would
+   * otherwise run as part of this write's commit. Forwards to
+   * `WriteParams.skip_auto_cleanup` in lance-core.
+   *
+   * Useful for high-frequency writers that prefer to manage version cleanup
+   * themselves (for example, via a separate periodic optimize job), or for
+   * writers that don't have delete permissions on the underlying storage.
+   *
+   * Defaults to false.
+   */
+  skipAutoCleanup?: boolean;
 }
 
 export interface UpdateOptions {
@@ -636,7 +648,7 @@ export class LocalTable extends Table {
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.inner.add(buffer, mode);
+    return await this.inner.add(buffer, mode, options?.skipAutoCleanup);
   }
 
   async update(

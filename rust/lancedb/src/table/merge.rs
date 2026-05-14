@@ -55,6 +55,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
+    pub(crate) skip_auto_cleanup: bool,
 }
 
 impl MergeInsertBuilder {
@@ -69,6 +70,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
+            skip_auto_cleanup: false,
         }
     }
 
@@ -148,6 +150,17 @@ impl MergeInsertBuilder {
         self
     }
 
+    /// Skip the automatic cleanup of old dataset versions that would otherwise
+    /// run during the merge insert commit.
+    ///
+    /// This forwards to [`lance::dataset::MergeInsertBuilder::skip_auto_cleanup`]
+    /// in lance-core. Useful for high-frequency writers that want to manage
+    /// version cleanup themselves, or writers without delete permissions.
+    pub fn skip_auto_cleanup(&mut self, skip: bool) -> &mut Self {
+        self.skip_auto_cleanup = skip;
+        self
+    }
+
     /// Executes the merge insert operation
     ///
     /// Returns version and statistics about the merge operation including the number of rows
@@ -191,6 +204,9 @@ pub(crate) async fn execute_merge_insert(
         builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
     }
     builder.use_index(params.use_index);
+    if params.skip_auto_cleanup {
+        builder.skip_auto_cleanup(true);
+    }
 
     let future = if let Some(timeout) = params.timeout {
         let future = builder

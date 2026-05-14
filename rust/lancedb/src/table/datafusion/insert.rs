@@ -219,6 +219,7 @@ impl ExecutionPlan for InsertExec {
                 && let Some(merged_txn) = merge_transactions(transactions)
             {
                 let new_dataset = CommitBuilder::new(dataset.clone())
+                    .with_skip_auto_cleanup(write_params.skip_auto_cleanup)
                     .execute(merged_txn)
                     .await?;
                 ds_wrapper.update(new_dataset);
