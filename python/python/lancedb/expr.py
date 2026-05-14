@@ -63,7 +63,7 @@ def _coerce(value: "ExprLike") -> "Expr":
 
 
 # Type alias used in annotations.
-ExprLike = Union["Expr", bool, int, float, str]
+ExprLike = Union["Expr", bool, int, float, str, bytes]
 
 
 class Expr:
@@ -261,13 +261,13 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name))
 
 
-def lit(value: Union[bool, int, float, str]) -> Expr:
+def lit(value: Union[bool, int, float, str, bytes]) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
-        A Python ``bool``, ``int``, ``float``, or ``str``.
+        A Python ``bool``, ``int``, ``float``, ``str``, or ``bytes``.
 
     Examples
     --------

@@ -8,7 +8,9 @@
 //! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
 
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
+use datafusion_common::ScalarValue;
 use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
+use pyo3::types::PyBytes;
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
 /// A type-safe DataFusion expression.
@@ -141,7 +143,7 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -157,8 +159,12 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(PyExpr(df_lit(s)));
     }
+    if value.is_instance_of::<PyBytes>() {
+        let bytes = value.extract::<Vec<u8>>()?;
+        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(bytes)))));
+    }
     Err(PyValueError::new_err(format!(
-        "unsupported literal type: {}. Supported: bool, int, float, str",
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes",
         value.get_type().name()?
     )))
 }
