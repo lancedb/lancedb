@@ -395,12 +395,17 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::CreateNamespaceRequest;
             // Mode is now a string field
-            let mode_str = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some("Create".to_string()),
-                "exist_ok" => Some("ExistOk".to_string()),
-                "overwrite" => Some("Overwrite".to_string()),
-                _ => None,
-            });
+            let mode_str = mode
+                .map(|m| match m.to_lowercase().as_str() {
+                    "create" => Ok("Create".to_string()),
+                    "exist_ok" => Ok("ExistOk".to_string()),
+                    "overwrite" => Ok("Overwrite".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid mode {:?}: expected one of 'create', 'exist_ok', 'overwrite'",
+                        m
+                    ))),
+                })
+                .transpose()?;
             let request = CreateNamespaceRequest {
                 id: Some(namespace_path),
                 mode: mode_str,
@@ -428,16 +433,26 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::DropNamespaceRequest;
             // Mode and Behavior are now string fields
-            let mode_str = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some("Skip".to_string()),
-                "FAIL" => Some("Fail".to_string()),
-                _ => None,
-            });
-            let behavior_str = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some("Restrict".to_string()),
-                "CASCADE" => Some("Cascade".to_string()),
-                _ => None,
-            });
+            let mode_str = mode
+                .map(|m| match m.to_uppercase().as_str() {
+                    "SKIP" => Ok("Skip".to_string()),
+                    "FAIL" => Ok("Fail".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid mode {:?}: expected one of 'skip', 'fail'",
+                        m
+                    ))),
+                })
+                .transpose()?;
+            let behavior_str = behavior
+                .map(|b| match b.to_uppercase().as_str() {
+                    "RESTRICT" => Ok("Restrict".to_string()),
+                    "CASCADE" => Ok("Cascade".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid behavior {:?}: expected one of 'restrict', 'cascade'",
+                        b
+                    ))),
+                })
+                .transpose()?;
             let request = DropNamespaceRequest {
                 id: Some(namespace_path),
                 mode: mode_str,

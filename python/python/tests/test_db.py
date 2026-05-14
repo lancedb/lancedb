@@ -914,6 +914,29 @@ def test_local_namespace_operations(tmp_path):
     assert db.list_namespaces().namespaces == []
 
 
+def test_create_namespace_invalid_mode_raises(tmp_path):
+    """Unrecognized create namespace modes raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(ValueError, match="Invalid create namespace mode"):
+        db.create_namespace(["child"], mode="frobnicate")
+
+
+def test_drop_namespace_invalid_mode_raises(tmp_path):
+    """Unrecognized drop namespace modes raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    db.create_namespace(["child"])
+    with pytest.raises(ValueError, match="Invalid drop namespace mode"):
+        db.drop_namespace(["child"], mode="frobnicate")
+
+
+def test_drop_namespace_invalid_behavior_raises(tmp_path):
+    """Unrecognized drop namespace behaviors raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    db.create_namespace(["child"])
+    with pytest.raises(ValueError, match="Invalid drop namespace behavior"):
+        db.drop_namespace(["child"], behavior="frobnicate")
+
+
 def test_clone_table_latest_version(tmp_path):
     """Test cloning a table with the latest version (default behavior)"""
     import os
