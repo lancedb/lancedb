@@ -36,6 +36,7 @@ pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
+use lance_namespace::error::NamespaceError;
 use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
 use lance_table::io::commit::CommitHandler;
@@ -93,6 +94,53 @@ pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
+
+/// Walk a boxed error chain to find the innermost `NamespaceError`.
+///
+/// Callers like `DatasetBuilder::from_namespace` re-wrap their inner namespace error
+/// inside a fresh `lance::Error::Namespace`, so a single downcast at the top level
+/// won't find it. This walks `.source()` to unwrap arbitrarily nested layers.
+fn find_namespace_error<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a NamespaceError> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(ns_err) = e.downcast_ref::<NamespaceError>() {
+            return Some(ns_err);
+        }
+        current = e.source();
+    }
+    None
+}
+
+/// Map a `lance::Error` coming from a `lance-namespace` call into a `lancedb::Error`,
+/// preserving the fine-grained namespace error code (e.g. `TableNotFound`,
+/// `TableAlreadyExists`). Errors that aren't recognized namespace error variants fall
+/// through to a generic runtime error rather than `TableNotFound`/`TableAlreadyExists`.
+pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> Error {
+    if let Some(code) = find_namespace_error(&err).map(NamespaceError::code) {
+        match code {
+            lance_namespace::error::ErrorCode::TableNotFound => {
+                return Error::TableNotFound {
+                    name: table_name.to_string(),
+                    source: Box::new(err),
+                };
+            }
+            lance_namespace::error::ErrorCode::TableAlreadyExists => {
+                return Error::TableAlreadyExists {
+                    name: table_name.to_string(),
+                };
+            }
+            _ => {}
+        }
+    }
+    match err {
+        lance::Error::Namespace { source, .. } => Error::Runtime {
+            message: format!("Namespace error: {}", source),
+        },
+        other => other.into(),
+    }
+}
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1494,12 +1542,7 @@ impl NativeTable {
         // and storage options from the namespace
         let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
             .await
-            .map_err(|e| match e {
-                lance::Error::Namespace { source, .. } => Error::Runtime {
-                    message: format!("Failed to get table info from namespace: {:?}", source),
-                },
-                e => e.into(),
-            })?;
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         let dataset = builder
             .with_read_params(params)
