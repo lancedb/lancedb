@@ -7,9 +7,12 @@
 //! build type-safe filter / projection expressions that map directly to
 //! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
 
+use std::ops::{Add, Div, Mul, Not, Sub};
+
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
+use datafusion_common::ScalarValue;
 use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
-use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
+use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction, types::{PyDate, PyDateTime}};
 
 /// A type-safe DataFusion expression.
 ///
@@ -59,30 +62,30 @@ impl PyExpr {
         Self(self.0.clone().or(other.0.clone()))
     }
 
+    /// Logical NOT.
     fn not_(&self) -> Self {
-        use std::ops::Not;
         Self(self.0.clone().not())
     }
 
     // ── arithmetic ───────────────────────────────────────────────────────────
 
+    /// Add expressions.
     fn add(&self, other: &Self) -> Self {
-        use std::ops::Add;
         Self(self.0.clone().add(other.0.clone()))
     }
 
+    /// Subtract expressions.
     fn sub(&self, other: &Self) -> Self {
-        use std::ops::Sub;
         Self(self.0.clone().sub(other.0.clone()))
     }
 
+    /// Multiply expressions.
     fn mul(&self, other: &Self) -> Self {
-        use std::ops::Mul;
         Self(self.0.clone().mul(other.0.clone()))
     }
 
+    /// Divide expressions.
     fn div(&self, other: &Self) -> Self {
-        use std::ops::Div;
         Self(self.0.clone().div(other.0.clone()))
     }
 
@@ -141,7 +144,7 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `Decimal`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -157,10 +160,60 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(PyExpr(df_lit(s)));
     }
+    if let Ok(b) = value.extract::<Vec<u8>>() {
+        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(b)))));
+    }
+
+    if let Ok(dt) = value.downcast::<PyDateTime>() {
+        let ts: f64 = dt.call_method0("timestamp")?.extract()?;
+        let micros = (ts * 1_000_000.0).round() as i64;
+        return Ok(PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
+            Some(micros),
+            None,
+        ))));
+    }
+    if let Ok(d) = value.downcast::<PyDate>() {
+        let ordinal: i32 = d.call_method0("toordinal")?.extract()?;
+        let days = ordinal - 719163; // Unix epoch is 1970-01-01
+        return Ok(PyExpr(df_lit(ScalarValue::Date32(Some(days)))));
+    }
+
+    let type_name = value.get_type().name()?;
+    if type_name == "Decimal" {
+        let s = value.call_method0("__str__")?.extract::<String>()?;
+        // Parse decimal string into i128 and scale
+        let (val, precision, scale) = parse_decimal(&s)?;
+        return Ok(PyExpr(df_lit(ScalarValue::Decimal128(
+            Some(val),
+            precision,
+            scale,
+        ))));
+    }
+
     Err(PyValueError::new_err(format!(
-        "unsupported literal type: {}. Supported: bool, int, float, str",
-        value.get_type().name()?
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes, date, datetime, Decimal",
+        type_name
     )))
+}
+
+fn parse_decimal(s: &str) -> PyResult<(i128, u8, i8)> {
+    let s = s.trim();
+    let dot_pos = s.find('.');
+    let scale = if let Some(pos) = dot_pos {
+        (s.len() - pos - 1) as i8
+    } else {
+        0
+    };
+
+    let digits = s.replace('.', "");
+    let val = digits
+        .parse::<i128>()
+        .map_err(|e| PyValueError::new_err(format!("failed to parse decimal digits: {}", e)))?;
+
+    // Precision is total number of digits
+    let precision = digits.trim_start_matches('-').len() as u8;
+
+    Ok((val, precision, scale))
 }
 
 /// Call an arbitrary registered SQL function by name.

@@ -19,6 +19,8 @@ operators::
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Union
 
 import pyarrow as pa
@@ -63,7 +65,7 @@ def _coerce(value: "ExprLike") -> "Expr":
 
 
 # Type alias used in annotations.
-ExprLike = Union["Expr", bool, int, float, str]
+ExprLike = Union["Expr", bool, int, float, str, bytes, date, datetime, Decimal]
 
 
 class Expr:
@@ -118,9 +120,17 @@ class Expr:
         """Logical AND (``expr_a & expr_b``)."""
         return Expr(self._inner.and_(_coerce(other)._inner))
 
+    def __rand__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical AND (``True & expr``)."""
+        return Expr(_coerce(other)._inner.and_(self._inner))
+
     def __or__(self, other: "Expr") -> "Expr":
         """Logical OR (``expr_a | expr_b``)."""
         return Expr(self._inner.or_(_coerce(other)._inner))
+
+    def __ror__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical OR (``False | expr``)."""
+        return Expr(_coerce(other)._inner.or_(self._inner))
 
     def __invert__(self) -> "Expr":
         """Logical NOT (``~expr``)."""
@@ -261,13 +271,14 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name))
 
 
-def lit(value: Union[bool, int, float, str]) -> Expr:
+def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
-        A Python ``bool``, ``int``, ``float``, or ``str``.
+        A Python ``bool``, ``int``, ``float``, ``str``, ``bytes``, ``date``,
+        ``datetime``, or ``Decimal``.
 
     Examples
     --------
@@ -275,6 +286,9 @@ def lit(value: Union[bool, int, float, str]) -> Expr:
     >>> col("price") * lit(1.1)
     Expr((price * 1.1))
     """
+    if not isinstance(value, (bool, int, float, str, bytes, date, datetime, Decimal)):
+        raise TypeError(f"Unsupported literal type: {type(value).__name__}")
+
     return Expr(expr_lit(value))
 
 
