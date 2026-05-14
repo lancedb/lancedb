@@ -29,7 +29,7 @@ lance-encoding = { "version" = "=7.0.0-beta.7", "tag" = "v7.0.0-beta.7", "git" =
 lance-arrow = { "version" = "=7.0.0-beta.7", "tag" = "v7.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "58.0.0", optional = false }
+arrow = { version = "58.3.0", optional = false }
 arrow-array = "58.0.0"
 arrow-data = "58.0.0"
 arrow-ipc = "58.0.0"
@@ -55,14 +55,14 @@ futures = "0"
 log = "0.4"
 moka = { version = "0.12", features = ["future"] }
 object_store = "0.13.2"
-pin-project = "1.0.7"
+pin-project = "1.1.13"
 rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
 regex = "1.10"
 lazy_static = "1"
-semver = "1.0.25"
+semver = "1.0.28"
 chrono = "0.4"
 
 [profile.ci]
