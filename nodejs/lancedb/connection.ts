@@ -296,6 +296,12 @@ export abstract class Connection {
    */
   abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
 
+  abstract renameTable(
+    oldName: string,
+    newName: string,
+    namespacePath?: string[],
+  ): Promise<void>;
+
   /**
    * Drop all tables in the database.
    * @param {string[]} namespacePath The namespace path to drop tables from (defaults to root namespace).
@@ -607,6 +613,14 @@ export class LocalConnection extends Connection {
 
   async dropTable(name: string, namespacePath?: string[]): Promise<void> {
     return this.inner.dropTable(name, namespacePath ?? []);
+  }
+
+  async renameTable(
+    oldName: string,
+    newName: string,
+    namespacePath?: string[],
+  ): Promise<void> {
+    return this.inner.renameTable(oldName, newName, namespacePath ?? []);
   }
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {
