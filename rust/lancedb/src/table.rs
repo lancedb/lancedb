@@ -1032,6 +1032,10 @@ impl Table {
     ///  * Prune: Removes old versions of the dataset
     ///  * Index: Optimizes the indices, adding new data to existing indices
     ///
+    /// For read-heavy serving, use [`Self::optimize_indices_for_search`] to compact
+    /// index segments for lower search latency without changing the public
+    /// [`OptimizeAction`] enum shape.
+    ///
     /// The frequency an application should call optimize is based on the frequency of
     /// data modifications.  If data is frequently added, deleted, or updated then
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -1039,6 +1043,36 @@ impl Table {
     /// modification operations.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Optimize indices for read-heavy serving by compacting as many index
+    /// segments as currently exist for the selected indices.
+    ///
+    /// Unlike [`Self::optimize`] with [`OptimizeAction::Index`], this helper
+    /// derives a merge window from the current table state and forces
+    /// `retrain = false` to favor search latency over indexing throughput.
+    ///
+    /// ```
+    /// use lancedb::table::{OptimizeOptions, Table};
+    ///
+    /// # async fn optimize(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .optimize_indices_for_search(OptimizeOptions::default())
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn optimize_indices_for_search(
+        &self,
+        options: OptimizeOptions,
+    ) -> Result<OptimizeStats> {
+        match self.as_native() {
+            Some(native) => optimize::optimize_indices_for_search(native, options).await,
+            None => Err(Error::NotSupported {
+                message: "search-oriented index optimization is only supported on local tables."
+                    .to_string(),
+            }),
+        }
     }
 
     /// Add new columns to the table, providing values to fill in.
@@ -1797,6 +1831,15 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
         })
+    }
+
+    /// Equivalent to [`Table::optimize_indices_for_search`] for callers using
+    /// [`NativeTable`] directly.
+    pub async fn optimize_indices_for_search(
+        &self,
+        options: OptimizeOptions,
+    ) -> Result<OptimizeStats> {
+        optimize::optimize_indices_for_search(self, options).await
     }
 
     /// Merge new data into this table.
