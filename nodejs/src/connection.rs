@@ -268,7 +268,6 @@ impl Connection {
             .default_error()
     }
 
-    /// Rename a table in the given namespace.
     #[napi(catch_unwind)]
     pub async fn rename_table(
         &self,

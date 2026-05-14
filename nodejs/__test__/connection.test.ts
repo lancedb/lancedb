@@ -81,14 +81,14 @@ describe("given a connection", () => {
     await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
   });
 
-  it("should be able to rename tables", async () => {
+  it("should expose renameTable and reject on OSS listing DB", async () => {
     await db.createTable("old_name", [{ id: 1 }]);
 
-    await db.renameTable("old_name", "new_name");
+    await expect(db.renameTable("old_name", "new_name")).rejects.toThrow(
+      "rename_table is not supported in LanceDB OSS",
+    );
 
-    await expect(db.tableNames()).resolves.toEqual(["new_name"]);
-    await expect(db.openTable("old_name")).rejects.toThrow("was not found");
-    await expect(db.openTable("new_name")).resolves.toBeDefined();
+    await expect(db.tableNames()).resolves.toEqual(["old_name"]);
   });
 
   it("should fail if creating table twice, unless overwrite is true", async () => {
