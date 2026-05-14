@@ -327,6 +327,29 @@ Open a table in the database.
 
 ***
 
+### renameTable()
+
+```ts
+abstract renameTable(
+   oldName,
+   newName,
+   namespacePath?): Promise<void>
+```
+
+#### Parameters
+
+* **oldName**: `string`
+
+* **newName**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### tableNames()
 
 #### tableNames(options)
