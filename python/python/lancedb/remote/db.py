@@ -123,6 +123,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -155,6 +156,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         namespace_path: List[str]
             The namespace identifier to create.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
             or "overwrite" (replace if exists). Case insensitive.
@@ -185,6 +187,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         namespace_path: List[str]
             The namespace identifier to drop.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
         behavior: str, optional
@@ -212,6 +215,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         namespace_path: List[str]
             The namespace identifier to describe.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         Returns
         -------
@@ -234,6 +238,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -271,6 +276,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], default []
             The namespace to list tables in.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str
             The last token to start the new page.
         limit: int, default 10
@@ -313,6 +319,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         Returns
         -------
@@ -352,6 +359,7 @@ class RemoteDBConnection(DBConnection):
         target_namespace_path: List[str], optional
             The namespace for the target table.
             None or empty list represents root namespace.
+            Previously called ``target_namespace`` in 0.30.2 and earlier.
         source_version: int, optional
             The version of the source table to clone.
         source_tag: str, optional
@@ -403,6 +411,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to create the table in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -536,6 +545,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to drop the table from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         """
         if namespace_path is None:
             namespace_path = []
@@ -557,6 +567,12 @@ class RemoteDBConnection(DBConnection):
             The current name of the table.
         new_name: str
             The new name of the table.
+        cur_namespace_path: List[str], optional
+            The namespace of the current table.
+            Previously called ``cur_namespace`` in 0.30.2 and earlier.
+        new_namespace_path: List[str], optional
+            The namespace to move the table to.
+            Previously called ``new_namespace`` in 0.30.2 and earlier.
         """
         if cur_namespace_path is None:
             cur_namespace_path = []

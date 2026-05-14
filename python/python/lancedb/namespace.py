@@ -201,7 +201,8 @@ def _execute_server_side_query(
     Parameters
     ----------
     namespace_client : LanceNamespace
-        The namespace client to use
+        The namespace client to use.
+        Previously called ``namespace`` in 0.30.2 and earlier.
     table_id : List[str]
         The table identifier (namespace path + table name)
     query : Query
@@ -388,7 +389,8 @@ class LanceNamespaceDBConnection(DBConnection):
         Parameters
         ----------
         namespace_client : LanceNamespace
-            The namespace client to use for table management
+            The namespace client to use for table management.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         read_consistency_interval : Optional[timedelta]
             The interval at which to check for updates to the table from other
             processes. If None, then consistency is not checked.
@@ -624,6 +626,8 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_path : Optional[List[str]]
             The parent namespace path to list children from.
             If None, lists root-level namespaces.
+
+            *Changed in version 0.31.0: renamed from* ``namespace``.
         page_token : Optional[str]
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -860,7 +864,8 @@ class AsyncLanceNamespaceDBConnection:
         Parameters
         ----------
         namespace_client : LanceNamespace
-            The namespace client to use for table management
+            The namespace client to use for table management.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         read_consistency_interval : Optional[timedelta]
             The interval at which to check for updates to the table from other
             processes. If None, then consistency is not checked.
@@ -1043,6 +1048,8 @@ class AsyncLanceNamespaceDBConnection:
         namespace_path : Optional[List[str]]
             The parent namespace path to list children from.
             If None, lists root-level namespaces.
+
+            *Changed in version 0.31.0: renamed from* ``namespace``.
         page_token : Optional[str]
             Token for pagination. Use the token from a previous response
             to get the next page of results.

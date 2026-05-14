@@ -79,6 +79,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], default []
             The parent namespace to list namespaces in.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -106,6 +107,7 @@ class DBConnection(EnforceOverrides):
         ----------
         namespace_path: List[str]
             The namespace identifier to create.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
             or "overwrite" (replace if exists). Case insensitive.
@@ -133,6 +135,7 @@ class DBConnection(EnforceOverrides):
         ----------
         namespace_path: List[str]
             The namespace identifier to drop.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
         behavior: str, optional
@@ -157,6 +160,7 @@ class DBConnection(EnforceOverrides):
         ----------
         namespace_path: List[str]
             The namespace identifier to describe.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         Returns
         -------
@@ -180,6 +184,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -210,6 +215,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], default []
             The namespace to list tables in.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
@@ -248,6 +254,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], default []
             The namespace to create the table in.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -416,6 +423,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().
@@ -451,6 +459,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], default []
             The namespace to drop the table from.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         """
         if namespace_path is None:
             namespace_path = []
@@ -474,9 +483,11 @@ class DBConnection(EnforceOverrides):
         cur_namespace_path: List[str], optional
             The namespace of the current table.
             None or empty list represents root namespace.
+            Previously called ``cur_namespace`` in 0.30.2 and earlier.
         new_namespace_path: List[str], optional
             The namespace to move the table to.
-            If not specified, defaults to the same as cur_namespace.
+            If not specified, defaults to the same as cur_namespace_path.
+            Previously called ``new_namespace`` in 0.30.2 and earlier.
         """
         if cur_namespace_path is None:
             cur_namespace_path = []
@@ -500,6 +511,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: List[str], optional
             The namespace to drop all tables from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         """
         if namespace_path is None:
             namespace_path = []
@@ -713,6 +725,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -780,6 +793,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -822,6 +836,7 @@ class LanceDBConnection(DBConnection):
         ----------
         namespace_path: List[str], optional
             The namespace to list tables in.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             The token to use for pagination.
         limit: int, default 10
@@ -876,6 +891,7 @@ class LanceDBConnection(DBConnection):
         ----------
         namespace_path: List[str], optional
             The namespace to create the table in.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         See
         ---
@@ -949,6 +965,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         Returns
         -------
@@ -1009,6 +1026,7 @@ class LanceDBConnection(DBConnection):
         target_namespace_path: List[str], optional
             The namespace for the target table.
             None or empty list represents root namespace.
+            Previously called ``target_namespace`` in 0.30.2 and earlier.
         source_version: int, optional
             The version of the source table to clone.
         source_tag: str, optional
@@ -1054,6 +1072,7 @@ class LanceDBConnection(DBConnection):
             The name of the table.
         namespace_path: List[str], optional
             The namespace to drop the table from.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
@@ -1092,8 +1111,10 @@ class LanceDBConnection(DBConnection):
             The new name of the table.
         cur_namespace_path: List[str], optional
             The namespace of the current table.
+            Previously called ``cur_namespace`` in 0.30.2 and earlier.
         new_namespace_path: List[str], optional
             The namespace to move the table to.
+            Previously called ``new_namespace`` in 0.30.2 and earlier.
         """
         if cur_namespace_path is None:
             cur_namespace_path = []
@@ -1216,6 +1237,7 @@ class AsyncConnection(object):
         namespace_path: List[str], optional
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
         limit: int, optional
@@ -1245,6 +1267,7 @@ class AsyncConnection(object):
         ----------
         namespace_path: List[str]
             The namespace identifier to create.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Creation mode - "create", "exist_ok", or "overwrite". Case insensitive.
         properties: Dict[str, str], optional
@@ -1274,6 +1297,7 @@ class AsyncConnection(object):
         ----------
         namespace_path: List[str]
             The namespace identifier to drop.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         mode: str, optional
             Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
         behavior: str, optional
@@ -1301,6 +1325,7 @@ class AsyncConnection(object):
         ----------
         namespace_path: List[str]
             The namespace identifier to describe.
+            Previously called ``namespace`` in 0.30.2 and earlier.
 
         Returns
         -------
@@ -1323,6 +1348,7 @@ class AsyncConnection(object):
         namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         page_token: str, optional
             Token for pagination. Use the token from a previous response
             to get the next page of results.
@@ -1358,6 +1384,7 @@ class AsyncConnection(object):
         namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         start_after: str, optional
             If present, only return names that come lexicographically after the supplied
             value.
@@ -1409,6 +1436,7 @@ class AsyncConnection(object):
         namespace_path: List[str], default []
             The namespace to create the table in.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -1632,6 +1660,7 @@ class AsyncConnection(object):
         namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -1701,6 +1730,7 @@ class AsyncConnection(object):
         target_namespace_path: List[str], optional
             The namespace for the target table.
             None or empty list represents root namespace.
+            Previously called ``target_namespace`` in 0.30.2 and earlier.
         source_version: int, optional
             The version of the source table to clone.
         source_tag: str, optional
@@ -1743,9 +1773,11 @@ class AsyncConnection(object):
         cur_namespace_path: List[str], optional
             The namespace of the current table.
             None or empty list represents root namespace.
+            Previously called ``cur_namespace`` in 0.30.2 and earlier.
         new_namespace_path: List[str], optional
             The namespace to move the table to.
-            If not specified, defaults to the same as cur_namespace.
+            If not specified, defaults to the same as cur_namespace_path.
+            Previously called ``new_namespace`` in 0.30.2 and earlier.
         """
         if cur_namespace_path is None:
             cur_namespace_path = []
@@ -1774,6 +1806,7 @@ class AsyncConnection(object):
         namespace_path: List[str], default []
             The namespace to drop the table from.
             Empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
@@ -1795,6 +1828,7 @@ class AsyncConnection(object):
         namespace_path: List[str], optional
             The namespace to drop all tables from.
             None or empty list represents root namespace.
+            Previously called ``namespace`` in 0.30.2 and earlier.
         """
         if namespace_path is None:
             namespace_path = []
