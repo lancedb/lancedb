@@ -11,6 +11,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # Only update Cargo.lock, never widen/raise the version requirements in
+    # Cargo.toml. The goal is keeping the lockfile (and the binaries we ship)
+    # current on security fixes, not forcing our library's consumers onto
+    # newer minimum versions.
+    versioning-strategy: lockfile-only
     groups:
       rust-minor-patch:
         update-types:
