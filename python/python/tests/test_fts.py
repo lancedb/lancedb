@@ -116,8 +116,7 @@ def lindera_ipadic(language_model_home):
     config_path.write_text(
         "segmenter:\n"
         '  mode: "normal"\n'
-        "  dictionary:\n"
-        f'    path: "{extracted_model.resolve().as_posix()}"\n',
+        f'  dictionary: "{extracted_model.resolve().as_posix()}"\n',
         encoding="utf-8",
     )
 
