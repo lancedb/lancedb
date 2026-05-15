@@ -233,6 +233,28 @@ jobs:
           cargo update -p aws-sdk-sso --precise 1.62.0
           cargo update -p aws-sdk-ssooidc --precise 1.63.0
           cargo update -p aws-sdk-sts --precise 1.63.0
+          # aws-runtime/sigv4/credential-types and the aws-smithy-* crates
+          # bumped their MSRV to 1.91.1 in late 2026; pin to the last
+          # 1.91.0-compatible versions. Order matters: aws-runtime / aws-sigv4
+          # / aws-credential-types are downgraded before the aws-smithy-*
+          # cluster so the constraint chain through aws-smithy-checksums →
+          # aws-smithy-http → aws-smithy-runtime-api / aws-smithy-types can
+          # actually unwind.
+          cargo update -p aws-runtime --precise 1.5.12
+          cargo update -p aws-sigv4 --precise 1.3.5
+          cargo update -p aws-credential-types --precise 1.2.8
+          cargo update -p aws-smithy-checksums --precise 0.63.9
+          cargo update -p aws-smithy-runtime --precise 1.9.3
+          cargo update -p aws-smithy-http --precise 0.62.4
+          cargo update -p aws-smithy-eventstream --precise 0.60.12
+          cargo update -p aws-smithy-runtime-api --precise 1.9.1
+          cargo update -p aws-smithy-async --precise 1.2.6
+          cargo update -p aws-smithy-types --precise 1.3.5
+          cargo update -p aws-smithy-http-client --precise 1.1.3
+          cargo update -p aws-smithy-observability --precise 0.1.4
+          cargo update -p aws-smithy-query --precise 0.60.8
+          cargo update -p aws-smithy-xml --precise 0.60.11
+          cargo update -p aws-types --precise 1.3.9
           cargo update -p home --precise 0.5.9
       - name: cargo +${{ matrix.msrv }} check
         env:
