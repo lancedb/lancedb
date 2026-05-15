@@ -47,7 +47,5 @@ test("filtering examples", async () => {
       .limit(5)
       .toArray();
     // --8<-- [end:orderby_search]
-    await tbl.query().where("id = 10").limit(10).toArray();
-    // --8<-- [end:sql_search]
   });
 });

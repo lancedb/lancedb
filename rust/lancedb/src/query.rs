@@ -516,7 +516,7 @@ pub trait QueryBase {
     /// Sort the results by the specified column(s).
     ///
     /// This allows ordering query results by one or more columns in either ascending or descending order.
-    fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> Result<&mut Self>;
+    fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
 }
 
 pub trait HasQuery {
@@ -582,9 +582,9 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> Result<&mut Self> {
+    fn order_by(mut self, ordering: Option<Vec<ColumnOrdering>>) -> Self {
         self.mut_query().order_by = ordering;
-        Ok(self)
+        self
     }
 }
 

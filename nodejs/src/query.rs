@@ -153,7 +153,7 @@ impl Query {
                 .map(LanceDbColumnOrdering::from)
                 .collect()
         });
-        self.inner.order_by(ordering).default_error()?;
+        self.inner = self.inner.clone().order_by(ordering);
         Ok(())
     }
 
@@ -365,7 +365,7 @@ impl VectorQuery {
                 .map(LanceDbColumnOrdering::from)
                 .collect()
         });
-        self.inner.order_by(ordering).default_error()?;
+        self.inner = self.inner.clone().order_by(ordering);
         Ok(())
     }
 

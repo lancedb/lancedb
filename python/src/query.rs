@@ -528,7 +528,7 @@ impl Query {
     pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
         let ordering =
             ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
-        self.inner.order_by(ordering).infer_error()?;
+        self.inner = self.inner.clone().order_by(ordering);
         Ok(())
     }
 
@@ -707,7 +707,7 @@ impl FTSQuery {
     pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
         let ordering =
             ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
-        self.inner.order_by(ordering).infer_error()?;
+        self.inner = self.inner.clone().order_by(ordering);
         Ok(())
     }
 
@@ -849,7 +849,7 @@ impl VectorQuery {
     pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
         let ordering =
             ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
-        self.inner.order_by(ordering).infer_error()?;
+        self.inner = self.inner.clone().order_by(ordering);
         Ok(())
     }
 

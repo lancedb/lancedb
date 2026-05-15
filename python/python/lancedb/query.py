@@ -1508,51 +1508,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
-        self.ordering_field_name = ordering_field_name
-        self._ordering_field_name = ordering_field_name
+        # Deprecated compatibility parameter. Native FTS ordering is now
+        # configured through order_by(); LanceQueryBuilder.create emits the warning.
+        _ = ordering_field_name
         self._reranker = None
         self._fast_search = fast_search
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
-
-    def _tantivy_ordering_field(self) -> Optional[str]:
-        if not self._order_by:
-            return self._ordering_field_name
-
-        import warnings
-
-        if len(self._order_by) > 1:
-            warnings.warn(
-                "Tantivy FTS only supports a single ordering field. "
-                "Only the first ordering column can be considered.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        ordering = self._order_by[0]
-        if ordering.ascending:
-            warnings.warn(
-                "Tantivy FTS only supports descending order with nulls_last for "
-                "compatibility with ordering_field_name. The requested ordering "
-                "will be ignored. Consider using LanceDB FTS for full ordering "
-                "support.",
-                UserWarning,
-                stacklevel=2,
-            )
-            return None
-
-        if ordering.nulls_first:
-            warnings.warn(
-                "Tantivy FTS does not support nulls_first. The requested ordering "
-                "will be ignored. Consider using LanceDB FTS for full ordering "
-                "support.",
-                UserWarning,
-                stacklevel=2,
-            )
-            return None
-
-        return ordering.column_name
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
