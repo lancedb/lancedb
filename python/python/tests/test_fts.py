@@ -501,24 +501,8 @@ async def test_search_fts_specify_column_async(async_table):
         pass
 
 
-def test_search_ordering_field_index_table(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"], use_tantivy=True)
-    with pytest.deprecated_call(
-        match=r"ordering_field_name is deprecated, use \.order_by\(\) method instead\."
-    ):
-        rows = (
-            table.search("puppy", ordering_field_name="count")
-            .limit(20)
-            .select(["text", "count"])
-            .to_list()
-        )
-    for r in rows:
-        assert "puppy" in r["text"]
-    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
-
-
-def test_search_order_by_tantivy_compatibility(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"], use_tantivy=True)
+def test_search_order_by_descending(table):
+    table.create_fts_index("text")
     rows = (
         table.search("puppy")
         .order_by([ColumnOrdering(column_name="count", ascending=False)])
@@ -532,47 +516,23 @@ def test_search_order_by_tantivy_compatibility(tmp_path, table):
     assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
 
 
-def test_search_order_by_tantivy_warns_for_unsupported_direction(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"], use_tantivy=True)
-
-    with pytest.warns(
-        UserWarning,
-        match="Tantivy FTS only supports descending order with nulls_last",
-    ):
-        rows = (
-            table.search("puppy")
-            .order_by([ColumnOrdering(column_name="count", ascending=True)])
-            .limit(20)
-            .select(["text", "count"])
-            .to_list()
-        )
-
-    assert len(rows) > 0
-
-
-def test_search_ordering_field_index(tmp_path, table):
-    index = ldb.fts.create_index(
-        str(tmp_path / "index"), ["text"], ordering_fields=["count"]
+def test_search_order_by_ascending(table):
+    table.create_fts_index("text")
+    rows = (
+        table.search("puppy")
+        .order_by([ColumnOrdering(column_name="count", ascending=True)])
+        .limit(20)
+        .select(["text", "count"])
+        .to_list()
     )
-
-    ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"])
-    index.reload()
-    results = ldb.fts.search_index(
-        index, query="puppy", limit=5, ordering_field="count"
-    )
-    assert len(results) == 2
-    assert len(results[0]) == 5  # row_ids
-    assert len(results[1]) == 5  # _distance
-    rows = table.to_lance().take(results[0]).to_pylist()
 
     for r in rows:
         assert "puppy" in r["text"]
-    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+    assert sorted(rows, key=lambda x: x["count"]) == rows
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_create_index_from_table(tmp_path, table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+def test_create_index_from_table(tmp_path, table):
+    table.create_fts_index("text")
     df = table.search("puppy").limit(5).select(["text"]).to_pandas()
     assert len(df) <= 5
     assert "text" in df.columns
