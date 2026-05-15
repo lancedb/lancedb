@@ -16,6 +16,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -660,6 +661,18 @@ def test_query_sync_maximal():
             "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
+            "order_by": [
+                {
+                    "column_name": "score",
+                    "ascending": False,
+                    "nulls_first": True,
+                },
+                {
+                    "column_name": "id",
+                    "ascending": True,
+                    "nulls_first": False,
+                },
+            ],
             "vector_column": "vector2",
             "fast_search": True,
             "with_row_id": True,
@@ -677,6 +690,14 @@ def test_query_sync_maximal():
             .refine_factor(10)
             .nprobes(5)
             .where("id > 0", prefilter=True)
+            .order_by(
+                [
+                    ColumnOrdering(
+                        column_name="score", ascending=False, nulls_first=True
+                    ),
+                    ColumnOrdering(column_name="id", ascending=True, nulls_first=False),
+                ]
+            )
             .with_row_id(True)
             .select(["id", "name"])
             .to_list()
