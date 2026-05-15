@@ -57,7 +57,7 @@ moka = { version = "0.12", features = ["future"] }
 object_store = "0.13.2"
 pin-project = "1.0.7"
 rand = "0.9"
-snafu = "0.8"
+snafu = "0.9"
 url = "2"
 num-traits = "0.2"
 regex = "1.10"
