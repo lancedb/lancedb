@@ -849,6 +849,10 @@ impl ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
+        if request.write_options.skip_auto_cleanup {
+            write_params.skip_auto_cleanup = true;
+        }
+
         write_params.session = Some(self.session.clone());
 
         write_params
@@ -2034,6 +2038,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
         };
 
         let table = db
@@ -2107,6 +2112,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
         };
 
         let table = db

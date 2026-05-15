@@ -441,6 +441,7 @@ mod tests {
             .add(new_batch.clone())
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
+                ..Default::default()
             })
             .mode(AddDataMode::Append)
             .execute()
@@ -760,5 +761,57 @@ mod tests {
         .unwrap();
         table2.add(struct_batch).execute().await.unwrap();
         assert_eq!(table2.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_skip_auto_cleanup() {
+        // Verifies WriteOptions::skip_auto_cleanup is forwarded to lance-core's
+        // WriteParams and actually suppresses the cleanup hook on commit.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        // Cleanup on every commit, with `older_than = 0s` so prior versions are
+        // immediately eligible.
+        table
+            .as_native()
+            .unwrap()
+            .update_config(vec![
+                ("lance.auto_cleanup.interval".to_string(), "1".to_string()),
+                (
+                    "lance.auto_cleanup.older_than".to_string(),
+                    "0s".to_string(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        // Write several versions with skip_auto_cleanup; none should be removed.
+        for i in 0..3 {
+            let new_batch = record_batch!(("id", Int64, [10 + i])).unwrap();
+            table
+                .add(new_batch)
+                .write_options(WriteOptions {
+                    skip_auto_cleanup: true,
+                    ..Default::default()
+                })
+                .execute()
+                .await
+                .unwrap();
+        }
+        let versions_before = table.list_versions().await.unwrap().len();
+
+        // Now write one more without the flag; cleanup should run and prune.
+        let new_batch = record_batch!(("id", Int64, [42])).unwrap();
+        table.add(new_batch).execute().await.unwrap();
+        let versions_after = table.list_versions().await.unwrap().len();
+
+        assert!(
+            versions_after < versions_before,
+            "auto-cleanup should have removed old versions once the skip flag was off \
+             (before={versions_before}, after={versions_after})"
+        );
     }
 }

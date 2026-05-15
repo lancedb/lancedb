@@ -237,6 +237,18 @@ pub struct WriteOptions {
     // Coming soon: https://github.com/lancedb/lancedb/issues/992
     // /// What behavior to take if the data contains invalid vectors
     // pub on_bad_vectors: BadVectorHandling,
+    /// If true, skip the automatic cleanup of old dataset versions that would
+    /// otherwise run during the commit. This forwards to
+    /// [`WriteParams::skip_auto_cleanup`] in lance-core.
+    ///
+    /// Useful for high-frequency writers that want to manage version cleanup
+    /// themselves (e.g. via a periodic optimize job), or for writers that
+    /// lack delete permissions on the underlying storage.
+    ///
+    /// If `lance_write_params` is also set with `skip_auto_cleanup = true`,
+    /// the cleanup is skipped. Setting this field to `true` forces the flag
+    /// on regardless of `lance_write_params`.
+    pub skip_auto_cleanup: bool,
     /// Advanced parameters that can be used to customize table creation
     ///
     /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
@@ -2326,7 +2338,8 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let skip_auto_cleanup = output.write_options.skip_auto_cleanup;
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -2336,6 +2349,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if skip_auto_cleanup {
+            lance_params.skip_auto_cleanup = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
