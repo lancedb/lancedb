@@ -655,6 +655,10 @@ class RemoteTable(Table):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
 
+    def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
+        """Not supported on LanceDB Cloud."""
+        return LOOP.run(self._table.set_unenforced_primary_key(columns))
+
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
 
