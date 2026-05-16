@@ -1284,7 +1284,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             1
         };
 
-        let output = add.into_plan(&table_schema, &table_def)?;
+        let output = add.into_plan(&table_schema, &table_def, true)?;
 
         if let Some(ref t) = output.tracker {
             t.set_total_tasks(num_partitions);
