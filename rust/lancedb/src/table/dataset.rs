@@ -528,6 +528,7 @@ mod tests {
                     }),
                     ..Default::default()
                 }),
+                ..Default::default()
             })
             .execute()
             .await
@@ -589,6 +590,7 @@ mod tests {
                     }),
                     ..Default::default()
                 }),
+                ..Default::default()
             })
             .execute()
             .await

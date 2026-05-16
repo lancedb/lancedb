@@ -1255,6 +1255,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
 
+        crate::data::sanitize::maybe_infer_for_overwrite(&mut add).await?;
+
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
@@ -2409,6 +2411,82 @@ mod tests {
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite_infers_fsl_from_list() {
+        // RemoteTable::add in Overwrite mode should send the inferred FSL
+        // schema (List<Float32> → FixedSizeList<Float32, dim>) to the server.
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+
+        let data_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+            true,
+        )]));
+        let data = RecordBatch::try_new(
+            data_schema.clone(),
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..3).map(|_| Some(vec![Some(1.0f32), Some(2.0), Some(3.0), Some(4.0)])),
+                ),
+            )],
+        )
+        .unwrap();
+
+        // Describe returns the initial (pre-overwrite) schema with a scalar id
+        // column. After overwrite the server-side schema is replaced; we only
+        // care that the bytes sent reflect the inferred FSL schema.
+        let initial_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let describe_body = describe_response(&initial_schema);
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    assert_eq!(
+                        request
+                            .url()
+                            .query_pairs()
+                            .find(|(k, _)| k == "mode")
+                            .map(|kv| kv.1)
+                            .as_deref(),
+                        Some("overwrite"),
+                    );
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        table
+            .add(data)
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        let body = receiver.recv().unwrap();
+        let bytes = collect_body(body).await;
+        let cursor = std::io::Cursor::new(bytes);
+        let reader = arrow_ipc::reader::StreamReader::try_new(cursor, None).unwrap();
+        let sent_schema = reader.schema();
+        let embedding_field = sent_schema.field_with_name("embedding").unwrap();
+        assert!(
+            matches!(embedding_field.data_type(), DataType::FixedSizeList(_, 4)),
+            "expected FixedSizeList(_, 4) in sent body, got {:?}",
+            embedding_field.data_type()
+        );
     }
 
     #[tokio::test]
