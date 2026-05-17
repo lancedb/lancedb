@@ -188,6 +188,16 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     assert len(result) == 3
 
 
+def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConnection):
+    for idx in range(20):
+        tmp_db.create_table(f"table_{idx}", data=[{"id": idx}])
+
+    assert len(tmp_db) == 20
+    for idx in range(20):
+        assert f"table_{idx}" in tmp_db
+    assert "does_not_exist" not in tmp_db
+
+
 @pytest.mark.asyncio
 async def test_table_names_async(tmp_path):
     db = lancedb.connect(tmp_path)
