@@ -74,6 +74,7 @@ pub(crate) mod dataset;
 pub mod delete;
 pub mod merge;
 pub mod optimize;
+mod primary_key;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
@@ -345,6 +346,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult>;
+    /// Set the unenforced primary key for the table to a single column.
+    ///
+    /// "Unenforced" means LanceDB does not check uniqueness on writes; the
+    /// column is recorded in the schema as the primary key for use by
+    /// features such as `merge_insert`. Only single-column primary keys are
+    /// supported, and the key cannot be changed once set.
+    ///
+    /// The default implementation returns `NotSupported`; table types
+    /// backed by a Lance dataset override it.
+    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_unenforced_primary_key is not supported on this table type".into(),
+        })
+    }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -1061,6 +1076,28 @@ impl Table {
     /// Remove columns from the table.
     pub async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.inner.drop_columns(columns).await
+    }
+
+    /// Set the unenforced primary key for this table to a single column.
+    ///
+    /// "Unenforced" means LanceDB does not check uniqueness on writes; the
+    /// column is recorded in the schema as the primary key so that features
+    /// such as `merge_insert` can use it.
+    ///
+    /// Only single-column primary keys are supported, and the key cannot be
+    /// changed once set — calling this on a table that already has an
+    /// unenforced primary key fails. `columns` is an iterable for binding
+    /// ergonomics but must yield exactly one column:
+    ///
+    /// - `table.set_unenforced_primary_key(["id"])`
+    pub async fn set_unenforced_primary_key<I, S>(&self, columns: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let owned: Vec<String> = columns.into_iter().map(Into::into).collect();
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        self.inner.set_unenforced_primary_key(&borrowed).await
     }
 
     /// Retrieve the version of the table
@@ -2469,6 +2506,10 @@ impl BaseTable for NativeTable {
         merge::execute_merge_insert(self, params, new_data).await
     }
 
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        primary_key::set_unenforced_primary_key(self, columns).await
+    }
+
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
         // Delegate to the submodule implementation
@@ -2770,6 +2811,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
     use tempfile::tempdir;
 
     use super::*;
@@ -3862,6 +3904,152 @@ mod tests {
             field.metadata.get("test_field_key1"),
             Some(&"test_field_val1".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // Reject empty input.
+        let err = table
+            .set_unenforced_primary_key(Vec::<&str>::new())
+            .await
+            .expect_err("empty input should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject compound (multi-column) input.
+        let err = table
+            .set_unenforced_primary_key(["id", "name"])
+            .await
+            .expect_err("compound primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject unknown column.
+        let err = table
+            .set_unenforced_primary_key(["nonexistent"])
+            .await
+            .expect_err("nonexistent column should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject unsupported dtype (Float64).
+        let err = table
+            .set_unenforced_primary_key(["score"])
+            .await
+            .expect_err("Float64 should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // None of the rejected calls set a primary key.
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        assert!(lance_schema.unenforced_primary_key().is_empty());
+
+        // Happy path: set the primary key to "id".
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
+        // Position metadata is 1-indexed.
+        assert_eq!(
+            pk[0].metadata.get(LANCE_UNENFORCED_PRIMARY_KEY_POSITION),
+            Some(&"1".to_string())
+        );
+
+        // The primary key is immutable: re-setting it is rejected, whether to
+        // the same column or a different one.
+        let err = table
+            .set_unenforced_primary_key(["id"])
+            .await
+            .expect_err("re-setting the same primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+        let err = table
+            .set_unenforced_primary_key(["name"])
+            .await
+            .expect_err("changing the primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // The primary key is unchanged after the rejected calls.
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
+    }
+
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_concurrent() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        // A long read-consistency interval keeps each handle pinned to the
+        // version it opened, so the second handle commits against a stale
+        // base — the same situation as two processes racing.
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(3600))
+            .execute()
+            .await
+            .unwrap();
+        conn.create_table("t", reader).execute().await.unwrap();
+
+        let table_a = conn.open_table("t").execute().await.unwrap();
+        let table_b = conn.open_table("t").execute().await.unwrap();
+
+        // Handle A sets the primary key first.
+        table_a.set_unenforced_primary_key(["id"]).await.unwrap();
+
+        // Handle B committed against a stale base that had no primary key, so
+        // its own up-front check did not see A's key. The commit itself must
+        // still fail rather than silently overriding A's primary key. (The
+        // cross-process race on a *different* column is caught by the Lance
+        // commit layer.)
+        let err = table_b
+            .set_unenforced_primary_key(["id"])
+            .await
+            .expect_err("concurrent primary key commit on a stale base should fail");
+        assert!(
+            !matches!(err, Error::InvalidInput { .. }),
+            "expected a commit-time conflict, not an up-front input error: {:?}",
+            err
+        );
+
+        // The committed primary key is exactly what A set — no corruption.
+        let fresh = conn.open_table("t").execute().await.unwrap();
+        let lance_schema = fresh.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
     }
 
     #[tokio::test]

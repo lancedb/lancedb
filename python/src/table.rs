@@ -805,6 +805,19 @@ impl Table {
         })
     }
 
+    pub fn set_unenforced_primary_key<'a>(
+        self_: PyRef<'a, Self>,
+        columns: Vec<String>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .set_unenforced_primary_key(columns)
+                .await
+                .infer_error()
+        })
+    }
+
     pub fn uses_v2_manifest_paths(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {

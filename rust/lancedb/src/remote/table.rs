@@ -1667,6 +1667,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(merge_insert_response)
     }
 
+    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_unenforced_primary_key is not supported on LanceDB cloud.".into(),
+        })
+    }
+
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(RemoteTags { inner: self }))
     }

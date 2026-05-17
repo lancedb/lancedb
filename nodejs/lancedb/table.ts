@@ -449,6 +449,18 @@ export abstract class Table {
    * containing the new version number of the table after dropping the columns.
    */
   abstract dropColumns(columnNames: string[]): Promise<DropColumnsResult>;
+  /**
+   * Set the unenforced primary key for this table to a single column.
+   *
+   * "Unenforced" means LanceDB does not check uniqueness on writes; the
+   * column is recorded in the schema as the primary key for use by features
+   * such as `merge_insert`. Only single-column primary keys are supported,
+   * and the key cannot be changed once set.
+   * @param {string | string[]} columns The primary key column. A one-element
+   * array is also accepted; passing more than one column is rejected.
+   * @returns {Promise<void>}
+   */
+  abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -895,6 +907,11 @@ export class LocalTable extends Table {
 
   async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
     return await this.inner.dropColumns(columnNames);
+  }
+
+  async setUnenforcedPrimaryKey(columns: string | string[]): Promise<void> {
+    const cols = typeof columns === "string" ? [columns] : columns;
+    return await this.inner.setUnenforcedPrimaryKey(cols);
   }
 
   async version(): Promise<number> {
