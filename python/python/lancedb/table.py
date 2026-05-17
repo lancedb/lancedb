@@ -3263,6 +3263,11 @@ class LanceTable(Table):
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
 
+    def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
+        """Set the unenforced primary key. See
+        [`AsyncTable.set_unenforced_primary_key`][lancedb.AsyncTable.set_unenforced_primary_key]."""
+        return LOOP.run(self._table.set_unenforced_primary_key(columns))
+
     def uses_v2_manifest_paths(self) -> bool:
         """
         Check if the table is using the new v2 manifest paths.
@@ -3807,6 +3812,31 @@ class AsyncTable:
 
         Any attempt to use the table after it has been closed will raise an error."""
         return self._inner.close()
+
+    async def set_unenforced_primary_key(
+        self, columns: Union[str, Iterable[str]]
+    ) -> None:
+        """Set the unenforced primary key for this table to the given
+        ordered list of columns.
+
+        "Unenforced" means LanceDB does not check uniqueness on writes; the
+        columns are recorded in the schema as the primary key so that
+        features such as `merge_insert` can use them. Calling this again
+        replaces any previously-set primary key.
+
+        Parameters
+        ----------
+        columns : str or Iterable[str]
+            Either a single column name (single-column key) or an ordered
+            iterable of column names (composite key). Each column dtype
+            must be one of: int32, int64, utf8, large_utf8, binary,
+            large_binary, fixed_size_binary.
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        else:
+            columns = list(columns)
+        await self._inner.set_unenforced_primary_key(columns)
 
     @property
     def name(self) -> str:
@@ -4512,6 +4542,8 @@ class AsyncTable:
             async_query = async_query.fast_search()
         if query.with_row_id:
             async_query = async_query.with_row_id()
+        if query.order_by:
+            async_query = async_query.order_by(query.order_by)
 
         if query.vector:
             async_query = async_query.nearest_to(query.vector).distance_range(

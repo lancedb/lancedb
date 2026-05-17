@@ -92,6 +92,12 @@ def ensure_vector_query(
         return val
 
 
+class ColumnOrdering(pydantic.BaseModel):
+    column_name: str
+    ascending: bool = True
+    nulls_first: bool = False
+
+
 class FullTextQueryType(str, Enum):
     MATCH = "match"
     MATCH_PHRASE = "match_phrase"
@@ -504,6 +510,8 @@ class Query(pydantic.BaseModel):
     # Bypass the vector index and use a brute force search
     bypass_vector_index: Optional[bool] = None
 
+    order_by: Optional[List[ColumnOrdering]] = None
+
     @classmethod
     def from_inner(cls, req: PyQueryRequest) -> Self:
         query = cls()
@@ -524,6 +532,8 @@ class Query(pydantic.BaseModel):
         query.refine_factor = req.refine_factor
         query.bypass_vector_index = req.bypass_vector_index
         query.postfilter = req.postfilter
+        if req.order_by is not None:
+            query.order_by = [ColumnOrdering(**o) for o in req.order_by]
         if req.full_text_search is not None:
             query.full_text_query = FullTextSearchQuery(
                 columns=None,
@@ -572,9 +582,22 @@ class LanceQueryBuilder(ABC):
             If "auto", the query type is inferred based on the query.
         vector_column_name: str
             The name of the vector column to use for vector search.
+        ordering_field_name: Optional[str]
+            .. deprecated:: 0.27.0
+                Use ``order_by()`` method instead.
+        fts_columns: Optional[Union[str, List[str]]]
+            The columns to search in for full text search.
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if ordering_field_name is not None:
+            import warnings
+
+            warnings.warn(
+                "ordering_field_name is deprecated, use .order_by() method instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
             # hybrid fts and vector query
@@ -671,6 +694,7 @@ class LanceQueryBuilder(ABC):
         self._text = None
         self._ef = None
         self._bypass_vector_index = None
+        self._order_by = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -946,6 +970,24 @@ class LanceQueryBuilder(ABC):
         plan : str
         """  # noqa: E501
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
+
+    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+        """
+        Set the ordering for the results.
+
+        Parameters
+        ----------
+        ordering: Optional[List[ColumnOrdering]]
+            The ordering to use for the results.  If None, then the default ordering
+            will be used.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._order_by = ordering
+        return self
 
     def analyze_plan(self) -> str:
         """
@@ -1314,6 +1356,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             fast_search=self._fast_search,
             ef=self._ef,
             bypass_vector_index=self._bypass_vector_index,
+            order_by=self._order_by,
         )
 
     def to_batches(
@@ -1465,7 +1508,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
-        self.ordering_field_name = ordering_field_name
+        # Deprecated compatibility parameter. Native FTS ordering is now
+        # configured through order_by(); LanceQueryBuilder.create emits the warning.
+        _ = ordering_field_name
         self._reranker = None
         self._fast_search = fast_search
         if isinstance(fts_columns, str):
@@ -1514,6 +1559,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             ),
             offset=self._offset,
             fast_search=self._fast_search,
+            order_by=self._order_by,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -1579,6 +1625,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             with_row_id=self._with_row_id,
             offset=self._offset,
+            order_by=self._order_by,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -2500,6 +2547,27 @@ class AsyncStandardQuery(AsyncQueryBase):
             The offset to start fetching results from.
         """
         self._inner.offset(offset)
+        return self
+
+    def order_by(self, ordering: Optional[List[ColumnOrdering]]) -> Self:
+        """
+        Set the ordering for the results.
+
+        Parameters
+        ----------
+        ordering: Optional[List[ColumnOrdering]]
+            The ordering to use for the results.  If None, then the default ordering
+            will be used.
+        """
+        if ordering is None:
+            self._inner.order_by(None)
+        else:
+            self._inner.order_by(
+                [
+                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
+                    for o in ordering
+                ]
+            )
         return self
 
     def fast_search(self) -> Self:
