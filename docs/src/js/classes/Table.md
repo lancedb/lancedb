@@ -690,6 +690,31 @@ of the given query
 
 ***
 
+### setUnenforcedPrimaryKey()
+
+```ts
+abstract setUnenforcedPrimaryKey(columns): Promise<void>
+```
+
+Set the unenforced primary key for this table to a single column.
+
+"Unenforced" means LanceDB does not check uniqueness on writes; the
+column is recorded in the schema as the primary key for use by features
+such as `merge_insert`. Only single-column primary keys are supported,
+and the key cannot be changed once set.
+
+#### Parameters
+
+* **columns**: `string` \| `string`[]
+    The primary key column. A one-element
+    array is also accepted; passing more than one column is rejected.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### stats()
 
 ```ts

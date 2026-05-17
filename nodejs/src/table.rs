@@ -345,6 +345,14 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn set_unenforced_primary_key(&self, columns: Vec<String>) -> napi::Result<()> {
+        self.inner_ref()?
+            .set_unenforced_primary_key(columns)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
