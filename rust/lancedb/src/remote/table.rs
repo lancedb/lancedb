@@ -1673,6 +1673,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
+    async fn set_lsm_write_spec(&self, _spec: crate::table::LsmWriteSpec) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_lsm_write_spec is not supported on LanceDB cloud.".into(),
+        })
+    }
+
+    async fn unset_lsm_write_spec(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "unset_lsm_write_spec is not supported on LanceDB cloud.".into(),
+        })
+    }
+
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(RemoteTags { inner: self }))
     }

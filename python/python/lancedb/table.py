@@ -154,6 +154,7 @@ if TYPE_CHECKING:
         AlterColumnsResult,
         DeleteResult,
         DropColumnsResult,
+        LsmWriteSpec,
         MergeResult,
         UpdateResult,
     )
@@ -3268,6 +3269,16 @@ class LanceTable(Table):
         [`AsyncTable.set_unenforced_primary_key`][lancedb.AsyncTable.set_unenforced_primary_key]."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
+    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
+        """Install an LsmWriteSpec. See
+        [`AsyncTable.set_lsm_write_spec`][lancedb.AsyncTable.set_lsm_write_spec]."""
+        return LOOP.run(self._table.set_lsm_write_spec(spec))
+
+    def unset_lsm_write_spec(self) -> None:
+        """Remove the LsmWriteSpec. See
+        [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
+        return LOOP.run(self._table.unset_lsm_write_spec())
+
     def uses_v2_manifest_paths(self) -> bool:
         """
         Check if the table is using the new v2 manifest paths.
@@ -3837,6 +3848,35 @@ class AsyncTable:
         else:
             columns = list(columns)
         await self._inner.set_unenforced_primary_key(columns)
+
+    async def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
+        """Install an LsmWriteSpec on this table.
+
+        The spec selects Lance's MemWAL LSM-style write path for future
+        `merge_insert` calls. For a bucket spec, the table must already
+        have a matching single-column unenforced primary key set via
+        [`set_unenforced_primary_key`].
+
+        Parameters
+        ----------
+        spec : LsmWriteSpec
+            Construct via `LsmWriteSpec.bucket(column, num_buckets)` or
+            `LsmWriteSpec.unsharded()`.
+
+        Examples
+        --------
+        >>> from lancedb._lancedb import LsmWriteSpec
+        >>> # await table.set_unenforced_primary_key("id")
+        >>> # await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
+        """
+        await self._inner.set_lsm_write_spec(spec)
+
+    async def unset_lsm_write_spec(self) -> None:
+        """Remove the LsmWriteSpec from this table.
+
+        This is a no-op if no spec is currently set.
+        """
+        await self._inner.unset_lsm_write_spec()
 
     @property
     def name(self) -> str:

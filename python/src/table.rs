@@ -171,6 +171,104 @@ impl From<lancedb::table::MergeResult> for MergeResult {
     }
 }
 
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `merge_insert`.
+///
+/// Constructed via the `bucket(...)` or `unsharded()` classmethods, then
+/// optionally chain `with_maintained_indexes(...)` to have the MemWAL
+/// keep listed indexes up to date as rows are appended.
+#[pyclass(from_py_object)]
+#[derive(Clone, Debug)]
+pub struct LsmWriteSpec {
+    inner: lancedb::table::LsmWriteSpec,
+}
+
+#[pymethods]
+impl LsmWriteSpec {
+    /// Hash-bucket partitioning by the unenforced primary key column.
+    #[staticmethod]
+    pub fn bucket(column: String, num_buckets: u32) -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::bucket(column, num_buckets),
+        }
+    }
+
+    /// No partitioning — every `merge_insert` call writes to a single
+    /// MemWAL shard.
+    #[staticmethod]
+    pub fn unsharded() -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::unsharded(),
+        }
+    }
+
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that
+    /// already exists on the table at the time `set_lsm_write_spec`
+    /// is called.
+    pub fn with_maintained_indexes(&self, indexes: Vec<String>) -> Self {
+        Self {
+            inner: self.inner.clone().with_maintained_indexes(indexes),
+        }
+    }
+
+    pub fn __repr__(&self) -> String {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+            } => format!(
+                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?})",
+                column, num_buckets, maintained_indexes,
+            ),
+            lancedb::table::LsmWriteSpec::Unsharded { maintained_indexes } => format!(
+                "LsmWriteSpec.unsharded(maintained_indexes={:?})",
+                maintained_indexes,
+            ),
+        }
+    }
+
+    /// Discriminator string identifying the variant ("bucket" or "unsharded").
+    #[getter]
+    pub fn spec_type(&self) -> &'static str {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
+        }
+    }
+
+    /// Bucket variant only: the column hash-bucketed by this spec.
+    #[getter]
+    pub fn column(&self) -> Option<String> {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { column, .. } => Some(column.clone()),
+            _ => None,
+        }
+    }
+
+    /// Bucket variant only: the number of buckets.
+    #[getter]
+    pub fn num_buckets(&self) -> Option<u32> {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            _ => None,
+        }
+    }
+
+    /// Names of indexes the MemWAL should keep up to date during writes.
+    #[getter]
+    pub fn maintained_indexes(&self) -> Vec<String> {
+        self.inner.maintained_indexes().to_vec()
+    }
+}
+
+impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+    fn from(spec: LsmWriteSpec) -> Self {
+        spec.inner
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
@@ -815,6 +913,24 @@ impl Table {
                 .set_unenforced_primary_key(columns)
                 .await
                 .infer_error()
+        })
+    }
+
+    pub fn set_lsm_write_spec<'a>(
+        self_: PyRef<'a, Self>,
+        spec: LsmWriteSpec,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let native_spec = lancedb::table::LsmWriteSpec::from(spec);
+        future_into_py(self_.py(), async move {
+            inner.set_lsm_write_spec(native_spec).await.infer_error()
+        })
+    }
+
+    pub fn unset_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.unset_lsm_write_spec().await.infer_error()
         })
     }
 

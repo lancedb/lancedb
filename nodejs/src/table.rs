@@ -353,6 +353,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::LsmWriteSpec::try_from(spec)?;
+        self.inner_ref()?
+            .set_lsm_write_spec(native_spec)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn unset_lsm_write_spec(&self) -> napi::Result<()> {
+        self.inner_ref()?
+            .unset_lsm_write_spec()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
@@ -542,6 +559,49 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+        }
+    }
+}
+
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `mergeInsert`.
+///
+/// `specType` must be either `"bucket"` or `"unsharded"`. For `"bucket"`,
+/// `column` and `numBuckets` are required; for `"unsharded"` they are
+/// ignored.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct LsmWriteSpec {
+    /// One of `"bucket"` or `"unsharded"`.
+    pub spec_type: String,
+    /// Bucket variant: the unenforced primary key column to hash-bucket.
+    pub column: Option<String>,
+    /// Bucket variant: the number of buckets, in `[1, 1024]`.
+    pub num_buckets: Option<u32>,
+    /// Names of indexes the MemWAL should keep up to date during writes.
+    pub maintained_indexes: Option<Vec<String>>,
+}
+
+impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+    type Error = napi::Error;
+
+    fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
+        let maintained = value.maintained_indexes.unwrap_or_default();
+        match value.spec_type.as_str() {
+            "bucket" => {
+                let column = value.column.ok_or_else(|| {
+                    napi::Error::from_reason("LsmWriteSpec bucket requires `column`")
+                })?;
+                let num_buckets = value.num_buckets.ok_or_else(|| {
+                    napi::Error::from_reason("LsmWriteSpec bucket requires `numBuckets`")
+                })?;
+                Ok(Self::bucket(column, num_buckets).with_maintained_indexes(maintained))
+            }
+            "unsharded" => Ok(Self::unsharded().with_maintained_indexes(maintained)),
+            other => Err(napi::Error::from_reason(format!(
+                "LsmWriteSpec `specType` must be 'bucket' or 'unsharded', got '{}'",
+                other
+            ))),
         }
     }
 }

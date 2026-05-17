@@ -107,6 +107,24 @@ export interface Version {
 }
 
 /**
+ * Specification selecting Lance's MemWAL LSM-style write path for
+ * `mergeInsert`.
+ *
+ * `specType` is either `"bucket"` or `"unsharded"`. For `"bucket"`,
+ * `column` and `numBuckets` are required.
+ */
+export interface LsmWriteSpec {
+  /** One of `"bucket"` or `"unsharded"`. */
+  specType: "bucket" | "unsharded";
+  /** Bucket variant: the unenforced primary key column to hash-bucket. */
+  column?: string;
+  /** Bucket variant: the number of buckets, in `[1, 1024]`. */
+  numBuckets?: number;
+  /** Names of indexes the MemWAL should keep up to date during writes. */
+  maintainedIndexes?: string[];
+}
+
+/**
  * A Table is a collection of Records in a LanceDB Database.
  *
  * A Table object is expected to be long lived and reused for multiple operations.
@@ -461,6 +479,24 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
+  /**
+   * Install an {@link LsmWriteSpec} on this table.
+   *
+   * The spec selects Lance's MemWAL LSM-style write path for future
+   * `mergeInsert` calls. For a `"bucket"` spec, the table must already
+   * have a matching single-column unenforced primary key set via
+   * {@link Table#setUnenforcedPrimaryKey}.
+   * @param {LsmWriteSpec} spec The spec to install.
+   * @returns {Promise<void>}
+   */
+  abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
+  /**
+   * Remove the {@link LsmWriteSpec} from this table.
+   *
+   * This is a no-op if no spec is currently set.
+   * @returns {Promise<void>}
+   */
+  abstract unsetLsmWriteSpec(): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -912,6 +948,14 @@ export class LocalTable extends Table {
   async setUnenforcedPrimaryKey(columns: string | string[]): Promise<void> {
     const cols = typeof columns === "string" ? [columns] : columns;
     return await this.inner.setUnenforcedPrimaryKey(cols);
+  }
+
+  async setLsmWriteSpec(spec: LsmWriteSpec): Promise<void> {
+    return await this.inner.setLsmWriteSpec(spec);
+  }
+
+  async unsetLsmWriteSpec(): Promise<void> {
+    return await this.inner.unsetLsmWriteSpec();
   }
 
   async version(): Promise<number> {

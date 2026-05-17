@@ -15,8 +15,8 @@ use pyo3::{
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
-    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, MergeResult,
-    Table, UpdateResult,
+    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, LsmWriteSpec,
+    MergeResult, Table, UpdateResult,
 };
 
 pub mod arrow;
@@ -52,6 +52,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AlterColumnsResult>()?;
     m.add_class::<AddResult>()?;
     m.add_class::<MergeResult>()?;
+    m.add_class::<LsmWriteSpec>()?;
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;

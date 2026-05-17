@@ -690,6 +690,30 @@ of the given query
 
 ***
 
+### setLsmWriteSpec()
+
+```ts
+abstract setLsmWriteSpec(spec): Promise<void>
+```
+
+Install an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) on this table.
+
+The spec selects Lance's MemWAL LSM-style write path for future
+`mergeInsert` calls. For a `"bucket"` spec, the table must already
+have a matching single-column unenforced primary key set via
+[Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey).
+
+#### Parameters
+
+* **spec**: [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)
+    The spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### setUnenforcedPrimaryKey()
 
 ```ts
@@ -815,6 +839,22 @@ Return the table as an arrow table
 #### Returns
 
 `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### unsetLsmWriteSpec()
+
+```ts
+abstract unsetLsmWriteSpec(): Promise<void>
+```
+
+Remove the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) from this table.
+
+This is a no-op if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
