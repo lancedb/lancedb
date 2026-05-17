@@ -29,6 +29,7 @@ from lancedb.query import (
     MultiMatchQuery,
     PhraseQuery,
     BooleanQuery,
+    ColumnOrdering,
     Occur,
     LanceFtsQueryBuilder,
 )
@@ -497,6 +498,36 @@ async def test_search_fts_specify_column_async(async_table):
         assert False
     except Exception:
         pass
+
+
+def test_search_order_by_descending(table):
+    table.create_fts_index("text")
+    rows = (
+        table.search("puppy")
+        .order_by([ColumnOrdering(column_name="count", ascending=False)])
+        .limit(20)
+        .select(["text", "count"])
+        .to_list()
+    )
+
+    for r in rows:
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+
+
+def test_search_order_by_ascending(table):
+    table.create_fts_index("text")
+    rows = (
+        table.search("puppy")
+        .order_by([ColumnOrdering(column_name="count", ascending=True)])
+        .limit(20)
+        .select(["text", "count"])
+        .to_list()
+    )
+
+    for r in rows:
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"]) == rows
 
 
 def test_create_index_from_table(tmp_path, table):
