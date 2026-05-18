@@ -10,7 +10,7 @@ import pyarrow as pa
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_rows
+from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -901,6 +901,7 @@ class Permutation:
             "pandas",
             "arrow",
             "torch",
+            "torch_row",
             "torch_col",
             "polars",
         ],
@@ -916,15 +917,20 @@ class Permutation:
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a list of tensors, one per row
+        - "torch" - the batch will be a dict of torch tensors keyed by column name
+          (one 1-D tensor per column). This matches HuggingFace's
+          ``dataset.set_format("torch")`` and works with the default
+          ``torch.utils.data.DataLoader`` collate.
+        - "torch_row" - the batch will be a list of torch tensors, one per row.
+          This was the behavior of "torch" prior to the HuggingFace alignment.
         - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
         - "polars" - the batch will be a polars DataFrame
 
         Conversion may or may not involve a data copy.  Lance uses Arrow internally
         and so it is able to zero-copy to the arrow and polars formats.
 
-        Conversion to torch_col will be zero-copy but will only support a subset of data
-        types (numeric types).
+        Conversion to torch and torch_col will be zero-copy but will only support a
+        subset of data types (numeric types).
 
         Conversion to numpy and/or pandas will typically be zero-copy for numeric
         types.  Conversion of strings, lists, and structs will require creating python
@@ -945,6 +951,10 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
+            new = self.with_transform(batch_to_tensor_dict)
+            new._torch_dict_format = True
+            return new
+        elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":
             return self.with_transform(batch_to_tensor)
@@ -966,6 +976,7 @@ class Permutation:
         assert transform is not None, "transform is required"
         new = copy.copy(self)
         new.transform_fn = transform
+        new._torch_dict_format = False
         return new
 
     def __getitem__(self, index: int) -> Any:
@@ -983,7 +994,15 @@ class Permutation:
             return await self.reader.take_offsets(indices, selection=self.selection)
 
         batch = LOOP.run(do_getitems())
-        return self.transform_fn(batch)
+        result = self.transform_fn(batch)
+        # For with_format("torch"), the transform produces a dict of batched
+        # tensors. Unbatch into a list of per-row dicts so PyTorch's default
+        # DataLoader collate (which expects a list of samples) can stack them
+        # back into a batched dict. iter() still yields the batched dict
+        # directly.
+        if getattr(self, "_torch_dict_format", False):
+            return [{k: v[i] for k, v in result.items()} for i in range(len(indices))]
+        return result
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
