@@ -968,22 +968,32 @@ class Permutation:
         new.transform_fn = transform
         return new
 
+    def take_offsets(self, offsets: list[int]) -> Any:
+        """
+        Take rows from the permutation by offset
+
+        The returned value is passed through the permutation's current transform,
+        so `with_format` and `with_transform` affect this method in the same way
+        they affect iteration.
+        """
+
+        async def do_take_offsets():
+            return await self.reader.take_offsets(offsets, selection=self.selection)
+
+        batch = LOOP.run(do_take_offsets())
+        return self.transform_fn(batch)
+
     def __getitem__(self, index: int) -> Any:
         """
         Returns a single row from the permutation by offset
         """
-        return self.__getitems__([index])
+        return self.take_offsets([index])
 
     def __getitems__(self, indices: list[int]) -> Any:
         """
         Returns rows from the permutation by offset
         """
-
-        async def do_getitems():
-            return await self.reader.take_offsets(indices, selection=self.selection)
-
-        batch = LOOP.run(do_getitems())
-        return self.transform_fn(batch)
+        return self.take_offsets(indices)
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
