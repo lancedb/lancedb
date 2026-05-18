@@ -47,6 +47,47 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_old_call", data=data)
+
+    expected = data.to_pandas()
+    pd.testing.assert_frame_equal(table.to_pandas(), expected)
+
+
+def test_table_to_pandas_blob_bytes(tmp_db: DBConnection):
+    data = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+    table = tmp_db.create_table("test_to_pandas_blob_bytes", data=data)
+
+    df = table.to_pandas(blob_mode="bytes")
+
+    assert df["blob"].tolist() == [b"hello", b"world"]
+
+
+def test_table_to_pandas_kwargs(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = tmp_db.create_table("test_to_pandas_kwargs", data=data)
+
+    df = table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
+
+
 def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     data = [{"vector": [0, 300]}]
 

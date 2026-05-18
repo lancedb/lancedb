@@ -718,6 +718,7 @@ class LanceQueryBuilder(ABC):
         flatten: Optional[Union[int, bool]] = None,
         *,
         timeout: Optional[timedelta] = None,
+        **kwargs,
     ) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
@@ -735,9 +736,12 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+        **kwargs
+            Forwarded to pyarrow.Table.to_pandas after query execution and
+            optional flattening.
         """
         tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
-        return tbl.to_pandas()
+        return tbl.to_pandas(**kwargs)
 
     @abstractmethod
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
@@ -2352,6 +2356,7 @@ class AsyncQueryBase(object):
         self,
         flatten: Optional[Union[int, bool]] = None,
         timeout: Optional[timedelta] = None,
+        **kwargs,
     ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
@@ -2384,10 +2389,13 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        **kwargs
+            Forwarded to pyarrow.Table.to_pandas after query execution and
+            optional flattening.
         """
         return (
             flatten_columns(await self.to_arrow(timeout=timeout), flatten)
-        ).to_pandas()
+        ).to_pandas(**kwargs)
 
     async def to_polars(
         self,
@@ -3389,6 +3397,7 @@ class BaseQueryBuilder(object):
         self,
         flatten: Optional[Union[int, bool]] = None,
         timeout: Optional[timedelta] = None,
+        **kwargs,
     ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
@@ -3421,8 +3430,11 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        **kwargs
+            Forwarded to pyarrow.Table.to_pandas after query execution and
+            optional flattening.
         """
-        return LOOP.run(self._inner.to_pandas(flatten, timeout))
+        return LOOP.run(self._inner.to_pandas(flatten, timeout, **kwargs))
 
     def to_polars(
         self,

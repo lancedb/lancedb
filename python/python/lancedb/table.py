@@ -87,6 +87,8 @@ from .util import (
 )
 from .index import lang_mapping
 
+BlobMode = Literal["lazy", "bytes", "descriptions"]
+
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
 _MODEL_BACKED_TOKENIZER_ERRORS = (
     "unknown base tokenizer",
@@ -760,14 +762,24 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(self) -> "pandas.DataFrame":
+    def to_pandas(
+        self, blob_mode: BlobMode = "lazy", **kwargs
+    ) -> "pandas.DataFrame":
         """Return the table as a pandas DataFrame.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            Controls how blob columns are returned for backends that support
+            Lance blob-aware pandas conversion.
+        **kwargs
+            Forwarded to PyArrow / Lance pandas conversion.
 
         Returns
         -------
         pd.DataFrame
         """
-        return self.to_arrow().to_pandas()
+        return self.to_arrow().to_pandas(**kwargs)
 
     @abstractmethod
     def to_arrow(self) -> pa.Table:
@@ -2183,14 +2195,21 @@ class LanceTable(Table):
         """Return the first n rows of the table."""
         return LOOP.run(self._table.head(n))
 
-    def to_pandas(self) -> "pd.DataFrame":
+    def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            Controls how Lance blob columns are returned.
+        **kwargs
+            Forwarded to Lance pandas conversion.
 
         Returns
         -------
         pd.DataFrame
         """
-        return self.to_arrow().to_pandas()
+        return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
     def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
