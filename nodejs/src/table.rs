@@ -103,8 +103,10 @@ impl Table {
 
         if let Some(tsfn) = progress_callback {
             op = op.progress(move |p| {
-                // Non-blocking: drop progress events rather than back-pressuring
-                // the write if the JS callback can't keep up.
+                // NonBlocking: dispatch onto the JS event loop without
+                // blocking the writer thread.  With napi-rs's default
+                // unbounded queue, events are not dropped — a slow JS
+                // callback will just queue them.
                 tsfn.call(
                     WriteProgressInfo::from(p),
                     ThreadsafeFunctionCallMode::NonBlocking,

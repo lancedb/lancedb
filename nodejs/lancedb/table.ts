@@ -88,9 +88,9 @@ export interface AddDataOptions {
    * Optional callback invoked periodically with write progress.
    *
    * The callback is fired once per batch written and once more with
-   * `done: true` when the write completes. Calls are non-blocking — if the
-   * callback is slow, intermediate updates may be dropped to avoid stalling
-   * the write.
+   * `done: true` when the write completes. Calls are dispatched
+   * asynchronously to the JS event loop and never block the write — a slow
+   * callback will queue events rather than back-pressure the writer.
    *
    * Errors thrown from the callback are logged with `console.warn` and
    * swallowed — they do not abort the write.
