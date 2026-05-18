@@ -4220,7 +4220,7 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
             .await
             .expect_err("should reject without PK");
-        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
 
         // Set PK, then a mismatched column on the spec must be rejected.
         table.set_unenforced_primary_key(["id"]).await.unwrap();
@@ -4228,7 +4228,7 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::bucket("name", 4))
             .await
             .expect_err("should reject column != PK");
-        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
 
         // Reject num_buckets out of range.
         for bad in [0u32, 1025] {
@@ -4236,7 +4236,7 @@ mod tests {
                 .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
-            assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
         }
 
         // Happy path: install spec; verify MemWAL details record it.
@@ -4253,8 +4253,8 @@ mod tests {
             .unwrap()
             .expect("MemWAL index should be initialized");
         assert_eq!(details.num_shards, 4);
-        assert_eq!(details.shard_specs.len(), 1);
-        let installed = &details.shard_specs[0];
+        assert_eq!(details.sharding_specs.len(), 1);
+        let installed = &details.sharding_specs[0];
         assert_eq!(installed.fields.len(), 1);
         let f = &installed.fields[0];
         assert_eq!(f.transform.as_deref(), Some("bucket"));
@@ -4310,8 +4310,8 @@ mod tests {
             .unwrap()
             .expect("MemWAL index should be initialized");
         assert_eq!(details.num_shards, 1);
-        assert_eq!(details.shard_specs.len(), 1);
-        let f = &details.shard_specs[0].fields[0];
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
         assert_eq!(f.transform.as_deref(), Some("unsharded"));
         assert!(f.source_ids.is_empty());
     }
