@@ -435,9 +435,7 @@ class LsmWriteSpec:
         """Return a copy of this spec asking the MemWAL to keep the named
         indexes up to date as rows are appended."""
         ...
-    def with_writer_config_defaults(
-        self, defaults: Dict[str, str]
-    ) -> "LsmWriteSpec":
+    def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "LsmWriteSpec":
         """Return a copy of this spec recording the given default
         `ShardWriter` configuration in the MemWAL index."""
         ...
