@@ -4486,7 +4486,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "snafu 0.9.0",
+ "snafu",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -4553,7 +4553,7 @@ dependencies = [
  "rand 0.9.4",
  "roaring",
  "serde_json",
- "snafu 0.9.0",
+ "snafu",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -4815,7 +4815,7 @@ dependencies = [
  "bytes",
  "lance-core",
  "lance-namespace-reqwest-client",
- "snafu 0.9.0",
+ "snafu",
 ]
 
 [[package]]
@@ -4901,7 +4901,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "snafu 0.9.0",
+ "snafu",
  "tokio",
  "tracing",
  "url",
@@ -5004,7 +5004,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "snafu 0.8.9",
+ "snafu",
  "tempfile",
  "test-log",
  "tokenizers",
@@ -5060,7 +5060,7 @@ dependencies = [
  "pyo3-build-config",
  "serde",
  "serde_json",
- "snafu 0.8.9",
+ "snafu",
  "tokio",
 ]
 
@@ -6906,7 +6906,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.11.0",
  "log",
  "multimap",
@@ -8446,32 +8446,11 @@ dependencies = [
 
 [[package]]
 name = "snafu"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e84b3f4eacbf3a1ce05eac6763b4d629d60cbc94d632e4092c54ade71f1e1a2"
-dependencies = [
- "snafu-derive 0.8.9",
-]
-
-[[package]]
-name = "snafu"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1d4bced6a69f90b2056c03dcff2c4737f98d6fb9e0853493996e1d253ca29c6"
 dependencies = [
- "snafu-derive 0.9.0",
-]
-
-[[package]]
-name = "snafu-derive"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
-dependencies = [
- "heck 0.4.1",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
+ "snafu-derive",
 ]
 
 [[package]]
@@ -8480,7 +8459,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
