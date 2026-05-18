@@ -78,7 +78,7 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
 
 /// Remove the [`LsmWriteSpec`] from the table by dropping the MemWAL index.
 ///
-/// No-op if no spec is currently set.
+/// Errors if no spec is currently set.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn unset_lsm_write_spec(table: &NativeTable) -> Result<()> {
     table.dataset.ensure_mutable()?;
@@ -86,7 +86,9 @@ pub(crate) async fn unset_lsm_write_spec(table: &NativeTable) -> Result<()> {
     {
         let dataset = table.dataset.get().await?;
         if dataset.mem_wal_index_details().await?.is_none() {
-            return Ok(());
+            return Err(Error::InvalidInput {
+                message: "unset_lsm_write_spec: no LSM write spec is set on this table".into(),
+            });
         }
     }
 

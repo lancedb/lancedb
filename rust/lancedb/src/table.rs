@@ -1293,19 +1293,42 @@ impl Table {
         self.inner.set_unenforced_primary_key(&borrowed).await
     }
 
-    /// Install an [`LsmWriteSpec`] on this table.
+    /// Install an [`LsmWriteSpec`] on this table, selecting Lance's MemWAL
+    /// LSM-style write path for future `merge_insert` calls.
     ///
-    /// The spec selects Lance's MemWAL LSM-style write path for future
-    /// `merge_insert` calls. For [`LsmWriteSpec::Bucket`], the table must
-    /// already have a matching single-column unenforced primary key set
-    /// via [`Table::set_unenforced_primary_key`].
+    /// [`LsmWriteSpec`] chooses one of three sharding strategies:
+    ///
+    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by the single-column
+    ///   unenforced primary key.
+    /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
+    /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
+    ///
+    /// All variants require the table to have an unenforced primary key
+    /// ([`Table::set_unenforced_primary_key`]); bucket sharding additionally
+    /// requires it to be the single column being bucketed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use lancedb::table::{LsmWriteSpec, Table};
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table.set_unenforced_primary_key(["id"]).await?;
+    /// table
+    ///     .set_lsm_write_spec(
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.inner.set_lsm_write_spec(spec).await
     }
 
-    /// Remove the [`LsmWriteSpec`] from this table.
+    /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
+    /// `merge_insert` write path.
     ///
-    /// This is a no-op if no spec is currently set.
+    /// Errors if no spec is currently set.
     pub async fn unset_lsm_write_spec(&self) -> Result<()> {
         self.inner.unset_lsm_write_spec().await
     }
@@ -4481,8 +4504,8 @@ mod tests {
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
 
-        // unset is a no-op when no spec is set.
-        table.unset_lsm_write_spec().await.unwrap();
+        // unset errors when no spec is set.
+        table.unset_lsm_write_spec().await.unwrap_err();
 
         // Install a spec, then unset it.
         table.set_unenforced_primary_key(["id"]).await.unwrap();
@@ -4501,8 +4524,8 @@ mod tests {
             assert!(dataset.mem_wal_index_details().await.unwrap().is_none());
         }
 
-        // unset is idempotent and a fresh spec can be installed afterwards.
-        table.unset_lsm_write_spec().await.unwrap();
+        // A second unset errors; a fresh spec can still be installed afterwards.
+        table.unset_lsm_write_spec().await.unwrap_err();
         table
             .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
             .await

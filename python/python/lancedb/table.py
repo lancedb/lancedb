@@ -3853,29 +3853,37 @@ class AsyncTable:
         """Install an LsmWriteSpec on this table.
 
         The spec selects Lance's MemWAL LSM-style write path for future
-        `merge_insert` calls. The table must already have an unenforced
-        primary key set via [`set_unenforced_primary_key`]; bucket sharding
-        additionally requires it to be a single column matching the bucket
-        column.
+        `merge_insert` calls. ``LsmWriteSpec`` chooses one of three sharding
+        strategies:
+
+        - ``LsmWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
+          the single-column unenforced primary key.
+        - ``LsmWriteSpec.identity(column)`` — shard by the raw value of a
+          scalar column.
+        - ``LsmWriteSpec.unsharded()`` — route every write to a single shard.
+
+        All variants require the table to have an unenforced primary key set
+        via [`set_unenforced_primary_key`]; bucket sharding additionally
+        requires it to be the single column being bucketed.
 
         Parameters
         ----------
         spec : LsmWriteSpec
-            Construct via `LsmWriteSpec.bucket(column, num_buckets)`,
-            `LsmWriteSpec.identity(column)`, or `LsmWriteSpec.unsharded()`.
+            The sharding spec to install.
 
         Examples
         --------
         >>> from lancedb._lancedb import LsmWriteSpec
-        >>> # await table.set_unenforced_primary_key("id")
-        >>> # await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
+        >>> # table.set_unenforced_primary_key("id")
+        >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
         await self._inner.set_lsm_write_spec(spec)
 
     async def unset_lsm_write_spec(self) -> None:
         """Remove the LsmWriteSpec from this table.
 
-        This is a no-op if no spec is currently set.
+        Reverts to the standard `merge_insert` write path. Errors if no spec
+        is currently set.
         """
         await self._inner.unset_lsm_write_spec()
 

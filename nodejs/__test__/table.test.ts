@@ -2424,8 +2424,8 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
       numBuckets: 4,
     });
     await table.unsetLsmWriteSpec();
-    // unset is idempotent.
-    await table.unsetLsmWriteSpec();
+    // A second unset errors — there is no spec left to remove.
+    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
     // A fresh spec can be installed after unset.
     await table.setLsmWriteSpec({
       specType: "bucket",

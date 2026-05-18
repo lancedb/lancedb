@@ -65,15 +65,17 @@ def test_set_lsm_write_spec_validates(tmp_path):
 def test_unset_lsm_write_spec(tmp_path):
     _db, table = _make_table(tmp_path)
 
-    # unset is a no-op when no spec is set.
-    table.unset_lsm_write_spec()
+    # unset errors when no spec is set.
+    with pytest.raises(Exception, match="no LSM write spec"):
+        table.unset_lsm_write_spec()
 
     # Install a spec, then remove it; afterwards a fresh spec can be set.
     table.set_unenforced_primary_key("id")
     table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
     table.unset_lsm_write_spec()
-    # Idempotent.
-    table.unset_lsm_write_spec()
+    # A second unset errors — there is no spec left to remove.
+    with pytest.raises(Exception, match="no LSM write spec"):
+        table.unset_lsm_write_spec()
     table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 8))
 
 
@@ -121,8 +123,9 @@ async def test_async_set_unset_lsm_write_spec(tmp_path):
     await table.set_unenforced_primary_key("id")
     await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
     await table.unset_lsm_write_spec()
-    # unset is idempotent.
-    await table.unset_lsm_write_spec()
+    # A second unset errors.
+    with pytest.raises(Exception, match="no LSM write spec"):
+        await table.unset_lsm_write_spec()
 
 
 def test_set_identity_spec(tmp_path):

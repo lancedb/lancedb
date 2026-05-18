@@ -483,20 +483,38 @@ export abstract class Table {
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
   /**
-   * Install an {@link LsmWriteSpec} on this table.
+   * Install an {@link LsmWriteSpec} on this table, selecting Lance's MemWAL
+   * LSM-style write path for future `mergeInsert` calls.
    *
-   * The spec selects Lance's MemWAL LSM-style write path for future
-   * `mergeInsert` calls. For a `"bucket"` spec, the table must already
-   * have a matching single-column unenforced primary key set via
-   * {@link Table#setUnenforcedPrimaryKey}.
-   * @param {LsmWriteSpec} spec The spec to install.
+   * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+   *
+   * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
+   *   key (`column` and `numBuckets` required).
+   * - `"identity"` — shard by the raw value of a scalar `column`.
+   * - `"unsharded"` — route every write to a single shard.
+   *
+   * All variants require the table to have an unenforced primary key
+   * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
+   * requires it to be the single column being bucketed.
+   * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * await table.setUnenforcedPrimaryKey("id");
+   * await table.setLsmWriteSpec({
+   *   specType: "bucket",
+   *   column: "id",
+   *   numBuckets: 16,
+   *   maintainedIndexes: ["id_idx"],
+   * });
+   * ```
    */
   abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
   /**
-   * Remove the {@link LsmWriteSpec} from this table.
+   * Remove the {@link LsmWriteSpec} from this table, reverting to the standard
+   * `mergeInsert` write path.
    *
-   * This is a no-op if no spec is currently set.
+   * Errors if no spec is currently set.
    * @returns {Promise<void>}
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
