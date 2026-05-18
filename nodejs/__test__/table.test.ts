@@ -982,6 +982,16 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create a HnswFlat index", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswFlat({
+        numPartitions: 10,
+      }),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("create a label list index", async () => {
     await tbl.createIndex("tags", {
       config: Index.labelList(),

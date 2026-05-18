@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use lancedb::index::Index as LanceDbIndex;
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
 use lancedb::index::vector::{
-    IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
-    IvfRqIndexBuilder,
+    IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, IvfRqIndexBuilder,
 };
 use napi_derive::napi;
 
@@ -267,6 +267,40 @@ impl Index {
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn hnsw_flat(
+        distance_type: Option<String>,
+        num_partitions: Option<u32>,
+        max_iterations: Option<u32>,
+        sample_rate: Option<u32>,
+        m: Option<u32>,
+        ef_construction: Option<u32>,
+    ) -> napi::Result<Self> {
+        let mut hnsw_flat_builder = IvfHnswFlatIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = parse_distance_type(distance_type)?;
+            hnsw_flat_builder = hnsw_flat_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            hnsw_flat_builder = hnsw_flat_builder.num_partitions(num_partitions);
+        }
+        if let Some(max_iterations) = max_iterations {
+            hnsw_flat_builder = hnsw_flat_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            hnsw_flat_builder = hnsw_flat_builder.sample_rate(sample_rate);
+        }
+        if let Some(m) = m {
+            hnsw_flat_builder = hnsw_flat_builder.num_edges(m);
+        }
+        if let Some(ef_construction) = ef_construction {
+            hnsw_flat_builder = hnsw_flat_builder.ef_construction(ef_construction);
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))),
         })
     }
 }
