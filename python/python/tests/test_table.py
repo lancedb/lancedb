@@ -57,6 +57,7 @@ def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
 
 
 def test_table_to_pandas_blob_bytes(tmp_db: DBConnection):
+    pytest.importorskip("lance")
     data = pa.table(
         {
             "id": pa.array([1, 2], pa.int64()),
