@@ -962,11 +962,43 @@ class Permutation:
 
         Note: transforms are not invoked in parallel.  This method is not a good place
         for expensive operations such as image decoding.
+
+        For a higher-level API that works with Python dicts, see map().
         """
         assert transform is not None, "transform is required"
         new = copy.copy(self)
         new.transform_fn = transform
         return new
+
+    def map(self, fn: Callable, *, batched: bool = False) -> "Permutation":
+        """
+        Apply a transformation function to each row or batch.
+
+        When batched=False (default), fn receives a single row as a dict
+        and should return a dict. This is applied to every row.
+
+        When batched=True, fn receives a column-oriented dict (keys are
+        column names, values are lists) and should return a dict of the
+        same shape.
+
+        This is a lazy transform -- fn is not called until data is
+        iterated or accessed. This replaces any previously set format
+        or transform.
+        """
+        if not callable(fn):
+            raise TypeError("fn must be callable")
+
+        if batched:
+
+            def _wrapper(batch: pa.RecordBatch):
+                return fn(Transforms.arrow2pythoncol(batch))
+
+        else:
+
+            def _wrapper(batch: pa.RecordBatch):
+                return [fn(row) for row in Transforms.arrow2python(batch)]
+
+        return self.with_transform(_wrapper)
 
     def __getitem__(self, index: int) -> Any:
         """
