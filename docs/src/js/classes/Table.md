@@ -690,6 +690,49 @@ of the given query
 
 ***
 
+### setLsmWriteSpec()
+
+```ts
+abstract setLsmWriteSpec(spec): Promise<void>
+```
+
+Install an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) on this table, selecting Lance's MemWAL
+LSM-style write path for future `mergeInsert` calls.
+
+`LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+
+- `"bucket"` — hash-bucket writes by the single-column unenforced primary
+  key (`column` and `numBuckets` required).
+- `"identity"` — shard by the raw value of a scalar `column`.
+- `"unsharded"` — route every write to a single shard.
+
+All variants require the table to have an unenforced primary key
+([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
+requires it to be the single column being bucketed.
+
+#### Parameters
+
+* **spec**: [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)
+    The sharding spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+await table.setUnenforcedPrimaryKey("id");
+await table.setLsmWriteSpec({
+  specType: "bucket",
+  column: "id",
+  numBuckets: 16,
+  maintainedIndexes: ["id_idx"],
+});
+```
+
+***
+
 ### setUnenforcedPrimaryKey()
 
 ```ts
@@ -815,6 +858,23 @@ Return the table as an arrow table
 #### Returns
 
 `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### unsetLsmWriteSpec()
+
+```ts
+abstract unsetLsmWriteSpec(): Promise<void>
+```
+
+Remove the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) from this table, reverting to the standard
+`mergeInsert` write path.
+
+Errors if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 

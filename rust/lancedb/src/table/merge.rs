@@ -16,6 +16,8 @@ use crate::error::{Error, Result};
 
 use super::{BaseTable, NativeTable};
 
+pub(crate) mod lsm;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MergeResult {
     // The commit version associated with the operation.

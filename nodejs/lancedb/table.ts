@@ -107,6 +107,27 @@ export interface Version {
 }
 
 /**
+ * Specification selecting Lance's MemWAL LSM-style write path for
+ * `mergeInsert`.
+ *
+ * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
+ * `column` and `numBuckets` are required; for `"identity"`, `column` is
+ * required.
+ */
+export interface LsmWriteSpec {
+  /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
+  specType: "bucket" | "identity" | "unsharded";
+  /** Bucket and identity variants: the sharding column. */
+  column?: string;
+  /** Bucket variant: the number of buckets, in `[1, 1024]`. */
+  numBuckets?: number;
+  /** Names of indexes the MemWAL should keep up to date during writes. */
+  maintainedIndexes?: string[];
+  /** Default `ShardWriter` configuration recorded in the MemWAL index. */
+  writerConfigDefaults?: Record<string, string>;
+}
+
+/**
  * A Table is a collection of Records in a LanceDB Database.
  *
  * A Table object is expected to be long lived and reused for multiple operations.
@@ -461,6 +482,42 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
+  /**
+   * Install an {@link LsmWriteSpec} on this table, selecting Lance's MemWAL
+   * LSM-style write path for future `mergeInsert` calls.
+   *
+   * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+   *
+   * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
+   *   key (`column` and `numBuckets` required).
+   * - `"identity"` — shard by the raw value of a scalar `column`.
+   * - `"unsharded"` — route every write to a single shard.
+   *
+   * All variants require the table to have an unenforced primary key
+   * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
+   * requires it to be the single column being bucketed.
+   * @param {LsmWriteSpec} spec The sharding spec to install.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * await table.setUnenforcedPrimaryKey("id");
+   * await table.setLsmWriteSpec({
+   *   specType: "bucket",
+   *   column: "id",
+   *   numBuckets: 16,
+   *   maintainedIndexes: ["id_idx"],
+   * });
+   * ```
+   */
+  abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
+  /**
+   * Remove the {@link LsmWriteSpec} from this table, reverting to the standard
+   * `mergeInsert` write path.
+   *
+   * Errors if no spec is currently set.
+   * @returns {Promise<void>}
+   */
+  abstract unsetLsmWriteSpec(): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -912,6 +969,14 @@ export class LocalTable extends Table {
   async setUnenforcedPrimaryKey(columns: string | string[]): Promise<void> {
     const cols = typeof columns === "string" ? [columns] : columns;
     return await this.inner.setUnenforcedPrimaryKey(cols);
+  }
+
+  async setLsmWriteSpec(spec: LsmWriteSpec): Promise<void> {
+    return await this.inner.setLsmWriteSpec(spec);
+  }
+
+  async unsetLsmWriteSpec(): Promise<void> {
+    return await this.inner.unsetLsmWriteSpec();
   }
 
   async version(): Promise<number> {

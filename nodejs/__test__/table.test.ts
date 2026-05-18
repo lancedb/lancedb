@@ -2397,3 +2397,81 @@ describe("setUnenforcedPrimaryKey", () => {
     await expect(table.setUnenforcedPrimaryKey("id")).rejects.toThrow();
   });
 });
+
+describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function makeTable(conn: Connection): Promise<Table> {
+    return await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Int64(), false)]),
+    );
+  }
+
+  it("installs and removes a bucket spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+    });
+    await table.unsetLsmWriteSpec();
+    // A second unset errors — there is no spec left to remove.
+    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
+    // A fresh spec can be installed after unset.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 8,
+    });
+  });
+
+  it("installs an unsharded spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("installs an identity spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("rejects an invalid spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    // num_buckets out of range.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "id",
+        numBuckets: 0,
+      }),
+    ).rejects.toThrow();
+    // Column mismatch.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "missing",
+        numBuckets: 4,
+      }),
+    ).rejects.toThrow();
+  });
+});
