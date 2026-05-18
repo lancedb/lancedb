@@ -31,7 +31,7 @@ from lancedb.pydantic import PYDANTIC_VERSION
 from lancedb.background_loop import LOOP
 
 from . import __version__
-from .arrow import AsyncRecordBatchReader
+from .arrow import AsyncRecordBatchReader, table_to_pylist
 from .dependencies import pandas as pd
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
@@ -793,7 +793,7 @@ class LanceQueryBuilder(ABC):
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
         """
-        return self.to_arrow(timeout=timeout).to_pylist()
+        return table_to_pylist(self.to_arrow(timeout=timeout))
 
     def to_pydantic(
         self, model: type[T], *, timeout: Optional[timedelta] = None
@@ -812,7 +812,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
+        return [model(**row) for row in table_to_pylist(self.to_arrow(timeout=timeout))]
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -2346,7 +2346,7 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
-        return (await self.to_arrow(timeout=timeout)).to_pylist()
+        return table_to_pylist(await self.to_arrow(timeout=timeout))
 
     async def to_pandas(
         self,
@@ -2444,7 +2444,7 @@ class AsyncQueryBase(object):
         list[LanceModel]
         """
         return [
-            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
+            model(**row) for row in table_to_pylist(await self.to_arrow(timeout=timeout))
         ]
 
     async def explain_plan(self, verbose: Optional[bool] = False):
