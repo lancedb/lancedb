@@ -762,9 +762,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(
-        self, blob_mode: BlobMode = "lazy", **kwargs
-    ) -> "pandas.DataFrame":
+    def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pandas.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Parameters
@@ -2209,6 +2207,12 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
+        if blob_mode == "lazy" and (
+            self._namespace_client is not None
+            or get_uri_scheme(self._dataset_path) == "memory"
+        ):
+            return self.to_arrow().to_pandas(**kwargs)
+
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
     def to_arrow(self) -> pa.Table:
