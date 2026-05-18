@@ -102,7 +102,7 @@ aws-config = { version = "1.5.10" }
 aws-smithy-runtime = { version = "1.9.1" }
 datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
-rstest = "0.23.0"
+rstest = "0.26.1"
 test-log = "0.2"
 
 
