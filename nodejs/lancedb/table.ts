@@ -110,18 +110,21 @@ export interface Version {
  * Specification selecting Lance's MemWAL LSM-style write path for
  * `mergeInsert`.
  *
- * `specType` is either `"bucket"` or `"unsharded"`. For `"bucket"`,
- * `column` and `numBuckets` are required.
+ * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
+ * `column` and `numBuckets` are required; for `"identity"`, `column` is
+ * required.
  */
 export interface LsmWriteSpec {
-  /** One of `"bucket"` or `"unsharded"`. */
-  specType: "bucket" | "unsharded";
-  /** Bucket variant: the unenforced primary key column to hash-bucket. */
+  /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
+  specType: "bucket" | "identity" | "unsharded";
+  /** Bucket and identity variants: the sharding column. */
   column?: string;
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
   /** Names of indexes the MemWAL should keep up to date during writes. */
   maintainedIndexes?: string[];
+  /** Default `ShardWriter` configuration recorded in the MemWAL index. */
+  writerConfigDefaults?: Record<string, string>;
 }
 
 /**

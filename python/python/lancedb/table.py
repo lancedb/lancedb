@@ -3853,15 +3853,16 @@ class AsyncTable:
         """Install an LsmWriteSpec on this table.
 
         The spec selects Lance's MemWAL LSM-style write path for future
-        `merge_insert` calls. For a bucket spec, the table must already
-        have a matching single-column unenforced primary key set via
-        [`set_unenforced_primary_key`].
+        `merge_insert` calls. The table must already have an unenforced
+        primary key set via [`set_unenforced_primary_key`]; bucket sharding
+        additionally requires it to be a single column matching the bucket
+        column.
 
         Parameters
         ----------
         spec : LsmWriteSpec
-            Construct via `LsmWriteSpec.bucket(column, num_buckets)` or
-            `LsmWriteSpec.unsharded()`.
+            Construct via `LsmWriteSpec.bucket(column, num_buckets)`,
+            `LsmWriteSpec.identity(column)`, or `LsmWriteSpec.unsharded()`.
 
         Examples
         --------

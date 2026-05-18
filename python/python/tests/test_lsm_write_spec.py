@@ -123,3 +123,24 @@ async def test_async_set_unset_lsm_write_spec(tmp_path):
     await table.unset_lsm_write_spec()
     # unset is idempotent.
     await table.unset_lsm_write_spec()
+
+
+def test_set_identity_spec(tmp_path):
+    _db, table = _make_table(tmp_path)
+    # Identity sharding still requires an unenforced primary key on the
+    # table; it shards by the raw value of the given column.
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.identity("v"))
+    table.unset_lsm_write_spec()
+
+
+def test_lsm_write_spec_identity_and_writer_config_defaults():
+    s = LsmWriteSpec.identity("v")
+    assert s.spec_type == "identity"
+    assert s.column == "v"
+    assert s.num_buckets is None
+    assert "identity" in repr(s)
+
+    s = s.with_writer_config_defaults({"durable_write": "false"})
+    assert s.writer_config_defaults == {"durable_write": "false"}
+    assert "durable_write" in repr(s)

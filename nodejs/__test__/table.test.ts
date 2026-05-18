@@ -2443,6 +2443,15 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     await table.unsetLsmWriteSpec();
   });
 
+  it("installs an identity spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    await table.unsetLsmWriteSpec();
+  });
+
   it("rejects an invalid spec", async () => {
     const conn = await connect(tmpDir.name);
     const table = await makeTable(conn);

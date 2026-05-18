@@ -174,9 +174,9 @@ impl From<lancedb::table::MergeResult> for MergeResult {
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `merge_insert`.
 ///
-/// Constructed via the `bucket(...)` or `unsharded()` classmethods, then
-/// optionally chain `with_maintained_indexes(...)` to have the MemWAL
-/// keep listed indexes up to date as rows are appended.
+/// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
+/// classmethods, then optionally chain `with_maintained_indexes(...)` and
+/// `with_writer_config_defaults(...)`.
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -185,7 +185,7 @@ pub struct LsmWriteSpec {
 
 #[pymethods]
 impl LsmWriteSpec {
-    /// Hash-bucket partitioning by the unenforced primary key column.
+    /// Hash-bucket sharding by the unenforced primary key column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {
@@ -193,7 +193,15 @@ impl LsmWriteSpec {
         }
     }
 
-    /// No partitioning — every `merge_insert` call writes to a single
+    /// Identity sharding — shard by the raw value of `column`.
+    #[staticmethod]
+    pub fn identity(column: String) -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::identity(column),
+        }
+    }
+
+    /// No sharding — every `merge_insert` call writes to a single
     /// MemWAL shard.
     #[staticmethod]
     pub fn unsharded() -> Self {
@@ -212,38 +220,61 @@ impl LsmWriteSpec {
         }
     }
 
+    /// Replace the default `ShardWriter` configuration recorded in the
+    /// MemWAL index, so every writer starts from the same defaults.
+    pub fn with_writer_config_defaults(&self, defaults: HashMap<String, String>) -> Self {
+        Self {
+            inner: self.inner.clone().with_writer_config_defaults(defaults),
+        }
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             lancedb::table::LsmWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
+                writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?})",
-                column, num_buckets, maintained_indexes,
+                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, num_buckets, maintained_indexes, writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Unsharded { maintained_indexes } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={:?})",
+            lancedb::table::LsmWriteSpec::Identity {
+                column,
                 maintained_indexes,
+                writer_config_defaults,
+            } => format!(
+                "LsmWriteSpec.identity(column={:?}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, maintained_indexes, writer_config_defaults,
+            ),
+            lancedb::table::LsmWriteSpec::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => format!(
+                "LsmWriteSpec.unsharded(maintained_indexes={:?}, writer_config_defaults={:?})",
+                maintained_indexes, writer_config_defaults,
             ),
         }
     }
 
-    /// Discriminator string identifying the variant ("bucket" or "unsharded").
+    /// Discriminator string identifying the variant ("bucket", "identity",
+    /// or "unsharded").
     #[getter]
     pub fn spec_type(&self) -> &'static str {
         match &self.inner {
             lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::LsmWriteSpec::Identity { .. } => "identity",
             lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
         }
     }
 
-    /// Bucket variant only: the column hash-bucketed by this spec.
+    /// Bucket and identity variants: the sharding column. `None` for unsharded.
     #[getter]
     pub fn column(&self) -> Option<String> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { column, .. } => Some(column.clone()),
-            _ => None,
+            lancedb::table::LsmWriteSpec::Bucket { column, .. }
+            | lancedb::table::LsmWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::LsmWriteSpec::Unsharded { .. } => None,
         }
     }
 
@@ -260,6 +291,12 @@ impl LsmWriteSpec {
     #[getter]
     pub fn maintained_indexes(&self) -> Vec<String> {
         self.inner.maintained_indexes().to_vec()
+    }
+
+    /// Default `ShardWriter` configuration recorded by this spec.
+    #[getter]
+    pub fn writer_config_defaults(&self) -> HashMap<String, String> {
+        self.inner.writer_config_defaults().clone()
     }
 }
 

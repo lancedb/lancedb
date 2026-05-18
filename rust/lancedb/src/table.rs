@@ -276,17 +276,20 @@ pub use self::merge::MergeResult;
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `merge_insert`.
 ///
-/// Construct via [`LsmWriteSpec::bucket`] or [`LsmWriteSpec::unsharded`],
-/// then optionally chain [`LsmWriteSpec::with_maintained_indexes`] to
-/// have MemWAL keep listed scalar / FTS / vector indexes up to date as
-/// rows are appended.
+/// Construct via [`LsmWriteSpec::bucket`], [`LsmWriteSpec::identity`], or
+/// [`LsmWriteSpec::unsharded`], then optionally chain
+/// [`LsmWriteSpec::with_maintained_indexes`] (indexes the MemWAL keeps up to
+/// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
+/// `ShardWriter` configuration recorded in the MemWAL index).
+///
+/// All variants require the table to have an unenforced primary key.
 ///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
 /// onto the MemWAL writer is a follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LsmWriteSpec {
-    /// Hash-bucket partitioning by the unenforced primary key column.
+    /// Hash-bucket sharding by the unenforced primary key column.
     ///
     /// `column` must equal the table's currently-set single-column
     /// unenforced primary key. `num_buckets` must be in `[1, 1024]`.
@@ -298,23 +301,49 @@ pub enum LsmWriteSpec {
         /// Names of indexes (already created on the table) that the
         /// MemWAL should maintain in-memory as rows are appended.
         maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
     },
-    /// No partitioning — every `merge_insert` call writes to a single
-    /// MemWAL shard. No primary key is required.
+    /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// Use this when the data is already partitioned by `column`; each
+    /// distinct value of `column` becomes its own shard.
+    Identity {
+        column: String,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+    /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
     Unsharded {
         /// Names of indexes (already created on the table) that the
         /// MemWAL should maintain in-memory as rows are appended.
         maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
     },
 }
 
 impl LsmWriteSpec {
-    /// Construct a hash-bucket spec with no maintained indexes.
+    /// Construct a hash-bucket sharding spec with no maintained indexes.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
             num_buckets,
             maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Construct an identity-sharding spec (shard by the raw value of
+    /// `column`) with no maintained indexes.
+    pub fn identity(column: impl Into<String>) -> Self {
+        Self::Identity {
+            column: column.into(),
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
         }
     }
 
@@ -322,6 +351,7 @@ impl LsmWriteSpec {
     pub fn unsharded() -> Self {
         Self::Unsharded {
             maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
         }
     }
 
@@ -337,10 +367,44 @@ impl LsmWriteSpec {
         match &mut self {
             Self::Bucket {
                 maintained_indexes, ..
-            } => *maintained_indexes = v,
-            Self::Unsharded {
+            }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
+            | Self::Unsharded {
                 maintained_indexes, ..
             } => *maintained_indexes = v,
+        }
+        self
+    }
+
+    /// Replace the default `ShardWriter` configuration recorded in the MemWAL
+    /// index, so every writer starts from the same defaults. Keys are
+    /// `ShardWriter` config field names (`Duration` knobs use a `_ms` suffix);
+    /// values are their string encodings.
+    pub fn with_writer_config_defaults<I, K, V>(mut self, defaults: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let m: HashMap<String, String> = defaults
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        match &mut self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => *writer_config_defaults = m,
         }
         self
     }
@@ -351,9 +415,30 @@ impl LsmWriteSpec {
             Self::Bucket {
                 maintained_indexes, ..
             }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
             | Self::Unsharded {
                 maintained_indexes, ..
             } => maintained_indexes,
+        }
+    }
+
+    /// Borrow the default `ShardWriter` configuration recorded by this spec.
+    pub fn writer_config_defaults(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => writer_config_defaults,
         }
     }
 }
@@ -4314,6 +4399,64 @@ mod tests {
         let f = &details.sharding_specs[0].fields[0];
         assert_eq!(f.transform.as_deref(), Some("unsharded"));
         assert!(f.source_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_identity() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::identity("region")
+                    .with_writer_config_defaults([("durable_write", "false")]),
+            )
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        // Identity sharding records an open-ended shard count.
+        assert_eq!(details.num_shards, 0);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
+        assert_eq!(f.transform.as_deref(), Some("identity"));
+        // Writer config defaults round-trip into the MemWAL index.
+        assert_eq!(
+            details
+                .writer_config_defaults
+                .get("durable_write")
+                .map(String::as_str),
+            Some("false")
+        );
     }
 
     #[tokio::test]

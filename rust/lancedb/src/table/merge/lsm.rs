@@ -36,19 +36,37 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     }
 
     let mut dataset = (*table.dataset.get().await?).clone();
-    let builder = dataset.initialize_mem_wal();
-    let builder = match spec {
+    let mut builder = dataset.initialize_mem_wal();
+    let (maintained_indexes, writer_config_defaults) = match spec {
         LsmWriteSpec::Bucket {
             column,
             num_buckets,
             maintained_indexes,
-        } => builder
-            .bucket_sharding(column, num_buckets)
-            .maintained_indexes(maintained_indexes),
-        LsmWriteSpec::Unsharded { maintained_indexes } => {
-            builder.unsharded().maintained_indexes(maintained_indexes)
+            writer_config_defaults,
+        } => {
+            builder = builder.bucket_sharding(column, num_buckets);
+            (maintained_indexes, writer_config_defaults)
+        }
+        LsmWriteSpec::Identity {
+            column,
+            maintained_indexes,
+            writer_config_defaults,
+        } => {
+            builder = builder.identity_sharding(column);
+            (maintained_indexes, writer_config_defaults)
+        }
+        LsmWriteSpec::Unsharded {
+            maintained_indexes,
+            writer_config_defaults,
+        } => {
+            builder = builder.unsharded();
+            (maintained_indexes, writer_config_defaults)
         }
     };
+    builder = builder.maintained_indexes(maintained_indexes);
+    for (key, value) in writer_config_defaults {
+        builder = builder.add_writer_config_default(key, value);
+    }
     builder.execute().await?;
     table.dataset.update(dataset);
     Ok(())
