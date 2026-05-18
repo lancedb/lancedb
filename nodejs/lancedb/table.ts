@@ -92,6 +92,9 @@ export interface AddDataOptions {
    * callback is slow, intermediate updates may be dropped to avoid stalling
    * the write.
    *
+   * Errors thrown from the callback are logged with `console.warn` and
+   * swallowed — they do not abort the write.
+   *
    * @example
    * ```ts
    * await table.add(data, {
@@ -751,7 +754,20 @@ export class LocalTable extends Table {
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.inner.add(buffer, mode, options?.progress);
+    // Wrap the user callback so a thrown error doesn't surface as an
+    // unhandled exception (the callback fires from a napi threadsafe
+    // function — exceptions there crash the process).
+    const userProgress = options?.progress;
+    const progress = userProgress
+      ? (p: WriteProgress) => {
+          try {
+            userProgress(p);
+          } catch (e) {
+            console.warn("Table.add progress callback threw:", e);
+          }
+        }
+      : undefined;
+    return await this.inner.add(buffer, mode, progress);
   }
 
   async update(

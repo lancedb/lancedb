@@ -140,6 +140,23 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       }
     });
 
+    it("should swallow errors thrown from the progress callback", async () => {
+      const warn = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const res = await table.add([{ id: 1 }, { id: 2 }], {
+          progress: () => {
+            throw new Error("callback bomb");
+          },
+        });
+        expect(res.version).toBeGreaterThan(0);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("should let me close the table", async () => {
       expect(table.isOpen()).toBe(true);
       table.close();
