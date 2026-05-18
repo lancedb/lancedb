@@ -47,6 +47,33 @@ import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
 /**
+ * Progress snapshot for a write operation, delivered to the `progress`
+ * callback passed to {@link Table.add}.
+ */
+export interface WriteProgress {
+  /** Number of rows written so far. */
+  outputRows: number;
+  /** Number of bytes written so far. */
+  outputBytes: number;
+  /**
+   * Total rows expected, when the input source reports it.
+   *
+   * Always set on the final callback (the one with `done: true`), falling
+   * back to the actual number of rows written when the source could not
+   * report a row count up front.
+   */
+  totalRows?: number;
+  /** Wall-clock seconds since the write started. */
+  elapsedSeconds: number;
+  /** Number of parallel write tasks currently in flight. */
+  activeTasks: number;
+  /** Total number of parallel write tasks (the write parallelism). */
+  totalTasks: number;
+  /** `true` for the final callback; `false` otherwise. */
+  done: boolean;
+}
+
+/**
  * Options for adding data to a table.
  */
 export interface AddDataOptions {
@@ -56,6 +83,25 @@ export interface AddDataOptions {
    * If "overwrite" then the new data will replace the existing data in the table.
    */
   mode: "append" | "overwrite";
+
+  /**
+   * Optional callback invoked periodically with write progress.
+   *
+   * The callback is fired once per batch written and once more with
+   * `done: true` when the write completes. Calls are non-blocking — if the
+   * callback is slow, intermediate updates may be dropped to avoid stalling
+   * the write.
+   *
+   * @example
+   * ```ts
+   * await table.add(data, {
+   *   progress: (p) => {
+   *     console.log(`${p.outputRows}/${p.totalRows ?? "?"} rows`);
+   *   },
+   * });
+   * ```
+   */
+  progress: (progress: WriteProgress) => void;
 }
 
 export interface UpdateOptions {
@@ -705,7 +751,7 @@ export class LocalTable extends Table {
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.inner.add(buffer, mode);
+    return await this.inner.add(buffer, mode, options?.progress);
   }
 
   async update(
