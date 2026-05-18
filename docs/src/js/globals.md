@@ -80,6 +80,7 @@
 - [IvfRqOptions](interfaces/IvfRqOptions.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
+- [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MergeResult](interfaces/MergeResult.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)

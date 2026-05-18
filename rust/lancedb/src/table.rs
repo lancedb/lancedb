@@ -273,6 +273,176 @@ pub trait Tags: Send + Sync {
 
 pub use self::merge::MergeResult;
 
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `merge_insert`.
+///
+/// Construct via [`LsmWriteSpec::bucket`], [`LsmWriteSpec::identity`], or
+/// [`LsmWriteSpec::unsharded`], then optionally chain
+/// [`LsmWriteSpec::with_maintained_indexes`] (indexes the MemWAL keeps up to
+/// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
+/// `ShardWriter` configuration recorded in the MemWAL index).
+///
+/// All variants require the table to have an unenforced primary key.
+///
+/// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
+/// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
+/// onto the MemWAL writer is a follow-up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LsmWriteSpec {
+    /// Hash-bucket sharding by the unenforced primary key column.
+    ///
+    /// `column` must equal the table's currently-set single-column
+    /// unenforced primary key. `num_buckets` must be in `[1, 1024]`.
+    /// Iceberg-compatible Murmur3-x86-32 (seed 0) is used so each row's
+    /// `bucket(column, num_buckets)` value is stable across processes.
+    Bucket {
+        column: String,
+        num_buckets: u32,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+    /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// Use this when the data is already partitioned by `column`; each
+    /// distinct value of `column` becomes its own shard.
+    Identity {
+        column: String,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+    /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
+    Unsharded {
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+}
+
+impl LsmWriteSpec {
+    /// Construct a hash-bucket sharding spec with no maintained indexes.
+    pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
+        Self::Bucket {
+            column: column.into(),
+            num_buckets,
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Construct an identity-sharding spec (shard by the raw value of
+    /// `column`) with no maintained indexes.
+    pub fn identity(column: impl Into<String>) -> Self {
+        Self::Identity {
+            column: column.into(),
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Construct an unsharded spec with no maintained indexes.
+    pub fn unsharded() -> Self {
+        Self::Unsharded {
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that already
+    /// exists on the table at the time `set_lsm_write_spec` is called.
+    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
+        match &mut self {
+            Self::Bucket {
+                maintained_indexes, ..
+            }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
+            | Self::Unsharded {
+                maintained_indexes, ..
+            } => *maintained_indexes = v,
+        }
+        self
+    }
+
+    /// Replace the default `ShardWriter` configuration recorded in the MemWAL
+    /// index, so every writer starts from the same defaults. Keys are
+    /// `ShardWriter` config field names (`Duration` knobs use a `_ms` suffix);
+    /// values are their string encodings.
+    pub fn with_writer_config_defaults<I, K, V>(mut self, defaults: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let m: HashMap<String, String> = defaults
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        match &mut self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => *writer_config_defaults = m,
+        }
+        self
+    }
+
+    /// Borrow the list of index names this spec asks MemWAL to maintain.
+    pub fn maintained_indexes(&self) -> &[String] {
+        match self {
+            Self::Bucket {
+                maintained_indexes, ..
+            }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
+            | Self::Unsharded {
+                maintained_indexes, ..
+            } => maintained_indexes,
+        }
+    }
+
+    /// Borrow the default `ShardWriter` configuration recorded by this spec.
+    pub fn writer_config_defaults(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => writer_config_defaults,
+        }
+    }
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -358,6 +528,29 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
         Err(Error::NotSupported {
             message: "set_unenforced_primary_key is not supported on this table type".into(),
+        })
+    }
+    /// Install an [`LsmWriteSpec`] on this table.
+    ///
+    /// The spec selects Lance's MemWAL LSM-style write path for future
+    /// `merge_insert` calls.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations
+    /// that support the MemWAL LSM write path must override this.
+    async fn set_lsm_write_spec(&self, _spec: LsmWriteSpec) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Remove the [`LsmWriteSpec`] from this table.
+    ///
+    /// This is a no-op if no spec is currently set.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations
+    /// that support the MemWAL LSM write path must override this.
+    async fn unset_lsm_write_spec(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "unset_lsm_write_spec is not supported on this table type".into(),
         })
     }
     /// Gets the table tag manager.
@@ -1098,6 +1291,46 @@ impl Table {
         let owned: Vec<String> = columns.into_iter().map(Into::into).collect();
         let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
         self.inner.set_unenforced_primary_key(&borrowed).await
+    }
+
+    /// Install an [`LsmWriteSpec`] on this table, selecting Lance's MemWAL
+    /// LSM-style write path for future `merge_insert` calls.
+    ///
+    /// [`LsmWriteSpec`] chooses one of three sharding strategies:
+    ///
+    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by the single-column
+    ///   unenforced primary key.
+    /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
+    /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
+    ///
+    /// All variants require the table to have an unenforced primary key
+    /// ([`Table::set_unenforced_primary_key`]); bucket sharding additionally
+    /// requires it to be the single column being bucketed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use lancedb::table::{LsmWriteSpec, Table};
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table.set_unenforced_primary_key(["id"]).await?;
+    /// table
+    ///     .set_lsm_write_spec(
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+        self.inner.set_lsm_write_spec(spec).await
+    }
+
+    /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
+    /// `merge_insert` write path.
+    ///
+    /// Errors if no spec is currently set.
+    pub async fn unset_lsm_write_spec(&self) -> Result<()> {
+        self.inner.unset_lsm_write_spec().await
     }
 
     /// Retrieve the version of the table
@@ -2508,6 +2741,14 @@ impl BaseTable for NativeTable {
 
     async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
         primary_key::set_unenforced_primary_key(self, columns).await
+    }
+
+    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+        merge::lsm::set_lsm_write_spec(self, spec).await
+    }
+
+    async fn unset_lsm_write_spec(&self) -> Result<()> {
+        merge::lsm::unset_lsm_write_spec(self).await
     }
 
     /// Delete rows from the table
@@ -4050,6 +4291,249 @@ mod tests {
         let pk = lance_schema.unenforced_primary_key();
         assert_eq!(pk.len(), 1);
         assert_eq!(pk[0].name, "id");
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec() {
+        use arrow_array::StringArray;
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // Reject when no PK is set.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .expect_err("should reject without PK");
+        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+
+        // Set PK, then a mismatched column on the spec must be rejected.
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("name", 4))
+            .await
+            .expect_err("should reject column != PK");
+        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+
+        // Reject num_buckets out of range.
+        for bad in [0u32, 1025] {
+            let err = table
+                .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
+                .await
+                .expect_err("should reject");
+            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+        }
+
+        // Happy path: install spec; verify MemWAL details record it.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap();
+
+        let native_tbl = table.as_native().unwrap();
+        let dataset = native_tbl.dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        assert_eq!(details.num_shards, 4);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let installed = &details.sharding_specs[0];
+        assert_eq!(installed.fields.len(), 1);
+        let f = &installed.fields[0];
+        assert_eq!(f.transform.as_deref(), Some("bucket"));
+        assert_eq!(
+            f.parameters.get("num_buckets").map(String::as_str),
+            Some("4")
+        );
+        // Bucket parameters must hold only `num_buckets`.
+        assert_eq!(f.parameters.len(), 1);
+
+        // Mutation rejected.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .await
+            .expect_err("mutation should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_unsharded() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // Lance's MemWAL still requires *some* unenforced primary key on
+        // the dataset; Unsharded just skips the per-row hashing step.
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        assert_eq!(details.num_shards, 1);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
+        assert_eq!(f.transform.as_deref(), Some("unsharded"));
+        assert!(f.source_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_identity() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::identity("region")
+                    .with_writer_config_defaults([("durable_write", "false")]),
+            )
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        // Identity sharding records an open-ended shard count.
+        assert_eq!(details.num_shards, 0);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
+        assert_eq!(f.transform.as_deref(), Some("identity"));
+        // Writer config defaults round-trip into the MemWAL index.
+        assert_eq!(
+            details
+                .writer_config_defaults
+                .get("durable_write")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unset_lsm_write_spec() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // unset errors when no spec is set.
+        table.unset_lsm_write_spec().await.unwrap_err();
+
+        // Install a spec, then unset it.
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
+        }
+
+        table.unset_lsm_write_spec().await.unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_none());
+        }
+
+        // A second unset errors; a fresh spec can still be installed afterwards.
+        table.unset_lsm_write_spec().await.unwrap_err();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .await
+            .unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
+        }
     }
 
     #[tokio::test]

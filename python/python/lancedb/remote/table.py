@@ -14,6 +14,7 @@ from lancedb._lancedb import (
     DeleteResult,
     DropColumnsResult,
     IndexConfig,
+    LsmWriteSpec,
     MergeResult,
     UpdateResult,
 )
@@ -658,6 +659,14 @@ class RemoteTable(Table):
     def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
         """Not supported on LanceDB Cloud."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
+
+    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
+        """Not supported on LanceDB Cloud."""
+        return LOOP.run(self._table.set_lsm_write_spec(spec))
+
+    def unset_lsm_write_spec(self) -> None:
+        """Not supported on LanceDB Cloud."""
+        return LOOP.run(self._table.unset_lsm_write_spec())
 
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
