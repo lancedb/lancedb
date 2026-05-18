@@ -113,6 +113,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  WriteProgress,
   LsmWriteSpec,
   ColumnAlteration,
 } from "./table";

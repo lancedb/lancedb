@@ -104,6 +104,7 @@
 - [UpdateResult](interfaces/UpdateResult.md)
 - [Version](interfaces/Version.md)
 - [WriteExecutionOptions](interfaces/WriteExecutionOptions.md)
+- [WriteProgress](interfaces/WriteProgress.md)
 
 ## Type Aliases
 
