@@ -112,7 +112,10 @@ export interface Version {
  *
  * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
  * `column` and `numBuckets` are required; for `"identity"`, `column` is
- * required.
+ * required and must be a deterministic function of the unenforced primary
+ * key (every row with a given primary key must always produce the same
+ * `column` value, or upserts of that key can land in different shards and a
+ * stale version can win).
  */
 export interface LsmWriteSpec {
   /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
@@ -518,6 +521,16 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
+  /**
+   * Drain and close any cached MemWAL shard writers held for this table.
+   *
+   * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * shard writers and caches them for reuse across calls. This closes them,
+   * flushing pending data; writers reopen lazily on the next `mergeInsert`.
+   * It is a no-op when no writers are cached.
+   * @returns {Promise<void>}
+   */
+  abstract closeLsmWriters(): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -977,6 +990,10 @@ export class LocalTable extends Table {
 
   async unsetLsmWriteSpec(): Promise<void> {
     return await this.inner.unsetLsmWriteSpec();
+  }
+
+  async closeLsmWriters(): Promise<void> {
+    return await this.inner.closeLsmWriters();
   }
 
   async version(): Promise<number> {

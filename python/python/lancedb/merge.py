@@ -34,6 +34,8 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_condition = None
         self._timeout = None
         self._use_index = True
+        self._use_lsm_write = None
+        self._validate_single_shard = None
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -94,6 +96,46 @@ class LanceMergeInsertBuilder(object):
             Whether to use indices for the merge operation. Defaults to `True`.
         """
         self._use_index = use_index
+        return self
+
+    def use_lsm_write(self, use_lsm_write: bool) -> LanceMergeInsertBuilder:
+        """
+        Controls whether the merge uses the MemWAL LSM write path.
+
+        By default (unset), a `merge_insert` on a table with an LSM write spec
+        is routed through Lance's MemWAL shard writer, and a table without one
+        uses the standard path. Pass `False` to force the standard path even
+        when a spec is set. Pass `True` to require a spec — `merge_insert`
+        raises an error if none is installed.
+
+        Parameters
+        ----------
+        use_lsm_write: bool
+            Whether to use the LSM write path.
+        """
+        self._use_lsm_write = use_lsm_write
+        return self
+
+    def validate_single_shard(
+        self, validate_single_shard: bool
+    ) -> LanceMergeInsertBuilder:
+        """
+        Controls how an LSM merge checks that its input targets a single shard.
+
+        When a table has an LSM write spec, every row in a `merge_insert` call
+        must route to the same shard. When `True` (the default), every row is
+        inspected to verify this. When `False`, only the first row is inspected
+        and the shard it routes to is used for the whole input — a faster path
+        for callers that have already pre-sharded their input.
+
+        Has no effect on tables without an LSM write spec.
+
+        Parameters
+        ----------
+        validate_single_shard: bool
+            Whether to check every row routes to one shard. Defaults to `True`.
+        """
+        self._validate_single_shard = validate_single_shard
         return self
 
     def execute(

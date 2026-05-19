@@ -32,6 +32,14 @@ numInsertedRows: number;
 
 ***
 
+### numRows
+
+```ts
+numRows: number;
+```
+
+***
+
 ### numUpdatedRows
 
 ```ts

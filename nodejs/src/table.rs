@@ -370,6 +370,11 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn close_lsm_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_lsm_writers().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
@@ -880,6 +885,7 @@ pub struct MergeResult {
     pub num_updated_rows: i64,
     pub num_deleted_rows: i64,
     pub num_attempts: i64,
+    pub num_rows: i64,
 }
 
 impl From<lancedb::table::MergeResult> for MergeResult {
@@ -890,6 +896,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_updated_rows: value.num_updated_rows as i64,
             num_deleted_rows: value.num_deleted_rows as i64,
             num_attempts: value.num_attempts as i64,
+            num_rows: value.num_rows as i64,
         }
     }
 }
