@@ -165,6 +165,22 @@ def test_offset(table):
     assert len(results_with_offset.to_pandas()) == 1
 
 
+@pytest.mark.asyncio
+async def test_query_to_pandas_kwargs(table, table_async):
+    sync_df = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .select(["id"])
+        .limit(1)
+        .to_pandas(split_blocks=True)
+    )
+    assert sync_df["id"].tolist() == [1]
+
+    async_df = await (
+        table_async.query().select(["id"]).limit(2).to_pandas(split_blocks=True)
+    )
+    assert async_df["id"].tolist() == [1, 2]
+
+
 def test_order_by_plain_query(mem_db):
     table = mem_db.create_table(
         "test_order_by",

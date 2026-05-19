@@ -269,6 +269,25 @@ def test_table_unimplemented_functions():
             table.to_pandas()
 
 
+def test_table_to_pandas_not_supported():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(NotImplementedError):
+            table.to_pandas()
+        with pytest.raises(NotImplementedError):
+            table.to_pandas(blob_mode="bytes", split_blocks=True)
+
+
 def test_table_add_in_threadpool():
     def handler(request):
         if request.path == "/v1/table/test/insert/":

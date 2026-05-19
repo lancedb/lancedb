@@ -40,7 +40,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
-from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
+from ..table import AsyncTable, BlobMode, IndexStatistics, Query, Table, Tags
 from ..types import BaseTokenizerType
 
 
@@ -101,7 +101,7 @@ class RemoteTable(Table):
         """to_arrow() is not yet supported on LanceDB cloud."""
         raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
 
-    def to_pandas(self):
+    def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not yet supported on LanceDB cloud."""
         raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
