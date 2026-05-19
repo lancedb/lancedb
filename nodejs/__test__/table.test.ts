@@ -2475,3 +2475,97 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("LSM merge insert", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function bucketTable(conn: Connection): Promise<Table> {
+    // The primary key column must be non-nullable.
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Utf8(), false),
+        new arrow.Field("value", new arrow.Float64(), true),
+      ]),
+    );
+    await table.add([
+      { id: "a", value: 1 },
+      { id: "b", value: 2 },
+    ]);
+    await table.setUnenforcedPrimaryKey("id");
+    // numBuckets = 1: every row routes to the single bucket.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 1,
+    });
+    return table;
+  }
+
+  it("routes merge_insert through the shard writer", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: "c", value: 3 },
+        { id: "d", value: 4 },
+      ]);
+    // LSM path: rows go to the MemWAL, so only numRows is populated.
+    expect(res.numRows).toBe(2);
+    expect(res.version).toBe(0);
+    expect(res.numInsertedRows).toBe(0);
+
+    await table.closeLsmWriters();
+  });
+
+  it("falls back to the standard path with useLsmWrite(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenNotMatchedInsertAll()
+      .useLsmWrite(false)
+      .execute([
+        { id: "b", value: 9 },
+        { id: "e", value: 5 },
+      ]);
+    // Standard path commits: id="e" inserted ("b" already exists).
+    expect(res.numInsertedRows).toBe(1);
+    expect(await table.countRows()).toBe(3);
+  });
+
+  it("supports validateSingleShard(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .validateSingleShard(false)
+      .execute([{ id: "f", value: 6 }]);
+    expect(res.numRows).toBe(1);
+  });
+
+  it("rejects a non-upsert merge under an LSM spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    await expect(
+      table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([{ id: "g", value: 7 }]),
+    ).rejects.toThrow();
+  });
+});

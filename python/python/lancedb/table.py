@@ -1178,7 +1178,7 @@ class Table(ABC):
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1, num_rows=3)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3279,6 +3279,11 @@ class LanceTable(Table):
         [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
+    def close_lsm_writers(self) -> None:
+        """Close cached MemWAL shard writers. See
+        [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
+        return LOOP.run(self._table.close_lsm_writers())
+
     def uses_v2_manifest_paths(self) -> bool:
         """
         Check if the table is using the new v2 manifest paths.
@@ -3887,6 +3892,16 @@ class AsyncTable:
         """
         await self._inner.unset_lsm_write_spec()
 
+    async def close_lsm_writers(self) -> None:
+        """Drain and close any cached MemWAL shard writers for this table.
+
+        When an LSM write spec is installed, `merge_insert` opens MemWAL shard
+        writers and caches them for reuse across calls. This closes them,
+        flushing pending data; writers reopen lazily on the next
+        `merge_insert`. It is a no-op when no writers are cached.
+        """
+        await self._inner.close_lsm_writers()
+
     @property
     def name(self) -> str:
         """The name of the table."""
@@ -4312,7 +4327,7 @@ class AsyncTable:
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1, num_rows=3)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -4692,6 +4707,8 @@ class AsyncTable:
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
+                use_lsm_write=merge._use_lsm_write,
+                validate_single_shard=merge._validate_single_shard,
             ),
         )
 
