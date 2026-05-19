@@ -89,6 +89,43 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
     assert str(df["id"].dtype) == "int64[pyarrow]"
 
 
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
+    pytest.importorskip("lance")
+    data = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_blob_bytes", data=data
+    )
+
+    df = await table.to_pandas(blob_mode="bytes")
+
+    assert df["blob"].tolist() == [b"hello", b"world"]
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_kwargs(tmp_db_async: AsyncConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = await tmp_db_async.create_table("test_async_to_pandas_kwargs", data=data)
+
+    df = await table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
+
+
 def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     data = [{"vector": [0, 300]}]
 

@@ -3968,14 +3968,39 @@ class AsyncTable:
         """
         return AsyncQuery(self._inner.query())
 
-    async def to_pandas(self) -> "pd.DataFrame":
+    async def _to_lance(self, **kwargs) -> lance.LanceDataset:
+        try:
+            import lance
+        except ImportError:
+            raise ImportError(
+                "The lance library is required to use this function. "
+                "Please install with `pip install pylance`."
+            )
+
+        return lance.dataset(
+            await self.uri(),
+            version=await self.version(),
+            storage_options=await self.latest_storage_options(),
+            **kwargs,
+        )
+
+    async def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            Controls how Lance blob columns are returned.
+        **kwargs
+            Forwarded to PyArrow / Lance pandas conversion.
 
         Returns
         -------
         pd.DataFrame
         """
-        return (await self.to_arrow()).to_pandas()
+        if blob_mode == "lazy":
+            return (await self.to_arrow()).to_pandas(**kwargs)
+        return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
