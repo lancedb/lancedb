@@ -445,8 +445,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_auto_cleanup_defaults() {
-        // With no configuration, lance defaults should be applied
-        // (interval=20, older_than=14 days)
+        // With no configuration, auto cleanup is not enabled and no config keys
+        // are written to the manifest.
         let db = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
@@ -457,8 +457,8 @@ mod tests {
             .unwrap();
 
         let (interval, older_than) = get_auto_cleanup_config(&table).await;
-        assert_eq!(interval.unwrap(), "20");
-        assert_eq!(older_than.unwrap(), "14days");
+        assert!(interval.is_none());
+        assert!(older_than.is_none());
     }
 
     #[tokio::test]
@@ -566,6 +566,85 @@ mod tests {
         let (interval, older_than) = get_auto_cleanup_config(&table).await;
         assert!(interval.is_none());
         assert!(older_than.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_disabled_wins_over_older_than() {
+        // Regression test: interval=0 (disable sentinel) must win over a
+        // simultaneously-set older_than_secs. Previously the older_than block
+        // would silently re-enable cleanup with default interval.
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_interval: Some(0),
+                    auto_cleanup_older_than_secs: Some(3600),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("disabled_wins", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert!(interval.is_none());
+        assert!(older_than.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_disabled_wins_via_storage_options() {
+        let db = connect("memory://")
+            .storage_options([
+                ("auto_cleanup_interval", "0"),
+                ("auto_cleanup_older_than_secs", "3600"),
+            ])
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("disabled_wins_storage", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let (interval, older_than) = get_auto_cleanup_config(&table).await;
+        assert!(interval.is_none());
+        assert!(older_than.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_cleanup_older_than_secs_out_of_range() {
+        let db = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    auto_cleanup_older_than_secs: Some(u64::MAX),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let err = db
+            .create_table("bad_older_than", batch)
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::Error::InvalidInput { .. }),
+            "expected InvalidInput, got {err:?}"
+        );
     }
 
     #[tokio::test]

@@ -1088,16 +1088,6 @@ export class LocalTable extends Table {
   async migrateManifestPathsV2(): Promise<void> {
     await this.inner.migrateManifestPathsV2();
   }
-
-  /**
-   * Get the dataset configuration key-value pairs.
-   *
-   * This returns the lance dataset config from the manifest, which includes
-   * settings like auto cleanup parameters.
-   */
-  async datasetConfig(): Promise<Record<string, string>> {
-    return await this.inner.datasetConfig();
-  }
 }
 
 /**

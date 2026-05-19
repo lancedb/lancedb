@@ -865,7 +865,7 @@ impl ListingDatabase {
         storage_version_override: Option<LanceFileVersion>,
         v2_manifest_override: Option<bool>,
         stable_row_ids_override: Option<bool>,
-    ) -> lance::dataset::WriteParams {
+    ) -> Result<lance::dataset::WriteParams> {
         let mut write_params = request
             .write_options
             .lance_write_params
@@ -912,21 +912,31 @@ impl ListingDatabase {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
 
-        // Apply auto cleanup config
-        if let Some(interval) = self.new_table_config.auto_cleanup_interval {
-            if interval == 0 {
-                write_params.auto_cleanup = None;
-            } else {
+        // Apply auto cleanup config. interval == 0 is the explicit "disable" sentinel
+        // and must win over any older_than setting from the same config.
+        let disabled = self.new_table_config.auto_cleanup_interval == Some(0);
+        if disabled {
+            write_params.auto_cleanup = None;
+        } else {
+            if let Some(interval) = self.new_table_config.auto_cleanup_interval {
                 let mut params = write_params.auto_cleanup.unwrap_or_default();
                 params.interval = interval as usize;
                 write_params.auto_cleanup = Some(params);
             }
-        }
-        if let Some(older_than_secs) = self.new_table_config.auto_cleanup_older_than_secs {
-            let mut params = write_params.auto_cleanup.unwrap_or_default();
-            params.older_than =
-                chrono::TimeDelta::try_seconds(older_than_secs as i64).expect("valid duration");
-            write_params.auto_cleanup = Some(params);
+            if let Some(older_than_secs) = self.new_table_config.auto_cleanup_older_than_secs {
+                let older_than = i64::try_from(older_than_secs)
+                    .ok()
+                    .and_then(chrono::TimeDelta::try_seconds)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: format!(
+                            "auto_cleanup_older_than_secs={} is out of range",
+                            older_than_secs
+                        ),
+                    })?;
+                let mut params = write_params.auto_cleanup.unwrap_or_default();
+                params.older_than = older_than;
+                write_params.auto_cleanup = Some(params);
+            }
         }
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
@@ -935,7 +945,7 @@ impl ListingDatabase {
 
         write_params.session = Some(self.session.clone());
 
-        write_params
+        Ok(write_params)
     }
 
     /// Handle the case where table already exists based on the create mode
@@ -1122,7 +1132,7 @@ impl Database for ListingDatabase {
             storage_version_override,
             v2_manifest_override,
             stable_row_ids_override,
-        );
+        )?;
 
         let data_schema = request.data.arrow_schema();
 
