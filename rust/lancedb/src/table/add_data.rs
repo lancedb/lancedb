@@ -268,7 +268,9 @@ mod tests {
     };
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::add_data::NaNVectorBehavior;
-    use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
+    use crate::table::{
+        ColumnDefinition, ColumnKind, NewColumnTransform, Table, TableDefinition, WriteOptions,
+    };
     use crate::test_utils::TestCustomError;
     use crate::test_utils::embeddings::MockEmbed;
 
@@ -515,6 +517,225 @@ mod tests {
         for batch in &results {
             let embedding_col = batch.column(1);
             assert_eq!(embedding_col.null_count(), 0);
+        }
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/3136.
+    ///
+    /// When a column is added via `add_columns` AFTER an embedding column,
+    /// the table schema becomes `[..., embedding, extra]`. Subsequent
+    /// `table.add()` calls used to fail with a CastError because columns
+    /// were matched positionally rather than by name.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema.clone(),
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_evol_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Seed a row so add_columns has data to compute against.
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a new physical column AFTER the embedding column.
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![("score".into(), "42.0".into())]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Now add data including the new column but WITHOUT the embedding.
+        // The input batch column order is [text, score]; after computing the
+        // embedding it becomes [text, score, text_vec], but the table schema
+        // is [text, text_vec, score]. Columns must be matched by name.
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0])),
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "score"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
+        }
+    }
+
+    /// Like `test_add_with_embeddings_after_add_columns`, but the column
+    /// added after the embedding is a nested struct rather than a scalar.
+    /// Verifies that name-based column matching also works when the
+    /// post-embedding column has a complex Arrow type.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_nested_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema,
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_nested_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a STRUCT column after the embedding column.
+        let meta_struct = DataType::Struct(
+            vec![
+                Field::new("source", DataType::Utf8, true),
+                Field::new("score", DataType::Float64, true),
+            ]
+            .into(),
+        );
+        let nested_schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            meta_struct.clone(),
+            true,
+        )]));
+        table
+            .add_columns(NewColumnTransform::AllNulls(nested_schema), None)
+            .await
+            .unwrap();
+
+        // Insert with the nested struct present but the embedding column
+        // absent. The computed batch is [text, meta, text_vec], but the
+        // table schema is [text, text_vec, meta] — only name-based matching
+        // can put `meta` (a struct) in the right slot.
+        let source = Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"]));
+        let score = Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0]));
+        let meta = Arc::new(arrow_array::StructArray::from(vec![
+            (
+                Arc::new(Field::new("source", DataType::Utf8, true)),
+                source as Arc<dyn arrow_array::Array>,
+            ),
+            (
+                Arc::new(Field::new("score", DataType::Float64, true)),
+                score as Arc<dyn arrow_array::Array>,
+            ),
+        ]));
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("meta", meta_struct, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                meta,
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "meta"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            assert_eq!(batch.schema().field(2).name(), "meta");
+            assert!(matches!(
+                batch.schema().field(2).data_type(),
+                DataType::Struct(_)
+            ));
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
         }
     }
 
