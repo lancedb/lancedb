@@ -273,9 +273,11 @@ impl Scannable for WithEmbeddingsScannable {
                 })??;
                 // Look up columns by name (not position) so the result matches
                 // the output schema even when columns appear in a different
-                // order — e.g. when `add_columns` placed a new column after
-                // the embedding column, but the computed batch has the
-                // embedding appended at the end.
+                // order — e.g. `add_columns` placed a new column after the
+                // embedding column, but the computed batch appends embeddings
+                // at the end. Cast per-column because field metadata (e.g.
+                // nested nullability) may also differ between the embedding
+                // function output and the table.
                 let columns: Vec<ArrayRef> = output_schema
                     .fields()
                     .iter()
@@ -1031,7 +1033,15 @@ mod tests {
             let result_batch = &results[0];
             assert_eq!(result_batch.schema(), output_schema);
             assert_eq!(result_batch.num_rows(), 2);
-            assert_eq!(result_batch.column(1).len(), 2);
+            // Position 1 must actually hold the FixedSizeList embedding —
+            // not the score column reinterpreted by a permissive cast.
+            let embedding = result_batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeListArray>()
+                .expect("position 1 should be a FixedSizeList embedding");
+            assert_eq!(embedding.value_length(), 4);
+            assert_eq!(embedding.null_count(), 0);
         }
 
         /// If the input batch is missing a non-embedding column required by
