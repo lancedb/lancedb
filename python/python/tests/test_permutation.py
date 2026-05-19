@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import math
 import pytest
 
@@ -626,6 +627,60 @@ def test_limit_offset(some_permutation: Permutation):
         some_permutation.with_take(500).with_skip(500).num_rows
     with pytest.raises(Exception):
         some_permutation.with_skip(500).with_take(500).num_rows
+
+
+def test_snapshot_indices_identity(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "identity_snapshot_table",
+        pa.table({"id": range(10), "value": range(10)}),
+    )
+
+    snapshot = Permutation.identity(table)._snapshot_indices()
+
+    assert snapshot.schema == pa.schema(
+        [pa.field("row_id", pa.uint64(), nullable=False)]
+    )
+    assert snapshot.column("row_id").to_pylist() == list(range(10))
+
+
+def test_snapshot_indices_split_respects_permutation_order(
+    some_table: Table, some_perm_table: Table
+):
+    permutation = Permutation.from_tables(some_table, some_perm_table, "test")
+    snapshot = permutation._snapshot_indices()
+    row_ids = snapshot.column("row_id").to_pylist()
+
+    assert snapshot.schema == pa.schema(
+        [pa.field("row_id", pa.uint64(), nullable=False)]
+    )
+    assert len(row_ids) == permutation.num_rows == 50
+
+    permutation_rows = some_perm_table.to_arrow()
+    expected = permutation_rows.filter(pc.equal(permutation_rows["split_id"], 1))[
+        "row_id"
+    ].to_pylist()
+    assert row_ids == expected
+
+
+def test_snapshot_indices_tracks_skip_take(some_permutation: Permutation):
+    full_snapshot = some_permutation._snapshot_indices().column("row_id").to_pylist()
+    sliced = some_permutation.with_skip(100).with_take(25)._snapshot_indices()
+
+    assert sliced.column("row_id").to_pylist() == full_snapshot[100:125]
+
+
+def test_snapshot_indices_ignores_selection_changes(some_permutation: Permutation):
+    snapshot = some_permutation._snapshot_indices()
+    selected = (
+        some_permutation.select_columns(["id"])
+        .rename_column("id", "row_id_alias")
+        .with_batch_size(32)
+        ._snapshot_indices()
+    )
+
+    assert (
+        selected.column("row_id").to_pylist() == snapshot.column("row_id").to_pylist()
+    )
 
 
 def test_remove_columns(some_permutation: Permutation):

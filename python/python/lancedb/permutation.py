@@ -995,6 +995,19 @@ class Permutation:
         """
         return self.take_offsets(indices)
 
+    def _snapshot_indices(self) -> pa.RecordBatch:
+        """
+        Materialize the current permutation view as ordered row ids.
+
+        This is an internal helper for dataset integrations and should not be
+        considered stable public API.
+        """
+
+        async def do_snapshot():
+            return await self.reader.snapshot_indices()
+
+        return LOOP.run(do_snapshot())
+
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
         """
