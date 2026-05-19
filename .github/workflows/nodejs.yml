@@ -157,7 +157,10 @@ jobs:
         npx jest --testEnvironment jest-environment-node-single-context --verbose
   macos:
     timeout-minutes: 30
-    runs-on: "macos-14"
+    # macos-15 ships a newer linker; the older macos-14 linker fails to insert
+    # branch islands when the debug cdylib's __text section exceeds the 128 MB
+    # AArch64 B/BL branch range.
+    runs-on: "macos-15"
     defaults:
       run:
         shell: bash
