@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable, WriteOptions,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -68,7 +68,12 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
+    pub async fn add(
+        &self,
+        buf: Buffer,
+        mode: String,
+        skip_auto_cleanup: Option<bool>,
+    ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let batches = batches
@@ -91,6 +96,13 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        if skip_auto_cleanup.unwrap_or(false) {
+            op = op.write_options(WriteOptions {
+                skip_auto_cleanup: true,
+                ..Default::default()
+            });
+        }
 
         let res = op.execute().await.default_error()?;
         Ok(res.into())

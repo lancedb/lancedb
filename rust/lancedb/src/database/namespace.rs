@@ -425,6 +425,10 @@ impl Database for LanceNamespaceDatabase {
             params.mode = WriteMode::Overwrite;
         }
 
+        if request.write_options.skip_auto_cleanup {
+            params.skip_auto_cleanup = true;
+        }
+
         // Set up storage options if provided
         if let Some(storage_opts) = initial_storage_options {
             let store_params = params

@@ -115,6 +115,12 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(1);
     });
 
+    it("should accept skipAutoCleanup on add()", async () => {
+      await table.add([{ id: 1 }], { skipAutoCleanup: true });
+      await table.add([{ id: 2 }], { skipAutoCleanup: true });
+      await expect(table.countRows()).resolves.toBe(2);
+    });
+
     it("should let me close the table", async () => {
       expect(table.isOpen()).toBe(true);
       table.close();

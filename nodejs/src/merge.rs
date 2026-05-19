@@ -50,6 +50,13 @@ impl NativeMergeInsertBuilder {
         this
     }
 
+    #[napi]
+    pub fn skip_auto_cleanup(&self, skip: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.skip_auto_cleanup(skip);
+        this
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec())

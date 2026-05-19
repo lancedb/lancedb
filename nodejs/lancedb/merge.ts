@@ -87,6 +87,23 @@ export class MergeInsertBuilder {
       this.#schema,
     );
   }
+
+  /**
+   * Skip the automatic cleanup of old dataset versions that would otherwise
+   * run as part of this merge insert's commit. Forwards to
+   * `MergeInsertBuilder::skip_auto_cleanup` in lance-core.
+   *
+   * Useful for high-frequency writers that prefer to manage version cleanup
+   * themselves, or writers without delete permissions on the underlying storage.
+   *
+   * @param skip - If true, the auto-cleanup step is skipped at commit time.
+   */
+  skipAutoCleanup(skip: boolean): MergeInsertBuilder {
+    return new MergeInsertBuilder(
+      this.#native.skipAutoCleanup(skip),
+      this.#schema,
+    );
+  }
   /**
    * Executes the merge insert operation
    *
