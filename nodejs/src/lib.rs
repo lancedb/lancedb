@@ -61,6 +61,10 @@ pub struct ConnectionOptions {
     /// (For LanceDB cloud only): the host to use for LanceDB cloud. Used
     /// for testing purposes.
     pub host_override: Option<String>,
+    /// (For LanceDB cloud only): OAuth configuration for IdP-based
+    /// authentication (e.g., Azure Entra ID). When set, token acquisition
+    /// and refresh are handled entirely in Rust.
+    pub oauth_config: Option<remote::OAuthConfig>,
 }
 
 #[napi(object)]

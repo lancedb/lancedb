@@ -320,6 +320,7 @@ async def connect_async(
     session: Optional[Session] = None,
     manifest_enabled: bool = False,
     namespace_client_properties: Optional[Dict[str, str]] = None,
+    oauth_config=None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -410,6 +411,7 @@ async def connect_async(
             session,
             manifest_enabled,
             namespace_client_properties,
+            oauth_config,
         )
     )
 

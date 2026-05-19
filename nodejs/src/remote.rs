@@ -140,6 +140,67 @@ impl From<TlsConfig> for lancedb::remote::TlsConfig {
     }
 }
 
+/// OAuth configuration for LanceDB authentication.
+/// All token acquisition and refresh is handled in the Rust layer.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct OAuthConfig {
+    /// OIDC issuer URL or OAuth authority URL.
+    /// For Azure: `https://login.microsoftonline.com/{tenant_id}/v2.0`
+    pub issuer_url: String,
+    /// Application / Client ID.
+    pub client_id: String,
+    /// OAuth scopes to request. For Azure: `["api://{app_id}/.default"]`
+    pub scopes: Vec<String>,
+    /// Authentication flow: "client_credentials", "authorization_code_pkce",
+    /// "device_code", "azure_managed_identity", "workload_identity"
+    pub flow: Option<String>,
+    /// Client secret (required for client_credentials).
+    pub client_secret: Option<String>,
+    /// Redirect URI (authorization_code_pkce flow).
+    pub redirect_uri: Option<String>,
+    /// Port for local callback server (authorization_code_pkce, default: 8400).
+    pub callback_port: Option<u16>,
+    /// Client ID for user-assigned managed identity (azure_managed_identity).
+    pub managed_identity_client_id: Option<String>,
+    /// Path to federated token file (workload_identity).
+    pub token_file: Option<String>,
+    /// Seconds before expiry to trigger proactive refresh (default: 300).
+    pub refresh_buffer_secs: Option<u32>,
+}
+
+impl From<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
+    fn from(config: OAuthConfig) -> Self {
+        use lancedb::remote::oauth::OAuthFlow;
+
+        let flow = match config.flow.as_deref().unwrap_or("client_credentials") {
+            "authorization_code_pkce" => OAuthFlow::AuthorizationCodePKCE {
+                redirect_uri: config.redirect_uri,
+                callback_port: config.callback_port,
+            },
+            "device_code" => OAuthFlow::DeviceCode,
+            "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
+                client_id: config.managed_identity_client_id,
+            },
+            "workload_identity" => OAuthFlow::WorkloadIdentity {
+                token_file: config
+                    .token_file
+                    .expect("tokenFile is required for workload_identity flow"),
+            },
+            other => panic!("Unknown OAuth flow type: {other}"),
+        };
+
+        Self {
+            issuer_url: config.issuer_url,
+            client_id: config.client_id,
+            client_secret: config.client_secret,
+            scopes: config.scopes,
+            flow,
+            refresh_buffer_secs: config.refresh_buffer_secs.map(|v| v as u64),
+        }
+    }
+}
+
 impl From<ClientConfig> for lancedb::remote::ClientConfig {
     fn from(config: ClientConfig) -> Self {
         Self {

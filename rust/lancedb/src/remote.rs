@@ -8,6 +8,7 @@
 
 pub(crate) mod client;
 pub(crate) mod db;
+pub mod oauth;
 mod retry;
 pub(crate) mod table;
 pub(crate) mod util;
@@ -20,3 +21,4 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub use client::{ClientConfig, HeaderProvider, RetryConfig, TimeoutConfig, TlsConfig};
 pub use db::{RemoteDatabaseOptions, RemoteDatabaseOptionsBuilder};
+pub use oauth::{OAuthConfig, OAuthFlow, OAuthHeaderProvider};

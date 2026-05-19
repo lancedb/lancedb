@@ -75,6 +75,11 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "stream",
 ], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
+# OAuth dependencies (used by remote feature)
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+urlencoding = { version = "2", optional = true }
+open = { version = "5", optional = true }
 uuid = { version = "1.7.0", features = ["v4"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
@@ -128,7 +133,7 @@ huggingface = [
     "lance-namespace-impls/dir-huggingface",
 ]
 dynamodb = ["lance/dynamodb", "aws"]
-remote = ["dep:reqwest", "dep:http", "lance-namespace-impls/rest", "lance-namespace-impls/rest-adapter"]
+remote = ["dep:reqwest", "dep:http", "dep:sha2", "dep:base64", "dep:urlencoding", "dep:open", "lance-namespace-impls/rest", "lance-namespace-impls/rest-adapter"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]

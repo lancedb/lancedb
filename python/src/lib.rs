@@ -26,6 +26,7 @@ pub mod expr;
 pub mod header;
 pub mod index;
 pub mod namespace;
+pub mod oauth;
 pub mod permutation;
 pub mod query;
 pub mod runtime;
