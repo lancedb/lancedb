@@ -1847,15 +1847,15 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
         ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
     ]
 
-    vector_results = table.search(
-        [0.0, 1.0], vector_column_name="image.embedding"
-    ).limit(1).to_list()
+    vector_results = (
+        table.search([0.0, 1.0], vector_column_name="image.embedding")
+        .limit(1)
+        .to_list()
+    )
     assert len(vector_results) == 1
     assert vector_results[0]["metadata"]["user_id"] == 0
 
-    filtered_results = (
-        table.search().where("metadata.user_id = 42").limit(1).to_list()
-    )
+    filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
     assert len(filtered_results) == 1
     assert filtered_results[0]["metadata"]["user_id"] == 42
 
