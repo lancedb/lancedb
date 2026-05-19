@@ -17,9 +17,20 @@ Common commands:
 * Run tests: `cargo test --quiet --features remote --tests`
 * Run specific test: `cargo test --quiet --features remote -p <package_name> --test <test_name>`
 * Lint: `cargo clippy --quiet --features remote --tests --examples`
-* Format: `cargo fmt --all`
+* Format Rust: `cargo fmt --all`
+* Format Python: `ruff format .`
+* Lint Python: `ruff check .`
 
-Before committing changes, run formatting.
+Before committing changes, run formatting for every language you touched. At minimum:
+
+* Rust changes: run `cargo fmt --all`.
+* Python changes: run `ruff format .` and `ruff check .` from the repository root.
+* TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
+
+Before creating a PR, make sure the PR title follows Conventional Commits, such as
+`fix: support nested field paths in native index creation` or
+`feat(python): add dataset multiprocessing support`. The semantic-release check uses the
+PR title and body as the merge commit message, so a non-conventional PR title will fail CI.
 
 ## Coding tips
 
