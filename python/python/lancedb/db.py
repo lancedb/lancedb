@@ -847,11 +847,21 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    def _all_table_names(self) -> List[str]:
+        names = []
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            names.extend(response.tables)
+            page_token = response.page_token
+            if not page_token:
+                return names
+
     def __len__(self) -> int:
-        return len(self.table_names())
+        return len(self._all_table_names())
 
     def __contains__(self, name: str) -> bool:
-        return name in self.table_names()
+        return name in self._all_table_names()
 
     @override
     def create_table(
