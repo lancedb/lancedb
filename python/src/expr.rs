@@ -7,8 +7,12 @@
 //! build type-safe filter / projection expressions that map directly to
 //! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
 
+use std::sync::Arc;
+
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
+use datafusion_common::ScalarValue;
 use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
+use pyo3::types::PyBytes;
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
 /// A type-safe DataFusion expression.
@@ -141,7 +145,7 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -157,8 +161,12 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(PyExpr(df_lit(s)));
     }
+    if value.is_instance_of::<PyBytes>() {
+        let bytes = value.extract::<Vec<u8>>()?;
+        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(bytes)))));
+    }
     Err(PyValueError::new_err(format!(
-        "unsupported literal type: {}. Supported: bool, int, float, str",
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes",
         value.get_type().name()?
     )))
 }
@@ -172,4 +180,18 @@ pub fn expr_func(name: &str, args: Vec<PyExpr>) -> PyResult<PyExpr> {
     lancedb::expr::func(name, df_args)
         .map(PyExpr)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Create a timestamp literal expression from microseconds since the Unix epoch.
+///
+/// `micros` — microseconds since 1970-01-01 00:00:00 UTC.
+/// `tz`     — optional IANA timezone name (e.g. `"UTC"`, `"+05:30"`) or `None`
+///             for a timezone-naïve timestamp.
+#[pyfunction]
+pub fn expr_lit_timestamp(micros: i64, tz: Option<String>) -> PyExpr {
+    let tz_arc = tz.map(|s| Arc::from(s.as_str()));
+    PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
+        Some(micros),
+        tz_arc,
+    )))
 }

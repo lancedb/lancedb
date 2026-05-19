@@ -19,11 +19,12 @@ operators::
 
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Union
 
 import pyarrow as pa
 
-from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
+from lancedb._lancedb import PyExpr, expr_col, expr_func, expr_lit, expr_lit_timestamp
 
 __all__ = ["Expr", "col", "lit", "func"]
 
@@ -63,7 +64,7 @@ def _coerce(value: "ExprLike") -> "Expr":
 
 
 # Type alias used in annotations.
-ExprLike = Union["Expr", bool, int, float, str]
+ExprLike = Union["Expr", bool, int, float, str, bytes, _dt.datetime]
 
 
 class Expr:
@@ -261,13 +262,36 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name))
 
 
-def lit(value: Union[bool, int, float, str]) -> Expr:
+def _tz_name(tzinfo: _dt.tzinfo) -> str:
+    """Return an IANA name or ISO-8601 offset string for *tzinfo*."""
+    # zoneinfo.ZoneInfo exposes .key; pytz exposes .zone
+    name = getattr(tzinfo, "key", None) or getattr(tzinfo, "zone", None)
+    if name:
+        return name
+    if tzinfo is _dt.timezone.utc:
+        return "UTC"
+    # Fixed-offset timezones: format as ±HH:MM
+    offset = tzinfo.utcoffset(None)
+    if offset is not None:
+        total = int(offset.total_seconds())
+        sign = "+" if total >= 0 else "-"
+        total = abs(total)
+        return f"{sign}{total // 3600:02d}:{(total % 3600) // 60:02d}"
+    return "UTC"
+
+
+_EPOCH_NAIVE = _dt.datetime(1970, 1, 1)
+_EPOCH_UTC = _dt.datetime(1970, 1, 1, tzinfo=_dt.timezone.utc)
+
+
+def lit(value: Union[bool, int, float, str, bytes, _dt.datetime]) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
-        A Python ``bool``, ``int``, ``float``, or ``str``.
+        A Python ``bool``, ``int``, ``float``, ``str``, ``bytes``, or
+        ``datetime.datetime`` (naive or timezone-aware).
 
     Examples
     --------
@@ -275,6 +299,13 @@ def lit(value: Union[bool, int, float, str]) -> Expr:
     >>> col("price") * lit(1.1)
     Expr((price * 1.1))
     """
+    if isinstance(value, _dt.datetime):
+        if value.tzinfo is None:
+            micros = int((value - _EPOCH_NAIVE).total_seconds() * 1_000_000)
+            return Expr(expr_lit_timestamp(micros, None))
+        utc_dt = value.astimezone(_dt.timezone.utc)
+        micros = int((utc_dt - _EPOCH_UTC).total_seconds() * 1_000_000)
+        return Expr(expr_lit_timestamp(micros, _tz_name(value.tzinfo)))
     return Expr(expr_lit(value))
 
 

@@ -3,6 +3,8 @@
 
 """Tests for the type-safe expression builder API."""
 
+import datetime
+
 import pytest
 import pyarrow as pa
 import lancedb
@@ -31,6 +33,14 @@ class TestExprConstruction:
 
     def test_lit_bool(self):
         e = lit(True)
+        assert isinstance(e, Expr)
+
+    def test_lit_bytes(self):
+        e = lit(b"\xde\xad\xbe\xef")
+        assert isinstance(e, Expr)
+
+    def test_lit_bytes_empty(self):
+        e = lit(b"")
         assert isinstance(e, Expr)
 
     def test_lit_unsupported_type_raises(self):
@@ -385,3 +395,202 @@ class TestColNamingIntegration:
         )
         assert "upper_name" in result.schema.names
         assert sorted(result["upper_name"].to_pylist()) == ["ALICE", "BOB", "CHARLIE"]
+
+
+# ── bytes / binary column integration tests ───────────────────────────────────
+
+
+@pytest.fixture
+def binary_table(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    data = pa.table(
+        {
+            "id": [1, 2, 3],
+            "payload": pa.array(
+                [b"\x01\x02", b"\xca\xfe", b"\xff\x00"],
+                type=pa.binary(),
+            ),
+        }
+    )
+    return db.create_table("binary_test", data)
+
+
+class TestExprBytesIntegration:
+    def test_binary_equality_filter(self, binary_table):
+        result = (
+            binary_table.search().where(col("payload") == lit(b"\xca\xfe")).to_arrow()
+        )
+        assert result.num_rows == 1
+        assert result["id"][0].as_py() == 2
+
+    def test_binary_ne_filter(self, binary_table):
+        result = (
+            binary_table.search().where(col("payload") != lit(b"\x01\x02")).to_arrow()
+        )
+        assert result.num_rows == 2
+
+    def test_binary_compound_filter(self, binary_table):
+        result = (
+            binary_table.search()
+            .where((col("payload") == lit(b"\x01\x02")) | (col("id") == lit(3)))
+            .to_arrow()
+        )
+        assert result.num_rows == 2
+
+
+# ── datetime / timestamp literal unit tests ───────────────────────────────────
+
+
+class TestExprDatetimeLiteral:
+    """Unit tests for datetime literal construction."""
+
+    def test_naive_datetime_returns_expr(self):
+        e = lit(datetime.datetime(2024, 1, 15, 12, 0, 0))
+        assert isinstance(e, Expr)
+
+    def test_utc_datetime_returns_expr(self):
+        e = lit(datetime.datetime(2024, 1, 15, 12, 0, 0, tzinfo=datetime.timezone.utc))
+        assert isinstance(e, Expr)
+
+    def test_fixed_offset_datetime_returns_expr(self):
+        tz = datetime.timezone(datetime.timedelta(hours=-5))
+        e = lit(datetime.datetime(2024, 1, 15, 7, 0, 0, tzinfo=tz))
+        assert isinstance(e, Expr)
+
+    def test_naive_datetime_in_comparison(self):
+        e = col("ts") > lit(datetime.datetime(2024, 1, 1))
+        assert isinstance(e, Expr)
+
+    def test_utc_datetime_in_comparison(self):
+        utc_dt = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        e = col("ts") >= lit(utc_dt)
+        assert isinstance(e, Expr)
+
+    def test_datetime_unsupported_type_still_raises(self):
+        with pytest.raises(Exception):
+            lit([1, 2, 3])
+
+
+# ── datetime / timestamp integration tests ────────────────────────────────────
+#
+# Tests cover the five timezone-handling scenarios from issue #3262:
+#   1. Both naive (no tzinfo)
+#   2. Both with the same timezone (UTC)
+#   3. Column UTC, literal in a different fixed-offset timezone
+#   4. Column has timezone (UTC), literal is naive
+#   5. Column is naive, literal has timezone (UTC)
+
+
+@pytest.fixture
+def ts_naive_table(tmp_path):
+    """Table with a timezone-naïve microsecond timestamp column."""
+    db = lancedb.connect(str(tmp_path))
+    # 2024-01-01 00:00, 2024-06-01 00:00, 2025-01-01 00:00  (naive)
+    epoch = datetime.datetime(1970, 1, 1)
+    rows = [
+        datetime.datetime(2024, 1, 1),
+        datetime.datetime(2024, 6, 1),
+        datetime.datetime(2025, 1, 1),
+    ]
+    micros = [int((r - epoch).total_seconds() * 1_000_000) for r in rows]
+    data = pa.table(
+        {
+            "id": [1, 2, 3],
+            "ts": pa.array(micros, type=pa.timestamp("us")),
+        }
+    )
+    return db.create_table("ts_naive", data)
+
+
+@pytest.fixture
+def ts_utc_table(tmp_path):
+    """Table with a UTC-annotated microsecond timestamp column."""
+    db = lancedb.connect(str(tmp_path))
+    epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+    rows = [
+        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2024, 6, 1, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+    ]
+    micros = [int((r - epoch).total_seconds() * 1_000_000) for r in rows]
+    data = pa.table(
+        {
+            "id": [1, 2, 3],
+            "ts": pa.array(micros, type=pa.timestamp("us", "UTC")),
+        }
+    )
+    return db.create_table("ts_utc", data)
+
+
+class TestExprDatetimeIntegration:
+    # ── scenario 1: both naive ────────────────────────────────────────────────
+
+    def test_naive_gt_filter(self, ts_naive_table):
+        cutoff = datetime.datetime(2024, 1, 1)
+        result = ts_naive_table.search().where(col("ts") > lit(cutoff)).to_arrow()
+        assert result.num_rows == 2  # 2024-06-01 and 2025-01-01
+
+    def test_naive_gte_filter(self, ts_naive_table):
+        cutoff = datetime.datetime(2024, 1, 1)
+        result = ts_naive_table.search().where(col("ts") >= lit(cutoff)).to_arrow()
+        assert result.num_rows == 3  # all three rows
+
+    def test_naive_lt_filter(self, ts_naive_table):
+        cutoff = datetime.datetime(2024, 6, 1)
+        result = ts_naive_table.search().where(col("ts") < lit(cutoff)).to_arrow()
+        assert result.num_rows == 1  # only 2024-01-01
+
+    def test_naive_between_filter(self, ts_naive_table):
+        lo = datetime.datetime(2024, 1, 1)
+        hi = datetime.datetime(2025, 1, 1)
+        result = (
+            ts_naive_table.search()
+            .where((col("ts") >= lit(lo)) & (col("ts") < lit(hi)))
+            .to_arrow()
+        )
+        assert result.num_rows == 2  # 2024-01-01 and 2024-06-01
+
+    # ── scenario 2: both with the same timezone (UTC) ─────────────────────────
+
+    def test_utc_gt_filter(self, ts_utc_table):
+        cutoff = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        result = ts_utc_table.search().where(col("ts") > lit(cutoff)).to_arrow()
+        assert result.num_rows == 2
+
+    def test_utc_between_filter(self, ts_utc_table):
+        lo = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        hi = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+        result = (
+            ts_utc_table.search()
+            .where((col("ts") >= lit(lo)) & (col("ts") < lit(hi)))
+            .to_arrow()
+        )
+        assert result.num_rows == 2
+
+    # ── scenario 3: column UTC, literal in a different fixed-offset timezone ──
+
+    def test_utc_col_fixed_offset_literal(self, ts_utc_table):
+        # 2024-06-01 00:00 UTC == 2024-05-31 19:00 UTC-5; filter ts > that
+        # expects rows for 2024-06-01 and 2025-01-01
+        tz_minus5 = datetime.timezone(datetime.timedelta(hours=-5))
+        # 2023-12-31 19:00 UTC-5 == 2024-01-01 00:00 UTC
+        cutoff = datetime.datetime(2023, 12, 31, 19, 0, 0, tzinfo=tz_minus5)
+        result = ts_utc_table.search().where(col("ts") > lit(cutoff)).to_arrow()
+        assert result.num_rows == 2  # 2024-06-01 and 2025-01-01
+
+    # ── scenario 4: column has UTC timezone, literal is naive ─────────────────
+
+    def test_utc_col_naive_literal(self, ts_utc_table):
+        # Naive literal is treated as UTC (same epoch microseconds, no annotation)
+        cutoff = datetime.datetime(2024, 1, 1)  # naive
+        result = ts_utc_table.search().where(col("ts") >= lit(cutoff)).to_arrow()
+        # DataFusion casts the naive literal to match the UTC column; all 3 qualify
+        assert result.num_rows == 3
+
+    # ── scenario 5: column is naive, literal has timezone ─────────────────────
+
+    def test_naive_col_utc_literal(self, ts_naive_table):
+        # UTC-annotated literal compared to naive column; DataFusion casts to match
+        cutoff = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        result = ts_naive_table.search().where(col("ts") >= lit(cutoff)).to_arrow()
+        assert result.num_rows == 3

@@ -4685,6 +4685,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
+ "datafusion-common",
  "env_logger",
  "futures",
  "lance-core",
