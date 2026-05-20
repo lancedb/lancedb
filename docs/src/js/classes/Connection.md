@@ -441,18 +441,28 @@ Open a table in the database.
 
 ```ts
 abstract renameTable(
-   oldName,
+   currentName,
    newName,
-   namespacePath?): Promise<void>
+   options?): Promise<void>
 ```
+
+Rename a table.
+
+Currently only supported by LanceDB Cloud. Local OSS connections and
+namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
+a "not supported" error.
 
 #### Parameters
 
-* **oldName**: `string`
+* **currentName**: `string`
+    The current name of the table.
 
 * **newName**: `string`
+    The new name for the table.
 
-* **namespacePath?**: `string`[]
+* **options?**: [`RenameTableOptions`](../interfaces/RenameTableOptions.md)
+    Optional namespace paths. When
+    `newNamespacePath` is omitted the table stays in `namespacePath`.
 
 #### Returns
 
