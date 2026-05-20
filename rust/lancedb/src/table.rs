@@ -2661,15 +2661,23 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        let schema = self.schema().await?;
-
-        let field = schema.field_with_name(&opts.columns[0])?;
-
-        let lance_idx_params = self.make_index_params(field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(field, &opts.index);
-        let columns = [field.name().as_str()];
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let (field, canonical_column) = {
+            let schema = dataset.schema();
+            let Some(field_path) = schema.resolve_case_insensitive(&opts.columns[0]) else {
+                return Err(Error::Schema {
+                    message: format!("Field '{}' does not exist", opts.columns[0]),
+                });
+            };
+            let lance_field = field_path.last().unwrap();
+            let canonical_column = schema.field_path(lance_field.id)?;
+            (Field::from(*lance_field), canonical_column)
+        };
+
+        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
+        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        let columns = [canonical_column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -2787,54 +2795,88 @@ impl BaseTable for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
-        let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
-
-            // skip Lance internal indexes
-            if idx.name == FRAG_REUSE_INDEX_NAME {
-                return None;
-            }
-
-            let stats = match dataset.index_statistics(idx.name.as_str()).await {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to get statistics for index {} ({}): {}", idx.name, idx.uuid, e);
+        let results = futures::stream::iter(indices.as_slice())
+            .then(|idx| async {
+                // skip Lance internal indexes
+                if idx.name == FRAG_REUSE_INDEX_NAME {
                     return None;
                 }
-            };
 
-            let stats: serde_json::Value = match serde_json::from_str(&stats) {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to deserialize index statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
+                let stats = match dataset.index_statistics(idx.name.as_str()).await {
+                    Ok(stats) => stats,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to get statistics for index {} ({}): {}",
+                            idx.name,
+                            idx.uuid,
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-            let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
-                log::warn!("Index statistics was missing 'index_type' field for index {} ({})", idx.name, idx.uuid);
-                return None;
-            };
+                let stats: serde_json::Value = match serde_json::from_str(&stats) {
+                    Ok(stats) => stats,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to deserialize index statistics for index {} ({}): {}",
+                            idx.name,
+                            idx.uuid,
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-            let index_type: crate::index::IndexType = match index_type.parse() {
-                Ok(index_type) => index_type,
-                Err(e) => {
-                    log::warn!("Failed to parse index type for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let mut columns = Vec::with_capacity(idx.fields.len());
-            for field_id in &idx.fields {
-                let Some(field) = dataset.schema().field_by_id(*field_id) else {
-                    log::warn!("The index {} ({}) referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id);
+                let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
+                    log::warn!(
+                        "Index statistics was missing 'index_type' field for index {} ({})",
+                        idx.name,
+                        idx.uuid
+                    );
                     return None;
                 };
-                columns.push(field.name.clone());
-            }
 
-            let name = idx.name.clone();
-            Some(IndexConfig { index_type, columns, name })
-        }).collect::<Vec<_>>().await;
+                let index_type: crate::index::IndexType = match index_type.parse() {
+                    Ok(index_type) => index_type,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse index type for index {} ({}): {}",
+                            idx.name,
+                            idx.uuid,
+                            e
+                        );
+                        return None;
+                    }
+                };
+
+                let mut columns = Vec::with_capacity(idx.fields.len());
+                for field_id in &idx.fields {
+                    let field_path = match dataset.schema().field_path(*field_id) {
+                        Ok(field_path) => field_path,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to resolve field path for index {} ({}) field id {}: {}",
+                                idx.name,
+                                idx.uuid,
+                                field_id,
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    columns.push(field_path);
+                }
+
+                let name = idx.name.clone();
+                Some(IndexConfig {
+                    index_type,
+                    columns,
+                    name,
+                })
+            })
+            .collect::<Vec<_>>()
+            .await;
 
         Ok(results.into_iter().flatten().collect())
     }
@@ -3037,6 +3079,7 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -3648,6 +3691,96 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 1);
         assert_eq!(stats.num_unindexed_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_returns_canonical_nested_field_paths() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let metadata_user_id = Field::new("user_id", DataType::Int32, false);
+        let metadata_dotted_user_id = Field::new("user.id", DataType::Int32, false);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("user_id", DataType::Int32, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(
+                    vec![metadata_user_id.clone(), metadata_dotted_user_id.clone()].into(),
+                ),
+                false,
+            ),
+        ]));
+        let metadata = arrow_array::StructArray::from(vec![
+            (
+                Arc::new(metadata_user_id),
+                Arc::new(Int32Array::from(vec![10, 20, 30])) as Arc<dyn Array>,
+            ),
+            (
+                Arc::new(metadata_dotted_user_id),
+                Arc::new(Int32Array::from(vec![100, 200, 300])) as Arc<dyn Array>,
+            ),
+        ]);
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(metadata),
+            ],
+        )
+        .unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["user_id"], Index::BTree(BTreeIndexBuilder::default()))
+            .name("top_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["metadata.user_id"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("nested_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["metadata.`user.id`"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("escaped_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        let columns_by_name = table
+            .list_indices()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|idx| (idx.name, idx.columns))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            columns_by_name.get("top_user_id_idx").unwrap(),
+            &vec!["user_id".to_string()]
+        );
+        assert_eq!(
+            columns_by_name.get("nested_user_id_idx").unwrap(),
+            &vec!["metadata.user_id".to_string()]
+        );
+        assert_eq!(
+            columns_by_name.get("escaped_user_id_idx").unwrap(),
+            &vec!["metadata.`user.id`".to_string()]
+        );
     }
 
     #[tokio::test]

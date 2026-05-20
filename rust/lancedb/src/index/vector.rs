@@ -23,17 +23,12 @@ impl VectorIndex {
             .fields
             .iter()
             .map(|field_id| {
-                manifest
-                    .schema
-                    .field_by_id(*field_id)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "field {field_id} of index {} must exist in schema",
-                            index.name
-                        )
-                    })
-                    .name
-                    .clone()
+                manifest.schema.field_path(*field_id).unwrap_or_else(|_| {
+                    panic!(
+                        "field {field_id} of index {} must exist in schema",
+                        index.name
+                    )
+                })
             })
             .collect();
         Self {
