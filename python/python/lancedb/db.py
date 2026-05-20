@@ -8,7 +8,17 @@ from abc import abstractmethod
 from datetime import timedelta
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Generator,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Union,
+)
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -847,11 +857,20 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
     def __len__(self) -> int:
-        return len(self.table_names())
+        return sum(1 for _ in self._all_table_names())
 
     def __contains__(self, name: str) -> bool:
-        return name in self.table_names()
+        return name in self._all_table_names()
 
     @override
     def create_table(
