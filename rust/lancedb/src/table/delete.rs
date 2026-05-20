@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use futures::FutureExt;
+use lance::dataset::DeleteBuilder;
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use serde::{Deserialize, Serialize};
 
-use super::NativeTable;
+use super::{NativeTable, Predicate};
 use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -21,17 +24,39 @@ pub struct DeleteResult {
 /// Internal implementation of the delete logic
 ///
 /// This logic was moved from NativeTable::delete to keep table.rs clean.
-pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Result<DeleteResult> {
+pub(crate) async fn execute_delete(
+    table: &NativeTable,
+    predicate: Predicate<'_>,
+) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
-    let mut dataset = (*table.dataset.get().await?).clone();
-    let delete_result = dataset.delete(predicate).boxed().await?;
-    let num_deleted_rows = delete_result.num_deleted_rows;
-    let version = dataset.version().version;
-    table.dataset.update(dataset);
-    Ok(DeleteResult {
-        num_deleted_rows,
-        version,
-    })
+    match predicate {
+        Predicate::String(s) => {
+            let mut dataset = (*table.dataset.get().await?).clone();
+            let delete_result = dataset.delete(s).boxed().await?;
+            let num_deleted_rows = delete_result.num_deleted_rows;
+            let version = dataset.version().version;
+            table.dataset.update(dataset);
+            Ok(DeleteResult {
+                num_deleted_rows,
+                version,
+            })
+        }
+        Predicate::Expr(expr) => {
+            let dataset = table.dataset.get().await?;
+            let delete_result = DeleteBuilder::from_expr(Arc::clone(&dataset), expr.clone())
+                .execute()
+                .await?;
+            let num_deleted_rows = delete_result.num_deleted_rows;
+            let version = delete_result.new_dataset.version().version;
+            table.dataset.update(
+                Arc::try_unwrap(delete_result.new_dataset).unwrap_or_else(|arc| (*arc).clone()),
+            );
+            Ok(DeleteResult {
+                num_deleted_rows,
+                version,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +199,102 @@ mod tests {
         assert!(
             current_version > initial_version,
             "Table version must increment after delete operation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_expr() {
+        use datafusion_expr::{col, lit};
+
+        let conn = connect("memory://").execute().await.unwrap();
+
+        // 1. Create a table with values 0 to 9
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_delete_expr", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        // 2. Verify initial state
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        let initial_version = table.version().await.unwrap();
+
+        // 3. Execute Delete with Expr (removes values > 5)
+        let expr = col("i").gt(lit(5));
+        table.delete(&expr).await.unwrap();
+
+        // 4. Verify results
+        assert_eq!(table.count_rows(None).await.unwrap(), 6); // 0, 1, 2, 3, 4, 5 remain
+        let current_version = table.version().await.unwrap();
+        assert!(
+            current_version > initial_version,
+            "Table version must increment after delete_expr operation"
+        );
+
+        // 5. Verify specific data consistency
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = &batches[0];
+        let array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+
+        // Ensure no value > 5 exists
+        for val in array.iter() {
+            assert!(val.unwrap() <= 5);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_expr_increments_version() {
+        use datafusion_expr::lit;
+
+        let conn = connect("memory://").execute().await.unwrap();
+
+        // Create a table with 5 rows
+        let batch = record_batch!(("id", Int32, [1, 2, 3, 4, 5])).unwrap();
+
+        let table = conn
+            .create_table("test_delete_expr_noop", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        // Capture the initial state (Rows = 5, Version = 1)
+        let initial_rows = table.count_rows(None).await.unwrap();
+        let initial_version = table.version().await.unwrap();
+
+        assert_eq!(initial_rows, 5);
+        let expr = lit(false);
+        table.delete(&expr).await.unwrap();
+
+        // Rows should still be 5
+        let current_rows = table.count_rows(None).await.unwrap();
+        assert_eq!(
+            current_rows, initial_rows,
+            "Data should not change when predicate is false"
+        );
+
+        // version check
+        let current_version = table.version().await.unwrap();
+        assert!(
+            current_version > initial_version,
+            "Table version must increment after delete_expr operation"
         );
     }
 }
