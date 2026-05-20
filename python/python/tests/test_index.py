@@ -106,6 +106,46 @@ async def test_create_scalar_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_create_nested_scalar_index_lists_canonical_paths(db_async):
+    metadata_type = pa.struct(
+        [
+            pa.field("user_id", pa.int32()),
+            pa.field("user.id", pa.int32()),
+        ]
+    )
+    data = pa.Table.from_arrays(
+        [
+            pa.array([1, 2, 3], type=pa.int32()),
+            pa.array(
+                [
+                    {"user_id": 10, "user.id": 100},
+                    {"user_id": 20, "user.id": 200},
+                    {"user_id": 30, "user.id": 300},
+                ],
+                type=metadata_type,
+            ),
+        ],
+        names=["user_id", "metadata"],
+    )
+    table = await db_async.create_table("nested_scalar_index", data)
+
+    await table.create_index("user_id", config=BTree(), name="top_user_id_idx")
+    await table.create_index(
+        "metadata.user_id", config=BTree(), name="nested_user_id_idx"
+    )
+    await table.create_index(
+        "metadata.`user.id`", config=BTree(), name="escaped_user_id_idx"
+    )
+
+    columns_by_name = {
+        index.name: index.columns for index in await table.list_indices()
+    }
+    assert columns_by_name["top_user_id_idx"] == ["user_id"]
+    assert columns_by_name["nested_user_id_idx"] == ["metadata.user_id"]
+    assert columns_by_name["escaped_user_id_idx"] == ["metadata.`user.id`"]
+
+
+@pytest.mark.asyncio
 async def test_create_fixed_size_binary_index(some_table: AsyncTable):
     await some_table.create_index("fsb", config=BTree())
     indices = await some_table.list_indices()

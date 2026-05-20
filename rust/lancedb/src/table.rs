@@ -2688,16 +2688,13 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-
-        let dataset = self.dataset.get().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
-        drop(dataset);
 
         let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
         let columns = [column.as_str()];
-        self.dataset.ensure_mutable()?;
-        let mut dataset = (*self.dataset.get().await?).clone();
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -2815,63 +2812,88 @@ impl BaseTable for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
-        let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
-
-            // skip Lance internal indexes
-            if idx.name == FRAG_REUSE_INDEX_NAME {
-                return None;
-            }
-
-            let stats = match dataset.index_statistics(idx.name.as_str()).await {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to get statistics for index {} ({}): {}", idx.name, idx.uuid, e);
+        let results = futures::stream::iter(indices.as_slice())
+            .then(|idx| async {
+                // skip Lance internal indexes
+                if idx.name == FRAG_REUSE_INDEX_NAME {
                     return None;
                 }
-            };
 
-            let stats: serde_json::Value = match serde_json::from_str(&stats) {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to deserialize index statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
-                log::warn!("Index statistics was missing 'index_type' field for index {} ({})", idx.name, idx.uuid);
-                return None;
-            };
-
-            let index_type: crate::index::IndexType = match index_type.parse() {
-                Ok(index_type) => index_type,
-                Err(e) => {
-                    log::warn!("Failed to parse index type for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let mut columns = Vec::with_capacity(idx.fields.len());
-            for field_id in &idx.fields {
-                let column = match dataset.schema().field_path(*field_id) {
-                    Ok(column) => column,
+                let stats = match dataset.index_statistics(idx.name.as_str()).await {
+                    Ok(stats) => stats,
                     Err(e) => {
                         log::warn!(
-                            "The index {} ({}) referenced a field with id {} which does not exist in the schema: {}",
+                            "Failed to get statistics for index {} ({}): {}",
                             idx.name,
                             idx.uuid,
-                            field_id,
                             e
                         );
                         return None;
                     }
                 };
-                columns.push(column);
-            }
 
-            let name = idx.name.clone();
-            Some(IndexConfig { index_type, columns, name })
-        }).collect::<Vec<_>>().await;
+                let stats: serde_json::Value = match serde_json::from_str(&stats) {
+                    Ok(stats) => stats,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to deserialize index statistics for index {} ({}): {}",
+                            idx.name,
+                            idx.uuid,
+                            e
+                        );
+                        return None;
+                    }
+                };
+
+                let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
+                    log::warn!(
+                        "Index statistics was missing 'index_type' field for index {} ({})",
+                        idx.name,
+                        idx.uuid
+                    );
+                    return None;
+                };
+
+                let index_type: crate::index::IndexType = match index_type.parse() {
+                    Ok(index_type) => index_type,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse index type for index {} ({}): {}",
+                            idx.name,
+                            idx.uuid,
+                            e
+                        );
+                        return None;
+                    }
+                };
+
+                let mut columns = Vec::with_capacity(idx.fields.len());
+                for field_id in &idx.fields {
+                    let field_path = match dataset.schema().field_path(*field_id) {
+                        Ok(field_path) => field_path,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to resolve field path for index {} ({}) field id {}: {}",
+                                idx.name,
+                                idx.uuid,
+                                field_id,
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    columns.push(field_path);
+                }
+
+                let name = idx.name.clone();
+                Some(IndexConfig {
+                    index_type,
+                    columns,
+                    name,
+                })
+            })
+            .collect::<Vec<_>>()
+            .await;
 
         Ok(results.into_iter().flatten().collect())
     }
@@ -3074,6 +3096,7 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;

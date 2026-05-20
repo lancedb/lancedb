@@ -3505,7 +3505,7 @@ mod tests {
                             {
                                 "index_name": "my_idx",
                                 "index_uuid": "34255f64-5717-4562-b3fc-2c963f66afa6",
-                                "columns": ["my_column"],
+                                "columns": ["metadata.`my.column`"],
                                 "index_status": "done",
                             },
                         ]
@@ -3544,7 +3544,7 @@ mod tests {
             IndexConfig {
                 name: "my_idx".into(),
                 index_type: IndexType::LabelList,
-                columns: vec!["my_column".into()],
+                columns: vec!["metadata.`my.column`".into()],
             },
         ];
         assert_eq!(indices, expected);
