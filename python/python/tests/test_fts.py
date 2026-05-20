@@ -563,8 +563,19 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_nested_schema(tmp_path, table):
-    with pytest.raises(ValueError, match="top-level fields"):
-        table.create_fts_index("nested.text")
+    table.create_fts_index("nested.text")
+    indices = table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "FTS"
+    assert indices[0].columns == ["nested.text"]
+
+    results = (
+        table.search("puppy", query_type="fts", fts_columns="nested.text")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) > 0
+    assert all("puppy" in row["nested"]["text"] for row in results)
 
 
 def test_search_index_with_filter(table):

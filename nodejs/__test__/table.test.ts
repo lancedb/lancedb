@@ -115,6 +115,48 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(1);
     });
 
+    it("should invoke the progress callback", async () => {
+      const events: import("../lancedb").WriteProgress[] = [];
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }], {
+        progress: (p) => events.push(p),
+      });
+
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1];
+      expect(last.done).toBe(true);
+      // Earlier callbacks must have done=false.
+      for (const ev of events.slice(0, -1)) {
+        expect(ev.done).toBe(false);
+      }
+      // outputRows reflects the rows added in this call, not table size.
+      expect(last.outputRows).toBe(3);
+      // The input source (an array) reports a row count, so totalRows is set.
+      expect(last.totalRows).toBe(3);
+      // outputRows is monotonic.
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i].outputRows).toBeGreaterThanOrEqual(
+          events[i - 1].outputRows,
+        );
+      }
+    });
+
+    it("should swallow errors thrown from the progress callback", async () => {
+      const warn = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const res = await table.add([{ id: 1 }, { id: 2 }], {
+          progress: () => {
+            throw new Error("callback bomb");
+          },
+        });
+        expect(res.version).toBeGreaterThan(0);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("should let me close the table", async () => {
       expect(table.isOpen()).toBe(true);
       table.close();

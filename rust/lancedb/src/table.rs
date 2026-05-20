@@ -2171,6 +2171,33 @@ impl NativeTable {
         }
     }
 
+    fn resolve_index_field(
+        schema: &lance_core::datatypes::Schema,
+        column: &str,
+    ) -> Result<(String, Field)> {
+        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid field path `{}`: {}", column, e),
+        })?;
+
+        let field_path = schema
+            .resolve_case_insensitive(column)
+            .ok_or_else(|| Error::Schema {
+                message: format!(
+                    "Field path `{}` not found in schema. Available field paths: {}",
+                    column,
+                    schema.field_paths().join(", ")
+                ),
+            })?;
+        let field = field_path.last().expect("field path should be non-empty");
+        let path_segments = field_path
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        let canonical_path = lance_core::datatypes::format_field_path(&path_segments);
+
+        Ok((canonical_path, Field::from(*field)))
+    }
+
     // Convert LanceDB Index to Lance IndexParams
     async fn make_index_params(
         &self,
@@ -2663,21 +2690,11 @@ impl BaseTable for NativeTable {
         }
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
-        let (field, canonical_column) = {
-            let schema = dataset.schema();
-            let Some(field_path) = schema.resolve_case_insensitive(&opts.columns[0]) else {
-                return Err(Error::Schema {
-                    message: format!("Field '{}' does not exist", opts.columns[0]),
-                });
-            };
-            let lance_field = field_path.last().unwrap();
-            let canonical_column = schema.field_path(lance_field.id)?;
-            (Field::from(*lance_field), canonical_column)
-        };
+        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
 
         let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(&field, &opts.index);
-        let columns = [canonical_column.as_str()];
+        let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -3085,8 +3102,8 @@ mod tests {
     use std::time::Duration;
 
     use arrow_array::{
-        Array, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray, RecordBatch,
-        RecordBatchIterator, RecordBatchReader, StringArray,
+        Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, StructArray,
         builder::{ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
@@ -3106,6 +3123,7 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+    use lance_index::scalar::FullTextSearchQuery;
     #[tokio::test]
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
@@ -3694,92 +3712,199 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_indices_returns_canonical_nested_field_paths() {
+    async fn test_create_index_nested_field_paths() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-
-        let metadata_user_id = Field::new("user_id", DataType::Int32, false);
-        let metadata_dotted_user_id = Field::new("user.id", DataType::Int32, false);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("user_id", DataType::Int32, false),
-            Field::new(
-                "metadata",
-                DataType::Struct(
-                    vec![metadata_user_id.clone(), metadata_dotted_user_id.clone()].into(),
-                ),
-                false,
-            ),
-        ]));
-        let metadata = arrow_array::StructArray::from(vec![
-            (
-                Arc::new(metadata_user_id),
-                Arc::new(Int32Array::from(vec![10, 20, 30])) as Arc<dyn Array>,
-            ),
-            (
-                Arc::new(metadata_dotted_user_id),
-                Arc::new(Int32Array::from(vec![100, 200, 300])) as Arc<dyn Array>,
-            ),
-        ]);
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3])),
-                Arc::new(metadata),
-            ],
-        )
-        .unwrap();
-
         let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let num_rows = 512;
+        let dimension = 8;
+
+        let metadata = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("user_id", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let vector_values = arrow_array::Float32Array::from_iter_values(
+            (0..num_rows * dimension).map(|v| v as f32),
+        );
+        let embeddings =
+            Arc::new(create_fixed_size_list(vector_values, dimension).unwrap()) as ArrayRef;
+        let image = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new(
+                "embedding",
+                embeddings.data_type().clone(),
+                false,
+            )),
+            embeddings,
+        )]));
+
+        let payload = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("text", DataType::Utf8, false)),
+            Arc::new(StringArray::from_iter_values(
+                (0..num_rows).map(|i| format!("document {}", i)),
+            )) as ArrayRef,
+        )]));
+
+        let meta_data = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("user-id", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let literal = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("a.b", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("metadata", metadata.data_type().clone(), false),
+            Field::new("image", image.data_type().clone(), false),
+            Field::new("payload", payload.data_type().clone(), false),
+            Field::new("meta-data", meta_data.data_type().clone(), false),
+            Field::new("literal", literal.data_type().clone(), false),
+        ]));
+        let batch =
+            RecordBatch::try_new(schema, vec![metadata, image, payload, meta_data, literal])
+                .unwrap();
+
         let table = conn
-            .create_table("my_table", batch)
+            .create_table("nested_index_paths", batch)
             .execute()
             .await
             .unwrap();
 
-        table
-            .create_index(&["user_id"], Index::BTree(BTreeIndexBuilder::default()))
-            .name("top_user_id_idx".to_string())
-            .execute()
-            .await
-            .unwrap();
         table
             .create_index(
                 &["metadata.user_id"],
                 Index::BTree(BTreeIndexBuilder::default()),
             )
-            .name("nested_user_id_idx".to_string())
+            .name("metadata_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["image.embedding"], Index::Auto)
+            .name("image_embedding_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["payload.text"], Index::FTS(Default::default()))
+            .name("payload_text_idx".to_string())
             .execute()
             .await
             .unwrap();
         table
             .create_index(
-                &["metadata.`user.id`"],
+                &["`meta-data`.`user-id`"],
                 Index::BTree(BTreeIndexBuilder::default()),
             )
-            .name("escaped_user_id_idx".to_string())
+            .name("escaped_names_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["literal.`a.b`"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("literal_dot_idx".to_string())
             .execute()
             .await
             .unwrap();
 
-        let columns_by_name = table
-            .list_indices()
+        let mut index_configs = table.list_indices().await.unwrap();
+        index_configs.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let indexed_columns = index_configs
+            .iter()
+            .map(|index| {
+                (
+                    index.name.as_str(),
+                    index.columns.as_slice(),
+                    index.index_type.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            indexed_columns,
+            vec![
+                (
+                    "escaped_names_idx",
+                    &["`meta-data`.`user-id`".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "image_embedding_idx",
+                    &["image.embedding".to_string()][..],
+                    crate::index::IndexType::IvfPq,
+                ),
+                (
+                    "literal_dot_idx",
+                    &["literal.`a.b`".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "metadata_user_id_idx",
+                    &["metadata.user_id".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "payload_text_idx",
+                    &["payload.text".to_string()][..],
+                    crate::index::IndexType::FTS,
+                ),
+            ]
+        );
+
+        let vector_results = table
+            .query()
+            .nearest_to(&[0.0; 8])
+            .unwrap()
+            .column("image.embedding")
+            .limit(1)
+            .execute()
             .await
             .unwrap()
-            .into_iter()
-            .map(|idx| (idx.name, idx.columns))
-            .collect::<HashMap<_, _>>();
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            vector_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
 
+        let fts_results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("document".to_string()))
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(!fts_results.is_empty());
+
+        let filtered_results = table
+            .query()
+            .only_if("metadata.user_id = 42")
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
         assert_eq!(
-            columns_by_name.get("top_user_id_idx").unwrap(),
-            &vec!["user_id".to_string()]
-        );
-        assert_eq!(
-            columns_by_name.get("nested_user_id_idx").unwrap(),
-            &vec!["metadata.user_id".to_string()]
-        );
-        assert_eq!(
-            columns_by_name.get("escaped_user_id_idx").unwrap(),
-            &vec!["metadata.`user.id`".to_string()]
+            filtered_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
         );
     }
 

@@ -1890,6 +1890,55 @@ def test_create_scalar_index(mem_db: DBConnection):
     assert scalar_index.name == "custom_y_index"
 
 
+def test_create_index_nested_field_paths(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("metadata", pa.struct([pa.field("user_id", pa.int32())])),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "metadata": {"user_id": i},
+                "image": {"embedding": [float(i), float(i + 1)]},
+            }
+            for i in range(256)
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_index_paths", data=data)
+
+    table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
+    table.create_index(
+        vector_column_name="image.embedding",
+        num_partitions=1,
+        num_sub_vectors=1,
+        name="image_embedding_idx",
+    )
+
+    indices = sorted(table.list_indices(), key=lambda idx: idx.name)
+    assert [(idx.name, idx.index_type, idx.columns) for idx in indices] == [
+        ("image_embedding_idx", "IvfPq", ["image.embedding"]),
+        ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
+    ]
+
+    vector_results = (
+        table.search([0.0, 1.0], vector_column_name="image.embedding")
+        .limit(1)
+        .to_list()
+    )
+    assert len(vector_results) == 1
+    assert vector_results[0]["metadata"]["user_id"] == 0
+
+    filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
+    assert len(filtered_results) == 1
+    assert filtered_results[0]["metadata"]["user_id"] == 42
+
+
 def test_empty_query(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
