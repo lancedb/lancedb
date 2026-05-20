@@ -20,11 +20,21 @@ Common commands:
 * Format Rust: `cargo fmt --all`
 * Format Python: `ruff format .`
 * Lint Python: `ruff check .`
+* Bootstrap Python dev env: `cd python && uv run --extra tests --extra dev maturin develop --extras tests,dev`
+* Run Python tests: `cd python && uv run --extra tests pytest python/tests -vv --durations=10 -m "not slow and not s3_test"`
+* Run specific Python test: `cd python && uv run --extra tests pytest python/tests/<test_file>.py::<test_name> -q`
+
+For Python validation, prefer the uv-managed environment declared by `python/uv.lock`.
+Do not treat system `python`, global `pytest`, or missing editable-install errors as
+final blockers; bootstrap or enter the uv environment instead. If `lancedb._lancedb`
+is missing or stale, or if Rust/PyO3 binding code changed, rebuild the Python
+extension with the bootstrap command above before running tests.
 
 Before committing changes, run formatting for every language you touched. At minimum:
 
 * Rust changes: run `cargo fmt --all`.
-* Python changes: run `ruff format .` and `ruff check .` from the repository root.
+* Python changes: run `ruff format .` and `ruff check .` from the repository root,
+  and run targeted tests through `cd python && uv run ...`.
 * TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
 
 Before creating a PR, make sure the PR title follows Conventional Commits, such as
