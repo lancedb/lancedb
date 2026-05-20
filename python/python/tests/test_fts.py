@@ -563,7 +563,7 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_nested_schema(tmp_path, table):
-    table.create_fts_index("nested.text")
+    table.create_fts_index("nested.text", with_position=True)
     indices = table.list_indices()
     assert len(indices) == 1
     assert indices[0].index_type == "FTS"
@@ -576,6 +576,98 @@ def test_nested_schema(tmp_path, table):
     )
     assert len(results) > 0
     assert all("puppy" in row["nested"]["text"] for row in results)
+
+    results = table.search(MatchQuery("puppy", "nested.text")).limit(5).to_list()
+    assert len(results) > 0
+    assert all("puppy" in row["nested"]["text"] for row in results)
+
+    phrase_results = (
+        table.search(PhraseQuery("puppy runs", "nested.text")).limit(5).to_list()
+    )
+    assert len(phrase_results) > 0
+    assert all("puppy runs" in row["nested"]["text"] for row in phrase_results)
+
+    hybrid_results = (
+        table.search(query_type="hybrid", fts_columns="nested.text")
+        .vector([0 for _ in range(128)])
+        .text("puppy")
+        .limit(5)
+        .to_list()
+    )
+    assert len(hybrid_results) > 0
+
+
+@pytest.mark.asyncio
+async def test_nested_schema_async(async_table):
+    await async_table.create_index("nested.text", config=FTS(with_position=True))
+    indices = await async_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "FTS"
+    assert indices[0].columns == ["nested.text"]
+
+    results = await (
+        async_table.query()
+        .nearest_to_text("puppy", columns="nested.text")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) > 0
+    assert all("puppy" in row["nested"]["text"] for row in results)
+
+    results = await (
+        async_table.query()
+        .nearest_to_text(MatchQuery("puppy", "nested.text"))
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) > 0
+    assert all("puppy" in row["nested"]["text"] for row in results)
+
+    phrase_results = await (
+        async_table.query()
+        .nearest_to_text(PhraseQuery("puppy runs", "nested.text"))
+        .limit(5)
+        .to_list()
+    )
+    assert len(phrase_results) > 0
+    assert all("puppy runs" in row["nested"]["text"] for row in phrase_results)
+
+    hybrid_results = await (
+        async_table.query()
+        .nearest_to([0 for _ in range(128)])
+        .nearest_to_text("puppy", columns="nested.text")
+        .limit(5)
+        .to_list()
+    )
+    assert len(hybrid_results) > 0
+
+
+def test_nested_schema_rejects_invalid_fts_fields(tmp_path):
+    db = ldb.connect(tmp_path)
+    data = pa.table(
+        {
+            "payload": pa.array(
+                [
+                    {"text": "puppy runs", "count": 1},
+                    {"text": "car drives", "count": 2},
+                ]
+            ),
+            "vector": pa.array(
+                [[0.1, 0.1], [0.2, 0.2]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test", data=data)
+
+    with pytest.raises(ValueError, match="FTS index cannot be created.*payload"):
+        table.create_fts_index("payload")
+
+    with pytest.raises(ValueError, match="FTS index cannot be created.*count"):
+        table.create_fts_index("payload.count")
+
+    with pytest.raises(ValueError, match="Field path `payload.missing` not found"):
+        table.create_fts_index("payload.missing")
 
 
 def test_search_index_with_filter(table):
