@@ -71,6 +71,7 @@ export {
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
+  RenameTableOptions,
 } from "./connection";
 
 export { Session } from "./native.js";
