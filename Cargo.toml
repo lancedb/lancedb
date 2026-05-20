@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=6.0.0", default-features = false }
-lance-core = "=6.0.0"
-lance-datagen = "=6.0.0"
-lance-file = "=6.0.0"
-lance-io = { "version" = "=6.0.0", default-features = false }
-lance-index = "=6.0.0"
-lance-linalg = "=6.0.0"
-lance-namespace = "=6.0.0"
-lance-namespace-impls = { "version" = "=6.0.0", default-features = false }
-lance-table = "=6.0.0"
-lance-testing = "=6.0.0"
-lance-datafusion = "=6.0.0"
-lance-encoding = "=6.0.0"
-lance-arrow = "=6.0.0"
+lance = { "version" = "=6.0.1-rc.2", default-features = false, "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=6.0.1-rc.2", default-features = false, "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=6.0.1-rc.2", default-features = false, "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=6.0.1-rc.2", "tag" = "v6.0.1-rc.2", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
