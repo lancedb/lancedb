@@ -993,6 +993,7 @@ mod tests {
     /// `"json vs large_binary" schema mismatch`.
     #[tokio::test]
     async fn test_add_arrow_json_into_lance_json_table() {
+        use arrow_array::{Array, cast::AsArray};
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
 
         // Build a table whose "data" column is lance.json (LargeBinary +
@@ -1013,7 +1014,10 @@ mod tests {
         let data_field = stored_field.field_with_name("data").unwrap();
         assert_eq!(data_field.data_type(), &DataType::LargeBinary);
         assert_eq!(
-            data_field.metadata().get("ARROW:extension:name").map(|s| s.as_str()),
+            data_field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(|s| s.as_str()),
             Some(JSON_EXT_NAME),
         );
 
@@ -1024,25 +1028,22 @@ mod tests {
             "ARROW:extension:name".to_string(),
             ARROW_JSON_EXT_NAME.to_string(),
         );
-        let arrow_json_field = Field::new("data", DataType::Utf8, true)
-            .with_metadata(arrow_json_metadata);
+        let arrow_json_field =
+            Field::new("data", DataType::Utf8, true).with_metadata(arrow_json_metadata);
         let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
 
         let json_values: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
-        let string_array: Arc<dyn arrow_array::Array> = Arc::new(
-            arrow_array::StringArray::from(json_values),
-        );
-        let batch =
-            RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+        let string_array: Arc<dyn arrow_array::Array> =
+            Arc::new(arrow_array::StringArray::from(json_values));
+        let batch = RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
 
         // This must not fail with a schema-mismatch error.
         table.add(batch).execute().await.unwrap();
 
         assert_eq!(table.count_rows(None).await.unwrap(), 3);
 
-        // Verify the data was correctly written by reading it back.
-        // Lance stores JSON as JSONB (binary format), so we read as large_binary
-        // and verify the content can be parsed.
+        // Verify the data was correctly written by reading it back. A lance.json
+        // column is read back as Utf8 carrying arrow.json extension metadata.
         let results: Vec<RecordBatch> = table
             .query()
             .select(Select::columns(&["data"]))
@@ -1060,19 +1061,20 @@ mod tests {
         // Verify null value is preserved
         assert!(batch.column(0).is_null(0));
 
-        // Verify JSON values are correctly stored (as JSONB binary)
+        // Verify JSON values are correctly stored.
         let json_col = batch.column(0);
-        let json_bytes: &arrow_array::LargeBinaryArray = json_col.as_binary();
+        assert_eq!(json_col.data_type(), &DataType::Utf8);
+        let json_strs = json_col.as_string::<i32>();
 
         // Row 1: {"a": 1}
-        assert!(!json_bytes.is_null(1));
-        let json1 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(1).as_ref())
+        assert!(!json_strs.is_null(1));
+        let json1 = serde_json::from_str::<serde_json::Value>(json_strs.value(1))
             .expect("JSON should be valid");
         assert_eq!(json1, serde_json::json!({"a": 1}));
 
         // Row 2: {"b": 2}
-        assert!(!json_bytes.is_null(2));
-        let json2 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(2).as_ref())
+        assert!(!json_strs.is_null(2));
+        let json2 = serde_json::from_str::<serde_json::Value>(json_strs.value(2))
             .expect("JSON should be valid");
         assert_eq!(json2, serde_json::json!({"b": 2}));
     }
@@ -1082,6 +1084,7 @@ mod tests {
     /// PyArrow's pa.large_string() or when creating pa.json_() with certain versions.
     #[tokio::test]
     async fn test_add_arrow_json_large_utf8_into_lance_json_table() {
+        use arrow_array::{Array, cast::AsArray};
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
 
         // Build a table whose "data" column is lance.json (LargeBinary +
@@ -1101,7 +1104,10 @@ mod tests {
         let data_field = stored_field.field_with_name("data").unwrap();
         assert_eq!(data_field.data_type(), &DataType::LargeBinary);
         assert_eq!(
-            data_field.metadata().get("ARROW:extension:name").map(|s| s.as_str()),
+            data_field
+                .metadata()
+                .get("ARROW:extension:name")
+                .map(|s| s.as_str()),
             Some(JSON_EXT_NAME),
         );
 
@@ -1111,16 +1117,14 @@ mod tests {
             "ARROW:extension:name".to_string(),
             ARROW_JSON_EXT_NAME.to_string(),
         );
-        let arrow_json_field = Field::new("data", DataType::LargeUtf8, true)
-            .with_metadata(arrow_json_metadata);
+        let arrow_json_field =
+            Field::new("data", DataType::LargeUtf8, true).with_metadata(arrow_json_metadata);
         let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
 
         let json_values: Vec<Option<&str>> = vec![None, Some(r#"{"x": 10}"#), Some(r#"{"y": 20}"#)];
-        let string_array: Arc<dyn arrow_array::Array> = Arc::new(
-            arrow_array::LargeStringArray::from(json_values),
-        );
-        let batch =
-            RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+        let string_array: Arc<dyn arrow_array::Array> =
+            Arc::new(arrow_array::LargeStringArray::from(json_values));
+        let batch = RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
 
         // This must not fail with a schema-mismatch error.
         table.add(batch).execute().await.unwrap();
@@ -1145,19 +1149,20 @@ mod tests {
         // Verify null value is preserved
         assert!(batch.column(0).is_null(0));
 
-        // Verify JSON values are correctly stored (as JSONB binary)
+        // Verify JSON values are correctly stored.
         let json_col = batch.column(0);
-        let json_bytes: &arrow_array::LargeBinaryArray = json_col.as_binary();
+        assert_eq!(json_col.data_type(), &DataType::Utf8);
+        let json_strs = json_col.as_string::<i32>();
 
         // Row 1: {"x": 10}
-        assert!(!json_bytes.is_null(1));
-        let json1 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(1).as_ref())
+        assert!(!json_strs.is_null(1));
+        let json1 = serde_json::from_str::<serde_json::Value>(json_strs.value(1))
             .expect("JSON should be valid");
         assert_eq!(json1, serde_json::json!({"x": 10}));
 
         // Row 2: {"y": 20}
-        assert!(!json_bytes.is_null(2));
-        let json2 = serde_json::from_slice::<serde_json::Value>(json_bytes.value(2).as_ref())
+        assert!(!json_strs.is_null(2));
+        let json2 = serde_json::from_str::<serde_json::Value>(json_strs.value(2))
             .expect("JSON should be valid");
         assert_eq!(json2, serde_json::json!({"y": 20}));
     }

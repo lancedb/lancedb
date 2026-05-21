@@ -641,8 +641,8 @@ mod tests {
     /// batch with a "json vs large_binary" schema-mismatch error.
     #[tokio::test]
     async fn test_arrow_json_passthrough_to_lance_json() {
-        use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
         use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
 
         // Build a table schema with a lance.json field (LargeBinary + lance.json metadata).
         let lance_field = json_field("data", true);
@@ -650,7 +650,10 @@ mod tests {
 
         // Build an input batch with an arrow.json field (Utf8 + arrow.json metadata).
         let mut arrow_meta = std::collections::HashMap::new();
-        arrow_meta.insert(ARROW_EXT_NAME_KEY.to_string(), ARROW_JSON_EXT_NAME.to_string());
+        arrow_meta.insert(
+            ARROW_EXT_NAME_KEY.to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        );
         let arrow_field = Field::new("data", DataType::Utf8, true).with_metadata(arrow_meta);
         let input_schema = Arc::new(Schema::new(vec![arrow_field]));
         let input_batch = RecordBatch::try_new(
