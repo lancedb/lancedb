@@ -80,6 +80,13 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
+    # rustls-pemfile: unmaintained (repo archived; code folded into
+    # rustls-pki-types). Reached only transitively via object_store → lance.
+    # No safe upgrade is available; clearing this requires object_store to
+    # migrate to the rustls-pki-types PemObject API.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134
+    { id = "RUSTSEC-2025-0134", reason = "transitive via object_store/lance; waiting on object_store migration to rustls-pki-types" },
+
     # bincode: unmaintained. Reached through lindera and lindera-dictionary,
     # which are required by the native Lindera tokenizer path. Lindera has not
     # migrated to another serialization format yet.
