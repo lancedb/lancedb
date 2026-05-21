@@ -3348,16 +3348,30 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
-        async_iter = LOOP.run(self._inner.execute(max_batch_length, timeout))
+
+        # ``self._inner`` is an ``AsyncQueryBase`` wrapping the native query
+        # object.  Calling ``execute`` on the native object directly from this
+        # thread fails (the pyo3 future needs a running loop), and ``execute``
+        # is not defined on ``AsyncQueryBase`` itself — so go through the
+        # async ``to_batches`` on the background loop.
+        async def _open():
+            return await self._inner.to_batches(
+                max_batch_length=max_batch_length, timeout=timeout
+            )
+
+        async_reader = LOOP.run(_open())
+
+        async def _anext(it):
+            return await it.__anext__()
 
         def iter_sync():
             try:
                 while True:
-                    yield LOOP.run(async_iter.__anext__())
+                    yield LOOP.run(_anext(async_reader))
             except StopAsyncIteration:
                 return
 
-        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+        return pa.RecordBatchReader.from_batches(async_reader.schema, iter_sync())
 
     def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """

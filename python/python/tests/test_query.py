@@ -1512,6 +1512,37 @@ def test_take_queries(tmp_path):
     ]
 
 
+def test_take_queries_to_batches(tmp_path):
+    # Regression test for the sync take-query path: `to_batches` previously
+    # raised ``AttributeError: 'AsyncTakeQuery' object has no attribute
+    # 'execute'`` because the inherited ``BaseQueryBuilder.to_batches`` called
+    # ``execute`` on the async wrapper instead of the native query.
+    db = lancedb.connect(tmp_path)
+    data = pa.table({"idx": list(range(100)), "label": [str(i) for i in range(100)]})
+    table = db.create_table("test", data)
+
+    # Take by offset → to_batches
+    rs = list(table.take_offsets([5, 2, 17]).to_batches())
+    assert all(isinstance(b, pa.RecordBatch) for b in rs)
+    assert sum(b.num_rows for b in rs) == 3
+    assert sorted(v for b in rs for v in b.column("idx").to_pylist()) == [2, 5, 17]
+
+    # Take by row id → to_batches
+    rs = list(table.take_row_ids([5, 2, 17]).to_batches())
+    assert all(isinstance(b, pa.RecordBatch) for b in rs)
+    assert sum(b.num_rows for b in rs) == 3
+    assert sorted(v for b in rs for v in b.column("idx").to_pylist()) == [2, 5, 17]
+
+    # Take with select projection → to_batches preserves the projection
+    rs = list(table.take_row_ids([5, 2, 17]).select(["label"]).to_batches())
+    assert all(b.schema.names == ["label"] for b in rs)
+    assert sorted(v for b in rs for v in b.column("label").to_pylist()) == [
+        "17",
+        "2",
+        "5",
+    ]
+
+
 def test_getitems(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pa.table(
