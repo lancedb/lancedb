@@ -110,25 +110,25 @@ def fetch_remote_tags() -> List[TagInfo]:
             "api",
             "-X",
             "GET",
-            f"repos/{LANCE_REPO}/git/refs/tags",
-            "--paginate",
+            f"repos/{LANCE_REPO}/releases",
             "--jq",
-            ".[].ref",
+            ".[].tag_name",
+            "-F",
+            "per_page=20",
         ]
     )
     tags: List[TagInfo] = []
     for line in output.splitlines():
-        ref = line.strip()
-        if not ref.startswith("refs/tags/v"):
+        tag = line.strip()
+        if not tag.startswith("v"):
             continue
-        tag = ref.split("refs/tags/")[-1]
         version = tag.lstrip("v")
         try:
             tags.append(TagInfo(tag=tag, version=version, semver=parse_semver(version)))
         except ValueError:
             continue
     if not tags:
-        raise RuntimeError("No Lance tags could be parsed from GitHub API output")
+        raise RuntimeError("No Lance releases could be parsed from GitHub API output")
     return tags
 
 
