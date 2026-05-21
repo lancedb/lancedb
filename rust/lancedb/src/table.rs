@@ -2646,7 +2646,13 @@ impl BaseTable for NativeTable {
             output.plan
         };
 
-        let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
+        let insert_exec = Arc::new(InsertExec::new_with_tracker(
+            ds_wrapper.clone(),
+            ds,
+            plan,
+            lance_params,
+            output.tracker.clone(),
+        ));
 
         let tracker_for_tasks = output.tracker.clone();
         if let Some(ref t) = tracker_for_tasks {
