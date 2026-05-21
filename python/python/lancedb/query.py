@@ -3349,21 +3349,14 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
-
-        async def _open():
-            return await self._inner.to_batches(
-                max_batch_length=max_batch_length, timeout=timeout
-            )
-
-        async_reader = LOOP.run(_open())
-
-        async def _anext(it):
-            return await it.__anext__()
+        async_reader = LOOP.run(
+            self._inner.to_batches(max_batch_length=max_batch_length, timeout=timeout)
+        )
 
         def iter_sync():
             try:
                 while True:
-                    yield LOOP.run(_anext(async_reader))
+                    yield LOOP.run(async_reader.__anext__())
             except StopAsyncIteration:
                 return
 
