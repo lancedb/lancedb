@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from enum import Enum
 from datetime import timedelta
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
+    Any,
     Dict,
     List,
     Literal,
@@ -17,41 +19,40 @@ from typing import (
     Type,
     TypeVar,
     Union,
-    Any,
 )
 
-import asyncio
 import deprecation
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pydantic
+from typing_extensions import Annotated
 
-from lancedb.pydantic import PYDANTIC_VERSION
+from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
+from lancedb.pydantic import PYDANTIC_VERSION
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
+from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-from .expr import Expr
-from lancedb._lancedb import fts_query_to_json
-from typing_extensions import Annotated
 
 if TYPE_CHECKING:
     import sys
+
     import PIL
     import polars as pl
 
-    from ._lancedb import Query as LanceQuery
     from ._lancedb import FTSQuery as LanceFTSQuery
     from ._lancedb import HybridQuery as LanceHybridQuery
-    from ._lancedb import VectorQuery as LanceVectorQuery
-    from ._lancedb import TakeQuery as LanceTakeQuery
     from ._lancedb import PyQueryRequest
+    from ._lancedb import Query as LanceQuery
+    from ._lancedb import TakeQuery as LanceTakeQuery
+    from ._lancedb import VectorQuery as LanceVectorQuery
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
@@ -3349,11 +3350,6 @@ class BaseQueryBuilder(object):
             complete within the specified time, an error will be raised.
         """
 
-        # ``self._inner`` is an ``AsyncQueryBase`` wrapping the native query
-        # object.  Calling ``execute`` on the native object directly from this
-        # thread fails (the pyo3 future needs a running loop), and ``execute``
-        # is not defined on ``AsyncQueryBase`` itself — so go through the
-        # async ``to_batches`` on the background loop.
         async def _open():
             return await self._inner.to_batches(
                 max_batch_length=max_batch_length, timeout=timeout
