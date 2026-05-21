@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from enum import Enum
 from datetime import timedelta
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
+    Any,
     Dict,
     List,
     Literal,
@@ -17,41 +19,40 @@ from typing import (
     Type,
     TypeVar,
     Union,
-    Any,
 )
 
-import asyncio
 import deprecation
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pydantic
+from typing_extensions import Annotated
 
-from lancedb.pydantic import PYDANTIC_VERSION
+from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
+from lancedb.pydantic import PYDANTIC_VERSION
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
+from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-from .expr import Expr
-from lancedb._lancedb import fts_query_to_json
-from typing_extensions import Annotated
 
 if TYPE_CHECKING:
     import sys
+
     import PIL
     import polars as pl
 
-    from ._lancedb import Query as LanceQuery
     from ._lancedb import FTSQuery as LanceFTSQuery
     from ._lancedb import HybridQuery as LanceHybridQuery
-    from ._lancedb import VectorQuery as LanceVectorQuery
-    from ._lancedb import TakeQuery as LanceTakeQuery
     from ._lancedb import PyQueryRequest
+    from ._lancedb import Query as LanceQuery
+    from ._lancedb import TakeQuery as LanceTakeQuery
+    from ._lancedb import VectorQuery as LanceVectorQuery
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
@@ -3348,16 +3349,18 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
-        async_iter = LOOP.run(self._inner.execute(max_batch_length, timeout))
+        async_reader = LOOP.run(
+            self._inner.to_batches(max_batch_length=max_batch_length, timeout=timeout)
+        )
 
         def iter_sync():
             try:
                 while True:
-                    yield LOOP.run(async_iter.__anext__())
+                    yield LOOP.run(async_reader.__anext__())
             except StopAsyncIteration:
                 return
 
-        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+        return pa.RecordBatchReader.from_batches(async_reader.schema, iter_sync())
 
     def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """
