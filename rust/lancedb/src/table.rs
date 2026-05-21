@@ -3877,6 +3877,25 @@ mod tests {
             1
         );
 
+        let default_vector_results = table
+            .query()
+            .nearest_to(&[0.0; 8])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            default_vector_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
+
         let fts_results = table
             .query()
             .full_text_search(FullTextSearchQuery::new("document".to_string()))

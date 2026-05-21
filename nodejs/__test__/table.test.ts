@@ -28,6 +28,7 @@ import {
   List,
   Schema,
   SchemaLike,
+  Struct,
   Type,
   Uint8,
   Utf8,
@@ -778,6 +779,113 @@ describe("When creating an index", () => {
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
     expect(indices2.length).toBe(0);
+  });
+
+  it("should create and search a nested vector index", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "nested_vector",
+      makeArrowTable(
+        Array.from({ length: 300 }, (_, id) => ({
+          id,
+          image: { embedding: [id, id + 1] },
+        })),
+        { schema: nestedSchema },
+      ),
+    );
+
+    await nestedTable.createIndex("image.embedding", {
+      name: "image_embedding_idx",
+    });
+    const indices = await nestedTable.listIndices();
+    expect(indices).toContainEqual({
+      name: "image_embedding_idx",
+      indexType: "IvfPq",
+      columns: ["image.embedding"],
+    });
+
+    const explicit = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .column("image.embedding")
+      .limit(1)
+      .toArray();
+    const inferred = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .limit(1)
+      .toArray();
+    expect(inferred[0].id).toEqual(explicit[0].id);
+  });
+
+  it("should report multiple nested vector candidates", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "text",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "multiple_nested_vectors",
+      makeArrowTable(
+        [
+          {
+            image: { embedding: [0.0, 1.0] },
+            text: { embedding: [2.0, 3.0] },
+          },
+        ],
+        { schema: nestedSchema },
+      ),
+    );
+
+    await expect(
+      nestedTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/image\.embedding.*text\.embedding/);
+  });
+
+  it("should report when no default vector column exists", async () => {
+    const db = await connect(tmpDir.name);
+    const noVectorTable = await db.createTable(
+      "no_vector",
+      makeArrowTable([{ id: 0, label: "cat" }]),
+    );
+
+    await expect(
+      noVectorTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/No vector column/);
   });
 
   it("should wait for index readiness", async () => {

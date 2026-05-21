@@ -27,7 +27,9 @@ use crate::table::UpdateResult;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::{AnyQuery, Filter, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
-use crate::utils::{supported_btree_data_type, supported_vector_data_type};
+use crate::utils::{
+    resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
+};
 use crate::{DistanceType, Error};
 use crate::{
     error::Result,
@@ -1563,11 +1565,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Index::FTS(p) => ("FTS", Some(to_json(p)?)),
             Index::Auto => {
                 let schema = self.schema().await?;
-                let field = schema
-                    .field_with_name(&column)
-                    .map_err(|_| Error::InvalidInput {
-                        message: format!("Column {} not found in schema", column),
-                    })?;
+                let field = resolve_arrow_field_path(&schema, &column)?;
                 if supported_vector_data_type(field.data_type()) {
                     body[METRIC_TYPE_KEY] =
                         serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());

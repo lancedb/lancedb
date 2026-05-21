@@ -1934,6 +1934,10 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     assert len(vector_results) == 1
     assert vector_results[0]["metadata"]["user_id"] == 0
 
+    default_vector_results = table.search([0.0, 1.0]).limit(1).to_list()
+    assert len(default_vector_results) == 1
+    assert default_vector_results[0]["metadata"]["user_id"] == 0
+
     filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
     assert len(filtered_results) == 1
     assert filtered_results[0]["metadata"]["user_id"] == 42
@@ -2011,6 +2015,74 @@ def test_search_with_schema_inf_multiple_vector(mem_db: DBConnection):
     q = np.random.randn(10)
     with pytest.raises(ValueError):
         table.search(q).limit(1).to_arrow()
+
+
+def test_search_infers_single_nested_vector(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {"id": 0, "image": {"embedding": [0.0, 1.0]}},
+            {"id": 1, "image": {"embedding": [10.0, 11.0]}},
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_default_search", data=data)
+
+    result = table.search([0.0, 1.0]).limit(1).to_list()
+    assert result[0]["id"] == 0
+
+
+def test_search_nested_vector_multiple_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+            pa.field(
+                "text",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "image": {"embedding": [0.0, 1.0]},
+                "text": {"embedding": [2.0, 3.0]},
+            }
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_multiple_candidates", data=data)
+
+    with pytest.raises(ValueError, match="image.embedding.*text.embedding"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_nested_vector_no_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field("metadata", pa.struct([pa.field("label", pa.string())])),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [{"id": 0, "metadata": {"label": "cat"}}],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_no_candidates", data=data)
+
+    with pytest.raises(ValueError, match="no vector column"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
