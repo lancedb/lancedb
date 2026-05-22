@@ -632,15 +632,14 @@ mod tests {
         assert_eq!(a.values(), &[1, 3]);
     }
 
-    /// `arrow.json` input (PyArrow `pa.json_()`, Utf8 + extension metadata) against a
+    /// `arrow.json` input (PyArrow `pa.json_()`, Utf8/LargeUtf8 + extension metadata) against a
     /// `lance.json` table field (LargeBinary + extension metadata) must be passed through
     /// without a cast so that lance-core can perform its own arrow.json → JSONB conversion.
     ///
     /// Before the fix, `cast_to_table_schema` attempted a `Utf8 → LargeBinary` DataFusion
     /// cast that preserved the wrong extension metadata, causing lance-core to reject the
     /// batch with a "json vs large_binary" schema-mismatch error.
-    #[tokio::test]
-    async fn test_arrow_json_passthrough_to_lance_json() {
+    async fn run_arrow_json_passthrough_to_lance_json(input_type: DataType) {
         use lance_arrow::ARROW_EXT_NAME_KEY;
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
 
@@ -648,23 +647,21 @@ mod tests {
         let lance_field = json_field("data", true);
         let table_schema = Schema::new(vec![lance_field]);
 
-        // Build an input batch with an arrow.json field (Utf8 + arrow.json metadata).
-        let mut arrow_meta = std::collections::HashMap::new();
-        arrow_meta.insert(
+        // Build an input batch with an arrow.json field (Utf8/LargeUtf8 + arrow.json metadata).
+        let arrow_meta = std::collections::HashMap::from([(
             ARROW_EXT_NAME_KEY.to_string(),
             ARROW_JSON_EXT_NAME.to_string(),
-        );
-        let arrow_field = Field::new("data", DataType::Utf8, true).with_metadata(arrow_meta);
+        )]);
+        let arrow_field = Field::new("data", input_type.clone(), true).with_metadata(arrow_meta);
         let input_schema = Arc::new(Schema::new(vec![arrow_field]));
-        let input_batch = RecordBatch::try_new(
-            input_schema,
-            vec![Arc::new(StringArray::from(vec![
-                Some(r#"{"x": 1}"#),
-                None,
-                Some(r#"{"y": 2}"#),
-            ]))],
-        )
-        .unwrap();
+
+        let values = vec![Some(r#"{"x": 1}"#), None, Some(r#"{"y": 2}"#)];
+        let input_array: Arc<dyn arrow_array::Array> = match input_type {
+            DataType::Utf8 => Arc::new(StringArray::from(values)),
+            DataType::LargeUtf8 => Arc::new(arrow_array::LargeStringArray::from(values)),
+            other => panic!("unsupported arrow.json backing type for this test: {other:?}"),
+        };
+        let input_batch = RecordBatch::try_new(input_schema, vec![input_array]).unwrap();
 
         let plan = plan_from_batch(input_batch).await;
         let projected = cast_to_table_schema(plan, &table_schema).unwrap();
@@ -672,7 +669,7 @@ mod tests {
         // The projected schema's "data" field must carry arrow.json metadata
         // (the input field), not be silently dropped or miscast.
         let out_field = projected.schema().field_with_name("data").unwrap().clone();
-        assert_eq!(out_field.data_type(), &DataType::Utf8);
+        assert_eq!(out_field.data_type(), &input_type);
         assert_eq!(
             out_field
                 .metadata()
@@ -685,9 +682,30 @@ mod tests {
         // The data must flow through correctly (3 rows, no panic).
         let result = collect(projected).await;
         assert_eq!(result.num_rows(), 3);
-        let col: &StringArray = result.column(0).as_any().downcast_ref().unwrap();
-        assert_eq!(col.value(0), r#"{"x": 1}"#);
+        let (v0, v2) = match input_type {
+            DataType::Utf8 => {
+                let col: &StringArray = result.column(0).as_any().downcast_ref().unwrap();
+                (col.value(0).to_string(), col.value(2).to_string())
+            }
+            DataType::LargeUtf8 => {
+                let col: &arrow_array::LargeStringArray =
+                    result.column(0).as_any().downcast_ref().unwrap();
+                (col.value(0).to_string(), col.value(2).to_string())
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(v0, r#"{"x": 1}"#);
         assert!(result.column(0).is_null(1));
-        assert_eq!(col.value(2), r#"{"y": 2}"#);
+        assert_eq!(v2, r#"{"y": 2}"#);
+    }
+
+    #[tokio::test]
+    async fn test_arrow_json_passthrough_to_lance_json() {
+        run_arrow_json_passthrough_to_lance_json(DataType::Utf8).await;
+    }
+
+    #[tokio::test]
+    async fn test_arrow_json_passthrough_to_lance_json_large_utf8() {
+        run_arrow_json_passthrough_to_lance_json(DataType::LargeUtf8).await;
     }
 }
