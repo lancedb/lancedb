@@ -37,10 +37,13 @@ Before committing changes, run formatting for every language you touched. At min
   and run targeted tests through `cd python && uv run ...`.
 * TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
 
-Before creating a PR, make sure the PR title follows Conventional Commits, such as
-`fix: support nested field paths in native index creation` or
-`feat(python): add dataset multiprocessing support`. The semantic-release check uses the
-PR title and body as the merge commit message, so a non-conventional PR title will fail CI.
+Before creating a PR, the exact value passed to `gh pr create --title` must follow
+Conventional Commits, such as `fix: support nested field paths in native index creation`
+or `feat(python): add dataset multiprocessing support`. Do not use a plain natural
+language summary like `Support nested field paths in native index creation` as the PR
+title. The semantic-release check uses the PR title and body as the merge commit message,
+so a non-conventional PR title will fail CI. After creating a PR, read the remote PR title
+back and fix it immediately if it is not conventional.
 
 ## Coding tips
 
