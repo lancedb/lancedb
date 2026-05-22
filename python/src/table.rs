@@ -185,7 +185,7 @@ pub struct LsmWriteSpec {
 
 #[pymethods]
 impl LsmWriteSpec {
-    /// Hash-bucket sharding by the unenforced primary key column.
+    /// Hash-bucket sharding by a scalar column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {

@@ -537,19 +537,14 @@ export abstract class Table {
    *
    * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
    *
-   * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
-   *   key (`column` and `numBuckets` required).
+   * - `"bucket"` — hash-bucket writes by a scalar `column` (`column` and
+   *   `numBuckets` required).
    * - `"identity"` — shard by the raw value of a scalar `column`.
    * - `"unsharded"` — route every write to a single shard.
-   *
-   * All variants require the table to have an unenforced primary key
-   * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
-   * requires it to be the single column being bucketed.
    * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
    * ```ts
-   * await table.setUnenforcedPrimaryKey("id");
    * await table.setLsmWriteSpec({
    *   specType: "bucket",
    *   column: "id",

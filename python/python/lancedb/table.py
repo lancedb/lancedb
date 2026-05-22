@@ -3875,14 +3875,10 @@ class AsyncTable:
         strategies:
 
         - ``LsmWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
-          the single-column unenforced primary key.
+          a scalar column.
         - ``LsmWriteSpec.identity(column)`` — shard by the raw value of a
           scalar column.
         - ``LsmWriteSpec.unsharded()`` — route every write to a single shard.
-
-        All variants require the table to have an unenforced primary key set
-        via [`set_unenforced_primary_key`]; bucket sharding additionally
-        requires it to be the single column being bucketed.
 
         Parameters
         ----------
@@ -3892,7 +3888,6 @@ class AsyncTable:
         Examples
         --------
         >>> from lancedb._lancedb import LsmWriteSpec
-        >>> # table.set_unenforced_primary_key("id")
         >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
         await self._inner.set_lsm_write_spec(spec)

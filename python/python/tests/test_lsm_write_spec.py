@@ -40,16 +40,6 @@ def _make_table(tmp_path):
 def test_set_lsm_write_spec_validates(tmp_path):
     _db, table = _make_table(tmp_path)
 
-    # No PK set yet.
-    with pytest.raises(Exception, match="primary key"):
-        table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
-
-    table.set_unenforced_primary_key("id")
-
-    # Column mismatch.
-    with pytest.raises(Exception, match="match"):
-        table.set_lsm_write_spec(LsmWriteSpec.bucket("v", 4))
-
     # Out-of-range num_buckets.
     with pytest.raises(Exception, match="num_buckets"):
         table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 0))
@@ -70,7 +60,6 @@ def test_unset_lsm_write_spec(tmp_path):
         table.unset_lsm_write_spec()
 
     # Install a spec, then remove it; afterwards a fresh spec can be set.
-    table.set_unenforced_primary_key("id")
     table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
     table.unset_lsm_write_spec()
     # A second unset errors — there is no spec left to remove.
@@ -81,9 +70,7 @@ def test_unset_lsm_write_spec(tmp_path):
 
 def test_set_unsharded_spec(tmp_path):
     _db, table = _make_table(tmp_path)
-    # Lance MemWAL still requires a primary key on the dataset; Unsharded
-    # just skips per-row hashing.
-    table.set_unenforced_primary_key("id")
+    # Unsharded routes every write to a single shard, skipping per-row hashing.
     table.set_lsm_write_spec(LsmWriteSpec.unsharded())
     table.unset_lsm_write_spec()
 
@@ -120,7 +107,6 @@ async def test_async_set_unset_lsm_write_spec(tmp_path):
         pa.RecordBatchReader.from_batches(SCHEMA, [_batch(["seed"], [0])]),
     )
 
-    await table.set_unenforced_primary_key("id")
     await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
     await table.unset_lsm_write_spec()
     # A second unset errors.
@@ -130,9 +116,7 @@ async def test_async_set_unset_lsm_write_spec(tmp_path):
 
 def test_set_identity_spec(tmp_path):
     _db, table = _make_table(tmp_path)
-    # Identity sharding still requires an unenforced primary key on the
-    # table; it shards by the raw value of the given column.
-    table.set_unenforced_primary_key("id")
+    # Identity sharding shards by the raw value of the given column.
     table.set_lsm_write_spec(LsmWriteSpec.identity("v"))
     table.unset_lsm_write_spec()
 
