@@ -147,6 +147,13 @@ def connect(
     >>> db = lancedb.connect("s3://my-bucket/lancedb",
     ...                      storage_options={"aws_access_key_id": "***"})
 
+    For tests and temporary data, use an in-memory database:
+
+    >>> db = lancedb.connect("memory://")
+
+    In-memory databases are not persisted. Tables are dropped when the last
+    connection or table handle referencing them is closed.
+
     Connect to LanceDB cloud:
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
@@ -378,6 +385,8 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # For tests and temporary data, use an in-memory database
+    ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
     ...     db = await lancedb.connect_async("db://my_database", api_key="ldb_...",
     ...                                      client_config={
