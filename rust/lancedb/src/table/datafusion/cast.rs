@@ -639,7 +639,11 @@ mod tests {
     /// Before the fix, `cast_to_table_schema` attempted a `Utf8 → LargeBinary` DataFusion
     /// cast that preserved the wrong extension metadata, causing lance-core to reject the
     /// batch with a "json vs large_binary" schema-mismatch error.
-    async fn run_arrow_json_passthrough_to_lance_json(input_type: DataType) {
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8)]
+    #[tokio::test]
+    async fn test_arrow_json_passthrough_to_lance_json(#[case] input_type: DataType) {
         use lance_arrow::ARROW_EXT_NAME_KEY;
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, json_field};
 
@@ -697,15 +701,5 @@ mod tests {
         assert_eq!(v0, r#"{"x": 1}"#);
         assert!(result.column(0).is_null(1));
         assert_eq!(v2, r#"{"y": 2}"#);
-    }
-
-    #[tokio::test]
-    async fn test_arrow_json_passthrough_to_lance_json() {
-        run_arrow_json_passthrough_to_lance_json(DataType::Utf8).await;
-    }
-
-    #[tokio::test]
-    async fn test_arrow_json_passthrough_to_lance_json_large_utf8() {
-        run_arrow_json_passthrough_to_lance_json(DataType::LargeUtf8).await;
     }
 }

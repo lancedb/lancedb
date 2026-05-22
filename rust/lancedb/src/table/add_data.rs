@@ -993,12 +993,12 @@ mod tests {
     /// `"json vs large_binary" schema mismatch`.
     ///
     /// PyArrow's `pa.json_()` may be backed by either `Utf8` or `LargeUtf8` depending on the
-    /// constructor used, so the helper is parameterized over the input backing type.
-    async fn append_arrow_json_into_lance_json_table(
-        input_type: DataType,
-        table_name: &str,
-        rows: Vec<Option<&str>>,
-    ) {
+    /// constructor used, so the test is parameterized over the input backing type.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8)]
+    #[tokio::test]
+    async fn test_add_arrow_json_into_lance_json_table(#[case] input_type: DataType) {
         use arrow_array::{Array, cast::AsArray};
         use lance_arrow::ARROW_EXT_NAME_KEY;
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
@@ -1010,7 +1010,7 @@ mod tests {
 
         let db = connect("memory://").execute().await.unwrap();
         let table = db
-            .create_empty_table(table_name, table_schema)
+            .create_empty_table("json_test", table_schema)
             .execute()
             .await
             .unwrap();
@@ -1037,6 +1037,7 @@ mod tests {
             Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
         let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
 
+        let rows: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
         let string_array: Arc<dyn arrow_array::Array> = match input_type {
             DataType::Utf8 => Arc::new(arrow_array::StringArray::from(rows.clone())),
             DataType::LargeUtf8 => Arc::new(arrow_array::LargeStringArray::from(rows.clone())),
@@ -1081,25 +1082,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[tokio::test]
-    async fn test_add_arrow_json_into_lance_json_table() {
-        append_arrow_json_into_lance_json_table(
-            DataType::Utf8,
-            "json_test",
-            vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_add_arrow_json_large_utf8_into_lance_json_table() {
-        append_arrow_json_into_lance_json_table(
-            DataType::LargeUtf8,
-            "json_test_large_utf8",
-            vec![None, Some(r#"{"x": 10}"#), Some(r#"{"y": 20}"#)],
-        )
-        .await;
     }
 }
