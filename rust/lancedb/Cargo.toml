@@ -104,6 +104,7 @@ datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
 test-log = "0.2"
+serial_test = "3"
 
 
 [features]

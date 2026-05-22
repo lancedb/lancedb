@@ -888,6 +888,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::time::Duration;
 
     #[test]
@@ -1143,6 +1144,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_none() {
         let config = ClientConfig::default();
         // Clear env vars that might be set from other tests
@@ -1155,6 +1157,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env() {
         // SAFETY: This is only called in tests
         unsafe {
@@ -1169,6 +1172,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env_key() {
         // SAFETY: This is only called in tests
         unsafe {
@@ -1189,6 +1193,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_direct_takes_precedence() {
         // SAFETY: This is only called in tests
         unsafe {
@@ -1206,6 +1211,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_empty_env_ignored() {
         // SAFETY: This is only called in tests
         unsafe {
