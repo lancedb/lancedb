@@ -701,14 +701,10 @@ LSM-style write path for future `mergeInsert` calls.
 
 `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
 
-- `"bucket"` — hash-bucket writes by the single-column unenforced primary
-  key (`column` and `numBuckets` required).
+- `"bucket"` — hash-bucket writes by a scalar `column` (`column` and
+  `numBuckets` required).
 - `"identity"` — shard by the raw value of a scalar `column`.
 - `"unsharded"` — route every write to a single shard.
-
-All variants require the table to have an unenforced primary key
-([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
-requires it to be the single column being bucketed.
 
 #### Parameters
 
@@ -722,7 +718,6 @@ requires it to be the single column being bucketed.
 #### Example
 
 ```ts
-await table.setUnenforcedPrimaryKey("id");
 await table.setLsmWriteSpec({
   specType: "bucket",
   column: "id",
