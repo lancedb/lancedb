@@ -362,6 +362,22 @@ def test_table_create_indices():
                     schema=dict(
                         fields=[
                             dict(name="id", type={"type": "int64"}, nullable=False),
+                            dict(name="text", type={"type": "string"}, nullable=False),
+                            dict(
+                                name="vector",
+                                type={
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        dict(
+                                            name="item",
+                                            type={"type": "float"},
+                                            nullable=True,
+                                        )
+                                    ],
+                                    "length": 2,
+                                },
+                                nullable=False,
+                            ),
                         ]
                     ),
                 )

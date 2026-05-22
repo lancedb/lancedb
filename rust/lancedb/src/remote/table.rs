@@ -1528,8 +1528,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 });
             }
         };
+        let schema = self.schema().await?;
+        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
         let mut body = serde_json::json!({
-            "column": column
+            "column": canonical_column
         });
 
         // Add name parameter if provided (for backwards compatibility, only include if Some)
@@ -1564,8 +1566,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
             Index::FTS(p) => ("FTS", Some(to_json(p)?)),
             Index::Auto => {
-                let schema = self.schema().await?;
-                let field = resolve_arrow_field_path(&schema, &column)?;
                 if supported_vector_data_type(field.data_type()) {
                     body[METRIC_TYPE_KEY] =
                         serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
@@ -1862,16 +1862,26 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
+        let schema = self.schema().await?;
+
         // Make request to get stats for each index, so we get the index type.
         // This is a bit inefficient, but it's the only way to get the index type.
         let mut futures = Vec::with_capacity(body.indexes.len());
         for index in body.indexes {
+            let columns = index
+                .columns
+                .iter()
+                .map(|column| {
+                    resolve_arrow_field_path(&schema, column)
+                        .map(|(canonical_column, _)| canonical_column)
+                })
+                .collect::<Result<Vec<_>>>()?;
             let future = async move {
                 match self.index_stats(&index.index_name).await {
                     Ok(Some(stats)) => Ok(Some(IndexConfig {
                         name: index.index_name,
                         index_type: stats.index_type,
-                        columns: index.columns,
+                        columns,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -2311,6 +2321,38 @@ mod tests {
             "schema": json_schema,
         }))
         .unwrap()
+    }
+
+    fn nested_index_schema() -> Schema {
+        let vector_type =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 8);
+        Schema::new(vec![
+            Field::new(
+                "metadata",
+                DataType::Struct(vec![Field::new("user_id", DataType::Int32, false)].into()),
+                false,
+            ),
+            Field::new(
+                "image",
+                DataType::Struct(vec![Field::new("embedding", vector_type, false)].into()),
+                false,
+            ),
+            Field::new(
+                "payload",
+                DataType::Struct(vec![Field::new("text", DataType::Utf8, false)].into()),
+                false,
+            ),
+            Field::new(
+                "meta-data",
+                DataType::Struct(vec![Field::new("user-id", DataType::Int32, false)].into()),
+                false,
+            ),
+            Field::new(
+                "literal",
+                DataType::Struct(vec![Field::new("a.b", DataType::Int32, false)].into()),
+                false,
+            ),
+        ])
     }
 
     #[rstest]
@@ -3080,6 +3122,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_vector_nested_field_path() {
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let mut expected_body = serde_json::json!({
+                "vector_column": "image.embedding",
+                "prefilter": true,
+                "k": 10,
+                "nprobes": 20,
+                "minimum_nprobes": 20,
+                "maximum_nprobes": 20,
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
+                "ef": Option::<usize>::None,
+                "refine_factor": Option::<u32>::None,
+                "version": null,
+            });
+            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
+            assert_eq!(body, expected_body);
+
+            let response_body = write_ipc_file(&expected_data_ref);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let _ = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .column("image.embedding")
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_query_fts() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -3160,7 +3255,7 @@ mod tests {
                         "query": {
                             "match": {
                                 "terms": "hello world",
-                                "column": "a",
+                                "column": "payload.text",
                                 "boost": 1.0,
                                 "fuzziness": 0,
                                 "max_expansions": 50,
@@ -3194,7 +3289,7 @@ mod tests {
             .query()
             .full_text_search(FullTextSearchQuery::new_query(
                 MatchQuery::new("hello world".to_owned())
-                    .with_column(Some("a".to_owned()))
+                    .with_column(Some("payload.text".to_owned()))
                     .into(),
             ))
             .with_row_id()
@@ -3465,20 +3560,34 @@ mod tests {
         for (index_type, expected_body, index) in cases {
             let table = Table::new_with_handler("my_table", move |request| {
                 assert_eq!(request.method(), "POST");
-                assert_eq!(request.url().path(), "/v1/table/my_table/create_index/");
-                assert_eq!(
-                    request.headers().get("Content-Type").unwrap(),
-                    JSON_CONTENT_TYPE
-                );
-                let body = request.body().unwrap().as_bytes().unwrap();
-                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-                let mut expected_body = expected_body.clone();
-                expected_body["column"] = "a".into();
-                expected_body[INDEX_TYPE_KEY] = index_type.into();
+                match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                        http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap()
+                    }
+                    "/v1/table/my_table/create_index/" => {
+                        assert_eq!(
+                            request.headers().get("Content-Type").unwrap(),
+                            JSON_CONTENT_TYPE
+                        );
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                        let mut expected_body = expected_body.clone();
+                        expected_body["column"] = "a".into();
+                        expected_body[INDEX_TYPE_KEY] = index_type.into();
 
-                assert_eq!(body, expected_body);
+                        assert_eq!(body, expected_body);
 
-                http::Response::builder().status(200).body("{}").unwrap()
+                        http::Response::builder()
+                            .status(200)
+                            .body("{}".to_string())
+                            .unwrap()
+                    }
+                    path => panic!("Unexpected path: {}", path),
+                }
             });
 
             table.create_index(&["a"], index).execute().await.unwrap();
@@ -3486,11 +3595,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_index_nested_field_paths() {
+        let schema = nested_index_schema();
+        let expected_requests = Arc::new(vec![
+            json!({
+                "column": "metadata.user_id",
+                "index_type": "BTREE",
+            }),
+            json!({
+                "column": "image.embedding",
+                "index_type": "IVF_PQ",
+                "metric_type": "l2",
+            }),
+            {
+                let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                body["column"] = "payload.text".into();
+                body["index_type"] = "FTS".into();
+                body
+            },
+            json!({
+                "column": "`meta-data`.`user-id`",
+                "index_type": "BTREE",
+            }),
+            json!({
+                "column": "literal.`a.b`",
+                "index_type": "BTREE",
+            }),
+        ]);
+        let request_idx = Arc::new(AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", {
+            let schema = schema.clone();
+            let expected_requests = expected_requests.clone();
+            let request_idx = request_idx.clone();
+            move |request| {
+                assert_eq!(request.method(), "POST");
+                match request.url().path() {
+                    "/v1/table/my_table/describe/" => http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap(),
+                    "/v1/table/my_table/create_index/" => {
+                        assert_eq!(
+                            request.headers().get("Content-Type").unwrap(),
+                            JSON_CONTENT_TYPE
+                        );
+                        let idx = request_idx.fetch_add(1, Ordering::SeqCst);
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(body, expected_requests[idx]);
+                        http::Response::builder()
+                            .status(200)
+                            .body("{}".to_string())
+                            .unwrap()
+                    }
+                    path => panic!("Unexpected path: {}", path),
+                }
+            }
+        });
+
+        table
+            .create_index(&["Metadata.USER_ID"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["Image.Embedding"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["Payload.Text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["`META-DATA`.`USER-ID`"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["literal.`A.B`"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(request_idx.load(Ordering::SeqCst), expected_requests.len());
+    }
+
+    #[tokio::test]
     async fn test_list_indices() {
-        let table = Table::new_with_handler("my_table", |request| {
+        let schema = Schema::new(vec![
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 8),
+                false,
+            ),
+            Field::new(
+                "metadata",
+                DataType::Struct(vec![Field::new("my.column", DataType::Utf8, true)].into()),
+                false,
+            ),
+        ]);
+        let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
 
             let response_body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap();
+                }
                 "/v1/table/my_table/index/list/" => {
                     serde_json::json!({
                         "indexes": [
@@ -4010,6 +4225,20 @@ mod tests {
             assert_eq!(request.method(), "POST");
 
             let response_body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![
+                        Field::new(
+                            "vector",
+                            DataType::FixedSizeList(
+                                Arc::new(Field::new("item", DataType::Float32, true)),
+                                8,
+                            ),
+                            false,
+                        ),
+                        Field::new("my_column", DataType::Utf8, false),
+                    ]);
+                    serde_json::from_str::<serde_json::Value>(&describe_response(&schema)).unwrap()
+                }
                 "/v1/table/my_table/index/list/" => {
                     serde_json::json!({
                         "indexes": [
@@ -4171,13 +4400,23 @@ mod tests {
                         assert_eq!(value["index_type"], "IVF_PQ");
                     }
 
-                    http::Response::builder().status(200).body("").unwrap()
-                }
-                "/v1/table/dev$users/describe/" => {
-                    // Needed for schema check in Auto index type
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 1, "schema": {"fields": [{"name": "embedding", "type": {"type": "list", "item": {"type": "float32"}}, "nullable": false}]}}"#)
+                        .body("".to_string())
+                        .unwrap()
+                }
+                "/v1/table/dev$users/describe/" => {
+                    let schema = Schema::new(vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, true)),
+                            8,
+                        ),
+                        false,
+                    )]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
                         .unwrap()
                 }
                 _ => {
