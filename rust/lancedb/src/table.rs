@@ -2391,13 +2391,28 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        let schema = self.schema().await?;
+        let dataset = self.dataset.get().await?;
+        let Some(field_path) = dataset.schema().resolve_case_insensitive(&opts.columns[0]) else {
+            return Err(Error::Schema {
+                message: format!(
+                    "Unable to get field named {:?}. Valid fields: {:?}",
+                    opts.columns[0],
+                    dataset.schema().field_paths()
+                ),
+            });
+        };
+        let field = (*field_path.last().expect("resolved field path is non-empty")).clone();
+        let names = field_path
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>();
+        let column = lance_core::datatypes::format_field_path(&names);
+        drop(dataset);
 
-        let field = schema.field_with_name(&opts.columns[0])?;
-
-        let lance_idx_params = self.make_index_params(field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(field, &opts.index);
-        let columns = [field.name().as_str()];
+        let field = Field::from(&field);
+        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
+        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        let columns = [column.as_str()];
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
         let mut builder = dataset
@@ -2543,11 +2558,11 @@ impl BaseTable for NativeTable {
 
             let mut columns = Vec::with_capacity(idx.fields.len());
             for field_id in &idx.fields {
-                let Some(field) = dataset.schema().field_by_id(*field_id) else {
+                let Ok(field_path) = dataset.schema().field_path(*field_id) else {
                     log::warn!("The index {} ({}) referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id);
                     return None;
                 };
-                columns.push(field.name.clone());
+                columns.push(field_path);
             }
 
             let name = idx.name.clone();
@@ -2761,7 +2776,7 @@ mod tests {
 
     use arrow_array::{
         Array, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray, RecordBatch,
-        RecordBatchIterator, RecordBatchReader, StringArray,
+        RecordBatchIterator, RecordBatchReader, StringArray, StructArray,
         builder::{ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
@@ -3365,6 +3380,57 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 1);
         assert_eq!(stats.num_unindexed_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_scalar_index_on_nested_field() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let metadata_fields = vec![Arc::new(Field::new("user_id", DataType::Int32, false))];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(metadata_fields.clone().into()),
+                false,
+            ),
+        ]));
+        let metadata = StructArray::new(
+            metadata_fields.into(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(metadata),
+            ],
+        )
+        .unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(
+                &["metadata.user_id"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        assert_eq!(
+            index_configs[0].columns,
+            vec!["metadata.user_id".to_string()]
+        );
     }
 
     #[tokio::test]
