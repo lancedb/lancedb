@@ -3,6 +3,7 @@
 
 
 from datetime import timedelta
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
@@ -17,7 +18,7 @@ else:
 
 # Remove this import to fix circular dependency
 # from lancedb import connect_async
-from lancedb.remote import ClientConfig
+from lancedb.remote import ClientConfig, RetryConfig, TimeoutConfig, TlsConfig
 import pyarrow as pa
 
 from ..common import DATA
@@ -34,6 +35,64 @@ from lance_namespace import (
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
+
+
+def _duration_seconds(value: Optional[timedelta]) -> Optional[float]:
+    return value.total_seconds() if value is not None else None
+
+
+def _timeout_config_to_dict(
+    config: Optional[TimeoutConfig],
+) -> Optional[dict[str, Any]]:
+    if config is None:
+        return None
+    return {
+        "timeout": _duration_seconds(config.timeout),
+        "connect_timeout": _duration_seconds(config.connect_timeout),
+        "read_timeout": _duration_seconds(config.read_timeout),
+        "pool_idle_timeout": _duration_seconds(config.pool_idle_timeout),
+    }
+
+
+def _retry_config_to_dict(config: RetryConfig) -> dict[str, Any]:
+    return {
+        "retries": config.retries,
+        "connect_retries": config.connect_retries,
+        "read_retries": config.read_retries,
+        "backoff_factor": config.backoff_factor,
+        "backoff_jitter": config.backoff_jitter,
+        "statuses": config.statuses,
+    }
+
+
+def _tls_config_to_dict(config: Optional[TlsConfig]) -> Optional[dict[str, Any]]:
+    if config is None:
+        return None
+    return {
+        "cert_file": config.cert_file,
+        "key_file": config.key_file,
+        "ssl_ca_cert": config.ssl_ca_cert,
+        "assert_hostname": config.assert_hostname,
+    }
+
+
+def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
+    if config.header_provider is not None:
+        raise ValueError(
+            "Cannot serialize a remote connection with a header_provider. "
+            "Use static api_key/extra_headers or provide a worker-side "
+            "connection factory instead."
+        )
+    return {
+        "user_agent": config.user_agent,
+        "retry_config": _retry_config_to_dict(config.retry_config),
+        "timeout_config": _timeout_config_to_dict(config.timeout_config),
+        "extra_headers": config.extra_headers,
+        "id_delimiter": config.id_delimiter,
+        "tls_config": _tls_config_to_dict(config.tls_config),
+        "header_provider": None,
+        "user_id": config.user_id,
+    }
 
 
 class RemoteDBConnection(DBConnection):
@@ -88,6 +147,11 @@ class RemoteDBConnection(DBConnection):
         parsed = urlparse(db_url)
         if parsed.scheme != "db":
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
+        self.db_url = db_url
+        self.api_key = api_key
+        self.region = region
+        self.host_override = host_override
+        self.storage_options = storage_options
         self.db_name = parsed.netloc
 
         self.client_config = client_config
@@ -108,6 +172,20 @@ class RemoteDBConnection(DBConnection):
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
+
+    @override
+    def serialize(self) -> str:
+        return json.dumps(
+            {
+                "connection_type": "remote",
+                "db_url": self.db_url,
+                "api_key": self.api_key,
+                "region": self.region,
+                "host_override": self.host_override,
+                "client_config": _client_config_to_dict(self.client_config),
+                "storage_options": self.storage_options,
+            }
+        )
 
     @override
     def list_namespaces(
@@ -329,7 +407,12 @@ class RemoteDBConnection(DBConnection):
             )
 
         table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
-        return RemoteTable(table, self.db_name)
+        return RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=namespace_path,
+        )
 
     def clone_table(
         self,
@@ -378,7 +461,12 @@ class RemoteDBConnection(DBConnection):
                 is_shallow=is_shallow,
             )
         )
-        return RemoteTable(table, self.db_name)
+        return RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=target_namespace_path,
+        )
 
     @override
     def create_table(
@@ -523,7 +611,12 @@ class RemoteDBConnection(DBConnection):
                 fill_value=fill_value,
             )
         )
-        return RemoteTable(table, self.db_name)
+        return RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=namespace_path,
+        )
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):

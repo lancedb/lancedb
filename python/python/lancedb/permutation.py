@@ -3,12 +3,13 @@
 
 import copy
 import json
+import os
 
 from deprecation import deprecated
 import pyarrow as pa
 
 from ._lancedb import async_permutation_builder, PermutationReader
-from .table import LanceTable
+from .table import LanceTable, Table
 from .background_loop import LOOP
 from .util import batch_to_tensor, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
@@ -354,6 +355,49 @@ class Transforms:
 DEFAULT_BATCH_SIZE = 100
 
 
+def _table_to_pickle_state(table: Table) -> dict[str, Any]:
+    from .remote.table import RemoteTable
+
+    if isinstance(table, RemoteTable):
+        return {
+            "kind": "remote",
+            "table": table,
+        }
+
+    if not isinstance(table, LanceTable):
+        raise ValueError(f"Cannot pickle table of type {type(table)!r}")
+
+    base_uri = table._conn.uri
+    if base_uri.startswith("memory://"):
+        return {
+            "kind": "memory",
+            "name": table.name,
+            "data": table.to_arrow(),
+        }
+
+    return {
+        "kind": "local",
+        "name": table.name,
+        "uri": base_uri,
+        "namespace": table._namespace_path,
+        "storage_options": table._conn.storage_options,
+    }
+
+
+def _table_from_pickle_state(state: dict[str, Any]) -> Table:
+    from . import connect
+
+    kind = state["kind"]
+    if kind == "remote":
+        return state["table"]
+    if kind == "memory":
+        return connect("memory://").create_table(state["name"], state["data"])
+    if kind == "local":
+        db = connect(state["uri"], storage_options=state["storage_options"])
+        return db.open_table(state["name"], namespace_path=state["namespace"] or None)
+    raise ValueError(f"Unknown table pickle state kind: {kind}")
+
+
 class Permutation:
     """
     A Permutation is a view of a dataset that can be used as input to model training
@@ -369,15 +413,15 @@ class Permutation:
 
     def __init__(
         self,
-        base_table: LanceTable,
-        permutation_table: Optional[LanceTable],
+        base_table: Table,
+        permutation_table: Optional[Table],
         split: int,
         selection: dict[str, str],
         batch_size: int,
         transform_fn: Callable[pa.RecordBatch, Any],
         offset: Optional[int] = None,
         limit: Optional[int] = None,
-        connection_factory: Optional[Callable[[str], LanceTable]] = None,
+        connection_factory: Optional[Callable[[str], Table]] = None,
         _reader: Optional[PermutationReader] = None,
     ):
         """
@@ -397,6 +441,7 @@ class Permutation:
         if _reader is None:
             _reader = LOOP.run(self._build_reader())
         self.reader: PermutationReader = _reader
+        self._pid = os.getpid()
 
     async def _build_reader(self) -> PermutationReader:
         reader = await PermutationReader.from_tables(
@@ -428,29 +473,25 @@ class Permutation:
         return new
 
     def with_connection_factory(
-        self, connection_factory: Callable[[str], LanceTable]
+        self, connection_factory: Callable[[str], Table]
     ) -> "Permutation":
         """
         Creates a new permutation that will use ``connection_factory`` to reopen
         the base table when this permutation is unpickled in a worker process.
 
-        The factory is a callable that takes a single argument — the base table
-        name — and returns a [LanceTable]. It must be picklable; the worker
+        The factory is a callable that takes a single argument, the base table
+        name, and returns a LanceDB table. It must be picklable; the worker
         will pickle it via standard ``pickle`` and call it to recover the base
         table. Picklable callables in practice means top-level (module-level)
         functions, ``functools.partial`` of such functions, or instances of
         picklable classes implementing ``__call__``. Lambdas and closures over
         local variables don't pickle with the default protocol.
 
-        Setting a factory is necessary when the URI alone is not enough to
-        re-open the connection — most importantly for LanceDB Cloud (``db://``)
-        connections, where ``api_key`` and ``region`` aren't recoverable from
-        the connection object after construction.
-
-        For local file or cloud-storage paths the factory is optional: if not
-        set, ``__getstate__`` falls back to capturing
-        ``(uri, storage_options, namespace_path)`` and re-opening via
-        ``lancedb.connect(uri, storage_options=...)``.
+        A factory is optional for normal local and remote LanceDB connections:
+        if not set, ``__getstate__`` captures the table's own picklable reopen
+        state. Use a factory when that default state is not enough, for example
+        when credentials should be loaded from the worker environment instead
+        of being embedded in the pickle.
 
         Examples
         --------
@@ -508,7 +549,7 @@ class Permutation:
         return new
 
     @classmethod
-    def identity(cls, table: LanceTable) -> "Permutation":
+    def identity(cls, table: Table) -> "Permutation":
         """
         Creates an identity permutation for the given table.
         """
@@ -517,8 +558,8 @@ class Permutation:
     @classmethod
     def from_tables(
         cls,
-        base_table: LanceTable,
-        permutation_table: Optional[LanceTable] = None,
+        base_table: Table,
+        permutation_table: Optional[Table] = None,
         split: Optional[Union[str, int]] = None,
     ) -> "Permutation":
         """
@@ -594,19 +635,24 @@ class Permutation:
 
         The base table is captured either via a user-supplied
         ``connection_factory`` (see [with_connection_factory]) or, as a
-        fallback, by introspecting ``(uri, storage_options, namespace_path)``
-        on the connection. The permutation table — always an in-memory
-        LanceDB table — is captured as a pyarrow Table (which pickles via
-        Arrow IPC natively). The reader is dropped from the wire format;
-        ``__setstate__`` rebuilds it from the restored tables.
+        fallback, by the table's own picklable reopen state. An in-memory
+        permutation table is captured as a pyarrow Table (which pickles via
+        Arrow IPC natively); otherwise, the permutation table uses its own
+        reopen state too. The reader is dropped from the wire format and
+        rebuilt lazily on first use.
         """
         permutation_data: Optional[pa.Table] = None
+        permutation_table_state: Optional[dict[str, Any]] = None
         if self.permutation_table is not None:
-            permutation_data = self.permutation_table.to_arrow()
+            try:
+                permutation_data = self.permutation_table.to_arrow()
+            except NotImplementedError:
+                permutation_table_state = _table_to_pickle_state(self.permutation_table)
 
         common = {
             "base_table_name": self.base_table.name,
             "permutation_data": permutation_data,
+            "permutation_table_state": permutation_table_state,
             "split": self.split,
             "selection": self.selection,
             "batch_size": self.batch_size,
@@ -622,39 +668,9 @@ class Permutation:
             # namespace from the existing connection.
             return common
 
-        # URI-introspection fallback: only viable for native (OSS) connections
-        # where (uri, storage_options) is enough to reopen. Remote / cloud
-        # connections don't expose recoverable api_key / region — those users
-        # must call with_connection_factory().
-        try:
-            base_uri = self.base_table._conn.uri
-            storage_options = self.base_table._conn.storage_options
-        except AttributeError as e:
-            raise ValueError(
-                "Cannot pickle this Permutation: the base table's connection "
-                "does not expose a uri/storage_options, which usually means it "
-                "is a remote (LanceDB Cloud) connection. Call "
-                "Permutation.with_connection_factory(...) first to provide a "
-                "picklable callable that re-opens the base table from a worker "
-                "process."
-            ) from e
-
-        if base_uri.startswith("memory://"):
-            # In-memory base tables don't exist in any worker process by
-            # default, so dump the entire base table into the pickle. This
-            # can be expensive for large datasets — users with large
-            # in-memory base tables should either persist them or set a
-            # connection_factory.
-            return {
-                **common,
-                "base_table_data": self.base_table.to_arrow(),
-            }
-
         return {
             **common,
-            "base_table_uri": base_uri,
-            "base_table_namespace": self.base_table._namespace_path,
-            "base_table_storage_options": storage_options,
+            "base_table_state": _table_to_pickle_state(self.base_table),
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -663,6 +679,8 @@ class Permutation:
         connection_factory = state["connection_factory"]
         if connection_factory is not None:
             base_table = connection_factory(state["base_table_name"])
+        elif "base_table_state" in state:
+            base_table = _table_from_pickle_state(state["base_table_state"])
         elif "base_table_data" in state:
             # In-memory base table inlined into the pickle; rebuild the same
             # way we rebuild the in-memory permutation table.
@@ -680,8 +698,12 @@ class Permutation:
                 namespace_path=state["base_table_namespace"] or None,
             )
 
-        permutation_table: Optional[LanceTable] = None
-        if state["permutation_data"] is not None:
+        permutation_table: Optional[Table] = None
+        if state.get("permutation_table_state") is not None:
+            permutation_table = _table_from_pickle_state(
+                state["permutation_table_state"]
+            )
+        elif state["permutation_data"] is not None:
             mem_db = connect("memory://")
             permutation_table = mem_db.create_table(
                 "permutation", state["permutation_data"]
@@ -696,10 +718,26 @@ class Permutation:
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
+        self.reader = None
+        self._pid = None
+
+    def _ensure_open(self) -> None:
+        pid = os.getpid()
+        if self.reader is not None and getattr(self, "_pid", None) == pid:
+            return
+        if hasattr(self.base_table, "_ensure_open"):
+            self.base_table._ensure_open()
+        if self.permutation_table is not None and hasattr(
+            self.permutation_table, "_ensure_open"
+        ):
+            self.permutation_table._ensure_open()
         self.reader = LOOP.run(self._build_reader())
+        self._pid = pid
 
     @property
     def schema(self) -> pa.Schema:
+        self._ensure_open()
+
         async def do_output_schema():
             return await self.reader.output_schema(self.selection)
 
@@ -717,6 +755,7 @@ class Permutation:
         """
         The number of rows in the permutation
         """
+        self._ensure_open()
         return self.reader.count_rows()
 
     @property
@@ -875,6 +914,7 @@ class Permutation:
         If skip_last_batch is True, the last batch will be skipped if it is not a
         multiple of batch_size.
         """
+        self._ensure_open()
 
         async def get_iter():
             return await self.reader.read(self.selection, batch_size=batch_size)
@@ -976,6 +1016,7 @@ class Permutation:
         so `with_format` and `with_transform` affect this method in the same way
         they affect iteration.
         """
+        self._ensure_open()
 
         async def do_take_offsets():
             return await self.reader.take_offsets(offsets, selection=self.selection)
@@ -1011,9 +1052,11 @@ class Permutation:
         """
         Skip the first `skip` rows of the permutation
         """
+        self._ensure_open()
         new = copy.copy(self)
         new.offset = skip
         new.reader = LOOP.run(new._build_reader())
+        new._pid = os.getpid()
         return new
 
     @deprecated(details="Use with_take instead")
@@ -1032,9 +1075,11 @@ class Permutation:
         """
         Limit the permutation to `limit` rows (following any `skip`)
         """
+        self._ensure_open()
         new = copy.copy(self)
         new.limit = limit
         new.reader = LOOP.run(new._build_reader())
+        new._pid = os.getpid()
         return new
 
     @deprecated(details="Use with_repeat instead")
