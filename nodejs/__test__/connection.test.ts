@@ -7,6 +7,13 @@ import * as tmp from "tmp";
 import { Connection, Table, connect, connectNamespace } from "../lancedb";
 import { LocalTable } from "../lancedb/table";
 
+// The `_versions` directory may also contain `latest_version_hint.json`, which
+// Lance writes on non-lexically-ordered stores (e.g. the local filesystem) to
+// speed up latest-version lookup. Only assert on manifest files.
+function manifestFiles(versionsDir: string): string[] {
+  return readdirSync(versionsDir).filter((f) => f.endsWith(".manifest"));
+}
+
 describe("when connecting", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -171,7 +178,7 @@ describe("given a connection", () => {
 
     let manifestDir =
       tmpDir.name + "/test_manifest_paths_v2_empty.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
+    manifestFiles(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d{20}\.manifest$/);
     });
 
@@ -180,7 +187,7 @@ describe("given a connection", () => {
     })) as LocalTable;
     expect(await table.usesV2ManifestPaths()).toBe(true);
     manifestDir = tmpDir.name + "/test_manifest_paths_v2.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
+    manifestFiles(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d{20}\.manifest$/);
     });
   });
@@ -199,14 +206,14 @@ describe("given a connection", () => {
 
     const manifestDir =
       tmpDir.name + "/test_manifest_path_migration.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
+    manifestFiles(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d\.manifest$/);
     });
 
     await table.migrateManifestPathsV2();
     expect(await table.usesV2ManifestPaths()).toBe(true);
 
-    readdirSync(manifestDir).forEach((file) => {
+    manifestFiles(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d{20}\.manifest$/);
     });
   });

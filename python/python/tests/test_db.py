@@ -450,6 +450,13 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
 
 
+def _manifest_files(versions_dir):
+    # The `_versions` directory may also contain `latest_version_hint.json`,
+    # which Lance writes on non-lexically-ordered stores (e.g. the local
+    # filesystem) to speed up latest-version lookup. Only assert on manifests.
+    return [f for f in os.listdir(versions_dir) if f.endswith(".manifest")]
+
+
 @pytest.mark.asyncio
 async def test_create_table_v2_manifest_paths_async(tmp_path):
     db_with_v2_paths = await lancedb.connect_async(
@@ -465,7 +472,7 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     )
     assert await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
-    for manifest in os.listdir(manifests_dir):
+    for manifest in _manifest_files(manifests_dir):
         assert re.match(r"\d{20}\.manifest", manifest)
 
     # Start a table in V1 mode then migrate
@@ -475,13 +482,13 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     )
     assert not await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
-    for manifest in os.listdir(manifests_dir):
+    for manifest in _manifest_files(manifests_dir):
         assert re.match(r"\d\.manifest", manifest)
 
     await tbl.migrate_manifest_paths_v2()
     assert await tbl.uses_v2_manifest_paths()
 
-    for manifest in os.listdir(manifests_dir):
+    for manifest in _manifest_files(manifests_dir):
         assert re.match(r"\d{20}\.manifest", manifest)
 
 
