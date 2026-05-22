@@ -6,7 +6,7 @@ pub(crate) mod background_cache;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::RecordBatchStream;
 use futures::{FutureExt, Stream};
@@ -199,38 +199,32 @@ fn collect_vector_columns(
     path.pop();
 }
 
-pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<Field> {
-    let segments =
-        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
-            message: format!("Invalid field path `{}`: {}", column, e),
+pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<(String, Field)> {
+    lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+        message: format!("Invalid field path `{}`: {}", column, e),
+    })?;
+
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
         })?;
-    let mut fields = schema.fields();
-
-    for (idx, segment) in segments.iter().enumerate() {
-        let field = find_field(fields, segment).ok_or_else(|| Error::Schema {
-            message: format!("Field path `{}` not found in schema", column),
+    let field_path = lance_schema
+        .resolve_case_insensitive(column)
+        .ok_or_else(|| Error::Schema {
+            message: format!(
+                "Field path `{}` not found in schema. Available field paths: {}",
+                column,
+                lance_schema.field_paths().join(", ")
+            ),
         })?;
-        if idx + 1 == segments.len() {
-            return Ok(field.clone());
-        }
-        fields = match field.data_type() {
-            DataType::Struct(fields) => fields,
-            _ => {
-                return Err(Error::Schema {
-                    message: format!("Field path `{}` not found in schema", column),
-                });
-            }
-        };
-    }
-
-    unreachable!("parse_field_path returns at least one segment")
-}
-
-fn find_field<'a>(fields: &'a Fields, name: &str) -> Option<&'a Field> {
-    fields
+    let field = field_path.last().expect("field path should be non-empty");
+    let path_segments = field_path
         .iter()
-        .find(|field| field.name() == name)
-        .map(|field| field.as_ref())
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
+    let canonical_path = lance_core::datatypes::format_field_path(&path_segments);
+
+    Ok((canonical_path, Field::from(*field)))
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
