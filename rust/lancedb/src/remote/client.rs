@@ -245,6 +245,9 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) sender: S,
     pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Connection-level read consistency interval. Drives the
+    /// `x-lancedb-min-timestamp` freshness header sent on read requests.
+    pub(crate) read_consistency_interval: Option<Duration>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -338,6 +341,7 @@ impl RestfulLanceDbClient<Sender> {
         host_override: Option<String>,
         default_headers: HeaderMap,
         client_config: ClientConfig,
+        read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
         // Get the timeouts
         let timeout =
@@ -435,6 +439,7 @@ impl RestfulLanceDbClient<Sender> {
                 .clone()
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
+            read_consistency_interval,
         })
     }
 }
@@ -843,6 +848,16 @@ pub mod test_utils {
     where
         T: Into<reqwest::Body>,
     {
+        client_with_handler_and_interval(handler, None)
+    }
+
+    pub fn client_with_handler_and_interval<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        read_consistency_interval: Option<Duration>,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
         let wrapper = move |req: reqwest::Request| {
             let response = handler(req);
             response.into()
@@ -857,6 +872,7 @@ pub mod test_utils {
             },
             id_delimiter: "$".to_string(),
             header_provider: None,
+            read_consistency_interval,
         }
     }
 
@@ -881,6 +897,7 @@ pub mod test_utils {
             },
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
+            read_consistency_interval: None,
         }
     }
 }
@@ -1047,6 +1064,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1082,6 +1100,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1119,6 +1138,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Header provider errors should fail the request

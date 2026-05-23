@@ -217,6 +217,7 @@ def connect(
             request_thread_pool=request_thread_pool,
             client_config=client_config,
             storage_options=storage_options,
+            read_consistency_interval=read_consistency_interval,
             **kwargs,
         )
     _check_s3_bucket_with_dots(str(uri), storage_options)
