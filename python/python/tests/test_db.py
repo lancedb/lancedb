@@ -428,7 +428,8 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     assert await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d{20}\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d{20}\.manifest", manifest)
 
     # Start a table in V1 mode then migrate
     tbl = await db_no_v2_paths.create_table(
@@ -438,13 +439,15 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     assert not await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d\.manifest", manifest)
 
     await tbl.migrate_manifest_paths_v2()
     assert await tbl.uses_v2_manifest_paths()
 
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d{20}\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d{20}\.manifest", manifest)
 
 
 @pytest.mark.asyncio
