@@ -145,6 +145,7 @@ class MRRReranker(Reranker):
                     `search().with_row_id(True)`"
             )
 
+        n_systems = len(vector_results)
         mrr_score_map = defaultdict(list)
 
         for result_table in vector_results:
@@ -155,7 +156,14 @@ class MRRReranker(Reranker):
 
         final_mrr_scores = {}
         for result_id, reciprocal_ranks in mrr_score_map.items():
-            mean_rr = np.mean(reciprocal_ranks)
+            # Divide by the *total* number of systems, treating documents that
+            # do not appear in a system as having reciprocal rank 0.  Using
+            # np.mean() here would silently divide only by the number of
+            # systems in which the document appeared, inflating scores for
+            # documents with partial coverage and inverting the ranking relative
+            # to documents that appear (with a lower reciprocal rank) in all
+            # systems.
+            mean_rr = sum(reciprocal_ranks) / n_systems
             final_mrr_scores[result_id] = mean_rr
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)
