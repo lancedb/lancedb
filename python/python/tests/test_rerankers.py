@@ -344,6 +344,66 @@ def test_mrr_reranker(tmp_path):
     assert len(result_deduped) == len(result)
 
 
+def test_mrr_reranker_multivector_partial_coverage():
+    """MRR scores must divide by the *total* number of systems, not the number
+    of systems in which a document appeared.
+
+    If a document appears in only 1 of N systems its denominator must still be
+    N; using np.mean() instead of sum()/N inflates the score and can invert the
+    ranking relative to documents that appear (at a lower reciprocal rank) in
+    all systems.
+
+    Concrete counter-example (3 systems):
+      - doc A: rank 1 in system 1 only → correct MRR = 1/3 ≈ 0.333
+      - doc B: rank 2 in all 3 systems → correct MRR = 3*(1/2)/3 = 0.5
+
+    Before the fix, doc A received np.mean([1.0]) = 1.0 and doc B received
+    np.mean([0.5, 0.5, 0.5]) = 0.5, so A was (incorrectly) ranked above B.
+    """
+    reranker = MRRReranker()
+
+    def _make_table(row_ids):
+        return pa.table(
+            {
+                "_rowid": pa.array(row_ids, type=pa.uint64()),
+                "text": pa.array([f"doc {i}" for i in row_ids], type=pa.string()),
+            }
+        )
+
+    # doc B (id=1) appears at rank 2 in all three systems → sum of rr = 3*0.5, mean = 0.5
+    # doc A (id=0) appears at rank 1 in only the first system → sum of rr = 1.0, mean/3 = 0.333
+    system1 = _make_table([0, 1])   # A@rank1, B@rank2
+    system2 = _make_table([1])      # B@rank1 (A absent)
+    system3 = _make_table([1])      # B@rank1 (A absent)
+
+    result = reranker.rerank_multivector([system1, system2, system3])
+
+    scores = {
+        row["_rowid"]: row["_relevance_score"]
+        for row in result.to_pylist()
+    }
+
+    score_a = scores[0]  # doc A: 1/3 of 1.0 ≈ 0.333
+    score_b = scores[1]  # doc B: sum(0.5+0.5+0.5)/3 = 0.5
+
+    # doc B must outscore doc A
+    assert score_b > score_a, (
+        f"Expected doc B (score={score_b:.4f}) to outscore doc A (score={score_a:.4f}). "
+        "MRR must divide by the total number of systems, not just the number in which "
+        "the document appeared."
+    )
+
+    # Verify the absolute scores are correct
+    assert abs(score_a - 1.0 / 3) < 1e-5, f"doc A MRR should be 1/3, got {score_a}"
+    assert abs(score_b - 0.5) < 1e-5, f"doc B MRR should be 0.5, got {score_b}"
+
+    # Result must be sorted descending
+    relevance = result.column("_relevance_score").to_pylist()
+    assert relevance == sorted(relevance, reverse=True), (
+        "Results must be sorted by _relevance_score descending"
+    )
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
