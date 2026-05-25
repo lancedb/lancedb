@@ -193,4 +193,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # releases are cut to crates.io. Allow that specific host.
 allow-git = [
     "https://github.com/lance-format/lance",
+    # TEMPORARY: fork dependency for joint merge-insert-expr PR. Revert to the
+    # release tag once the lance change lands and a new beta is published.
+    "https://github.com/Ar-maan05/lance",
 ]

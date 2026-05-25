@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=7.0.0-beta.13", default-features = false, "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=7.0.0-beta.13", default-features = false, "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=7.0.0-beta.13", default-features = false, "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=7.0.0-beta.13", "tag" = "v7.0.0-beta.13", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=7.1.0-beta.4", default-features = false, "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-core = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-datagen = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-file = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-io = { "version" = "=7.1.0-beta.4", default-features = false, "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-index = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-linalg = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-namespace = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-namespace-impls = { "version" = "=7.1.0-beta.4", default-features = false, "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-table = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-testing = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-datafusion = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-encoding = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
+lance-arrow = { "version" = "=7.1.0-beta.4", "rev" = "3a6e755fb9e120e403ece5dddab159a178017d54", "git" = "https://github.com/Ar-maan05/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
