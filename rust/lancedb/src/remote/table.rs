@@ -75,14 +75,23 @@ const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 
 /// Per-table state driving the freshness headers (`x-lancedb-min-version` and
 /// `x-lancedb-min-timestamp`) sent on read requests.
-///
-/// `min_version` provides read-your-write within a single handle: writes that
-/// return a version update it, and reads send it. `checkout_baseline` is the
-/// wall-clock time captured at the last [`BaseTable::checkout_latest`] call;
-/// reads send `max(baseline, now - read_consistency_interval)`.
 #[derive(Debug, Default, Clone, Copy)]
 struct FreshnessState {
+    /// Provides read-your-write within a single handle: writes that return a
+    /// version update this, and reads send it as `x-lancedb-min-version`.
     min_version: Option<u64>,
+    /// Wall-clock time captured at the last [`BaseTable::checkout_latest`]
+    /// call. Subsequent reads send
+    /// `max(baseline, now - read_consistency_interval)` as
+    /// `x-lancedb-min-timestamp`.
+    ///
+    /// Without this, `checkout_latest()` would have no effect on subsequent
+    /// reads when `read_consistency_interval` is unset (the default): a
+    /// server-side cache could still serve a snapshot older than the moment
+    /// the user explicitly asked for "latest". The baseline forces the
+    /// server to skip any cache entry older than the checkout time, so the
+    /// `checkout_latest()` signal is preserved across reads on the same
+    /// handle regardless of the configured consistency interval.
     checkout_baseline: Option<SystemTime>,
 }
 
