@@ -25,7 +25,7 @@ use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::query::create_multi_vector_plan;
-use crate::table::{AnyQuery, Filter, PreprocessingOutput, TableStatistics};
+use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
@@ -1483,9 +1483,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(update_response)
     }
 
-    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
+    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
         self.check_mutable().await?;
-        let body = serde_json::json!({ "predicate": predicate });
+        let predicate_sql = match predicate {
+            Predicate::String(s) => s.to_string(),
+            Predicate::Expr(expr) => expr_to_sql_string(expr)?,
+        };
+        let body = serde_json::json!({ "predicate": predicate_sql });
         let request = self
             .client
             .post(&format!("/v1/table/{}/delete/", self.identifier))
@@ -2849,6 +2853,33 @@ mod tests {
 
         let result = table.delete("id in (1, 2, 3)").await.unwrap();
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    #[tokio::test]
+    async fn test_delete_expr() {
+        use datafusion_expr::{col, lit};
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path() == "/v1/table/my_table/delete/" {
+                assert_eq!(request.method(), "POST");
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert!(body.get("predicate").unwrap().is_string());
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"num_deleted_rows": 4, "version": 2}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let expr = col("id").gt(lit(5));
+        let result = table.delete(&expr).await.unwrap();
+        assert_eq!(result.num_deleted_rows, 4);
+        assert_eq!(result.version, 2);
     }
 
     #[rstest]
