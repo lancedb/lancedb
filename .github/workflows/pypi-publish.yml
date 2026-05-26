@@ -61,6 +61,7 @@ jobs:
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
       - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           name: wheels-linux-${{ matrix.config.platform }}-${{ matrix.config.manylinux }}
           path: target/wheels/lancedb-*.whl
@@ -89,6 +90,7 @@ jobs:
           python-minor-version: 10
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           name: wheels-mac-${{ matrix.config.target }}
           path: target/wheels/lancedb-*.whl
@@ -114,39 +116,11 @@ jobs:
           python-minor-version: 10
           args: "--release --strip"
       - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           name: wheels-windows
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
-  # TODO: REMOVE BEFORE MERGE. PR-only dry run that confirms the pypa publish
-  # container actually starts (the actions/runner#2473 bug). Points at TestPyPI
-  # with `continue-on-error: true` so a TestPyPI 4xx (no OIDC trust configured
-  # there) doesn't fail the PR check.
-  publish-dry-run:
-    name: Publish wheels (dry run)
-    if: github.event_name == 'pull_request'
-    needs: [linux, mac, windows]
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - name: Download wheel artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: wheels-*
-          path: target/wheels
-          merge-multiple: true
-      - name: List wheels
-        run: ls -la target/wheels
-      - name: Publish to TestPyPI (dry run)
-        continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: target/wheels/
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
   publish:
     name: Publish wheels
     if: startsWith(github.ref, 'refs/tags/python-v')
