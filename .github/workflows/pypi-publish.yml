@@ -96,6 +96,10 @@ jobs:
   windows:
     timeout-minutes: 90
     runs-on: windows-latest
+    env:
+      # link.exe is single-threaded and the long pole on Windows builds. Use
+      # rustc's bundled lld-link instead.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
       - uses: actions/checkout@v6
         with:
