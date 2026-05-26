@@ -11,7 +11,6 @@ on:
       - .github/workflows/build_linux_wheel/action.yml
       - .github/workflows/build_mac_wheel/action.yml
       - .github/workflows/build_windows_wheel/action.yml
-      - .github/workflows/upload_wheel/action.yml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 
@@ -136,9 +135,39 @@ jobs:
           merge-multiple: true
       - name: List wheels
         run: ls -la target/wheels
-      - uses: ./.github/workflows/upload_wheel
+      - name: Choose repo
+        id: choose_repo
+        run: |
+          if [[ ${{ github.ref }} == *beta* ]]; then
+            echo "repo=fury" >> $GITHUB_OUTPUT
+          else
+            echo "repo=pypi" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to Fury
+        if: steps.choose_repo.outputs.repo == 'fury'
+        env:
+          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
+        run: |
+          shopt -s nullglob
+          WHEELS=(target/wheels/lancedb-*.whl)
+          if [[ ${#WHEELS[@]} -eq 0 ]]; then
+            echo "No wheels found in target/wheels/" >&2
+            exit 1
+          fi
+          for WHEEL in "${WHEELS[@]}"; do
+            echo "Uploading $WHEEL to Fury"
+            curl -f -F package=@"$WHEEL" "https://$FURY_TOKEN@push.fury.io/lancedb/"
+          done
+      # NOTE: pypa/gh-action-pypi-publish must be invoked directly from a
+      # workflow file, not from inside a composite action. When called from a
+      # composite, `github.action_repository` is empty (actions/runner#2473)
+      # and the action falls back to `github.repository`, producing a bogus
+      # `docker://ghcr.io/<repo>:<ref>` image reference that GHA tries to pull.
+      - name: Publish to PyPI
+        if: steps.choose_repo.outputs.repo == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          fury_token: ${{ secrets.FURY_TOKEN }}
+          packages-dir: target/wheels/
   gh-release:
     if: startsWith(github.ref, 'refs/tags/python-v')
     runs-on: ubuntu-latest
