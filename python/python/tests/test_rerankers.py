@@ -670,8 +670,8 @@ def test_linear_combination_missing_fts_is_penalised():
     )
     fts_results = pa.Table.from_pydict(
         {
-            "_rowid": [0],          # rowid 1 has no FTS match
-            "_score": [0.3],        # small FTS score
+            "_rowid": [0],  # rowid 1 has no FTS match
+            "_score": [0.3],  # small FTS score
         }
     )
 
