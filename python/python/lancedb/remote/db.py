@@ -50,6 +50,7 @@ class RemoteDBConnection(DBConnection):
         connection_timeout: Optional[float] = None,
         read_timeout: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        read_consistency_interval: Optional[timedelta] = None,
     ):
         """Connect to a remote LanceDB database."""
         if isinstance(client_config, dict):
@@ -103,6 +104,7 @@ class RemoteDBConnection(DBConnection):
                 host_override=host_override,
                 client_config=client_config,
                 storage_options=storage_options,
+                read_consistency_interval=read_consistency_interval,
             )
         )
 

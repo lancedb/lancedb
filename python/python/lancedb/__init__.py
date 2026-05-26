@@ -94,7 +94,6 @@ def connect(
     host_override: str, optional
         The override url for LanceDB Cloud.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -104,6 +103,10 @@ def connect(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
@@ -217,6 +220,7 @@ def connect(
             request_thread_pool=request_thread_pool,
             client_config=client_config,
             storage_options=storage_options,
+            read_consistency_interval=read_consistency_interval,
             **kwargs,
         )
     _check_s3_bucket_with_dots(str(uri), storage_options)
@@ -343,7 +347,6 @@ async def connect_async(
     host_override: str, optional
         The override url for LanceDB Cloud.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -353,6 +356,10 @@ async def connect_async(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
