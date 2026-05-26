@@ -24,9 +24,16 @@ runs:
     env:
       FURY_TOKEN: ${{ inputs.fury_token }}
     run: |
-      WHEEL=$(ls target/wheels/lancedb-*.whl 2> /dev/null | head -n 1)
-      echo "Uploading $WHEEL to Fury"
-      curl -f -F package=@$WHEEL https://$FURY_TOKEN@push.fury.io/lancedb/
+      shopt -s nullglob
+      WHEELS=(target/wheels/lancedb-*.whl)
+      if [[ ${#WHEELS[@]} -eq 0 ]]; then
+        echo "No wheels found in target/wheels/" >&2
+        exit 1
+      fi
+      for WHEEL in "${WHEELS[@]}"; do
+        echo "Uploading $WHEEL to Fury"
+        curl -f -F package=@"$WHEEL" "https://$FURY_TOKEN@push.fury.io/lancedb/"
+      done
   - name: Publish to PyPI
     if: steps.choose_repo.outputs.repo == 'pypi'
     uses: pypa/gh-action-pypi-publish@release/v1
