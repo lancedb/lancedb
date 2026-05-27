@@ -253,6 +253,36 @@ pub enum Filter {
     Datafusion(Expr),
 }
 
+/// A predicate for filtering rows in delete operations.
+///
+/// Accepts either a SQL string or a DataFusion [`Expr`]. Use the [`From`]
+/// implementations to convert from `&str` or `&Expr` automatically.
+/// See [`Table::delete`] for usage examples.
+pub enum Predicate<'a> {
+    /// A SQL predicate string
+    String(&'a str),
+    /// A DataFusion logical expression
+    Expr(&'a Expr),
+}
+
+impl<'a> From<&'a str> for Predicate<'a> {
+    fn from(s: &'a str) -> Self {
+        Predicate::String(s)
+    }
+}
+
+impl<'a> From<&'a String> for Predicate<'a> {
+    fn from(s: &'a String) -> Self {
+        Predicate::String(s.as_str())
+    }
+}
+
+impl<'a> From<&'a Expr> for Predicate<'a> {
+    fn from(e: &'a Expr) -> Self {
+        Predicate::Expr(e)
+    }
+}
+
 #[async_trait]
 pub trait Tags: Send + Sync {
     /// List the tags of the table.
@@ -282,17 +312,15 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// All variants require the table to have an unenforced primary key.
-///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
 /// onto the MemWAL writer is a follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LsmWriteSpec {
-    /// Hash-bucket sharding by the unenforced primary key column.
+    /// Hash-bucket sharding by a scalar column.
     ///
-    /// `column` must equal the table's currently-set single-column
-    /// unenforced primary key. `num_buckets` must be in `[1, 1024]`.
+    /// `column` must be a non-nested column with a supported scalar type.
+    /// `num_buckets` must be in `[1, 1024]`.
     /// Iceberg-compatible Murmur3-x86-32 (seed 0) is used so each row's
     /// `bucket(column, num_buckets)` value is stable across processes.
     Bucket {
@@ -491,8 +519,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
-    /// Delete rows from the table.
-    async fn delete(&self, predicate: &str) -> Result<DeleteResult>;
+    /// Delete rows from the table matching the given [`Predicate`].
+    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult>;
     /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
@@ -647,6 +675,30 @@ mod test_utils {
                 handler.clone(),
                 None,
             ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                inner,
+                database: Some(database),
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_and_interval<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+            read_consistency_interval: Option<std::time::Duration>,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(
+                crate::remote::table::RemoteTable::new_mock_with_consistency_interval(
+                    name.into(),
+                    handler.clone(),
+                    read_consistency_interval,
+                ),
+            );
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
@@ -860,7 +912,8 @@ impl Table {
     /// Delete the rows from table that match the predicate.
     ///
     /// # Arguments
-    /// - `predicate` - The SQL predicate string to filter the rows to be deleted.
+    /// - `predicate` - A SQL string (`&str`) or DataFusion expression (`&Expr`)
+    ///   that selects the rows to delete.
     ///
     /// # Example
     ///
@@ -869,6 +922,7 @@ impl Table {
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
+    /// use datafusion_expr::{col, lit};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
@@ -898,11 +952,17 @@ impl Table {
     ///     .execute()
     ///     .await
     ///     .unwrap();
+    ///
+    /// // Using a SQL string:
     /// tbl.delete("id > 5").await.unwrap();
+    ///
+    /// // Using a DataFusion expression:
+    /// let expr = col("id").lt(lit(4));
+    /// tbl.delete(&expr).await.unwrap();
     /// # });
     /// ```
-    pub async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        self.inner.delete(predicate).await
+    pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
+        self.inner.delete(predicate.into()).await
     }
 
     /// Create an index on the provided column(s).
@@ -1298,21 +1358,15 @@ impl Table {
     ///
     /// [`LsmWriteSpec`] chooses one of three sharding strategies:
     ///
-    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by the single-column
-    ///   unenforced primary key.
+    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by a scalar column.
     /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
     /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
-    ///
-    /// All variants require the table to have an unenforced primary key
-    /// ([`Table::set_unenforced_primary_key`]); bucket sharding additionally
-    /// requires it to be the single column being bucketed.
     ///
     /// # Example
     ///
     /// ```
     /// # use lancedb::table::{LsmWriteSpec, Table};
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// table.set_unenforced_primary_key(["id"]).await?;
     /// table
     ///     .set_lsm_write_spec(
     ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
@@ -2777,8 +2831,7 @@ impl BaseTable for NativeTable {
     }
 
     /// Delete rows from the table
-    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        // Delegate to the submodule implementation
+    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
         delete::execute_delete(self, predicate).await
     }
 
@@ -4600,21 +4653,6 @@ mod tests {
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
 
-        // Reject when no PK is set.
-        let err = table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
-            .await
-            .expect_err("should reject without PK");
-        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
-
-        // Set PK, then a mismatched column on the spec must be rejected.
-        table.set_unenforced_primary_key(["id"]).await.unwrap();
-        let err = table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("name", 4))
-            .await
-            .expect_err("should reject column != PK");
-        assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
-
         // Reject num_buckets out of range.
         for bad in [0u32, 1025] {
             let err = table
@@ -4680,9 +4718,6 @@ mod tests {
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
 
-        // Lance's MemWAL still requires *some* unenforced primary key on
-        // the dataset; Unsharded just skips the per-row hashing step.
-        table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
@@ -4729,7 +4764,6 @@ mod tests {
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
 
-        table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
             .set_lsm_write_spec(
                 LsmWriteSpec::identity("region")
@@ -4785,7 +4819,6 @@ mod tests {
         table.unset_lsm_write_spec().await.unwrap_err();
 
         // Install a spec, then unset it.
-        table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
             .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
             .await
