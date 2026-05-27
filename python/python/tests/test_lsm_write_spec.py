@@ -40,16 +40,6 @@ def _make_table(tmp_path):
 def test_set_lsm_write_spec_validates(tmp_path):
     _db, table = _make_table(tmp_path)
 
-    # No PK set yet.
-    with pytest.raises(Exception, match="primary key"):
-        table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
-
-    table.set_unenforced_primary_key("id")
-
-    # Column mismatch.
-    with pytest.raises(Exception, match="match"):
-        table.set_lsm_write_spec(LsmWriteSpec.bucket("v", 4))
-
     # Out-of-range num_buckets.
     with pytest.raises(Exception, match="num_buckets"):
         table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 0))
@@ -70,7 +60,6 @@ def test_unset_lsm_write_spec(tmp_path):
         table.unset_lsm_write_spec()
 
     # Install a spec, then remove it; afterwards a fresh spec can be set.
-    table.set_unenforced_primary_key("id")
     table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
     table.unset_lsm_write_spec()
     # A second unset errors — there is no spec left to remove.

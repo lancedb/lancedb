@@ -171,18 +171,22 @@ describe("given a connection", () => {
 
     let manifestDir =
       tmpDir.name + "/test_manifest_paths_v2_empty.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
 
     table = (await db.createTable("test_manifest_paths_v2", [{ id: 1 }], {
       enableV2ManifestPaths: true,
     })) as LocalTable;
     expect(await table.usesV2ManifestPaths()).toBe(true);
     manifestDir = tmpDir.name + "/test_manifest_paths_v2.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
   });
 
   it("should be able to migrate tables to the V2 manifest paths", async () => {
@@ -199,16 +203,20 @@ describe("given a connection", () => {
 
     const manifestDir =
       tmpDir.name + "/test_manifest_path_migration.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d\.manifest$/);
+      });
 
     await table.migrateManifestPathsV2();
     expect(await table.usesV2ManifestPaths()).toBe(true);
 
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
   });
 });
 

@@ -812,8 +812,7 @@ impl ConnectBuilder {
         self
     }
 
-    /// The interval at which to check for updates from other processes. This
-    /// only affects LanceDB OSS.
+    /// The interval at which to check for updates from other processes.
     ///
     /// If left unset, consistency is not checked. For maximum read
     /// performance, this is the default. For strong consistency, set this to
@@ -825,8 +824,11 @@ impl ConnectBuilder {
     /// This only affects read operations. Write operations are always
     /// consistent.
     ///
-    /// LanceDB Cloud uses eventual consistency under the hood, and is not
-    /// currently configurable.
+    /// # Cost
+    ///
+    /// Stronger consistency is not free. The smaller the interval, the more
+    /// often each read pays the cost of checking for updates against object
+    /// storage, raising per-read latency and cost.
     pub fn read_consistency_interval(
         mut self,
         read_consistency_interval: std::time::Duration,
@@ -886,6 +888,7 @@ impl ConnectBuilder {
             options.host_override,
             self.request.client_config,
             storage_options.into(),
+            self.request.read_consistency_interval,
         )?);
         Ok(Connection {
             internal,
