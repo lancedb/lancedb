@@ -21,18 +21,10 @@ jobs:
       matrix:
         config:
           - platform: x86_64
-            manylinux: "2_17"
-            extra_args: ""
-            runner: ubuntu-22.04
-          - platform: x86_64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
             runner: ubuntu-22.04
-          - platform: aarch64
-            manylinux: "2_17"
-            extra_args: ""
-            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: ubuntu-2404-8x-arm64
+          # For successful fat LTO builds, we need a large runner to avoid OOM errors.
           - platform: aarch64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
