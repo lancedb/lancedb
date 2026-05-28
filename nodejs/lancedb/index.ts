@@ -105,6 +105,7 @@ export {
   IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
+  HnswFlatOptions,
   FtsOptions,
 } from "./indices";
 
