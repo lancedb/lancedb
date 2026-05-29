@@ -17,7 +17,6 @@
 //! dataset, and [`close_lsm_writers`] closes it.
 
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,13 +24,15 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
-use arrow_array::{Array, RecordBatch, RecordBatchReader};
+use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
-use lance::dataset::mem_wal::{DatasetMemWalExt, ShardWriter, ShardWriterConfig};
+use lance::dataset::mem_wal::{
+    DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
+};
 use lance::index::DatasetIndexExt;
-use lance_index::mem_wal::{MemWalIndexDetails, ShardingField};
-use murmur3::murmur3_32;
+use lance_core::datatypes::Schema as LanceSchema;
+use lance_index::mem_wal::{MemWalIndexDetails, ShardingSpec};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -52,10 +53,6 @@ const UNSHARDED_TRANSFORM: &str = "unsharded";
 
 /// Parameter key holding the bucket count on the bucket transform.
 const NUM_BUCKETS_PARAM: &str = "num_buckets";
-
-/// Murmur3-x86-32 seed. Iceberg's `bucket` transform uses 0; matching it keeps
-/// the row-to-bucket assignment stable and Iceberg-compatible.
-const MURMUR3_SEED: u32 = 0;
 
 /// Fixed namespace UUID for deriving deterministic shard ids. Hardcoded so
 /// derivations stay stable across processes.
@@ -289,12 +286,9 @@ fn check_shard_match(cached: Uuid, wanted: Uuid) -> Result<()> {
 #[derive(Debug, Clone)]
 enum LsmMode {
     /// Hash-bucket the routing column into `num_buckets` shards.
-    Bucket {
-        routing_col: String,
-        num_buckets: u32,
-    },
+    Bucket { spec: ShardingSpec },
     /// Shard by the raw value of the routing column.
-    Identity { routing_col: String },
+    Identity { spec: ShardingSpec },
     /// Route every row to a single shard.
     Unsharded,
 }
@@ -368,7 +362,7 @@ pub(crate) async fn lsm_dispatch_decision(
         });
     }
 
-    let mode = resolve_lsm_mode(&details, dataset.as_ref())?;
+    let mode = resolve_lsm_mode(&details)?;
     Ok(LsmDispatch::Lsm(LsmPlan {
         mode,
         writer_config_defaults: details.writer_config_defaults,
@@ -386,17 +380,20 @@ fn is_upsert_only(params: &MergeInsertBuilder) -> bool {
 }
 
 /// Read the sharding mode from the MemWAL index details.
-fn resolve_lsm_mode(details: &MemWalIndexDetails, dataset: &Dataset) -> Result<LsmMode> {
-    let field = details
+fn resolve_lsm_mode(details: &MemWalIndexDetails) -> Result<LsmMode> {
+    let spec = details
         .sharding_specs
         .first()
-        .and_then(|spec| spec.fields.first())
+        .cloned()
         .ok_or_else(|| Error::Runtime {
             message: "merge_insert: MemWAL index has no sharding spec".to_string(),
         })?;
+    let field = spec.fields.first().ok_or_else(|| Error::Runtime {
+        message: "merge_insert: MemWAL index has an empty sharding spec".to_string(),
+    })?;
     match field.transform.as_deref() {
         Some(BUCKET_TRANSFORM) => {
-            let num_buckets = field
+            field
                 .parameters
                 .get(NUM_BUCKETS_PARAM)
                 .and_then(|s| s.parse::<u32>().ok())
@@ -404,14 +401,9 @@ fn resolve_lsm_mode(details: &MemWalIndexDetails, dataset: &Dataset) -> Result<L
                 .ok_or_else(|| Error::Runtime {
                     message: "merge_insert: MemWAL bucket spec has a missing or invalid num_buckets parameter".to_string(),
                 })?;
-            Ok(LsmMode::Bucket {
-                routing_col: routing_column(field, dataset)?,
-                num_buckets,
-            })
+            Ok(LsmMode::Bucket { spec })
         }
-        Some(IDENTITY_TRANSFORM) => Ok(LsmMode::Identity {
-            routing_col: routing_column(field, dataset)?,
-        }),
+        Some(IDENTITY_TRANSFORM) => Ok(LsmMode::Identity { spec }),
         Some(UNSHARDED_TRANSFORM) => Ok(LsmMode::Unsharded),
         other => Err(Error::Runtime {
             message: format!(
@@ -420,23 +412,6 @@ fn resolve_lsm_mode(details: &MemWalIndexDetails, dataset: &Dataset) -> Result<L
             ),
         }),
     }
-}
-
-/// Resolve the routing column name from a sharding field's source id.
-fn routing_column(field: &ShardingField, dataset: &Dataset) -> Result<String> {
-    let field_id = *field.source_ids.first().ok_or_else(|| Error::Runtime {
-        message: "merge_insert: MemWAL sharding spec has no source field".to_string(),
-    })?;
-    let schema_field = dataset
-        .schema()
-        .field_by_id(field_id)
-        .ok_or_else(|| Error::Runtime {
-            message: format!(
-                "merge_insert: MemWAL sharding spec references field id {} which is not in the schema",
-                field_id
-            ),
-        })?;
-    Ok(schema_field.name.clone())
 }
 
 // =============================================================================
@@ -449,7 +424,7 @@ fn routing_column(field: &ShardingField, dataset: &Dataset) -> Result<String> {
 /// anything is written, then issued as a single atomic `ShardWriter::put` — so
 /// a validation failure (e.g. input spanning shards) never leaves a partial
 /// write behind. When `validate_single_shard` is set, every row is checked to
-/// route to one shard; when disabled, only the first row of each batch is.
+/// route to one shard; when disabled, only the first row of the whole input is.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn execute_lsm_merge_insert(
     table: &NativeTable,
@@ -464,7 +439,6 @@ pub(crate) async fn execute_lsm_merge_insert(
     // anything. `ShardWriter::put` is atomic over the batch vector, so any
     // failure raised here leaves the MemWAL untouched.
     let mut batches: Vec<RecordBatch> = Vec::new();
-    let mut shard_id: Option<Uuid> = None;
     let mut total_rows: u64 = 0;
 
     for batch in new_data {
@@ -473,21 +447,18 @@ pub(crate) async fn execute_lsm_merge_insert(
             continue;
         }
         let batch = align_batch_schema(batch, &target_schema)?;
-        let batch_shard = resolve_batch_shard(&plan.mode, &batch, validate_single_shard)?;
-        match shard_id {
-            Some(seen) if seen != batch_shard => {
-                return Err(Error::InvalidInput {
-                    message: "merge_insert: input batches route to multiple shards; each merge_insert call must target a single shard".to_string(),
-                });
-            }
-            _ => shard_id = Some(batch_shard),
-        }
         total_rows += batch.num_rows() as u64;
         batches.push(batch);
     }
 
     // Empty input (or only empty batches): nothing to write.
-    let Some(shard_id) = shard_id else {
+    let Some(shard_id) = resolve_input_shard(
+        &plan.mode,
+        dataset.schema(),
+        &batches,
+        validate_single_shard,
+    )?
+    else {
         return Ok(lsm_merge_result(0));
     };
 
@@ -502,25 +473,65 @@ pub(crate) async fn execute_lsm_merge_insert(
     Ok(lsm_merge_result(total_rows))
 }
 
+/// Resolve the target shard for a collected input.
+fn resolve_input_shard(
+    mode: &LsmMode,
+    schema: &LanceSchema,
+    batches: &[RecordBatch],
+    validate_single_shard: bool,
+) -> Result<Option<Uuid>> {
+    let mut shard_id: Option<Uuid> = None;
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        if !validate_single_shard && shard_id.is_some() {
+            continue;
+        }
+        let batch_shard = resolve_batch_shard(mode, schema, batch, validate_single_shard)?;
+        match shard_id {
+            Some(seen) if seen != batch_shard => {
+                return Err(Error::InvalidInput {
+                    message: "merge_insert: input batches route to multiple shards; each merge_insert call must target a single shard".to_string(),
+                });
+            }
+            _ => shard_id = Some(batch_shard),
+        }
+    }
+    Ok(shard_id)
+}
+
 /// Compute the target shard id for a non-empty batch. When
 /// `validate_single_shard` is set, every row is checked to route to the same
 /// shard; otherwise only the first row is inspected.
 fn resolve_batch_shard(
     mode: &LsmMode,
+    schema: &LanceSchema,
     batch: &RecordBatch,
     validate_single_shard: bool,
 ) -> Result<Uuid> {
+    let routing_batch = if validate_single_shard {
+        batch.clone()
+    } else {
+        batch.slice(0, 1)
+    };
     match mode {
         LsmMode::Unsharded => Ok(unsharded_shard_id()),
-        LsmMode::Bucket {
-            routing_col,
-            num_buckets,
-        } => {
-            let array = routing_array(batch, routing_col)?;
-            let first = bucket_for_row(array, 0, *num_buckets)?;
+        LsmMode::Bucket { spec } => {
+            let values = evaluate_lsm_shard_values(&routing_batch, spec, schema)?;
+            let buckets = values
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .ok_or_else(|| Error::Runtime {
+                    message: format!(
+                        "merge_insert: MemWAL bucket evaluator returned {:?}; expected Int32",
+                        values.data_type()
+                    ),
+                })?;
+            let first = buckets.value(0);
             if validate_single_shard {
-                for row in 1..batch.num_rows() {
-                    let bucket = bucket_for_row(array, row, *num_buckets)?;
+                for row in 1..routing_batch.num_rows() {
+                    let bucket = buckets.value(row);
                     if bucket != first {
                         return Err(Error::InvalidInput {
                             message: format!(
@@ -531,19 +542,23 @@ fn resolve_batch_shard(
                     }
                 }
             }
-            Ok(bucket_shard_id(first))
+            Ok(bucket_shard_id(u32::try_from(first).map_err(|_| {
+                Error::Runtime {
+                    message: format!(
+                        "merge_insert: MemWAL bucket evaluator returned negative bucket {}",
+                        first
+                    ),
+                }
+            })?))
         }
-        LsmMode::Identity { routing_col } => {
-            let array = routing_array(batch, routing_col)?;
-            let first = encode_scalar(array, 0)?;
+        LsmMode::Identity { spec } => {
+            let values = evaluate_lsm_shard_values(&routing_batch, spec, schema)?;
+            let first = encode_scalar(values.as_ref(), 0)?;
             if validate_single_shard {
-                for row in 1..batch.num_rows() {
-                    if encode_scalar(array, row)? != first {
+                for row in 1..routing_batch.num_rows() {
+                    if encode_scalar(values.as_ref(), row)? != first {
                         return Err(Error::InvalidInput {
-                            message: format!(
-                                "merge_insert: input rows have differing values for identity-sharding column '{}'; each merge_insert call must target a single shard (pre-shard the input, or set validate_single_shard(false) to route by the first row only)",
-                                routing_col
-                            ),
+                            message: "merge_insert: input rows have differing values for identity-sharding column; each merge_insert call must target a single shard (pre-shard the input, or set validate_single_shard(false) to route by the first row only)".to_string(),
                         });
                     }
                 }
@@ -553,66 +568,31 @@ fn resolve_batch_shard(
     }
 }
 
-/// Borrow a routing column from a batch, rejecting a missing column or nulls.
-fn routing_array<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a dyn Array> {
-    let array = batch
-        .column_by_name(column)
-        .ok_or_else(|| Error::InvalidInput {
+fn evaluate_lsm_shard_values(
+    batch: &RecordBatch,
+    spec: &ShardingSpec,
+    schema: &LanceSchema,
+) -> Result<ArrayRef> {
+    let values = evaluate_sharding_spec(batch, spec, schema)?;
+    if values.num_columns() != 1 {
+        return Err(Error::Runtime {
             message: format!(
-                "merge_insert: input is missing the routing column '{}'",
-                column
-            ),
-        })?;
-    if array.null_count() > 0 {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "merge_insert: input has null values in the routing column '{}'",
-                column
+                "merge_insert: MemWAL sharding spec evaluated to {} fields; expected exactly one",
+                values.num_columns()
             ),
         });
     }
-    Ok(array.as_ref())
-}
-
-/// Bucket index for one row under `bucket(col, num_buckets)`.
-fn bucket_for_row(array: &dyn Array, row: usize, num_buckets: u32) -> Result<u32> {
-    Ok((murmur3_hash_value(array, row)? & 0x7FFF_FFFF) % num_buckets)
-}
-
-/// Murmur3-x86-32 hash of one cell, matching Iceberg's `bucket` transform.
-fn murmur3_hash_value(array: &dyn Array, row: usize) -> Result<u32> {
-    let buf: Vec<u8> = match array.data_type() {
-        // Iceberg widens int to long before hashing, so `Int32` value `v` and
-        // `Int64` value `v` hash identically.
-        DataType::Int32 => (array.as_primitive::<Int32Type>().value(row) as i64)
-            .to_le_bytes()
-            .to_vec(),
-        DataType::Int64 => array
-            .as_primitive::<Int64Type>()
-            .value(row)
-            .to_le_bytes()
-            .to_vec(),
-        DataType::Utf8 => array.as_string::<i32>().value(row).as_bytes().to_vec(),
-        DataType::LargeUtf8 => array.as_string::<i64>().value(row).as_bytes().to_vec(),
-        DataType::Binary => array.as_binary::<i32>().value(row).to_vec(),
-        DataType::LargeBinary => array.as_binary::<i64>().value(row).to_vec(),
-        DataType::FixedSizeBinary(_) => array.as_fixed_size_binary().value(row).to_vec(),
-        other => {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "merge_insert: bucket sharding does not support primary key dtype {:?}",
-                    other
-                ),
-            });
-        }
-    };
-    murmur3_32(&mut Cursor::new(&buf), MURMUR3_SEED).map_err(|e| Error::Runtime {
-        message: format!("merge_insert: murmur3 hash failed: {}", e),
-    })
+    Ok(values.column(0).clone())
 }
 
 /// Encode one cell of an identity-sharding column to comparable bytes.
 fn encode_scalar(array: &dyn Array, row: usize) -> Result<Vec<u8>> {
+    if array.is_null(row) {
+        return Err(Error::InvalidInput {
+            message: "merge_insert: identity sharding does not support null routing values"
+                .to_string(),
+        });
+    }
     Ok(match array.data_type() {
         DataType::Int8 => array
             .as_primitive::<Int8Type>()
@@ -798,27 +778,109 @@ fn lsm_merge_result(num_rows: u64) -> MergeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Int32Array, Int64Array, StringArray};
+    use arrow_array::{ArrayRef, BooleanArray, Int32Array, Int64Array, StringArray, UInt64Array};
     use arrow_schema::Field;
+    use lance_index::mem_wal::ShardingField;
 
-    #[test]
-    fn bucket_assignments_are_pinned() {
-        // Regression guard: changing the hash or seed moves row -> bucket
-        // assignments and breaks upserts on existing tables.
-        let array = StringArray::from(vec!["alpha", "beta", "gamma", "delta"]);
-        let buckets: Vec<u32> = (0..4)
-            .map(|r| bucket_for_row(&array, r, 4).unwrap())
-            .collect();
-        assert_eq!(buckets, vec![1, 1, 2, 0]);
+    fn lance_schema(batch: &RecordBatch) -> LanceSchema {
+        LanceSchema::try_from(batch.schema().as_ref()).unwrap()
+    }
+
+    fn single_field_spec(field: ShardingField) -> ShardingSpec {
+        ShardingSpec {
+            spec_id: SHARDING_SPEC_ID,
+            fields: vec![field],
+        }
+    }
+
+    fn bucket_mode(source_id: i32, num_buckets: u32) -> LsmMode {
+        LsmMode::Bucket {
+            spec: single_field_spec(ShardingField {
+                field_id: "bucket".to_string(),
+                source_ids: vec![source_id],
+                transform: Some(BUCKET_TRANSFORM.to_string()),
+                expression: None,
+                result_type: "int32".to_string(),
+                parameters: HashMap::from([(
+                    NUM_BUCKETS_PARAM.to_string(),
+                    num_buckets.to_string(),
+                )]),
+            }),
+        }
+    }
+
+    fn identity_mode(source_id: i32) -> LsmMode {
+        LsmMode::Identity {
+            spec: single_field_spec(ShardingField {
+                field_id: "identity".to_string(),
+                source_ids: vec![source_id],
+                transform: Some(IDENTITY_TRANSFORM.to_string()),
+                expression: None,
+                result_type: "utf8".to_string(),
+                parameters: HashMap::new(),
+            }),
+        }
+    }
+
+    fn bucket_values(batch: &RecordBatch, num_buckets: u32) -> Vec<i32> {
+        let LsmMode::Bucket { spec } = bucket_mode(0, num_buckets) else {
+            unreachable!();
+        };
+        let values = evaluate_lsm_shard_values(batch, &spec, &lance_schema(batch)).unwrap();
+        values.as_primitive::<Int32Type>().values().to_vec()
     }
 
     #[test]
-    fn bucket_int32_matches_int64_after_widening() {
-        for v in [1_i64, 7, -3, 12345] {
-            let b32 = bucket_for_row(&Int32Array::from(vec![v as i32]), 0, 8).unwrap();
-            let b64 = bucket_for_row(&Int64Array::from(vec![v]), 0, 8).unwrap();
-            assert_eq!(b32, b64, "Int32({0}) and Int64({0}) must agree", v);
-        }
+    fn bucket_assignments_are_pinned() {
+        let batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])) as ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(bucket_values(&batch, 8), vec![1, 5, 0]);
+    }
+
+    #[test]
+    fn bucket_int32_uses_lance_evaluator() {
+        let batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(3)])) as ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(bucket_values(&batch, 8), vec![2, 7, 0, 1]);
+    }
+
+    #[test]
+    fn bucket_accepts_lance_supported_scalar_types() {
+        let bool_batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            resolve_batch_shard(
+                &bucket_mode(0, 8),
+                &lance_schema(&bool_batch),
+                &bool_batch,
+                true
+            )
+            .is_ok()
+        );
+
+        let u64_batch = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(UInt64Array::from(vec![1_u64])) as ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            resolve_batch_shard(
+                &bucket_mode(0, 8),
+                &lance_schema(&u64_batch),
+                &u64_batch,
+                true
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -925,93 +987,96 @@ mod tests {
 
     #[test]
     fn resolve_batch_shard_bucket_same_bucket() {
-        // alpha and beta both hash to bucket 1 under num_buckets = 4.
-        let mode = LsmMode::Bucket {
-            routing_col: "id".to_string(),
-            num_buckets: 4,
-        };
-        let batch = utf8_batch("id", vec!["alpha", "beta"]);
+        let mode = bucket_mode(0, 8);
+        let batch = utf8_batch("id", vec!["a", "a"]);
         assert_eq!(
-            resolve_batch_shard(&mode, &batch, true).unwrap(),
+            resolve_batch_shard(&mode, &lance_schema(&batch), &batch, true).unwrap(),
             bucket_shard_id(1)
         );
     }
 
     #[test]
     fn resolve_batch_shard_bucket_rejects_mixed() {
-        // alpha -> bucket 1, gamma -> bucket 2.
-        let mode = LsmMode::Bucket {
-            routing_col: "id".to_string(),
-            num_buckets: 4,
-        };
-        let batch = utf8_batch("id", vec!["alpha", "gamma"]);
+        let mode = bucket_mode(0, 8);
+        let batch = utf8_batch("id", vec!["a", "b"]);
         // validate_single_shard rejects a batch that spans buckets.
         assert!(matches!(
-            resolve_batch_shard(&mode, &batch, true),
+            resolve_batch_shard(&mode, &lance_schema(&batch), &batch, true),
             Err(Error::InvalidInput { .. })
         ));
         // With validation off, only row 0 is inspected, so it is accepted.
         assert_eq!(
-            resolve_batch_shard(&mode, &batch, false).unwrap(),
+            resolve_batch_shard(&mode, &lance_schema(&batch), &batch, false).unwrap(),
             bucket_shard_id(1)
         );
     }
 
     #[test]
-    fn resolve_batch_shard_rejects_nulls() {
-        let mode = LsmMode::Bucket {
-            routing_col: "id".to_string(),
-            num_buckets: 4,
-        };
+    fn resolve_batch_shard_bucket_routes_nulls_to_zero() {
+        let mode = bucket_mode(0, 8);
         let batch = RecordBatch::try_new(
             Arc::new(ArrowSchema::new(vec![Field::new(
                 "id",
                 DataType::Int64,
                 true,
             )])),
-            vec![Arc::new(Int64Array::from(vec![Some(1), None]))],
+            vec![Arc::new(Int64Array::from(vec![None, None]))],
         )
         .unwrap();
-        assert!(matches!(
-            resolve_batch_shard(&mode, &batch, true),
-            Err(Error::InvalidInput { .. })
-        ));
+        assert_eq!(
+            resolve_batch_shard(&mode, &lance_schema(&batch), &batch, true).unwrap(),
+            bucket_shard_id(0)
+        );
     }
 
     #[test]
     fn resolve_batch_shard_rejects_missing_routing_column() {
-        let mode = LsmMode::Bucket {
-            routing_col: "id".to_string(),
-            num_buckets: 4,
-        };
+        let mode = bucket_mode(0, 8);
+        let schema = LanceSchema::try_from(&ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Utf8,
+            true,
+        )]))
+        .unwrap();
         let batch = utf8_batch("other", vec!["a"]);
-        assert!(matches!(
-            resolve_batch_shard(&mode, &batch, true),
-            Err(Error::InvalidInput { .. })
-        ));
+        assert!(resolve_batch_shard(&mode, &schema, &batch, true).is_err());
     }
 
     #[test]
     fn resolve_batch_shard_identity_groups_by_value() {
-        let mode = LsmMode::Identity {
-            routing_col: "region".to_string(),
-        };
+        let mode = identity_mode(0);
         let same = utf8_batch("region", vec!["us", "us"]);
         let mixed = utf8_batch("region", vec!["us", "eu"]);
-        assert!(resolve_batch_shard(&mode, &same, true).is_ok());
+        assert!(resolve_batch_shard(&mode, &lance_schema(&same), &same, true).is_ok());
         assert!(matches!(
-            resolve_batch_shard(&mode, &mixed, true),
+            resolve_batch_shard(&mode, &lance_schema(&mixed), &mixed, true),
             Err(Error::InvalidInput { .. })
         ));
         // With validation off, the mixed batch is accepted (row 0 only).
-        assert!(resolve_batch_shard(&mode, &mixed, false).is_ok());
+        assert!(resolve_batch_shard(&mode, &lance_schema(&mixed), &mixed, false).is_ok());
+    }
+
+    #[test]
+    fn resolve_input_shard_validation_off_only_uses_first_input_row() {
+        let mode = bucket_mode(0, 8);
+        let first = utf8_batch("id", vec!["a"]);
+        let second = utf8_batch("id", vec!["b"]);
+        let schema = lance_schema(&first);
+        assert_eq!(
+            resolve_input_shard(&mode, &schema, &[first.clone(), second.clone()], false).unwrap(),
+            Some(bucket_shard_id(1))
+        );
+        assert!(matches!(
+            resolve_input_shard(&mode, &schema, &[first, second], true),
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
     #[test]
     fn resolve_batch_shard_unsharded_is_constant() {
         let batch = utf8_batch("anything", vec!["a", "b", "c"]);
         assert_eq!(
-            resolve_batch_shard(&LsmMode::Unsharded, &batch, true).unwrap(),
+            resolve_batch_shard(&LsmMode::Unsharded, &lance_schema(&batch), &batch, true).unwrap(),
             unsharded_shard_id()
         );
     }
