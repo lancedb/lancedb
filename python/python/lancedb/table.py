@@ -30,7 +30,7 @@ from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
 from lancedb.arrow import peek_reader
-from lancedb.background_loop import LOOP
+from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -4908,10 +4908,13 @@ class AsyncTable:
             if embedding is not None:
                 loop = asyncio.get_running_loop()
                 # This function is likely to block, since it either calls an expensive
-                # function or makes an HTTP request to an embeddings REST API.
+                # function or makes an HTTP request to an embeddings REST API. Run it
+                # on a dedicated executor so it can't starve the default executor that
+                # other blocking I/O shares. See
+                # https://github.com/lancedb/lancedb/issues/3310.
                 return (
                     await loop.run_in_executor(
-                        None,
+                        embedding_executor(),
                         embedding.function.compute_query_embeddings_with_retry,
                         query,
                     )

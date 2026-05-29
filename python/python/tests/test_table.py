@@ -4,6 +4,7 @@
 
 import os
 import sys
+import threading
 import warnings
 from datetime import date, datetime, timedelta
 from time import sleep
@@ -2837,3 +2838,38 @@ def test_sanitize_data_metadata_not_stripped():
     assert result_schema.metadata is not None
     assert result_schema.metadata[b"existing_key"] == b"existing_value"
     assert result_schema.metadata[b"new_key"] == b"new_value"
+
+
+@pytest.mark.asyncio
+async def test_async_search_runs_embedding_on_dedicated_executor(
+    mem_db_async: AsyncConnection,
+):
+    # Regression test for #3310: AsyncTable.search() must run the (potentially
+    # blocking) query-embedding call on the dedicated embedding executor, not
+    # asyncio's default executor -- which is shared with other blocking I/O and
+    # can be starved by a slow embedding call under concurrent load.
+    func = MockTextEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    table = await mem_db_async.create_table("embed_executor", schema=Schema)
+    await table.add([{"text": "hello world"}])
+
+    captured_threads: List[str] = []
+    original = MockTextEmbeddingFunction.generate_embeddings
+
+    def record_thread(self, texts):
+        captured_threads.append(threading.current_thread().name)
+        return original(self, texts)
+
+    # Patch only around the search so we capture the query-embedding call, not
+    # the add-time source-embedding call.
+    with patch.object(MockTextEmbeddingFunction, "generate_embeddings", record_thread):
+        await (await table.search("a query string")).limit(1).to_list()
+
+    assert captured_threads, "search did not invoke the embedding function"
+    assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
+        f"embedding ran off the dedicated executor: {captured_threads}"
+    )
