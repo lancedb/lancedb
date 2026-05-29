@@ -4,6 +4,7 @@
 
 import os
 import sys
+import warnings
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -11,7 +12,7 @@ from unittest.mock import patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -928,7 +929,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # Test with target_partition_size
@@ -948,7 +954,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         target_partition_size=8192,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # target_partition_size has a default value,
@@ -967,7 +978,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -978,7 +994,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=False,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -993,7 +1014,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -1008,7 +1034,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -1032,6 +1063,7 @@ def test_create_index_name_and_train_parameters(
         "vector",
         replace=True,
         config=expected_config,
+        wait_timeout=None,
         name="my_custom_index",
         train=True,
     )
@@ -1039,13 +1071,82 @@ def test_create_index_name_and_train_parameters(
     # Test with train=False
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=False
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=False,
     )
 
     # Test with both name and train
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name="my_index_name", train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name="my_index_name",
+        train=True,
+    )
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_legacy_emits_deprecation_warning(
+    mock_create_index, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        "test",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with pytest.warns(DeprecationWarning, match="create_index"):
+        table.create_index(metric="l2", num_partitions=8, vector_column_name="vector")
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "category": "a", "text": "hello world"},
+            {"vector": [5.9, 26.5], "category": "b", "text": "goodbye"},
+        ],
+    )
+
+    # Vector index via new API should not warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        table.create_index("vector", config=IvfPq(distance_type="l2"))
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=IvfPq(distance_type="l2"),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # Scalar index via new API
+    table.create_index("category", config=BTree())
+    mock_create_index.assert_called_with(
+        "category",
+        replace=True,
+        config=BTree(),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # FTS index via new API
+    table.create_index("text", config=FTS(with_position=True))
+    mock_create_index.assert_called_with(
+        "text",
+        replace=True,
+        config=FTS(with_position=True),
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -1861,8 +1962,9 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
-    # Test with default name
-    table.create_scalar_index("x")
+    # Test with default name; confirm DeprecationWarning fires
+    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+        table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
