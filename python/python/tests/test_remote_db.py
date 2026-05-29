@@ -509,8 +509,14 @@ def test_remote_create_index_new_api():
                         schema=dict(
                             fields=[
                                 dict(name="id", type={"type": "int64"}, nullable=False),
-                                dict(name="category", type={"type": "string"}, nullable=False),
-                                dict(name="text", type={"type": "string"}, nullable=False),
+                                dict(
+                                    name="category",
+                                    type={"type": "string"},
+                                    nullable=False,
+                                ),
+                                dict(
+                                    name="text", type={"type": "string"}, nullable=False
+                                ),
                                 dict(
                                     name="vector",
                                     type={
