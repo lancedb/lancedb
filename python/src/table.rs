@@ -143,18 +143,20 @@ pub struct MergeResult {
     pub num_inserted_rows: u64,
     pub num_deleted_rows: u64,
     pub num_attempts: u32,
+    pub num_rows: u64,
 }
 
 #[pymethods]
 impl MergeResult {
     pub fn __repr__(&self) -> String {
         format!(
-            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={})",
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={}, num_rows={})",
             self.version,
             self.num_updated_rows,
             self.num_inserted_rows,
             self.num_deleted_rows,
-            self.num_attempts
+            self.num_attempts,
+            self.num_rows
         )
     }
 }
@@ -167,6 +169,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: result.num_inserted_rows,
             num_deleted_rows: result.num_deleted_rows,
             num_attempts: result.num_attempts,
+            num_rows: result.num_rows,
         }
     }
 }
@@ -194,6 +197,12 @@ impl LsmWriteSpec {
     }
 
     /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// `column` must be a deterministic function of the unenforced primary
+    /// key: every row with a given primary key must always produce the same
+    /// `column` value, or upserts of that key can land in different shards
+    /// and a stale version can win. Typically `column` is the primary key
+    /// itself or a stable attribute of it.
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
@@ -933,6 +942,12 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
+        if let Some(use_lsm_write) = parameters.use_lsm_write {
+            builder.use_lsm_write(use_lsm_write);
+        }
+        if let Some(validate_single_shard) = parameters.validate_single_shard {
+            builder.validate_single_shard(validate_single_shard);
+        }
 
         future_into_py(self_.py(), async move {
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
@@ -968,6 +983,13 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.close_lsm_writers().await.infer_error()
         })
     }
 
@@ -1124,6 +1146,8 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition: Option<String>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
+    use_lsm_write: Option<bool>,
+    validate_single_shard: Option<bool>,
 }
 
 #[pyclass]

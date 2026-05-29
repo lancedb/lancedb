@@ -8,6 +8,7 @@ use std::{
 
 use lance::{Dataset, dataset::refs};
 
+use crate::table::merge::lsm::ShardWriterCache;
 use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 
 /// A wrapper around a [Dataset] that provides consistency checks.
@@ -18,6 +19,10 @@ use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetState>>,
     consistency: ConsistencyMode,
+    /// The single MemWAL `ShardWriter` for this dataset, co-located so it is
+    /// cached for the session and shares the dataset's lifecycle. A dataset
+    /// writes to one shard at a time. Shared by `Arc` across clones.
+    shard_writer: Arc<ShardWriterCache>,
 }
 
 /// The current dataset and whether it is pinned to a specific version.
@@ -67,7 +72,13 @@ impl DatasetConsistencyWrapper {
                 pinned_version: None,
             })),
             consistency,
+            shard_writer: Arc::new(ShardWriterCache::default()),
         }
+    }
+
+    /// The MemWAL `ShardWriter` cache co-located with this dataset.
+    pub(crate) fn shard_writer(&self) -> &Arc<ShardWriterCache> {
+        &self.shard_writer
     }
 
     /// Get the current dataset.

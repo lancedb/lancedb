@@ -792,6 +792,10 @@ class RemoteTable(Table):
         """Not supported on LanceDB Cloud."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
+    def close_lsm_writers(self) -> None:
+        """No-op on LanceDB Cloud (no local shard writers)."""
+        return LOOP.run(self._table.close_lsm_writers())
+
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
 

@@ -366,6 +366,14 @@ impl LsmWriteSpec {
 
     /// Construct an identity-sharding spec (shard by the raw value of
     /// `column`) with no maintained indexes.
+    ///
+    /// `column` must be a deterministic function of the unenforced primary
+    /// key: every row with a given primary key must always produce the same
+    /// `column` value. MemWAL dedups upserts by primary key but tracks
+    /// generations per shard, so if the same key is written with two
+    /// different `column` values its versions land in different shards and a
+    /// stale value can win. Typically `column` is the primary key itself, or
+    /// a stable attribute of it (e.g. a tenant id).
     pub fn identity(column: impl Into<String>) -> Self {
         Self::Identity {
             column: column.into(),
@@ -579,6 +587,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: "unset_lsm_write_spec is not supported on this table type".into(),
         })
+    }
+    /// Drain and close any cached MemWAL shard writers for this table.
+    ///
+    /// The default implementation is a no-op; table types that maintain
+    /// MemWAL shard writers override it.
+    async fn close_lsm_writers(&self) -> Result<()> {
+        Ok(())
     }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
@@ -1384,6 +1399,16 @@ impl Table {
     /// Errors if no spec is currently set.
     pub async fn unset_lsm_write_spec(&self) -> Result<()> {
         self.inner.unset_lsm_write_spec().await
+    }
+
+    /// Drain and close any cached MemWAL shard writers held for this table.
+    ///
+    /// When an [`LsmWriteSpec`] is installed, `merge_insert` opens MemWAL shard
+    /// writers and caches them for reuse across calls. This closes them,
+    /// flushing pending data; writers reopen lazily on the next `merge_insert`.
+    /// It is a no-op when no writers are cached.
+    pub async fn close_lsm_writers(&self) -> Result<()> {
+        self.inner.close_lsm_writers().await
     }
 
     /// Retrieve the version of the table
@@ -2827,6 +2852,10 @@ impl BaseTable for NativeTable {
 
     async fn unset_lsm_write_spec(&self) -> Result<()> {
         merge::lsm::unset_lsm_write_spec(self).await
+    }
+
+    async fn close_lsm_writers(&self) -> Result<()> {
+        merge::lsm::close_lsm_writers(self).await
     }
 
     /// Delete rows from the table

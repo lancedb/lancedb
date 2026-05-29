@@ -187,6 +187,25 @@ Any attempt to use the table after it is closed will result in an error.
 
 ***
 
+### closeLsmWriters()
+
+```ts
+abstract closeLsmWriters(): Promise<void>
+```
+
+Drain and close any cached MemWAL shard writers held for this table.
+
+When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert` opens MemWAL
+shard writers and caches them for reuse across calls. This closes them,
+flushing pending data; writers reopen lazily on the next `mergeInsert`.
+It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### countRows()
 
 ```ts
