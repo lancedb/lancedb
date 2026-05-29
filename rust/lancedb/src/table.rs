@@ -3015,11 +3015,12 @@ impl BaseTable for NativeTable {
         let p99 = *sorted_sizes.get(num_fragments * 99 / 100).unwrap_or(&0);
         let min = sorted_sizes.first().copied().unwrap_or(0);
         let max = sorted_sizes.last().copied().unwrap_or(0);
-        let mean = if num_fragments == 0 {
-            0
-        } else {
-            sorted_sizes.iter().copied().sum::<usize>() / num_fragments
-        };
+        let mean = sorted_sizes
+            .iter()
+            .copied()
+            .sum::<usize>()
+            .checked_div(num_fragments)
+            .unwrap_or(0);
 
         let frag_stats = FragmentStatistics {
             num_fragments,
