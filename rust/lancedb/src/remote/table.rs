@@ -1806,6 +1806,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 num_inserted_rows: 0,
                 num_updated_rows: 0,
                 num_attempts: 0,
+                num_rows: 0,
             });
         }
 

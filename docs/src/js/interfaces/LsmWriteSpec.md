@@ -11,7 +11,10 @@ Specification selecting Lance's MemWAL LSM-style write path for
 
 `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
 `column` and `numBuckets` are required; for `"identity"`, `column` is
-required.
+required and must be a deterministic function of the unenforced primary
+key (every row with a given primary key must always produce the same
+`column` value, or upserts of that key can land in different shards and a
+stale version can win).
 
 ## Properties
 

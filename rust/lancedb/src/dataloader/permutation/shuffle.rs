@@ -464,11 +464,9 @@ mod tests {
         let mut iter = ids.into_iter().map(|o| o.unwrap());
         while let Some(first) = iter.next() {
             let rows_left_in_clump = if first == 4470 { 19 } else { 29 };
-            let mut expected_next = first + 1;
-            for _ in 0..rows_left_in_clump {
+            for expected_next in (first + 1)..=(first + rows_left_in_clump) {
                 let next = iter.next().unwrap();
                 assert_eq!(next, expected_next);
-                expected_next += 1;
             }
         }
     }

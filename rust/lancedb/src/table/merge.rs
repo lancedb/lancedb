@@ -41,6 +41,16 @@ pub struct MergeResult {
     /// A value of 1 means the operation succeeded on the first try.
     #[serde(default)]
     pub num_attempts: u32,
+    /// Total number of rows written.
+    ///
+    /// On the standard `merge_insert` path this equals
+    /// `num_inserted_rows + num_updated_rows`. On the MemWAL LSM write path the
+    /// insert/update breakdown is not known until compaction; in that mode
+    /// `num_inserted_rows`, `num_updated_rows`, `num_deleted_rows`, `version`
+    /// and `num_attempts` are all `0` and this field holds the total number of
+    /// rows written through the shard writer.
+    #[serde(default)]
+    pub num_rows: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +73,8 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
+    pub(crate) use_lsm_write: Option<bool>,
+    pub(crate) validate_single_shard: bool,
 }
 
 impl MergeInsertBuilder {
@@ -77,6 +89,8 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
+            use_lsm_write: None,
+            validate_single_shard: true,
         }
     }
 
@@ -173,6 +187,34 @@ impl MergeInsertBuilder {
         self
     }
 
+    /// Controls whether `merge_insert` uses the MemWAL LSM write path.
+    ///
+    /// By default (unset), a `merge_insert` on a table with an
+    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through
+    /// Lance's MemWAL shard writer, and a table without one uses the standard
+    /// path. Calling this with `false` forces the standard path even when a
+    /// spec is set. Calling it with `true` requires a spec — `merge_insert`
+    /// errors if none is installed.
+    pub fn use_lsm_write(&mut self, use_lsm_write: bool) -> &mut Self {
+        self.use_lsm_write = Some(use_lsm_write);
+        self
+    }
+
+    /// Controls how an LSM `merge_insert` checks that its input targets a
+    /// single shard.
+    ///
+    /// When a table has an LSM write spec, every row in a `merge_insert` call
+    /// must route to the same shard. When `true` (the default), every row is
+    /// inspected to verify this. When `false`, only the first row is inspected
+    /// and the shard it routes to is used for the whole input — a faster path
+    /// for callers that have already pre-sharded their input.
+    ///
+    /// Has no effect on tables without an LSM write spec.
+    pub fn validate_single_shard(&mut self, validate_single_shard: bool) -> &mut Self {
+        self.validate_single_shard = validate_single_shard;
+        self
+    }
+
     /// Executes the merge insert operation
     ///
     /// Returns version and statistics about the merge operation including the number of rows
@@ -190,6 +232,23 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    match lsm::lsm_dispatch_decision(table, &params).await? {
+        lsm::LsmDispatch::Lsm(plan) => {
+            let future =
+                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
+            return match params.timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, future).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Error::Runtime {
+                        message: "merge insert timed out".to_string(),
+                    }),
+                },
+                None => future.await,
+            };
+        }
+        lsm::LsmDispatch::Standard => {}
+    }
+
     let dataset = table.dataset.get().await?;
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
@@ -249,6 +308,7 @@ pub(crate) async fn execute_merge_insert(
         num_inserted_rows: stats.num_inserted_rows,
         num_deleted_rows: stats.num_deleted_rows,
         num_attempts: stats.num_attempts,
+        num_rows: stats.num_inserted_rows + stats.num_updated_rows,
     })
 }
 
@@ -394,5 +454,368 @@ mod tests {
         let result = merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(result.num_deleted_rows, 5);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+}
+
+#[cfg(test)]
+mod lsm_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{
+        Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+    };
+    use arrow_schema::{DataType, Field, Schema};
+    use tempfile::{TempDir, tempdir};
+
+    use crate::connect;
+    use crate::error::Error;
+    use crate::table::{LsmWriteSpec, Table};
+
+    /// A reader of `[id: Int64, value: Int64]` rows; `value` is `0..n`.
+    fn id_value_reader(ids: Vec<i64>) -> Box<dyn RecordBatchReader + Send> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("value", DataType::Int64, false),
+        ]));
+        let n = ids.len() as i64;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(Int64Array::from_iter_values(0..n)),
+            ],
+        )
+        .unwrap();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// A reader of `[id: Int64, region: Utf8]` rows.
+    fn id_region_reader(rows: Vec<(i64, &str)>) -> Box<dyn RecordBatchReader + Send> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, false),
+        ]));
+        let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+        let regions: Vec<&str> = rows.iter().map(|(_, region)| *region).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(StringArray::from(regions)),
+            ],
+        )
+        .unwrap();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// A multi-batch reader of `[id: Int64, region: Utf8]` rows.
+    fn id_region_multi_reader(batches: Vec<Vec<(i64, &str)>>) -> Box<dyn RecordBatchReader + Send> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, false),
+        ]));
+        let records: Vec<_> = batches
+            .into_iter()
+            .map(|rows| {
+                let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+                let regions: Vec<&str> = rows.iter().map(|(_, region)| *region).collect();
+                Ok(RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int64Array::from(ids)),
+                        Arc::new(StringArray::from(regions)),
+                    ],
+                )
+                .unwrap())
+            })
+            .collect();
+        Box::new(RecordBatchIterator::new(records, schema))
+    }
+
+    /// Create an `[id, value]` table with `id` as the unenforced primary key.
+    async fn id_value_table(dir: &TempDir) -> Table {
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_value_reader(vec![1, 2, 3]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_bucket() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        // num_buckets = 1: every row routes to the single bucket.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .await
+            .unwrap();
+
+        // Empty `on` defaults to the primary key.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap();
+
+        // LSM path: rows go to the MemWAL, the breakdown is unknown until
+        // compaction, so only `num_rows` is populated.
+        assert_eq!(result.num_rows, 3);
+        assert_eq!(result.version, 0);
+        assert_eq!(result.num_inserted_rows, 0);
+        assert_eq!(result.num_updated_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_unsharded() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_value_reader(vec![10, 11, 12, 13]))
+            .await
+            .unwrap();
+        assert_eq!(result.num_rows, 4);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_identity() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us"), (2, "us")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .await
+            .unwrap();
+
+        // All rows share one identity value, so they route to one shard.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_region_reader(vec![(3, "us"), (4, "us")]))
+            .await
+            .unwrap();
+        assert_eq!(result.num_rows, 2);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_use_lsm_write_false_falls_back() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .await
+            .unwrap();
+
+        // use_lsm_write(false) opts out: the standard path runs and commits.
+        let mut builder = table.merge_insert(&["id"]);
+        builder.when_not_matched_insert_all().use_lsm_write(false);
+        let result = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap();
+
+        assert_eq!(result.num_inserted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_rejects_on_not_primary_key() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .await
+            .unwrap();
+
+        let mut builder = table.merge_insert(&["value"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let err = builder.execute(id_value_reader(vec![1])).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_rejects_non_upsert() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .await
+            .unwrap();
+
+        // Insert-only (no when_matched_update_all) is not the upsert shape.
+        let mut builder = table.merge_insert(&[]);
+        builder.when_not_matched_insert_all();
+        let err = builder.execute(id_value_reader(vec![4])).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn lsm_close_writers_then_reopen() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .await
+            .unwrap();
+
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(id_value_reader(vec![7, 8])).await.unwrap();
+
+        table.close_lsm_writers().await.unwrap();
+
+        // The writer reopens lazily on the next merge_insert.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = builder.execute(id_value_reader(vec![9])).await.unwrap();
+        assert_eq!(result.num_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_multi_batch() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .await
+            .unwrap();
+
+        // Multiple batches that all route to one shard are written together.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_region_multi_reader(vec![
+                vec![(2, "us"), (3, "us")],
+                vec![(4, "us")],
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(result.num_rows, 3);
+
+        // Batches that route to different shards are rejected; the validation
+        // runs before any write, so no partial write is left behind.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let err = builder
+            .execute(id_region_multi_reader(vec![
+                vec![(5, "us")],
+                vec![(6, "eu")],
+            ]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_use_lsm_write_true_requires_spec() {
+        let dir = tempdir().unwrap();
+        // id_value_table sets a primary key but no LSM write spec.
+        let table = id_value_table(&dir).await;
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .use_lsm_write(true);
+        let err = builder.execute(id_value_reader(vec![4])).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_rejects_second_shard() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .await
+            .unwrap();
+
+        // The first merge_insert opens the single writer for shard "us".
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder
+            .execute(id_region_reader(vec![(2, "us")]))
+            .await
+            .unwrap();
+
+        // A merge_insert routing to a different shard is rejected.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let err = builder
+            .execute(id_region_reader(vec![(3, "eu")]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+
+        // After closing the writer, a different shard can be written.
+        table.close_lsm_writers().await.unwrap();
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder
+            .execute(id_region_reader(vec![(4, "eu")]))
+            .await
+            .unwrap();
     }
 }
