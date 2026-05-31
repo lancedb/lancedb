@@ -125,6 +125,9 @@ class MRRReranker(Reranker):
         This cannot reuse rerank_hybrid because MRR semantics require treating
         each vector result as a separate ranking system.
         """
+        if not vector_results:
+            raise ValueError("vector_results must not be empty")
+
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
             raise ValueError(
                 "All elements in vector_results should be of the same type"
