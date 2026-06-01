@@ -18,13 +18,13 @@ use crate::index::waiter::wait_for_index;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
-use crate::table::AlterColumnsResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::query::create_multi_vector_plan;
+use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
@@ -1968,6 +1968,35 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(result)
     }
 
+    async fn update_field_metadata(
+        &self,
+        updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        self.check_mutable().await?;
+        let body = serde_json::json!({ "updates": updates });
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/update_field_metadata/",
+                self.identifier
+            ))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let result: UpdateFieldMetadataResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse update_field_metadata response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(result.version);
+        Ok(result)
+    }
+
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "columns": columns });
@@ -2261,6 +2290,7 @@ mod tests {
 
     use crate::remote::client::{ClientConfig, RetryConfig};
     use crate::table::AddDataMode;
+    use crate::table::FieldMetadataUpdate;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
@@ -6459,5 +6489,26 @@ mod tests {
         let headers = captured.lock().unwrap().clone().unwrap();
         assert!(!headers.contains_key("x-lancedb-min-version"));
         assert!(!headers.contains_key("x-lancedb-min-timestamp"));
+    }
+
+    #[tokio::test]
+    async fn test_update_field_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/update_field_metadata/"
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 7, "fields": {"category": {"unit": "label"}}}"#)
+                .unwrap()
+        });
+
+        let result = table
+            .update_field_metadata(&[FieldMetadataUpdate::new("category").set("unit", "label")])
+            .await
+            .unwrap();
+        assert_eq!(result.version, 7);
     }
 }

@@ -91,7 +91,10 @@ pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
-pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
+pub use schema_evolution::{
+    AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
+    UpdateFieldMetadataResult,
+};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
 
@@ -658,6 +661,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
         Err(Error::NotSupported {
             message: "create_insert_exec not implemented".to_string(),
+        })
+    }
+    /// Update per-field metadata. Merges into existing metadata by default;
+    /// [`FieldMetadataUpdate::remove`] deletes a key and
+    /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
+    ///
+    /// The default returns `NotSupported`; Lance-backed and remote tables override it.
+    async fn update_field_metadata(
+        &self,
+        _updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        Err(Error::NotSupported {
+            message: "update_field_metadata is not supported on this table type".into(),
         })
     }
 }
@@ -1338,6 +1354,14 @@ impl Table {
         alterations: &[ColumnAlteration],
     ) -> Result<AlterColumnsResult> {
         self.inner.alter_columns(alterations).await
+    }
+
+    /// Update per-field metadata (merges by default).
+    pub async fn update_field_metadata(
+        &self,
+        updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        self.inner.update_field_metadata(updates).await
     }
 
     /// Remove columns from the table.
@@ -2884,6 +2908,13 @@ impl BaseTable for NativeTable {
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         schema_evolution::execute_alter_columns(self, alterations).await
+    }
+
+    async fn update_field_metadata(
+        &self,
+        updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        schema_evolution::execute_update_field_metadata(self, updates).await
     }
 
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
