@@ -89,6 +89,8 @@ class RemoteTable(Table):
         if self._table_handle is not None and self._pid == pid:
             return
 
+        # Pickle clears the handle; fork inherits a handle created in the
+        # parent process. In both cases reopen before touching the Rust client.
         from lancedb import deserialize_conn
 
         db = deserialize_conn(self._serialized_connection_state(), for_worker=True)

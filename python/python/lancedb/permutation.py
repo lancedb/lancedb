@@ -635,24 +635,18 @@ class Permutation:
 
         The base table is captured either via a user-supplied
         ``connection_factory`` (see [with_connection_factory]) or, as a
-        fallback, by the table's own picklable reopen state. An in-memory
-        permutation table is captured as a pyarrow Table (which pickles via
-        Arrow IPC natively); otherwise, the permutation table uses its own
-        reopen state too. The reader is dropped from the wire format and
-        rebuilt lazily on first use.
+        fallback, by the table's own picklable reopen state. The permutation
+        table is captured as a pyarrow Table (which pickles via Arrow IPC
+        natively). The reader is dropped from the wire format and rebuilt
+        lazily on first use.
         """
         permutation_data: Optional[pa.Table] = None
-        permutation_table_state: Optional[dict[str, Any]] = None
         if self.permutation_table is not None:
-            try:
-                permutation_data = self.permutation_table.to_arrow()
-            except NotImplementedError:
-                permutation_table_state = _table_to_pickle_state(self.permutation_table)
+            permutation_data = self.permutation_table.to_arrow()
 
         common = {
             "base_table_name": self.base_table.name,
             "permutation_data": permutation_data,
-            "permutation_table_state": permutation_table_state,
             "split": self.split,
             "selection": self.selection,
             "batch_size": self.batch_size,
@@ -699,11 +693,7 @@ class Permutation:
             )
 
         permutation_table: Optional[Table] = None
-        if state.get("permutation_table_state") is not None:
-            permutation_table = _table_from_pickle_state(
-                state["permutation_table_state"]
-            )
-        elif state["permutation_data"] is not None:
+        if state["permutation_data"] is not None:
             mem_db = connect("memory://")
             permutation_table = mem_db.create_table(
                 "permutation", state["permutation_data"]
@@ -725,6 +715,8 @@ class Permutation:
         pid = os.getpid()
         if self.reader is not None and getattr(self, "_pid", None) == pid:
             return
+        # The reader owns Rust-side table handles. Rebuild it after unpickle or
+        # fork even though the Python table wrappers reopen themselves.
         if hasattr(self.base_table, "_ensure_open"):
             self.base_table._ensure_open()
         if self.permutation_table is not None and hasattr(
