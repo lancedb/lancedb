@@ -1400,6 +1400,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytecount"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
+
+[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1522,9 +1528,9 @@ dependencies = [
 
 [[package]]
 name = "cedarwood"
-version = "0.4.6"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d910bedd62c24733263d0bed247460853c9d22e8956bd4cd964302095e04e90"
+checksum = "c0524a528a6a0288df1863c3c20fe92c301875b4941e7b6c4b394ab08c5a4c55"
 dependencies = [
  "smallvec",
 ]
@@ -1681,7 +1687,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2063,6 +2069,10 @@ name = "ctor"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "378f0974ae2468eaf63aa036dbe9c926b0dc7ea64c156f2ea618bc2f75b934f0"
+dependencies = [
+ "link-section",
+ "linktime-proc-macro",
+]
 
 [[package]]
 name = "ctor-proc-macro"
@@ -2907,7 +2917,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3104,7 +3114,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3284,8 +3294,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "rand 0.9.4",
@@ -4078,6 +4088,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "icu_locale"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5a396343c7208121dc86e35623d3dfe19814a7613cfd14964994cdc9c9a2e26"
+dependencies = [
+ "icu_collections",
+ "icu_locale_core",
+ "icu_locale_data",
+ "icu_provider",
+ "potential_utf",
+ "tinystr",
+ "zerovec",
+]
+
+[[package]]
 name = "icu_locale_core"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4085,10 +4110,17 @@ checksum = "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29"
 dependencies = [
  "displaydoc",
  "litemap",
+ "serde",
  "tinystr",
  "writeable",
  "zerovec",
 ]
+
+[[package]]
+name = "icu_locale_data"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fdcc9ac77c6d74ff5cf6e65ef3181d6af32003b16fce3a77fb451d2f695993"
 
 [[package]]
 name = "icu_normalizer"
@@ -4138,12 +4170,35 @@ checksum = "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
+ "serde",
+ "stable_deref_trait",
  "writeable",
  "yoke",
  "zerofrom",
  "zerotrie",
  "zerovec",
 ]
+
+[[package]]
+name = "icu_segmenter"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0794db0b1a86193ac9c48768d0e6c52c54448e0870ad87907d456ee0dac964"
+dependencies = [
+ "icu_collections",
+ "icu_locale",
+ "icu_provider",
+ "icu_segmenter_data",
+ "potential_utf",
+ "utf8_iter",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_segmenter_data"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4a2c462a4d927d512f5f882a033ddd62f33a05bb9f230d98f736ac3dc85938f"
 
 [[package]]
 name = "id-arena"
@@ -4306,19 +4361,20 @@ checksum = "9028f49264629065d057f340a86acb84867925865f73bbf8d47b4d149a7e88b8"
 
 [[package]]
 name = "jieba-macros"
-version = "0.9.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a29cfc5dcd898604c6f80363411fa6b6b08e27d1d253d6225b9cb6702ea02fc0"
+checksum = "46adade69b634535a8f495cf87710ed893cff53e1dbc9dd750c2ab81c5defb82"
 dependencies = [
  "phf_codegen 0.13.1",
 ]
 
 [[package]]
 name = "jieba-rs"
-version = "0.9.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3245d6e9d1d5facbd6a23848d6b67e3439738ccbb4fa5a3d65da315ba1a910a2"
+checksum = "11b53580aaa8ec8b713da271da434f8947409242c537a9ab3f7b76bdbb19e8a9"
 dependencies = [
+ "bytecount",
  "cedarwood",
  "jieba-macros",
  "phf 0.13.1",
@@ -4340,7 +4396,7 @@ dependencies = [
  "portable-atomic-util",
  "serde_core",
  "wasm-bindgen",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4506,8 +4562,8 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
 name = "lance"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4580,8 +4636,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4600,9 +4656,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "lance-arrow-scalar"
+version = "58.0.0"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-data",
+ "arrow-row",
+ "arrow-schema",
+ "half",
+]
+
+[[package]]
+name = "lance-arrow-stats"
+version = "58.0.0"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "lance-arrow-scalar",
+]
+
+[[package]]
 name = "lance-bitpacking"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrayref",
  "paste",
@@ -4611,8 +4691,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4647,8 +4727,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4678,8 +4758,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4697,8 +4777,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4733,8 +4813,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4765,8 +4845,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4796,6 +4876,7 @@ dependencies = [
  "jieba-rs",
  "jsonb",
  "lance-arrow",
+ "lance-arrow-stats",
  "lance-core",
  "lance-datafusion",
  "lance-datagen",
@@ -4831,8 +4912,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4874,8 +4955,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4891,8 +4972,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4904,8 +4985,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -4954,8 +5035,8 @@ dependencies = [
 
 [[package]]
 name = "lance-select"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4969,8 +5050,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5010,8 +5091,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5022,9 +5103,10 @@ dependencies = [
 
 [[package]]
 name = "lance-tokenizer"
-version = "7.1.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v7.1.0-beta.4#0c0b3e18c0a4c75bda1dd6ec9d6247ef75bd29d9"
+version = "7.2.0-beta.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v7.2.0-beta.3#7c070f760fa8e24c8015cb2afbd22c5e6b7898e8"
 dependencies = [
+ "icu_segmenter",
  "jieba-rs",
  "lindera",
  "rust-stemmers",
@@ -5321,6 +5403,18 @@ dependencies = [
  "strum_macros 0.28.0",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "link-section"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c8600ca3dbe044f07955b443ff606c50f45295b863289bbe7d0844d50cf11e4"
+
+[[package]]
+name = "linktime-proc-macro"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a44cd706ff0d503ee32b2071166510ca27e281228de10cd3aa8d35ff94560f81"
 
 [[package]]
 name = "linux-raw-sys"
@@ -5781,7 +5875,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5951,9 +6045,9 @@ dependencies = [
 
 [[package]]
 name = "object_store_opendal"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08298874eee5935c95bcaa393148834f9c53d904461ca15584a041d8a1c907c2"
+checksum = "0eb12a624a41fce745838d0ef3701ff6c47797c13cd18ad3612fd2a3134fdbd8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6008,11 +6102,11 @@ dependencies = [
 
 [[package]]
 name = "opendal"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97b31d3d8e99a85d83b73ec26647f5607b80578ed9375810b6e44ffa3590a236"
+checksum = "96c9c85ce253ff87225e7669979d877a20c98a06604ec9d6dd5f4473e08f1ae1"
 dependencies = [
- "ctor 0.6.3",
+ "ctor 1.0.5",
  "opendal-core",
  "opendal-layer-concurrent-limit",
  "opendal-layer-logging",
@@ -6028,9 +6122,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-core"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1849dd2687e173e776d3af5fce1ba3ae47b9dd37a09d1c4deba850ef45fe00ca"
+checksum = "c4f8607c90e2c963a91467f50fb49fbc7fb3d573f88cea219ca59ccd3740b309"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6040,10 +6134,10 @@ dependencies = [
  "http-body 1.0.1",
  "jiff",
  "log",
- "md-5 0.10.6",
+ "md-5 0.11.0",
  "mea",
  "percent-encoding",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-core",
  "reqwest 0.13.3",
  "serde",
@@ -6056,9 +6150,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-concurrent-limit"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "048b1b29c503263bdd80a9afe46a68cd02ea9bd361185b1feab4b151078998e9"
+checksum = "0d6f81ba6960e3fae1882f253b114b21d7e444e1534f209c7737a79f6243eb6f"
 dependencies = [
  "futures",
  "http 1.4.0",
@@ -6068,9 +6162,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-logging"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2645adc988b12eda106e2679ae529facfbbaa868ceb706f6f8125c6af15c47b"
+checksum = "58ada45c6d81d1aa4c9305d0c7d4bc317c59c85866a0908a2d75a7a978aa5ee2"
 dependencies = [
  "log",
  "opendal-core",
@@ -6078,9 +6172,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-retry"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4eac134ffa4ddda6131a640a84a5315996424b9416c85052f8c64c1a33b70ad4"
+checksum = "7b2a25a718afb81fad81cb9a0580a1cb989221fa2317f888c6a37f8dad408eb7"
 dependencies = [
  "backon",
  "log",
@@ -6089,9 +6183,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-layer-timeout"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "619586ab7480c2e3009f6d18eabab18957bc094778fd130bcc38924970a90f4c"
+checksum = "1e91f731724c213af81e9d03517859c8fc47b4578e64ad61ae4f099f10fe36e3"
 dependencies = [
  "opendal-core",
  "tokio",
@@ -6099,9 +6193,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-azblob"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7452bf3ec61cfd81ac9ad9ada17825931e9e371d44a045c6bfab9596c0a2ac3b"
+checksum = "0030644366ef5d8cbe3a4a5822bf99a4aafddc1666e9d24b44d158d9062fc76a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -6109,27 +6203,28 @@ dependencies = [
  "log",
  "opendal-core",
  "opendal-service-azure-common",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-azure-storage",
  "reqsign-core",
  "reqsign-file-read-tokio",
  "serde",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "uuid",
 ]
 
 [[package]]
 name = "opendal-service-azdls"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f9884c2d8cf8ba2bb077d79c877dac5863ba3bab9e2c9c1e41a2e0491404772"
+checksum = "6dea4908d490143a9b0b7f7a790e139ff829b06a023f670455ed3d44f664b361"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "http 1.4.0",
  "log",
  "opendal-core",
  "opendal-service-azure-common",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-azure-storage",
  "reqsign-core",
  "reqsign-file-read-tokio",
@@ -6139,9 +6234,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-azure-common"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb0e45d6c8dcf66ce2da20e241bcb80e6e540e109a4ff20f318f6c9b4c54e0c"
+checksum = "9b489f13c42e69d69bdd72952b634356ec43a7881a20259b38b540fcecdf4051"
 dependencies = [
  "http 1.4.0",
  "opendal-core",
@@ -6149,9 +6244,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-gcs"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70a49477a10163431896d106136117f5670717f9c9e49cf6f710528800c6633a"
+checksum = "48de101aac565ed06af4b47903c24eafd249075553ec1fb18256751c45148d47"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6159,7 +6254,7 @@ dependencies = [
  "log",
  "opendal-core",
  "percent-encoding",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-core",
  "reqsign-file-read-tokio",
  "reqsign-google",
@@ -6170,9 +6265,9 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-hf"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b2ab7a2a8a11dfe257ef4db5c0de798acbcd0d6429c37382dad2154bc06a388"
+checksum = "c4922661976a1d40794a2adfbdb888cc3c23097690f825a92f773af38908a848"
 dependencies = [
  "bytes",
  "hf-xet",
@@ -6187,15 +6282,15 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-oss"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29c8a917829ad06d21b639558532cb0101fe49b040d946d673a73018683fac05"
+checksum = "328fa55e8888cbdfe00826bfea2a79042422b720e8369e9e021e46121dea5ace"
 dependencies = [
  "bytes",
  "http 1.4.0",
  "log",
  "opendal-core",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-aliyun-oss",
  "reqsign-core",
  "reqsign-file-read-tokio",
@@ -6204,18 +6299,18 @@ dependencies = [
 
 [[package]]
 name = "opendal-service-s3"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dadddeb9bb50b0d30927dd914c298c4ddca47e4c1cfa7674d311f0cf9b051c8"
+checksum = "313d46c9f5ae70bca26b7c3e3fbb9b639292625f28af73aa016f47e788af9deb"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "crc32c",
  "http 1.4.0",
  "log",
- "md-5 0.10.6",
+ "md-5 0.11.0",
  "opendal-core",
- "quick-xml 0.38.4",
+ "quick-xml 0.39.4",
  "reqsign-aws-v4",
  "reqsign-core",
  "reqsign-file-read-tokio",
@@ -6955,6 +7050,8 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
+ "serde_core",
+ "writeable",
  "zerovec",
 ]
 
@@ -7017,8 +7114,8 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.5.0",
- "itertools 0.14.0",
+ "heck 0.4.1",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "petgraph",
@@ -7037,7 +7134,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7196,7 +7293,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
 dependencies = [
  "memchr",
- "serde",
 ]
 
 [[package]]
@@ -7262,7 +7358,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8000,7 +8096,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8071,7 +8167,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8643,7 +8739,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -8655,7 +8751,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9047,7 +9143,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9187,6 +9283,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
  "displaydoc",
+ "serde_core",
  "zerovec",
 ]
 
@@ -9970,7 +10067,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10654,6 +10751,7 @@ dependencies = [
  "displaydoc",
  "yoke",
  "zerofrom",
+ "zerovec",
 ]
 
 [[package]]
@@ -10662,6 +10760,7 @@ version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239"
 dependencies = [
+ "serde",
  "yoke",
  "zerofrom",
  "zerovec-derive",
