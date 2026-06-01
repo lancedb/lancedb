@@ -586,22 +586,25 @@ def test_table_create_indices():
         # This is a smoke-test.
         table = db.create_table("test", [{"id": 1}])
 
-        # Test create_scalar_index with custom name
-        table.create_scalar_index(
-            "id", wait_timeout=timedelta(seconds=2), name="custom_scalar_idx"
-        )
+        # Test create_scalar_index with custom name (legacy method)
+        with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+            table.create_scalar_index(
+                "id", wait_timeout=timedelta(seconds=2), name="custom_scalar_idx"
+            )
 
-        # Test create_fts_index with custom name
-        table.create_fts_index(
-            "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
-        )
+        # Test create_fts_index with custom name (legacy method)
+        with pytest.warns(DeprecationWarning, match="create_fts_index"):
+            table.create_fts_index(
+                "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
+            )
 
-        # Test create_index with custom name
-        table.create_index(
-            vector_column_name="vector",
-            wait_timeout=timedelta(seconds=10),
-            name="custom_vector_idx",
-        )
+        # Test create_index with custom name (legacy form: vector_column_name kwarg)
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                vector_column_name="vector",
+                wait_timeout=timedelta(seconds=10),
+                name="custom_vector_idx",
+            )
 
         # Validate that the name parameter was passed correctly in requests
         assert len(received_requests) == 3
@@ -628,6 +631,98 @@ def test_table_create_indices():
         table.drop_index("custom_vector_idx")
         table.drop_index("custom_scalar_idx")
         table.drop_index("custom_fts_idx")
+
+
+def test_remote_create_index_new_api():
+    received_requests = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/create_index/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = request.rfile.read(content_len) if content_len > 0 else b""
+            received_requests.append(json.loads(body) if body else {})
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                                dict(
+                                    name="category",
+                                    type={"type": "string"},
+                                    nullable=False,
+                                ),
+                                dict(
+                                    name="text", type={"type": "string"}, nullable=False
+                                ),
+                                dict(
+                                    name="vector",
+                                    type={
+                                        "type": "fixed_size_list",
+                                        "fields": [
+                                            dict(
+                                                name="item",
+                                                type={"type": "float"},
+                                                nullable=True,
+                                            )
+                                        ],
+                                        "length": 2,
+                                    },
+                                    nullable=False,
+                                ),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    from lancedb.index import BTree, FTS, IvfPq, IvfRq
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+
+        # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
+        import warnings as _warnings
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error", DeprecationWarning)
+            table.create_index("vector", config=IvfPq(distance_type="l2"))
+            table.create_index("category", config=BTree())
+            table.create_index("text", config=FTS())
+            # IvfRq via new API
+            table.create_index("vector", config=IvfRq(distance_type="l2"))
+
+        # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                vector_column_name="vector",
+                index_type="IVF_RQ",
+                num_partitions=8,
+            )
+
+        assert len(received_requests) == 5
+        assert [req["column"] for req in received_requests] == [
+            "vector",
+            "category",
+            "text",
+            "vector",
+            "vector",
+        ]
 
 
 def test_table_wait_for_index_timeout():

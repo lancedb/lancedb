@@ -162,12 +162,13 @@ async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("data", config=Bitmap())
     indices = await some_table.list_indices()
     assert len(indices) == 3
+    # list_indices returns indices in alphabetical order by name
     assert indices[0].index_type == "Bitmap"
-    assert indices[0].columns == ["id"]
+    assert indices[0].columns == ["data"]
     assert indices[1].index_type == "Bitmap"
-    assert indices[1].columns == ["is_active"]
+    assert indices[1].columns == ["id"]
     assert indices[2].index_type == "Bitmap"
-    assert indices[2].columns == ["data"]
+    assert indices[2].columns == ["is_active"]
 
     index_name = indices[0].name
     stats = await some_table.index_stats(index_name)

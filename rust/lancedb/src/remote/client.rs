@@ -245,6 +245,9 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) sender: S,
     pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Connection-level read consistency interval. Drives the
+    /// `x-lancedb-min-timestamp` freshness header sent on read requests.
+    pub(crate) read_consistency_interval: Option<Duration>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -338,6 +341,7 @@ impl RestfulLanceDbClient<Sender> {
         host_override: Option<String>,
         default_headers: HeaderMap,
         client_config: ClientConfig,
+        read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
         // Get the timeouts
         let timeout =
@@ -435,6 +439,7 @@ impl RestfulLanceDbClient<Sender> {
                 .clone()
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
+            read_consistency_interval,
         })
     }
 }
@@ -843,6 +848,16 @@ pub mod test_utils {
     where
         T: Into<reqwest::Body>,
     {
+        client_with_handler_and_interval(handler, None)
+    }
+
+    pub fn client_with_handler_and_interval<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        read_consistency_interval: Option<Duration>,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
         let wrapper = move |req: reqwest::Request| {
             let response = handler(req);
             response.into()
@@ -857,6 +872,7 @@ pub mod test_utils {
             },
             id_delimiter: "$".to_string(),
             header_provider: None,
+            read_consistency_interval,
         }
     }
 
@@ -881,6 +897,7 @@ pub mod test_utils {
             },
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
+            read_consistency_interval: None,
         }
     }
 }
@@ -888,7 +905,17 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::time::Duration;
+
+    // Serializes the env-var-mutating tests below: cargo test runs tests in
+    // parallel, but several of these tests read and write the same process-
+    // global env vars (`LANCEDB_USER_ID*`), so they would race without this.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_timeout_config_default() {
@@ -1046,6 +1073,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1081,6 +1109,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1118,6 +1147,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Header provider errors should fail the request
@@ -1143,7 +1173,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_none() {
+        let _guard = lock_env();
         let config = ClientConfig::default();
         // Clear env vars that might be set from other tests
         // SAFETY: This is only called in tests
@@ -1155,7 +1187,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1169,7 +1203,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env_key() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::remove_var("LANCEDB_USER_ID");
@@ -1189,7 +1225,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_direct_takes_precedence() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1206,7 +1244,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_empty_env_ignored() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "");

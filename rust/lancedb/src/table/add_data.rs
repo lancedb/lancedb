@@ -982,4 +982,105 @@ mod tests {
         table2.add(struct_batch).execute().await.unwrap();
         assert_eq!(table2.count_rows(None).await.unwrap(), 2);
     }
+
+    /// Regression test: appending `arrow.json` (PyArrow `pa.json_()`) data into a table
+    /// whose schema was created with `pa.json_()` (internally stored as `lance.json`, backed
+    /// by `LargeBinary`) must succeed without a schema-mismatch error.
+    ///
+    /// Previously `build_field_exprs` would attempt a `Utf8 → LargeBinary` DataFusion cast,
+    /// which produced a field whose Arrow extension metadata still read `arrow.json` instead
+    /// of `lance.json`.  Lance-core then rejected the append with
+    /// `"json vs large_binary" schema mismatch`.
+    ///
+    /// PyArrow's `pa.json_()` may be backed by either `Utf8` or `LargeUtf8` depending on the
+    /// constructor used, so the test is parameterized over the input backing type.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8)]
+    #[tokio::test]
+    async fn test_add_arrow_json_into_lance_json_table(#[case] input_type: DataType) {
+        use arrow_array::{Array, cast::AsArray};
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+
+        // Build a table whose "data" column is lance.json (LargeBinary +
+        // ARROW:extension:name = "lance.json").
+        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let table_schema = Arc::new(Schema::new(vec![lance_json_field]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_test", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Sanity-check the stored schema.
+        let stored_field = table.schema().await.unwrap();
+        let data_field = stored_field.field_with_name("data").unwrap();
+        assert_eq!(data_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            data_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+        );
+
+        // Build an arrow.json input field (Utf8/LargeUtf8 + arrow.json extension).
+        // This is what PyArrow produces for pa.json_() arrays.
+        let arrow_json_metadata = std::collections::HashMap::from([(
+            ARROW_EXT_NAME_KEY.to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        )]);
+        let arrow_json_field =
+            Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
+        let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
+
+        let rows: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
+        let string_array: Arc<dyn arrow_array::Array> = match input_type {
+            DataType::Utf8 => Arc::new(arrow_array::StringArray::from(rows.clone())),
+            DataType::LargeUtf8 => Arc::new(arrow_array::LargeStringArray::from(rows.clone())),
+            other => panic!("unsupported arrow.json backing type for this test: {other:?}"),
+        };
+        let batch = RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+
+        // This must not fail with a schema-mismatch error.
+        table.add(batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), rows.len());
+
+        // A lance.json column is read back as Utf8 carrying arrow.json extension metadata.
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["data"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), rows.len());
+
+        let json_col = batch.column(0);
+        assert_eq!(json_col.data_type(), &DataType::Utf8);
+        let json_strs = json_col.as_string::<i32>();
+
+        for (i, expected) in rows.iter().enumerate() {
+            match expected {
+                None => assert!(json_strs.is_null(i), "row {i} expected null"),
+                Some(raw) => {
+                    assert!(!json_strs.is_null(i), "row {i} expected non-null");
+                    let actual: serde_json::Value = serde_json::from_str(json_strs.value(i))
+                        .expect("read-back JSON should be valid");
+                    let expected: serde_json::Value =
+                        serde_json::from_str(raw).expect("expected JSON should be valid");
+                    assert_eq!(actual, expected, "row {i} JSON mismatch");
+                }
+            }
+        }
+    }
 }
