@@ -340,7 +340,11 @@ def test_add_nullable_struct_with_none(mem_db: DBConnection):
         ]
     )
 
-    table = mem_db.create_table("test_nullable_struct", schema=schema)
+    table = mem_db.create_table(
+        "test_nullable_struct",
+        schema=schema,
+        storage_options=dict(new_table_data_storage_version="2.1"),
+    )
 
     # Adding a row with a non-null struct should work
     table.add([{"id": "1", "data": {"x": 1.0}}])
