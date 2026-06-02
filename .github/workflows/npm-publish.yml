@@ -14,6 +14,10 @@ on:
       - main
     tags:
       - "v*"
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
