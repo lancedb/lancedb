@@ -315,6 +315,15 @@ def deserialize_conn(
             manifest_enabled=parsed.get("manifest_enabled", False),
             namespace_client_properties=parsed.get("namespace_client_properties"),
         )
+    elif connection_type == "remote":
+        return RemoteDBConnection(
+            parsed["db_url"],
+            parsed["api_key"],
+            parsed.get("region", "us-east-1"),
+            host_override=parsed.get("host_override"),
+            client_config=parsed.get("client_config"),
+            storage_options=storage_options,
+        )
     else:
         raise ValueError(f"Unknown connection_type: {connection_type}")
 

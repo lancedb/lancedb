@@ -5,6 +5,7 @@ from datetime import timedelta
 import deprecation
 import logging
 from functools import cached_property
+import os
 from typing import (
     Any,
     Callable,
@@ -63,14 +64,80 @@ class RemoteTable(Table):
         self,
         table: AsyncTable,
         db_name: str,
+        *,
+        connection_state: Optional[Union[str, Callable[[], str]]] = None,
+        namespace_path: Optional[List[str]] = None,
     ):
-        self._table = table
+        self._table_handle = table
+        self._name = table.name
         self.db_name = db_name
+        self._connection_state = connection_state
+        self._namespace_path = list(namespace_path or [])
+        self._checkout_version: Optional[int] = None
+        self._pid = os.getpid()
+
+    def _serialized_connection_state(self) -> str:
+        if self._connection_state is None:
+            raise RuntimeError(
+                "Cannot reopen this remote table because it does not carry "
+                "serialized connection state"
+            )
+        if callable(self._connection_state):
+            self._connection_state = self._connection_state()
+        return self._connection_state
+
+    @property
+    def _table(self) -> AsyncTable:
+        self._ensure_open()
+        assert self._table_handle is not None
+        return self._table_handle
+
+    @_table.setter
+    def _table(self, table: AsyncTable) -> None:
+        self._table_handle = table
+        self._name = table.name
+        self._pid = os.getpid()
+
+    def _ensure_open(self) -> None:
+        pid = os.getpid()
+        if self._table_handle is not None and self._pid == pid:
+            return
+
+        # Pickle clears the handle; fork inherits a handle created in the
+        # parent process. In both cases reopen before touching the Rust client.
+        from lancedb import deserialize_conn
+
+        db = deserialize_conn(self._serialized_connection_state(), for_worker=True)
+        table = db.open_table(self._name, namespace_path=self._namespace_path)
+        if self._checkout_version is not None:
+            table.checkout(self._checkout_version)
+
+        self._table_handle = table._table
+        self.db_name = table.db_name
+        self._pid = pid
+
+    def __getstate__(self) -> dict:
+        return {
+            "connection_state": self._serialized_connection_state(),
+            "db_name": self.db_name,
+            "name": self.name,
+            "namespace_path": self._namespace_path,
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        self._table_handle = None
+        self._name = state["name"]
+        self.db_name = state["db_name"]
+        self._connection_state = state["connection_state"]
+        self._namespace_path = state["namespace_path"]
+        self._checkout_version = state["checkout_version"]
+        self._pid = None
 
     @property
     def name(self) -> str:
         """The name of the table"""
-        return self._table.name
+        return self._name
 
     def __repr__(self) -> str:
         return f"RemoteTable({self.db_name}.{self.name})"
@@ -120,13 +187,19 @@ class RemoteTable(Table):
         raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def checkout(self, version: Union[int, str]):
-        return LOOP.run(self._table.checkout(version))
+        result = LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
+        return result
 
     def checkout_latest(self):
-        return LOOP.run(self._table.checkout_latest())
+        result = LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
+        return result
 
     def restore(self, version: Optional[Union[int, str]] = None):
-        return LOOP.run(self._table.restore(version))
+        result = LOOP.run(self._table.restore(version))
+        self._checkout_version = None
+        return result
 
     def list_indices(self) -> Iterable[IndexConfig]:
         """List all the indices on the table"""
