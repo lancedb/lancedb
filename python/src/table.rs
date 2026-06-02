@@ -1172,10 +1172,10 @@ impl Table {
                         }
                     }
                 }
-                if let Some(replace) = update.get_item("replace")? {
-                    if replace.extract::<bool>()? {
-                        field_update = field_update.replace();
-                    }
+                if let Some(replace) = update.get_item("replace")?
+                    && replace.extract::<bool>()?
+                {
+                    field_update = field_update.replace();
                 }
                 Ok(field_update)
             })
