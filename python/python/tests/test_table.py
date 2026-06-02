@@ -3,6 +3,7 @@
 
 
 import os
+import pickle
 import sys
 import warnings
 from datetime import date, datetime, timedelta
@@ -46,6 +47,36 @@ def test_basic(mem_db: DBConnection):
 
     expected_data = pa.Table.from_pylist(data, schema=expected_schema)
     assert table.to_arrow() == expected_data
+
+
+def test_lance_table_is_picklable(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_table", pa.table({"id": [1, 2, 3]}))
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    assert restored.name == "pickle_table"
+    assert restored.count_rows() == 3
+    assert restored.to_arrow().column("id").to_pylist() == [1, 2, 3]
+
+
+def test_lance_table_pickle_preserves_checkout(tmp_db: DBConnection):
+    table = tmp_db.create_table("pickle_checkout", pa.table({"id": [1]}))
+    table.add(pa.table({"id": [2]}))
+    table.checkout(1)
+
+    restored = pickle.loads(pickle.dumps(table))
+
+    assert restored.count_rows() == 1
+    assert restored.to_arrow().column("id").to_pylist() == [1]
+    restored.checkout_latest()
+    assert restored.count_rows() == 2
+
+
+def test_memory_lance_table_pickle_is_unsupported(mem_db: DBConnection):
+    table = mem_db.create_table("memory_pickle", pa.table({"id": [1]}))
+
+    with pytest.raises(ValueError, match="in-memory LanceTable"):
+        pickle.dumps(table)
 
 
 def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):

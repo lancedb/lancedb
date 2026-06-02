@@ -74,6 +74,7 @@ class RemoteTable(Table):
         self._connection_state = connection_state
         self._namespace_path = list(namespace_path or [])
         self._checkout_version: Optional[int] = None
+        self._table_state: Optional[dict[str, Any]] = None
         self._pid = os.getpid()
 
     def _serialized_connection_state(self) -> str:
@@ -86,6 +87,16 @@ class RemoteTable(Table):
             self._connection_state = self._connection_state()
         return self._connection_state
 
+    def _reopen_state(self) -> dict[str, Any]:
+        if self._table_state is not None:
+            return self._table_state
+        self._table_state = {
+            "name": self._name,
+            "namespace_path": self._namespace_path,
+            "storage_options": None,
+        }
+        return self._table_state
+
     @property
     def _table(self) -> AsyncTable:
         self._ensure_open()
@@ -96,6 +107,7 @@ class RemoteTable(Table):
     def _table(self, table: AsyncTable) -> None:
         self._table_handle = table
         self._name = table.name
+        self._table_state = None
         self._pid = os.getpid()
 
     def _ensure_open(self) -> None:
@@ -108,7 +120,11 @@ class RemoteTable(Table):
         from lancedb import deserialize_conn
 
         db = deserialize_conn(self._serialized_connection_state(), for_worker=True)
-        table = db.open_table(self._name, namespace_path=self._namespace_path)
+        table_state = self._reopen_state()
+        table = db.open_table(
+            table_state["name"],
+            namespace_path=table_state["namespace_path"] or None,
+        )
         if self._checkout_version is not None:
             table.checkout(self._checkout_version)
 
@@ -120,17 +136,24 @@ class RemoteTable(Table):
         return {
             "connection_state": self._serialized_connection_state(),
             "db_name": self.db_name,
-            "name": self.name,
-            "namespace_path": self._namespace_path,
+            "table_state": self._reopen_state(),
             "checkout_version": self._checkout_version,
         }
 
     def __setstate__(self, state: dict) -> None:
         self._table_handle = None
-        self._name = state["name"]
+        table_state = state.get("table_state")
+        if table_state is None:
+            table_state = {
+                "name": state["name"],
+                "namespace_path": state["namespace_path"],
+                "storage_options": None,
+            }
+        self._table_state = table_state
+        self._name = table_state["name"]
         self.db_name = state["db_name"]
         self._connection_state = state["connection_state"]
-        self._namespace_path = state["namespace_path"]
+        self._namespace_path = table_state["namespace_path"]
         self._checkout_version = state["checkout_version"]
         self._pid = None
 
