@@ -4,6 +4,7 @@
 import copy
 import json
 import os
+import time
 
 from deprecation import deprecated
 import pyarrow as pa
@@ -398,6 +399,106 @@ def _table_from_pickle_state(state: dict[str, Any]) -> Table:
     raise ValueError(f"Unknown table pickle state kind: {kind}")
 
 
+class PermutationMetrics:
+    """
+    Tracks observability metrics for a Permutation iterator.
+
+    When observability is enabled via
+    :meth:`Permutation.with_observability`, the iterator records
+    timing and byte counts for three phases of each batch:
+
+    * **I/O** – time spent fetching data from the Rust reader.
+    * **Transform** – time spent in the Python transform function.
+    * **Consumption** – time the caller spends between receiving
+      a batch and requesting the next one.
+
+    Use :meth:`summary` to obtain bytes-per-second rates that help
+    distinguish between I/O, CPU, and GPU bottlenecks.
+
+    Examples
+    --------
+    >>> perm = perm.with_observability()  # doctest: +SKIP
+    >>> for batch in perm:               # doctest: +SKIP
+    ...     train(batch)
+    >>> print(perm.metrics.summary())    # doctest: +SKIP
+    """
+
+    def __init__(self):
+        self.total_bytes: int = 0
+        self.io_time: float = 0.0
+        self.transform_time: float = 0.0
+        self.consumption_time: float = 0.0
+        self._batch_count: int = 0
+
+    def add_io(self, num_bytes: int, elapsed: float) -> None:
+        """Record one I/O fetch.
+
+        Parameters
+        ----------
+        num_bytes : int
+            Number of bytes in the fetched batch (``batch.nbytes``).
+        elapsed : float
+            Wall-clock seconds spent in the fetch.
+        """
+        self.total_bytes += num_bytes
+        self.io_time += elapsed
+
+    def add_transform_time(self, elapsed: float) -> None:
+        """Record time spent in the transform function for one batch."""
+        self.transform_time += elapsed
+
+    def add_consumption_time(self, elapsed: float) -> None:
+        """Record time the caller spent processing the previous batch."""
+        self.consumption_time += elapsed
+        self._batch_count += 1
+
+    def summary(self) -> dict[str, Any]:
+        """Return a dictionary of bytes-per-second rates and totals.
+
+        Keys
+        ----
+        io_bytes_per_sec : float
+            Throughput through the I/O (data loading) stage.
+        transform_bytes_per_sec : float
+            Throughput through the transformation stage.
+        consumption_bytes_per_sec : float
+            Throughput as seen by the consumer.
+        total_bytes : int
+            Total bytes read across all batches.
+        batch_count : int
+            Number of batches yielded to the consumer.
+        """
+        return {
+            "io_bytes_per_sec": (
+                self.total_bytes / self.io_time if self.io_time > 0 else 0.0
+            ),
+            "transform_bytes_per_sec": (
+                self.total_bytes / self.transform_time
+                if self.transform_time > 0
+                else 0.0
+            ),
+            "consumption_bytes_per_sec": (
+                self.total_bytes / self.consumption_time
+                if self.consumption_time > 0
+                else 0.0
+            ),
+            "total_bytes": self.total_bytes,
+            "batch_count": self._batch_count,
+        }
+
+    def __repr__(self) -> str:
+        s = self.summary()
+        mb = 1024 * 1024
+        return (
+            f"PermutationMetrics("
+            f"I/O: {s['io_bytes_per_sec'] / mb:.2f} MB/s, "
+            f"Transform: {s['transform_bytes_per_sec'] / mb:.2f} MB/s, "
+            f"Consumption: {s['consumption_bytes_per_sec'] / mb:.2f} MB/s, "
+            f"total: {s['total_bytes'] / mb:.2f} MB, "
+            f"batches: {s['batch_count']})"
+        )
+
+
 class Permutation:
     """
     A Permutation is a view of a dataset that can be used as input to model training
@@ -438,6 +539,7 @@ class Permutation:
         self.offset = offset
         self.limit = limit
         self.connection_factory = connection_factory
+        self.metrics = None
         if _reader is None:
             _reader = LOOP.run(self._build_reader())
         self.reader: PermutationReader = _reader
@@ -708,6 +810,7 @@ class Permutation:
         self.offset = state["offset"]
         self.limit = state["limit"]
         self.connection_factory = connection_factory
+        self.metrics = None
         self.reader = None
         self._pid = None
 
@@ -891,6 +994,42 @@ class Permutation:
             new_selection[name] = value
         return self._with_selection(new_selection)
 
+    def with_observability(self, enabled: bool = True) -> "Permutation":
+        """
+        Enable or disable observability metrics for this permutation.
+
+        When enabled, the :attr:`metrics` attribute will be populated with a
+        :class:`PermutationMetrics` instance that tracks bytes per second
+        for I/O, transformation, and consumption during iteration. This
+        helps distinguish between I/O, CPU, and GPU bottlenecks.
+
+        Calling this method resets any previously accumulated metrics.
+
+        Parameters
+        ----------
+        enabled : bool
+            Set to ``True`` to enable metrics collection, ``False`` to
+            disable it. Defaults to ``True``.
+
+        Returns
+        -------
+        Permutation
+            A new permutation with observability enabled (or disabled).
+
+        Examples
+        --------
+        >>> perm = perm.with_observability()   # doctest: +SKIP
+        >>> for batch in perm:                 # doctest: +SKIP
+        ...     train(batch)
+        >>> print(perm.metrics.summary())       # doctest: +SKIP
+        """
+        new = copy.copy(self)
+        if enabled:
+            new.metrics = PermutationMetrics()
+        else:
+            new.metrics = None
+        return new
+
     def __iter__(self) -> Iterator[dict[str, Any]]:
         """
         Iterate over the permutation
@@ -916,11 +1055,38 @@ class Permutation:
         async def get_next():
             return await async_iter.__anext__()
 
+        metrics = self.metrics
         try:
+            # yield_time is set after each yield so we can measure how long
+            # the caller spends between receiving a batch and asking for the
+            # next one.  It is None until the first yield.
+            yield_time: Optional[float] = None
             while True:
+                if metrics:
+                    t_start_io = time.perf_counter()
+                    if yield_time is not None:
+                        metrics.add_consumption_time(t_start_io - yield_time)
+
                 batch = LOOP.run(get_next())
+
+                if metrics:
+                    metrics.add_io(batch.nbytes, time.perf_counter() - t_start_io)
+
                 if batch.num_rows == batch_size or not skip_last_batch:
-                    yield self.transform_fn(batch)
+                    if metrics:
+                        t_start_xf = time.perf_counter()
+
+                    transformed = self.transform_fn(batch)
+
+                    if metrics:
+                        metrics.add_transform_time(time.perf_counter() - t_start_xf)
+
+                    yield transformed
+
+                    if metrics:
+                        yield_time = time.perf_counter()
+                # If batch was skipped, don't update yield_time — the next
+                # I/O fetch is not "consumption time".
         except StopAsyncIteration:
             return
 
