@@ -154,6 +154,7 @@ if TYPE_CHECKING:
         AddColumnsResult,
         AddResult,
         AlterColumnsResult,
+        UpdateFieldMetadataResult,
         DeleteResult,
         DropColumnsResult,
         LsmWriteSpec,
@@ -1797,6 +1798,29 @@ class Table(ABC):
         -------
         AlterColumnsResult
             version: the new version number of the table after the alteration.
+        """
+
+    @abstractmethod
+    def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        """
+        Update per-field (column) metadata.
+
+        Parameters
+        ----------
+        updates : dict
+            One or more dicts, each with:
+            - "path": str — dot-path to the field (e.g. "embedding" or "a.b.c").
+            - "metadata": dict[str, str | None] — keys to set; a value of ``None``
+              deletes that key.
+            - "replace": bool, optional — replace the field's whole metadata map
+              instead of merging (default False).
+
+        Returns
+        -------
+        UpdateFieldMetadataResult
+            version: the new table version after the update.
         """
 
     @abstractmethod
@@ -3583,6 +3607,11 @@ class LanceTable(Table):
     ) -> AlterColumnsResult:
         return LOOP.run(self._table.alter_columns(*alterations))
 
+    def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        return LOOP.run(self._table.update_field_metadata(*updates))
+
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
 
@@ -5233,6 +5262,13 @@ class AsyncTable:
             version: the new version number of the table after the alteration.
         """
         return await self._inner.alter_columns(alterations)
+
+    async def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        """Update per-field metadata. See
+        [`Table.update_field_metadata`][lancedb.table.Table.update_field_metadata]."""
+        return await self._inner.update_field_metadata(updates)
 
     async def drop_columns(self, columns: Iterable[str]):
         """

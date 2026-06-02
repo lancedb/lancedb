@@ -2472,6 +2472,30 @@ def test_alter_columns(mem_db: DBConnection):
     assert table.to_arrow().column_names == ["new_id"]
 
 
+def test_update_field_metadata(mem_db: DBConnection):
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = mem_db.create_table("my_table", data=data)
+
+    res = table.update_field_metadata(
+        {"path": "category", "metadata": {"unit": "label", "pii": "false"}}
+    )
+    assert res.version == 2
+    # Arrow field metadata is bytes-keyed
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"pii": b"false",
+    }
+
+    # merge: add a key, delete one via None, keep the rest
+    table.update_field_metadata(
+        {"path": "category", "metadata": {"source": "import", "pii": None}}
+    )
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"source": b"import",
+    }
+
+
 @pytest.mark.asyncio
 async def test_alter_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})

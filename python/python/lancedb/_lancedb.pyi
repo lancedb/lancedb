@@ -208,6 +208,9 @@ class Table:
     async def alter_columns(
         self, columns: list[dict[str, Any]]
     ) -> AlterColumnsResult: ...
+    async def update_field_metadata(
+        self, updates: list[dict[str, Any]]
+    ) -> UpdateFieldMetadataResult: ...
     async def optimize(
         self,
         *,
@@ -458,6 +461,9 @@ class AddColumnsResult:
     version: int
 
 class AlterColumnsResult:
+    version: int
+
+class UpdateFieldMetadataResult:
     version: int
 
 class DropColumnsResult:

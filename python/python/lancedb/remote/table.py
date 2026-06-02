@@ -24,6 +24,7 @@ from lancedb._lancedb import (
     AddColumnsResult,
     AddResult,
     AlterColumnsResult,
+    UpdateFieldMetadataResult,
     DeleteResult,
     DropColumnsResult,
     IndexConfig,
@@ -776,6 +777,11 @@ class RemoteTable(Table):
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:
         return LOOP.run(self._table.alter_columns(*alterations))
+
+    def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        return LOOP.run(self._table.update_field_metadata(*updates))
 
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
