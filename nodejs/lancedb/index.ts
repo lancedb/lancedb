@@ -42,6 +42,7 @@ export {
   AddResult,
   AddColumnsResult,
   AlterColumnsResult,
+  UpdateFieldMetadataResult,
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
@@ -117,6 +118,7 @@ export {
   WriteProgress,
   LsmWriteSpec,
   ColumnAlteration,
+  FieldMetadataUpdate,
 } from "./table";
 
 export {

@@ -32,6 +32,7 @@ import {
   OptimizeStats,
   TableStatistics,
   Tags,
+  UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
@@ -508,6 +509,18 @@ export abstract class Table {
   abstract alterColumns(
     columnAlterations: ColumnAlteration[],
   ): Promise<AlterColumnsResult>;
+
+  /**
+   * Update per-field (column) metadata.
+   * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
+   * update's metadata is merged into the field's existing metadata by default;
+   * a value of `null` deletes that key, and `replace: true` swaps the whole map.
+   * @returns {Promise<UpdateFieldMetadataResult>} resolves to the new table version.
+   */
+  abstract updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult>;
+
   /**
    * Drop one or more columns from the dataset
    *
@@ -1037,6 +1050,12 @@ export class LocalTable extends Table {
     return await this.inner.alterColumns(processedAlterations);
   }
 
+  async updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult> {
+    return await this.inner.updateFieldMetadata(updates);
+  }
+
   async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
     return await this.inner.dropColumns(columnNames);
   }
@@ -1202,4 +1221,20 @@ export interface ColumnAlteration {
   dataType?: string | DataType;
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean;
+}
+
+/** A per-field metadata update, addressed by dot-path. */
+export interface FieldMetadataUpdate {
+  /**
+   * Dot-separated path to the field. For a top-level column this is just its
+   * name; for a nested field it's the path, e.g. "a.b.c".
+   */
+  path: string;
+  /**
+   * Metadata key/value pairs. Merged into the field's existing metadata by
+   * default; a value of `null` deletes that key.
+   */
+  metadata: Record<string, string | null>;
+  /** If true, replace the field's entire metadata map instead of merging. */
+  replace?: boolean;
 }
