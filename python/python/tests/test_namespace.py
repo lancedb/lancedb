@@ -76,6 +76,35 @@ class TestNamespaceConnection:
         assert len(result) == 0
         assert list(result.columns) == ["id", "vector", "text"]
 
+    def test_table_to_pandas_blob_lazy_through_namespace(self):
+        """Namespace-backed tables should use Lance blob-aware pandas conversion."""
+        pytest.importorskip("lance")
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_namespace(["test_ns"])
+        data = pa.table(
+            {
+                "id": pa.array([1, 2], pa.int64()),
+                "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+            },
+            schema=pa.schema(
+                [
+                    pa.field("id", pa.int64()),
+                    pa.field(
+                        "blob",
+                        pa.large_binary(),
+                        metadata={"lance-encoding:blob": "true"},
+                    ),
+                ]
+            ),
+        )
+
+        table = db.create_table("blob_table", data, namespace_path=["test_ns"])
+        df = table.to_pandas(blob_mode="lazy").sort_values("id")
+
+        blob = df["blob"].iloc[0]
+        assert hasattr(blob, "readall")
+        assert blob.readall() == b"hello"
+
     def test_open_table_through_namespace(self):
         """Test opening an existing table through namespace."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})

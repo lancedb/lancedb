@@ -89,6 +89,26 @@ from .index import lang_mapping
 
 BlobMode = Literal["lazy", "bytes", "descriptions"]
 
+_VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
+
+
+def _validate_blob_mode(blob_mode: BlobMode) -> None:
+    if blob_mode not in _VALID_BLOB_MODES:
+        modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
+        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
+
+
+def _field_is_blob(field: pa.Field) -> bool:
+    metadata = field.metadata or {}
+    return metadata.get(b"lance-encoding:blob") == b"true" or (
+        metadata.get("lance-encoding:blob") == "true"
+    )
+
+
+def _schema_has_blob_field(schema: pa.Schema) -> bool:
+    return any(_field_is_blob(field) for field in schema)
+
+
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
 _MODEL_BACKED_TOKENIZER_ERRORS = (
     "unknown base tokenizer",
@@ -2270,9 +2290,14 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
-        if blob_mode == "lazy" and (
-            self._namespace_client is not None
-            or get_uri_scheme(self._dataset_path) == "memory"
+        _validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
+            return self.to_arrow().to_pandas(**kwargs)
+
+        if (
+            blob_mode == "lazy"
+            and self._namespace_client is None
+            and get_uri_scheme(self._dataset_path) == "memory"
         ):
             return self.to_arrow().to_pandas(**kwargs)
 
@@ -4280,7 +4305,7 @@ class AsyncTable:
         can be executed with methods like [to_arrow][lancedb.query.AsyncQuery.to_arrow],
         [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
         """
-        return AsyncQuery(self._inner.query())
+        return AsyncQuery(self._inner.query(), self)
 
     async def _to_lance(self, **kwargs) -> lance.LanceDataset:
         try:
@@ -4312,7 +4337,13 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        if blob_mode == "lazy":
+        _validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not _schema_has_blob_field(
+            await self.schema()
+        ):
+            return (await self.to_arrow()).to_pandas(**kwargs)
+
+        if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -5349,7 +5380,7 @@ class AsyncTable:
         pa.RecordBatch
             A record batch containing the rows at the given offsets.
         """
-        return AsyncTakeQuery(self._inner.take_offsets(offsets))
+        return AsyncTakeQuery(self._inner.take_offsets(offsets), self)
 
     def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
         """
@@ -5378,7 +5409,7 @@ class AsyncTable:
         AsyncTakeQuery
             A query object that can be executed to get the rows.
         """
-        return AsyncTakeQuery(self._inner.take_row_ids(row_ids))
+        return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
 
     @property
     def tags(self) -> AsyncTags:

@@ -39,6 +39,35 @@ from utils import exception_output
 from importlib.util import find_spec
 
 
+def _blob_query_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4], pa.int64()),
+            "tag": pa.array(["drop", "keep", "keep", "keep"], pa.utf8()),
+            "vector": pa.array(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+            "blob": pa.array([b"one", b"two", b"three", b"four"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("tag", pa.utf8()),
+                pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
+
+
 @pytest.fixture(scope="module")
 def table(tmpdir_factory) -> lancedb.table.Table:
     tmp_path = str(tmpdir_factory.mktemp("data"))
@@ -179,6 +208,138 @@ async def test_query_to_pandas_kwargs(table, table_async):
         table_async.query().select(["id"]).limit(2).to_pandas(split_blocks=True)
     )
     assert async_df["id"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        f"test_query_to_pandas_blob_{blob_mode}", _blob_query_data()
+    )
+
+    df = (
+        table.search()
+        .select(["id", "blob"])
+        .where("id = 1")
+        .to_pandas(blob_mode=blob_mode)
+    )
+
+    assert df["id"].tolist() == [1]
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"one")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
+
+
+def test_plain_scan_query_to_pandas_blob_projection(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_projection", _blob_query_data()
+    )
+
+    df = (
+        table.search()
+        .where("id >= 2")
+        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
+        .limit(2)
+        .offset(1)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id_alias"].tolist() == [3, 4]
+    assert df["payload"].tolist() == [b"three", b"four"]
+    assert df["double_id"].tolist() == [6, 8]
+
+
+def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+    tmp_db, monkeypatch
+):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+    )
+    query = table.search().where("id = 1").select(["id", "blob"])
+
+    def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before native pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = query.to_pandas(blob_mode="bytes")
+
+    assert df["id"].tolist() == [1]
+    assert df["blob"].tolist() == [b"one"]
+
+
+@pytest.mark.asyncio
+async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_query_to_pandas_blob_projection", _blob_query_data()
+    )
+
+    lazy_df = await (
+        table.query().where("id = 1").select(["id", "blob"]).to_pandas(blob_mode="lazy")
+    )
+    assert lazy_df["id"].tolist() == [1]
+    _assert_lazy_blob(lazy_df["blob"].iloc[0], b"one")
+
+    bytes_df = await (
+        table.query()
+        .where("id >= 2")
+        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
+        .limit(2)
+        .offset(1)
+        .to_pandas(blob_mode="bytes")
+    )
+    assert bytes_df["id_alias"].tolist() == [3, 4]
+    assert bytes_df["payload"].tolist() == [b"three", b"four"]
+    assert bytes_df["double_id"].tolist() == [6, 8]
+
+    desc_df = await (
+        table.query()
+        .where("id = 1")
+        .select(["blob"])
+        .to_pandas(blob_mode="descriptions")
+    )
+    first = desc_df["blob"].iloc[0]
+    assert first != b"one"
+    assert not hasattr(first, "readall")
+
+
+@pytest.mark.asyncio
+async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+    tmp_db_async, monkeypatch
+):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+    )
+    query = table.query().where("id = 1").select(["id", "blob"])
+
+    async def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before native pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = await query.to_pandas(blob_mode="bytes")
+
+    assert df["id"].tolist() == [1]
+    assert df["blob"].tolist() == [b"one"]
+
+
+def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table("test_vector_query_blob_mode", _blob_query_data())
+
+    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
+            blob_mode="lazy"
+        )
 
 
 def test_order_by_plain_query(mem_db):
