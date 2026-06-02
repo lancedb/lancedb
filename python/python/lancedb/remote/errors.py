@@ -27,7 +27,7 @@ class LanceDBClientError(RuntimeError):
         self.request_id = request_id
         self.status_code = status_code
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple:
         return (self.__class__, (str(self), self.request_id, self.status_code))
 
 
@@ -105,7 +105,7 @@ class RetryError(LanceDBClientError):
         self.max_connect_failures = max_connect_failures
         self.max_read_failures = max_read_failures
 
-    def __reduce__(self):
+    def __reduce__(self) -> tuple:
         return (
             self.__class__,
             (
