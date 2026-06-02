@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+mod lsm;
+
 use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
@@ -87,6 +89,13 @@ pub async fn create_plan(
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
+
+    // LSM read routing: when opted in, read through the MemWAL LSM scanner so
+    // in-flight `merge_insert` data (active/frozen memtables + flushed
+    // generations) is visible. Validation and dispatch live in `lsm`.
+    if query.base.use_lsm_read {
+        return lsm::create_lsm_plan(table, query).await;
+    }
 
     let ds_ref = table.dataset.get().await?;
     let schema = ds_ref.schema();

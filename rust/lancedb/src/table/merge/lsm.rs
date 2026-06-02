@@ -215,6 +215,39 @@ impl ShardWriterEntry {
         }
         Ok(())
     }
+
+    /// The cached writer's latest in-memory manifest (current generation +
+    /// flushed generations). `Ok(None)` if the writer was already closed.
+    /// Used by the LSM read path to snapshot this shard authoritatively
+    /// without re-reading the on-disk manifest.
+    async fn manifest(&self) -> Result<Option<lance_index::mem_wal::ShardManifest>> {
+        let guard = self.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return Ok(None);
+        };
+        writer.manifest().await.map_err(|e| Error::Runtime {
+            message: format!("read: shard writer manifest read failed: {}", e),
+        })
+    }
+
+    /// Atomically capture the cached writer's active + frozen-awaiting-flush
+    /// memtables for unified LSM scanning. `Ok(None)` if the writer was
+    /// already closed.
+    async fn in_memory_memtable_refs(
+        &self,
+    ) -> Result<Option<lance::dataset::mem_wal::scanner::InMemoryMemTables>> {
+        let guard = self.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return Ok(None);
+        };
+        writer
+            .in_memory_memtable_refs()
+            .await
+            .map(Some)
+            .map_err(|e| Error::Runtime {
+                message: format!("read: shard writer memtable capture failed: {}", e),
+            })
+    }
 }
 
 impl ShardWriterCache {
@@ -252,6 +285,32 @@ impl ShardWriterCache {
         let entry = Arc::new(ShardWriterEntry::new(writer));
         *guard = Some((shard_id, entry.clone()));
         Ok(entry)
+    }
+
+    /// Snapshot the cached writer's shard for the LSM read path: its shard id,
+    /// authoritative in-memory manifest, and active + frozen memtable refs.
+    /// Returns `None` when no writer is currently cached (e.g. nothing has been
+    /// written this session, or the writer was closed).
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) async fn read_snapshot(
+        &self,
+    ) -> Result<
+        Option<(
+            Uuid,
+            Option<lance_index::mem_wal::ShardManifest>,
+            Option<lance::dataset::mem_wal::scanner::InMemoryMemTables>,
+        )>,
+    > {
+        let cached = {
+            let guard = self.slot.read().await;
+            guard.as_ref().map(|(id, entry)| (*id, entry.clone()))
+        };
+        let Some((shard_id, entry)) = cached else {
+            return Ok(None);
+        };
+        let manifest = entry.manifest().await?;
+        let memtables = entry.in_memory_memtable_refs().await?;
+        Ok(Some((shard_id, manifest, memtables)))
     }
 
     /// Close the cached writer, if any, and clear the slot.

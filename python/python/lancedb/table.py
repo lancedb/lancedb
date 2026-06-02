@@ -4951,6 +4951,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
+        if query.use_lsm_read:
+            async_query = async_query.use_lsm_read()
         if query.with_row_id:
             async_query = async_query.with_row_id()
         if query.order_by:

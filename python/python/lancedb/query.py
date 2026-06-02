@@ -505,6 +505,10 @@ class Query(pydantic.BaseModel):
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
+    # if true, read through the MemWAL LSM scanner to include uncompacted
+    # merge_insert data (active/frozen memtables + flushed generations)
+    use_lsm_read: Optional[bool] = None
+
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
 
@@ -522,6 +526,7 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
+        query.use_lsm_read = req.use_lsm_read
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -691,6 +696,7 @@ class LanceQueryBuilder(ABC):
         self._where = None
         self._postfilter = None
         self._with_row_id = None
+        self._use_lsm_read = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -945,6 +951,26 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         self._with_row_id = with_row_id
+        return self
+
+    def use_lsm_read(self, use_lsm_read: bool = True) -> Self:
+        """Read through the MemWAL LSM scanner so the query also returns data
+        written via the LSM ``merge_insert`` path that has not yet been compacted
+        into the base table (active/frozen memtables + flushed generations).
+
+        Requires an LSM write spec on the table; otherwise execution fails.
+
+        Parameters
+        ----------
+        use_lsm_read: bool, default True
+            If True, include uncompacted LSM data in the results.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._use_lsm_read = use_lsm_read
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1357,6 +1383,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
+            use_lsm_read=self._use_lsm_read,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -1559,6 +1586,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             postfilter=self._postfilter,
             with_row_id=self._with_row_id,
+            use_lsm_read=self._use_lsm_read,
             full_text_query=FullTextSearchQuery(
                 query=self._query, columns=self._fts_columns
             ),
@@ -1629,6 +1657,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
             with_row_id=self._with_row_id,
+            use_lsm_read=self._use_lsm_read,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2591,6 +2620,20 @@ class AsyncStandardQuery(AsyncQueryBase):
             [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
         """
         self._inner.fast_search()
+        return self
+
+    def use_lsm_read(self) -> Self:
+        """
+        Read through the MemWAL LSM scanner so the query also returns data
+        written via the LSM ``merge_insert`` path that has not yet been
+        compacted into the base table (the active/frozen in-memory memtables and
+        the flushed generations), deduplicated by primary key.
+
+        Requires an LSM write spec on the table (see
+        [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec]);
+        otherwise execution fails. By default reads only the base table.
+        """
+        self._inner.use_lsm_read()
         return self
 
     def postfilter(self) -> Self:

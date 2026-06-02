@@ -517,6 +517,15 @@ pub trait QueryBase {
     ///
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
+
+    /// Read through the MemWAL LSM scanner so the query also returns data written
+    /// via the LSM `merge_insert` path that has not yet been compacted into the
+    /// base table (active/frozen memtables and flushed generations).
+    ///
+    /// Requires an LSM write spec on the table (see
+    /// [`crate::Table::set_lsm_write_spec`]); otherwise execution fails. By
+    /// default reads only the base table.
+    fn use_lsm_read(self) -> Self;
 }
 
 pub trait HasQuery {
@@ -584,6 +593,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn order_by(mut self, ordering: Option<Vec<ColumnOrdering>>) -> Self {
         self.mut_query().order_by = ordering;
+        self
+    }
+
+    fn use_lsm_read(mut self) -> Self {
+        self.mut_query().use_lsm_read = true;
         self
     }
 }
@@ -767,6 +781,17 @@ pub struct QueryRequest {
     ///
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
+
+    /// If set to true, the query reads through the MemWAL LSM scanner so it also
+    /// sees data written via the LSM `merge_insert` path that has not yet been
+    /// compacted into the base table — the active and frozen in-memory memtables
+    /// and the flushed (L0) generations, deduplicated by primary key against the
+    /// base table (newest generation wins).
+    ///
+    /// Requires an LSM write spec on the table (see
+    /// [`crate::Table::set_lsm_write_spec`]). By default this is false and reads
+    /// only the base table.
+    pub use_lsm_read: bool,
 }
 
 impl Default for QueryRequest {
@@ -784,6 +809,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
+            use_lsm_read: false,
         }
     }
 }

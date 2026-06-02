@@ -2718,4 +2718,32 @@ describe("LSM merge insert", () => {
         .execute([{ id: "g", value: 7 }]),
     ).rejects.toThrow();
   });
+
+  it("useLsmRead surfaces in-flight memtable rows", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn); // base ids "a", "b"
+
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([{ id: "c", value: 3 }]);
+
+    // Base-only read does not see the uncommitted row.
+    const baseOnly = await table.query().toArray();
+    expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
+
+    // useLsmRead includes the active memtable row.
+    const lsm = await table.query().useLsmRead().toArray();
+    expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("useLsmRead errors without an LSM spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "plain",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    await expect(table.query().useLsmRead().toArray()).rejects.toThrow();
+  });
 });
