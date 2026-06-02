@@ -994,6 +994,29 @@ based on the row being updated (e.g. "my_col + 1")
 
 ***
 
+### updateFieldMetadata()
+
+```ts
+abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
+```
+
+Update per-field (column) metadata.
+
+#### Parameters
+
+* **updates**: [`FieldMetadataUpdate`](../interfaces/FieldMetadataUpdate.md)[]
+    One or more per-field updates. Each
+    update's metadata is merged into the field's existing metadata by default;
+    a value of `null` deletes that key, and `replace: true` swaps the whole map.
+
+#### Returns
+
+`Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
+
+resolves to the new table version.
+
+***
+
 ### vectorSearch()
 
 ```ts

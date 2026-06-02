@@ -16,8 +16,8 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -351,6 +351,27 @@ impl AlterColumnsResult {
 
 impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
     fn from(result: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct UpdateFieldMetadataResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl UpdateFieldMetadataResult {
+    pub fn __repr__(&self) -> String {
+        format!("UpdateFieldMetadataResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(result: lancedb::table::UpdateFieldMetadataResult) -> Self {
         Self {
             version: result.version,
         }
@@ -1125,6 +1146,45 @@ impl Table {
                 .infer_error()?;
 
             Ok(())
+        })
+    }
+
+    pub fn update_field_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: Vec<Bound<PyDict>>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let updates = updates
+            .iter()
+            .map(|update| {
+                let path: String = update
+                    .get_item("path")?
+                    .ok_or_else(|| PyValueError::new_err("Missing path"))?
+                    .extract()?;
+                let mut field_update = FieldMetadataUpdate::new(path);
+                if let Some(metadata) = update.get_item("metadata")? {
+                    let metadata_dict = metadata.cast::<PyDict>()?;
+                    for (key, value) in metadata_dict.iter() {
+                        let key: String = key.extract()?;
+                        if value.is_none() {
+                            field_update = field_update.remove(key);
+                        } else {
+                            field_update = field_update.set(key, value.extract::<String>()?);
+                        }
+                    }
+                }
+                if let Some(replace) = update.get_item("replace")?
+                    && replace.extract::<bool>()?
+                {
+                    field_update = field_update.replace();
+                }
+                Ok(field_update)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.update_field_metadata(&updates).await.infer_error()?;
+            Ok(UpdateFieldMetadataResult::from(result))
         })
     }
 }

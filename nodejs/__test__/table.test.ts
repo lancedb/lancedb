@@ -1571,6 +1571,33 @@ describe("schema evolution", function () {
     expect(await table.schema()).toEqual(expectedSchema3);
   });
 
+  it("can update field metadata", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("fm", [
+      { id: 1, category: "a" },
+      { id: 2, category: "b" },
+    ]);
+
+    const res = await table.updateFieldMetadata([
+      { path: "category", metadata: { unit: "label", pii: "false" } },
+    ]);
+    expect(res).toHaveProperty("version");
+    expect(res.version).toBe(2);
+
+    let cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label");
+    expect(cat?.metadata.get("pii")).toBe("false");
+
+    // merge: add a key, delete one via null, keep the rest
+    await table.updateFieldMetadata([
+      { path: "category", metadata: { source: "import", pii: null } },
+    ]);
+    cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label"); // preserved
+    expect(cat?.metadata.get("source")).toBe("import"); // added
+    expect(cat?.metadata.has("pii")).toBe(false); // deleted
+  });
+
   it("can cast to various types", async function () {
     const con = await connect(tmpDir.name);
 

@@ -5,8 +5,9 @@ use std::collections::HashMap;
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
+    FieldMetadataUpdate as LanceFieldMetadataUpdate, NewColumnTransform, OptimizeAction,
+    OptimizeOptions, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -350,6 +351,23 @@ impl Table {
         let res = self
             .inner_ref()?
             .alter_columns(&alterations)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn update_field_metadata(
+        &self,
+        updates: Vec<FieldMetadataUpdate>,
+    ) -> napi::Result<UpdateFieldMetadataResult> {
+        let updates = updates
+            .into_iter()
+            .map(LanceFieldMetadataUpdate::from)
+            .collect::<Vec<_>>();
+        let res = self
+            .inner_ref()?
+            .update_field_metadata(&updates)
             .await
             .default_error()?;
         Ok(res.into())
@@ -747,6 +765,29 @@ pub struct ColumnAlteration {
     pub nullable: Option<bool>,
 }
 
+/// A per-field metadata update, addressed by dot-path. Merges into the field's
+/// existing metadata by default; a `null` value deletes a key, and `replace`
+/// swaps the field's entire metadata map.
+#[napi(object)]
+pub struct FieldMetadataUpdate {
+    /// Dot-separated path to the field (e.g. "embedding" or "a.b.c").
+    pub path: String,
+    /// Metadata keys to set; a `null` value deletes that key.
+    pub metadata: HashMap<String, Option<String>>,
+    /// If true, replace the field's entire metadata map instead of merging.
+    pub replace: Option<bool>,
+}
+
+impl From<FieldMetadataUpdate> for LanceFieldMetadataUpdate {
+    fn from(js: FieldMetadataUpdate) -> Self {
+        Self {
+            path: js.path,
+            metadata: js.metadata,
+            replace: js.replace.unwrap_or(false),
+        }
+    }
+}
+
 impl TryFrom<ColumnAlteration> for LanceColumnAlteration {
     type Error = String;
     fn try_from(js: ColumnAlteration) -> std::result::Result<Self, Self::Error> {
@@ -981,6 +1022,19 @@ pub struct AlterColumnsResult {
 
 impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
     fn from(value: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct UpdateFieldMetadataResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(value: lancedb::table::UpdateFieldMetadataResult) -> Self {
         Self {
             version: value.version as i64,
         }

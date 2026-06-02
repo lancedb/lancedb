@@ -10,6 +10,7 @@
 
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::NativeTable;
 use crate::Result;
@@ -40,6 +41,52 @@ pub struct DropColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
+    pub version: u64,
+}
+
+/// A single field's metadata update, addressed by dot-path.
+///
+/// Merges into the field's existing metadata by default. Use [`Self::remove`] to
+/// delete a key, or [`Self::replace`] to swap the field's entire metadata map.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct FieldMetadataUpdate {
+    /// Dot-separated path to the field (e.g. `"embedding"` or `"address.zip"`).
+    pub path: String,
+    /// Keys to set (`Some`) or delete (`None`).
+    pub metadata: HashMap<String, Option<String>>,
+    /// If `true`, replace the field's entire metadata map instead of merging.
+    pub replace: bool,
+}
+
+impl FieldMetadataUpdate {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            metadata: HashMap::new(),
+            replace: false,
+        }
+    }
+
+    pub fn set(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), Some(value.into()));
+        self
+    }
+
+    pub fn remove(mut self, key: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), None);
+        self
+    }
+
+    pub fn replace(mut self) -> Self {
+        self.replace = true;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateFieldMetadataResult {
+    /// The commit version associated with the operation.
     #[serde(default)]
     pub version: u64,
 }
@@ -90,6 +137,32 @@ pub(crate) async fn execute_drop_columns(
     Ok(DropColumnsResult { version })
 }
 
+/// Internal implementation of the update field metadata logic.
+///
+/// Merges or replaces per-field metadata, addressing fields by dot-path.
+pub(crate) async fn execute_update_field_metadata(
+    table: &NativeTable,
+    updates: &[FieldMetadataUpdate],
+) -> Result<UpdateFieldMetadataResult> {
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+
+    let mut builder = dataset.update_field_metadata();
+    for update in updates {
+        let entries = update.metadata.iter().map(|(k, v)| (k.clone(), v.clone()));
+        builder = if update.replace {
+            builder.replace(&update.path, entries)?
+        } else {
+            builder.update(&update.path, entries)?
+        };
+    }
+    builder.await?;
+
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(UpdateFieldMetadataResult { version })
+}
+
 #[cfg(test)]
 mod tests {
     use arrow_array::{Int32Array, StringArray, record_batch};
@@ -97,6 +170,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;
 
+    use super::FieldMetadataUpdate;
     use crate::connect;
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::NewColumnTransform;
@@ -609,5 +683,47 @@ mod tests {
         assert!(drop_result.version > v3);
         let v4 = table.version().await.unwrap();
         assert_eq!(drop_result.version, v4);
+    }
+
+    #[tokio::test]
+    async fn test_update_field_metadata() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("category", Utf8, ["A", "B", "C"])
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_update_field_metadata", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        // Set metadata on a field.
+        table
+            .update_field_metadata(&[FieldMetadataUpdate::new("category")
+                .set("unit", "label")
+                .set("pii", "false")])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        let field = schema.field_with_name("category").unwrap();
+        assert_eq!(
+            field.metadata().get("unit").map(String::as_str),
+            Some("label")
+        );
+
+        // Merge: add a key, delete one, keep the rest.
+        table
+            .update_field_metadata(&[FieldMetadataUpdate::new("category")
+                .set("source", "import")
+                .remove("pii")])
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        let md = schema.field_with_name("category").unwrap().metadata();
+        assert_eq!(md.get("unit").map(String::as_str), Some("label")); // preserved
+        assert_eq!(md.get("source").map(String::as_str), Some("import")); // added
+        assert!(!md.contains_key("pii")); // deleted
     }
 }
