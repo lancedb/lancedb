@@ -51,8 +51,8 @@ Inputs can be a version (`7.2.0-beta.1`), a tag (`v7.2.0-beta.1`), a tag ref (`r
 5. Run validation:
 
    ```bash
-   cargo clippy --workspace --tests --all-features -- -D warnings
-   cargo fmt --all
+   cargo clippy --quiet --workspace --tests --all-features -- -D warnings
+   cargo fmt --all --quiet
    ```
 
    Fix real diagnostics and rerun clippy until it succeeds. Do not skip warnings.

@@ -78,8 +78,7 @@ jobs:
           cat <<EOF >/tmp/codex-prompt.txt
           You are running inside the lancedb repository on a GitHub Actions runner.
 
-          Read and use the in-repository skill at "skills/lancedb-update-lance-dependency/SKILL.md".
-          Update LanceDB's Lance dependency for target "${TARGET_TAG}" and create a pull request targeting "main" if an update is needed.
+          Use \$lancedb-update-lance-dependency with target "${TARGET_TAG}".
 
           Constraints:
           - Use env "GH_TOKEN" for GitHub operations.
