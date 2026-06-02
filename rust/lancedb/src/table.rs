@@ -2604,6 +2604,7 @@ impl NativeTable {
     ///   field id and the second element is a hashmap of metadata key-value
     ///   pairs.
     ///
+    #[deprecated(since = "0.33.1", note = "Use `update_field_metadata` instead")]
     pub async fn replace_field_metadata(
         &self,
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
@@ -3167,7 +3168,6 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -4480,10 +4480,10 @@ mod tests {
             Some(&"test_val2_update".to_string())
         );
 
-        let mut new_field_metadata = HashMap::<String, String>::new();
-        new_field_metadata.insert("test_field_key1".into(), "test_field_val1".into());
         native_tbl
-            .replace_field_metadata(vec![(field.id as u32, new_field_metadata)])
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new("i").set("test_field_key1", "test_field_val1")
+            ])
             .await
             .unwrap();
 

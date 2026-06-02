@@ -21,7 +21,7 @@ use lancedb::table::{
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
 };
@@ -1123,28 +1123,15 @@ impl Table {
         field_name: String,
         metadata: &Bound<'_, PyDict>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let mut new_metadata = HashMap::<String, String>::new();
-        for (column_name, value) in metadata.into_iter() {
-            let key: String = column_name.extract()?;
-            let value: String = value.extract()?;
-            new_metadata.insert(key, value);
+        // Deprecated: forwards to the update_field_metadata path (replace mode).
+        let mut update = FieldMetadataUpdate::new(field_name).replace();
+        for (key, value) in metadata.into_iter() {
+            update = update.set(key.extract::<String>()?, value.extract::<String>()?);
         }
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let native_tbl = inner
-                .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
-            let schema = native_tbl.manifest().await.infer_error()?.schema;
-            let field = schema
-                .field(&field_name)
-                .ok_or_else(|| PyKeyError::new_err(format!("Field {} not found", field_name)))?;
-
-            native_tbl
-                .replace_field_metadata(vec![(field.id as u32, new_metadata)])
-                .await
-                .infer_error()?;
-
+            inner.update_field_metadata(&[update]).await.infer_error()?;
             Ok(())
         })
     }
