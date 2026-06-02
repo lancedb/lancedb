@@ -3666,9 +3666,17 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
     def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
         """
         Replace the metadata of a field in the schema
+
+        .. deprecated:: 0.33.1
+            Use :func:`update_field_metadata` instead.
 
         Parameters
         ----------
@@ -5554,11 +5562,19 @@ class AsyncTable:
         """
         await self._inner.migrate_manifest_paths_v2()
 
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
     async def replace_field_metadata(
         self, field_name: str, new_metadata: dict[str, str]
     ):
         """
         Replace the metadata of a field in the schema
+
+        .. deprecated:: 0.33.1
+            Use :func:`update_field_metadata` instead.
 
         Parameters
         ----------

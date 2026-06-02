@@ -1118,6 +1118,7 @@ impl Table {
         })
     }
 
+    #[allow(deprecated)]
     pub fn replace_field_metadata<'a>(
         self_: PyRef<'a, Self>,
         field_name: String,
