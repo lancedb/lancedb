@@ -1384,6 +1384,38 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .map_err(unwrap_shared_error)
     }
 
+    async fn create_branch(
+        &self,
+        _name: &str,
+        _from: lance::dataset::refs::Ref,
+    ) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "branching is not yet supported on remote tables".into(),
+        })
+    }
+
+    async fn checkout_branch(&self, _name: &str) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "branching is not yet supported on remote tables".into(),
+        })
+    }
+
+    async fn list_branches(&self) -> Result<HashMap<String, lance::dataset::refs::BranchContents>> {
+        Err(Error::NotSupported {
+            message: "branching is not yet supported on remote tables".into(),
+        })
+    }
+
+    async fn delete_branch(&self, _name: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "branching is not yet supported on remote tables".into(),
+        })
+    }
+
+    fn current_branch(&self) -> Option<String> {
+        None
+    }
+
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
 
