@@ -91,14 +91,14 @@ def _schema_has_blob_field(schema: pa.Schema) -> bool:
 
 
 def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
-    return blob_mode in ("lazy", "bytes") and _schema_has_blob_field(schema)
+    return blob_mode in _BLOB_MODE_TO_HANDLING and _schema_has_blob_field(schema)
 
 
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     return RuntimeError(
-        "blob_mode='lazy' and blob_mode='bytes' require Lance native pandas "
-        f"conversion for queries that return blob columns, but {reason}. "
-        "Use blob_mode='descriptions' or remove blob columns from the projection."
+        "blob columns require Lance native scanner conversion for query "
+        f"to_pandas(), but {reason}. Use a plain scan query or remove blob "
+        "columns from the projection."
     )
 
 
@@ -149,17 +149,46 @@ def _projection_to_scanner_kwargs(
     return {"columns": projection}
 
 
-def _scanner_kwargs_for_query(query: Query, blob_mode: BlobMode) -> Dict[str, Any]:
+def _scanner_kwargs_for_query(
+    query: Query, blob_mode: BlobMode, dataset: Optional[Any] = None
+) -> Dict[str, Any]:
+    fragments = _scanner_fragments_for_query(query, dataset)
     kwargs = {
         **_projection_to_scanner_kwargs(query.columns),
         "filter": _filter_to_sql(query.filter),
         "limit": query.limit,
         "offset": query.offset,
         "with_row_id": query.with_row_id,
+        "with_row_address": query.with_row_address,
         "fast_search": query.fast_search,
         "blob_handling": _BLOB_MODE_TO_HANDLING[blob_mode],
+        "fragments": fragments,
     }
     return {key: value for key, value in kwargs.items() if value is not None}
+
+
+def _scanner_fragments_for_query(query: Query, dataset: Optional[Any]) -> Optional[Any]:
+    if query.fragments is not None and query.fragment_ids is not None:
+        raise ValueError("fragments and fragment_ids cannot both be set")
+    if query.fragments is not None:
+        return query.fragments
+    if query.fragment_ids is None:
+        return None
+    if dataset is None:
+        raise ValueError("fragment_ids require a Lance dataset")
+
+    requested = set(query.fragment_ids)
+    fragments = [
+        fragment
+        for fragment in dataset.get_fragments()
+        if fragment.fragment_id in requested
+    ]
+    found = {fragment.fragment_id for fragment in fragments}
+    missing = requested - found
+    if missing:
+        missing_ids = ", ".join(str(fragment_id) for fragment_id in sorted(missing))
+        raise ValueError(f"fragment_ids not found in dataset: {missing_ids}")
+    return fragments
 
 
 def _ensure_lazy_blob_frame(
@@ -177,6 +206,16 @@ def _ensure_lazy_blob_frame(
                 "the Lance scanner did not return lazy blob files"
             )
     return df
+
+
+def _scanner_to_table(scanner: Any) -> pa.Table:
+    if hasattr(scanner, "to_pyarrow"):
+        reader = scanner.to_pyarrow()
+        return reader.read_all()
+    if hasattr(scanner, "to_table"):
+        return scanner.to_table()
+    reader = scanner.to_reader()
+    return reader.read_all()
 
 
 def _scanner_to_pandas(scanner: Any, blob_mode: BlobMode, **kwargs) -> "pd.DataFrame":
@@ -199,14 +238,7 @@ def _scanner_to_pandas(scanner: Any, blob_mode: BlobMode, **kwargs) -> "pd.DataF
             return _ensure_lazy_blob_frame(df, schema, blob_mode)
         return df
 
-    if hasattr(scanner, "to_pyarrow"):
-        reader = scanner.to_pyarrow()
-        tbl = reader.read_all()
-    elif hasattr(scanner, "to_table"):
-        tbl = scanner.to_table()
-    else:
-        reader = scanner.to_reader()
-        tbl = reader.read_all()
+    tbl = _scanner_to_table(scanner)
     if blob_mode == "lazy" and _schema_has_blob_field(tbl.schema):
         raise _unsupported_blob_pandas_error(
             "the Lance scanner does not expose to_pandas"
@@ -648,6 +680,13 @@ class Query(pydantic.BaseModel):
     # if true, include the row id in the results
     with_row_id: Optional[bool] = None
 
+    # if true, include the row address in the results
+    with_row_address: Optional[bool] = None
+
+    # Lance fragments or fragment ids to scan on scanner-backed plain queries
+    fragments: Optional[Any] = None
+    fragment_ids: Optional[List[int]] = None
+
     # offset to start fetching results from
     offset: Optional[int] = None
 
@@ -840,6 +879,9 @@ class LanceQueryBuilder(ABC):
         self._where = None
         self._postfilter = None
         self._with_row_id = None
+        self._with_row_address = None
+        self._fragments = None
+        self._fragment_ids = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -901,9 +943,11 @@ class LanceQueryBuilder(ABC):
             schema = output_schema()
             if _blob_mode_requires_native_pandas(blob_mode, schema):
                 native_error = None
-                if flatten is None and timeout is None:
+                if (flatten is None or blob_mode == "descriptions") and timeout is None:
                     try:
-                        df = self._plain_scan_to_pandas(blob_mode, **kwargs)
+                        df = self._plain_scan_to_pandas(
+                            blob_mode, flatten=flatten, **kwargs
+                        )
                         if df is not None:
                             return df
                     except Exception as err:
@@ -1125,6 +1169,32 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = with_row_id
         return self
 
+    def with_row_address(self, with_row_address: bool = True) -> Self:
+        """Set whether to return row addresses.
+
+        Parameters
+        ----------
+        with_row_address: bool, default True
+            If True, return the _rowaddr column in the results.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._with_row_address = with_row_address
+        return self
+
+    def with_fragments(self, fragments: Any) -> Self:
+        """Set the Lance fragments to scan for plain scanner-backed queries."""
+        self._fragments = fragments
+        return self
+
+    def fragment_ids(self, fragment_ids: List[int]) -> Self:
+        """Set the Lance fragment ids to scan for plain scanner-backed queries."""
+        self._fragment_ids = fragment_ids
+        return self
+
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
         """Return the execution plan for this query.
 
@@ -1267,6 +1337,7 @@ class LanceQueryBuilder(ABC):
     def _plain_scan_to_pandas(
         self,
         blob_mode: BlobMode,
+        flatten: Optional[Union[int, bool]] = None,
         **kwargs,
     ) -> Optional["pd.DataFrame"]:
         query = self.to_query_object()
@@ -1274,7 +1345,12 @@ class LanceQueryBuilder(ABC):
             return None
 
         dataset = self._table.to_lance()
-        scanner = dataset.scanner(**_scanner_kwargs_for_query(query, blob_mode))
+        scanner = dataset.scanner(
+            **_scanner_kwargs_for_query(query, blob_mode, dataset)
+        )
+        if flatten is not None:
+            tbl = flatten_columns(_scanner_to_table(scanner), flatten)
+            return tbl.to_pandas(**kwargs)
         return _scanner_to_pandas(scanner, blob_mode, **kwargs)
 
     @abstractmethod
@@ -1548,6 +1624,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
+            with_row_address=self._with_row_address,
+            fragments=self._fragments,
+            fragment_ids=self._fragment_ids,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -1750,6 +1829,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             postfilter=self._postfilter,
             with_row_id=self._with_row_id,
+            with_row_address=self._with_row_address,
+            fragments=self._fragments,
+            fragment_ids=self._fragment_ids,
             full_text_query=FullTextSearchQuery(
                 query=self._query, columns=self._fts_columns
             ),
@@ -1820,6 +1902,9 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
             with_row_id=self._with_row_id,
+            with_row_address=self._with_row_address,
+            fragments=self._fragments,
+            fragment_ids=self._fragment_ids,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2411,6 +2496,9 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
         self._table = table
+        self._with_row_address = None
+        self._fragments = None
+        self._fragment_ids = None
 
     def to_query_object(self) -> Query:
         """
@@ -2419,7 +2507,11 @@ class AsyncQueryBase(object):
         This is currently experimental but can be useful as the query object is pure
         python and more easily serializable.
         """
-        return Query.from_inner(self._inner.to_query_request())
+        query = Query.from_inner(self._inner.to_query_request())
+        query.with_row_address = self._with_row_address
+        query.fragments = self._fragments
+        query.fragment_ids = self._fragment_ids
+        return query
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
@@ -2474,6 +2566,27 @@ class AsyncQueryBase(object):
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
+        return self
+
+    def with_row_address(self, with_row_address: bool = True) -> Self:
+        """
+        Include the _rowaddr column in scanner-backed plain query results.
+        """
+        self._with_row_address = with_row_address
+        return self
+
+    def with_fragments(self, fragments: Any) -> Self:
+        """
+        Restrict scanner-backed plain query results to the given Lance fragments.
+        """
+        self._fragments = fragments
+        return self
+
+    def fragment_ids(self, fragment_ids: List[int]) -> Self:
+        """
+        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """
+        self._fragment_ids = fragment_ids
         return self
 
     async def to_batches(
@@ -2601,9 +2714,11 @@ class AsyncQueryBase(object):
             schema = await self.output_schema()
             if _blob_mode_requires_native_pandas(blob_mode, schema):
                 native_error = None
-                if flatten is None and timeout is None:
+                if (flatten is None or blob_mode == "descriptions") and timeout is None:
                     try:
-                        df = await self._plain_scan_to_pandas(blob_mode, **kwargs)
+                        df = await self._plain_scan_to_pandas(
+                            blob_mode, flatten=flatten, **kwargs
+                        )
                         if df is not None:
                             return df
                     except Exception as err:
@@ -2625,6 +2740,7 @@ class AsyncQueryBase(object):
     async def _plain_scan_to_pandas(
         self,
         blob_mode: BlobMode,
+        flatten: Optional[Union[int, bool]] = None,
         **kwargs,
     ) -> Optional["pd.DataFrame"]:
         if self._table is None:
@@ -2635,7 +2751,12 @@ class AsyncQueryBase(object):
             return None
 
         dataset = await self._table._to_lance()
-        scanner = dataset.scanner(**_scanner_kwargs_for_query(query, blob_mode))
+        scanner = dataset.scanner(
+            **_scanner_kwargs_for_query(query, blob_mode, dataset)
+        )
+        if flatten is not None:
+            tbl = flatten_columns(_scanner_to_table(scanner), flatten)
+            return tbl.to_pandas(**kwargs)
         return _scanner_to_pandas(scanner, blob_mode, **kwargs)
 
     async def to_polars(
@@ -3522,6 +3643,7 @@ class AsyncTakeQuery(AsyncQueryBase):
     async def _plain_scan_to_pandas(
         self,
         blob_mode: BlobMode,
+        flatten: Optional[Union[int, bool]] = None,
         **kwargs,
     ) -> Optional["pd.DataFrame"]:
         return None
@@ -3574,6 +3696,27 @@ class BaseQueryBuilder(object):
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
+        return self
+
+    def with_row_address(self, with_row_address: bool = True) -> Self:
+        """
+        Include the _rowaddr column in scanner-backed plain query results.
+        """
+        self._inner.with_row_address(with_row_address)
+        return self
+
+    def with_fragments(self, fragments: Any) -> Self:
+        """
+        Restrict scanner-backed plain query results to the given Lance fragments.
+        """
+        self._inner.with_fragments(fragments)
+        return self
+
+    def fragment_ids(self, fragment_ids: List[int]) -> Self:
+        """
+        Restrict scanner-backed plain query results to the given Lance fragment ids.
+        """
+        self._inner.fragment_ids(fragment_ids)
         return self
 
     def output_schema(self) -> pa.Schema:
