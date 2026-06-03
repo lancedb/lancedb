@@ -988,6 +988,7 @@ class AsyncLanceNamespaceDBConnection:
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
     ) -> AsyncTable:
         """Open an existing table from the namespace."""
         if namespace_path is None:
@@ -1004,6 +1005,8 @@ class AsyncLanceNamespaceDBConnection:
                 table_id = namespace_path + [name]
                 raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
             raise
+        if branch is not None:
+            table = await table.branches.checkout(branch)
         return table._set_namespace_context(
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,

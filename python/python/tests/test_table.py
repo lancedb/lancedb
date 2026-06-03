@@ -1007,6 +1007,19 @@ def test_open_table_with_branch(tmp_path):
     assert db.open_table("t").count_rows() == 1
 
 
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch(tmp_path):
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    table = await db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    branch = await table.branches.create("exp")
+    await branch.add([{"id": 2}])
+
+    # open_table(branch=...) on the async namespace connection must work
+    opened = await db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert await opened.count_rows() == 2
+
+
 def test_branch_to_lance_targets_branch(tmp_path):
     pytest.importorskip("lance")
     db = lancedb.connect(tmp_path)
