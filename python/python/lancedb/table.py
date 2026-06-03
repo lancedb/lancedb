@@ -2121,22 +2121,27 @@ class LanceTable(Table):
                 "Please install with `pip install pylance`."
             )
 
+        branch = self.current_branch()
+        version = None if branch is not None else self.version
         if self._namespace_client is not None:
             table_id = self._namespace_path + [self.name]
-            return lance.dataset(
-                version=self.version,
+            ds = lance.dataset(
+                version=version,
                 storage_options=self._conn.storage_options,
                 namespace_client=self._namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
-
-        return lance.dataset(
-            self._dataset_path,
-            version=self.version,
-            storage_options=self._conn.storage_options,
-            **kwargs,
-        )
+        else:
+            ds = lance.dataset(
+                self._dataset_path,
+                version=version,
+                storage_options=self._conn.storage_options,
+                **kwargs,
+            )
+        if branch is not None:
+            ds = ds.checkout_version((branch, self.version))
+        return ds
 
     @property
     def schema(self) -> pa.Schema:
@@ -2210,6 +2215,10 @@ class LanceTable(Table):
         writes on it do not affect ``main``.
         """
         return Branches(self)
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        return self._table.current_branch()
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4403,12 +4412,20 @@ class AsyncTable:
                 "Please install with `pip install pylance`."
             )
 
-        return lance.dataset(
+        # lance.dataset() can't open a branch directly, so open the base table
+        # and check out the branch ref (a None branch resolves to main).
+        branch = self.current_branch()
+        table_version = await self.version()
+        version = None if branch is not None else table_version
+        ds = lance.dataset(
             await self.uri(),
-            version=await self.version(),
+            version=version,
             storage_options=await self.latest_storage_options(),
             **kwargs,
         )
+        if branch is not None:
+            ds = ds.checkout_version((branch, table_version))
+        return ds
 
     async def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -5547,6 +5564,10 @@ class AsyncTable:
         branch (or version). Writes on a branch do not affect ``main``.
         """
         return AsyncBranches(self._inner)
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        return self._inner.current_branch()
 
     async def optimize(
         self,

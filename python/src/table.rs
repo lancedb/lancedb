@@ -860,6 +860,10 @@ impl Table {
         Ok(Tags::new(self.inner_ref()?.clone()))
     }
 
+    pub fn current_branch(&self) -> PyResult<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
+    }
+
     #[getter]
     pub fn branches(&self) -> PyResult<Branches> {
         Ok(Branches::new(self.inner_ref()?.clone()))

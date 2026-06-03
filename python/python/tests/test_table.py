@@ -994,6 +994,16 @@ def test_open_table_with_branch(tmp_path):
     assert opened.namespace == ["ns1"]
 
 
+def test_branch_to_lance_targets_branch(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    branch = table.branches.create("exp")
+    branch.add([{"i": 2}])  # branch: 2 rows, main: 1 row
+
+    assert branch.to_lance().count_rows() == 2
+    assert table.to_lance().count_rows() == 1
+
+
 @pytest.mark.asyncio
 async def test_async_branches(tmp_path):
     db = await lancedb.connect_async(tmp_path)
