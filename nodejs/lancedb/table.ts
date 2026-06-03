@@ -1260,15 +1260,19 @@ export interface FieldMetadataUpdate {
  * to the branch; writes on it do not affect `main`.
  */
 export class Branches {
-  private readonly inner: NativeBranches;
+  #inner: NativeBranches;
 
+  /**
+   * Construct a Branches manager. Internal use only.
+   * @hidden
+   */
   constructor(inner: NativeBranches) {
-    this.inner = inner;
+    this.#inner = inner;
   }
 
   /** List all branches, mapping name to branch metadata. */
   async list(): Promise<Record<string, BranchContents>> {
-    return await this.inner.list();
+    return await this.#inner.list();
   }
 
   /**
@@ -1283,16 +1287,16 @@ export class Branches {
     fromRef?: string,
     fromVersion?: number,
   ): Promise<Table> {
-    return new LocalTable(await this.inner.create(name, fromRef, fromVersion));
+    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
   }
 
   /** Check out an existing branch and return a handle scoped to it. */
   async checkout(name: string): Promise<Table> {
-    return new LocalTable(await this.inner.checkout(name));
+    return new LocalTable(await this.#inner.checkout(name));
   }
 
   /** Delete a branch. */
   async delete(name: string): Promise<void> {
-    return await this.inner.delete(name);
+    return await this.#inner.delete(name);
   }
 }
