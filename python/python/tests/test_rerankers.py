@@ -344,6 +344,12 @@ def test_mrr_reranker(tmp_path):
     assert len(result_deduped) == len(result)
 
 
+def test_mrr_reranker_empty_input():
+    reranker = MRRReranker()
+    with pytest.raises(ValueError, match="must not be empty"):
+        reranker.rerank_multivector([])
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
