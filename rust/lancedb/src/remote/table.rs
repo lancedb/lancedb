@@ -2048,6 +2048,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         name: index.index_name,
                         index_type: stats.index_type,
                         columns,
+                        // These are left None until the server response wires
+                        // them through. See https://github.com/lancedb/lancedb/issues/3492
+                        index_uuid: None,
+                        created_at: None,
+                        num_indexed_rows: None,
+                        size_bytes: None,
+                        index_details: None,
+                        num_segments: None,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -3944,11 +3952,23 @@ mod tests {
                 name: "vector_idx".into(),
                 index_type: IndexType::IvfPq,
                 columns: vec!["vector".into()],
+                index_uuid: None,
+                created_at: None,
+                num_indexed_rows: None,
+                size_bytes: None,
+                index_details: None,
+                num_segments: None,
             },
             IndexConfig {
                 name: "my_idx".into(),
                 index_type: IndexType::LabelList,
                 columns: vec!["metadata.`my.column`".into()],
+                index_uuid: None,
+                created_at: None,
+                num_indexed_rows: None,
+                size_bytes: None,
+                index_details: None,
+                num_segments: None,
             },
         ];
         assert_eq!(indices, expected);
