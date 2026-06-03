@@ -3484,8 +3484,14 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        # Branch queries run locally: the server-side query protocol can't
+        # carry a branch yet.
+        # TODO: push down server-side once it can (with remote table support).
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and self.current_branch() is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
