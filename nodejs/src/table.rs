@@ -1175,7 +1175,16 @@ impl Branches {
         // "main" and None are two spellings of the root branch; normalize so
         // from_ref = "main" behaves identically to the default.
         let from_ref = from_ref.filter(|b| b != "main");
-        let from = Ref::Version(from_ref, from_version.map(|v| v as u64));
+        // Reject a negative version up front; `as u64` would silently wrap it
+        // into a huge version number.
+        let from_version = from_version
+            .map(|v| {
+                u64::try_from(v).map_err(|_| {
+                    napi::Error::from_reason("from_version must be a non-negative integer")
+                })
+            })
+            .transpose()?;
+        let from = Ref::Version(from_ref, from_version);
         let table = self
             .inner
             .create_branch(&name, from)

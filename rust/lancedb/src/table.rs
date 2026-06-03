@@ -1930,6 +1930,15 @@ impl NativeTable {
         }
     }
 
+    fn validate_branch_name(name: &str, field: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!("{field} must be a non-empty string"),
+            });
+        }
+        Ok(())
+    }
+
     /// Opens an existing Table using a namespace client.
     ///
     /// This method uses `DatasetBuilder::from_namespace` to open the table, which
@@ -2726,6 +2735,10 @@ impl BaseTable for NativeTable {
         name: &str,
         from: lance::dataset::refs::Ref,
     ) -> Result<Arc<dyn BaseTable>> {
+        Self::validate_branch_name(name, "branch name")?;
+        if let lance::dataset::refs::Ref::Version(Some(from_branch), _) = &from {
+            Self::validate_branch_name(from_branch, "from_ref")?;
+        }
         let mut ds = (*self.dataset.get().await?).clone();
         let branch_ds = ds.create_branch(name, from, None).await?;
         let dataset = dataset::DatasetConsistencyWrapper::new_latest(
@@ -2736,6 +2749,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+        Self::validate_branch_name(name, "branch name")?;
         let branch_ds = self.dataset.get().await?.checkout_branch(name).await?;
         let dataset = dataset::DatasetConsistencyWrapper::new_latest(
             branch_ds,
@@ -2749,6 +2763,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn delete_branch(&self, name: &str) -> Result<()> {
+        Self::validate_branch_name(name, "branch name")?;
         let mut ds = (*self.dataset.get().await?).clone();
         ds.delete_branch(name).await?;
         Ok(())
@@ -3534,6 +3549,42 @@ mod tests {
         table.delete_branch("exp").await.unwrap();
         let branches = table.list_branches().await.unwrap();
         assert!(!branches.contains_key("exp"));
+    }
+
+    #[tokio::test]
+    async fn test_branch_name_validation() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+
+        // every entry point rejects an empty name instead of passing it down
+        assert!(matches!(
+            table.create_branch("", 1u64).await,
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            table.checkout_branch("").await,
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            table.delete_branch("").await,
+            Err(Error::InvalidInput { .. })
+        ));
+        // an empty source branch is rejected too
+        assert!(matches!(
+            table
+                .create_branch(
+                    "ok",
+                    lance::dataset::refs::Ref::Version(Some(String::new()), None)
+                )
+                .await,
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
     #[tokio::test]

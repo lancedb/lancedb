@@ -133,6 +133,16 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(await (await db.openTable("some_table")).countRows()).toBe(1);
     });
 
+    it("rejects invalid branch inputs", async () => {
+      const branches = await table.branches();
+      await expect(branches.create("")).rejects.toThrow("non-empty");
+      await expect(branches.checkout("")).rejects.toThrow("non-empty");
+      await expect(branches.delete("")).rejects.toThrow("non-empty");
+      await expect(branches.create("bad", "main", -1)).rejects.toThrow(
+        "non-negative",
+      );
+    });
+
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);

@@ -967,6 +967,18 @@ def test_branches(tmp_path):
     assert "exp" not in table.branches.list()
 
 
+def test_branch_name_validation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}])
+
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.create("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.checkout("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.delete("")
+
+
 def test_branches_preserve_namespace(tmp_path):
     pytest.importorskip(
         "lance"
