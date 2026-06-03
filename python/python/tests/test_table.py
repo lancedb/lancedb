@@ -26,6 +26,28 @@ from lancedb.table import LanceTable
 from pydantic import BaseModel
 
 
+def _blob_test_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
+
+
 def test_basic(mem_db: DBConnection):
     data = [
         {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
@@ -57,27 +79,30 @@ def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
     pd.testing.assert_frame_equal(table.to_pandas(), expected)
 
 
-def test_table_to_pandas_blob_bytes(tmp_db: DBConnection):
+def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_invalid_blob_mode", data=data)
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
     pytest.importorskip("lance")
-    data = pa.table(
-        {
-            "id": pa.array([1, 2], pa.int64()),
-            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
-        },
-        schema=pa.schema(
-            [
-                pa.field("id", pa.int64()),
-                pa.field(
-                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
-                ),
-            ]
-        ),
-    )
-    table = tmp_db.create_table("test_to_pandas_blob_bytes", data=data)
+    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
 
-    df = table.to_pandas(blob_mode="bytes")
+    df = table.to_pandas(blob_mode=blob_mode)
 
-    assert df["blob"].tolist() == [b"hello", b"world"]
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"hello")
+        _assert_lazy_blob(df["blob"].iloc[1], b"world")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"hello", b"world"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"hello"
+        assert not hasattr(first, "readall")
 
 
 def test_table_to_pandas_kwargs(tmp_db: DBConnection):
@@ -93,27 +118,26 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
 @pytest.mark.asyncio
 async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
     pytest.importorskip("lance")
-    data = pa.table(
-        {
-            "id": pa.array([1, 2], pa.int64()),
-            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
-        },
-        schema=pa.schema(
-            [
-                pa.field("id", pa.int64()),
-                pa.field(
-                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
-                ),
-            ]
-        ),
-    )
     table = await tmp_db_async.create_table(
-        "test_async_to_pandas_blob_bytes", data=data
+        "test_async_to_pandas_blob_bytes", data=_blob_test_data()
     )
 
     df = await table.to_pandas(blob_mode="bytes")
 
     assert df["blob"].tolist() == [b"hello", b"world"]
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_invalid_blob_mode_non_blob_table(
+    tmp_db_async: AsyncConnection,
+):
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_invalid_blob_mode",
+        data=pa.table({"id": [1, 2], "text": ["one", "two"]}),
+    )
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        await table.to_pandas(blob_mode="invalid")
 
 
 @pytest.mark.asyncio
