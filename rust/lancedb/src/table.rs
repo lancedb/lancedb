@@ -3587,6 +3587,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_branch_handle_tracks_concurrent_writes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // interval = 0 so every read checks storage for new commits
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        let v1 = table.version().await.unwrap();
+
+        // two independent handles on the same branch
+        let writer = table.create_branch("exp", v1).await.unwrap();
+        let reader = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // a concurrent write on the branch is visible to the other handle, which
+        // tracks the branch's HEAD (not main's)
+        writer.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 2);
+        // main is untouched
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_branch_handle_without_consistency_interval_is_pinned() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // default interval (None): handles do not auto-refresh
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        let v1 = table.version().await.unwrap();
+
+        let writer = table.create_branch("exp", v1).await.unwrap();
+        let reader = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // without a consistency interval the reader stays on the version it
+        // opened, exactly like a main-branch handle...
+        writer.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // ...until it explicitly refreshes
+        reader.checkout_latest().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn test_create_index() {
         use arrow_array::RecordBatch;
         use arrow_schema::{DataType, Field, Schema as ArrowSchema};

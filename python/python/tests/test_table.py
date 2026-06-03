@@ -929,7 +929,7 @@ async def test_async_tags(mem_db_async: AsyncConnection):
 
 
 def test_branches(tmp_path):
-    db = lancedb.connect(tmp_path)
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
     table = db.create_table(
         "test",
         data=[
@@ -965,6 +965,22 @@ def test_branches(tmp_path):
     table.branches.delete("exp")
     table.branches.delete("exp2")
     assert "exp" not in table.branches.list()
+
+
+def test_branch_handle_tracks_concurrent_writes(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("t", [{"id": 1}])
+
+    # two independent handles on the same branch
+    writer = table.branches.create("exp")
+    reader = db.open_table("t", branch="exp")
+    assert reader.count_rows() == 1
+
+    # a concurrent write on the branch is visible to the other handle
+    writer.add([{"id": 2}])
+    assert reader.count_rows() == 2
+    # main is unaffected
+    assert table.count_rows() == 1
 
 
 def test_branch_name_validation(tmp_path):
