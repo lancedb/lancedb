@@ -17,7 +17,7 @@ use arrow::{
 };
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -860,6 +860,11 @@ impl Table {
         Ok(Tags::new(self.inner_ref()?.clone()))
     }
 
+    #[getter]
+    pub fn branches(&self) -> PyResult<Branches> {
+        Ok(Branches::new(self.inner_ref()?.clone()))
+    }
+
     #[pyo3(signature = (offsets))]
     pub fn take_offsets(self_: PyRef<'_, Self>, offsets: Vec<u64>) -> PyResult<TakeQuery> {
         Ok(TakeQuery::new(
@@ -1257,6 +1262,69 @@ impl Tags {
         future_into_py(self_.py(), async move {
             let mut tags = inner.tags().await.infer_error()?;
             tags.update(tag.as_str(), version).await.infer_error()?;
+            Ok(())
+        })
+    }
+}
+
+#[pyclass]
+pub struct Branches {
+    inner: LanceDbTable,
+}
+
+impl Branches {
+    pub fn new(table: LanceDbTable) -> Self {
+        Self { inner: table }
+    }
+}
+
+#[pymethods]
+impl Branches {
+    pub fn list(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let res = inner.list_branches().await.infer_error()?;
+            Python::attach(|py| {
+                let py_dict = PyDict::new(py);
+                for (name, contents) in res {
+                    let value = PyDict::new(py);
+                    value.set_item("parent_branch", contents.parent_branch)?;
+                    value.set_item("parent_version", contents.parent_version)?;
+                    value.set_item("manifest_size", contents.manifest_size)?;
+                    py_dict.set_item(name, value)?;
+                }
+                Ok(py_dict.unbind())
+            })
+        })
+    }
+
+    #[pyo3(signature = (name, from_ref=None, from_version=None))]
+    pub fn create(
+        self_: PyRef<'_, Self>,
+        name: String,
+        from_ref: Option<String>,
+        from_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let from = Ref::Version(from_ref, from_version);
+            let table = inner.create_branch(&name, from).await.infer_error()?;
+            Ok(Table::new(table))
+        })
+    }
+
+    pub fn checkout(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let table = inner.checkout_branch(&name).await.infer_error()?;
+            Ok(Table::new(table))
+        })
+    }
+
+    pub fn delete(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.delete_branch(&name).await.infer_error()?;
             Ok(())
         })
     }

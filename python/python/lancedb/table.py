@@ -784,6 +784,15 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @property
+    def branches(self) -> "Branches":
+        """Branch management for the table.
+
+        Branches are isolated, writable lines of history forked from another
+        branch (or version). Writes on a branch do not affect ``main``.
+        """
+        raise NotImplementedError
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -2192,6 +2201,15 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         return Tags(self._table)
+
+    @property
+    def branches(self) -> "Branches":
+        """Branch management for the table.
+
+        ``create``/``checkout`` return a new table handle scoped to the branch;
+        writes on it do not affect ``main``.
+        """
+        return Branches(self._table)
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -5521,6 +5539,15 @@ class AsyncTable:
         """
         return AsyncTags(self._inner)
 
+    @property
+    def branches(self) -> AsyncBranches:
+        """Branch management for the table.
+
+        Branches are isolated, writable lines of history forked from another
+        branch (or version). Writes on a branch do not affect ``main``.
+        """
+        return AsyncBranches(self._inner)
+
     async def optimize(
         self,
         *,
@@ -5853,6 +5880,50 @@ class Tags:
         LOOP.run(self._table.tags.update(tag, version))
 
 
+class Branches:
+    """
+    Table branch manager.
+    """
+
+    def __init__(self, table):
+        self._table = table
+
+    def list(self) -> Dict[str, Any]:
+        """List all branches, mapping name to branch metadata."""
+        return LOOP.run(self._table.branches.list())
+
+    def create(
+        self,
+        name: str,
+        from_ref: Optional[str] = None,
+        from_version: Optional[int] = None,
+    ) -> "LanceTable":
+        """Create a branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the new branch.
+        from_ref: str, optional
+            Source branch to fork from. Defaults to ``main``.
+        from_version: int, optional
+            A specific version on ``from_ref`` to fork from. Defaults to latest.
+        """
+        async_table = LOOP.run(
+            self._table.branches.create(name, from_ref, from_version)
+        )
+        return LanceTable.from_inner(async_table._inner)
+
+    def checkout(self, name: str) -> "LanceTable":
+        """Check out an existing branch and return a handle scoped to it."""
+        async_table = LOOP.run(self._table.branches.checkout(name))
+        return LanceTable.from_inner(async_table._inner)
+
+    def delete(self, name: str) -> None:
+        """Delete a branch."""
+        LOOP.run(self._table.branches.delete(name))
+
+
 class AsyncTags:
     """
     Async table tag manager.
@@ -5920,3 +5991,47 @@ class AsyncTags:
             The new table version to tag.
         """
         await self._table.tags.update(tag, version)
+
+
+class AsyncBranches:
+    """Async table branch manager."""
+
+    def __init__(self, table):
+        self._table = table
+
+    async def list(self) -> Dict[str, Any]:
+        """List all branches, mapping name to branch metadata."""
+        return await self._table.branches.list()
+
+    async def create(
+        self,
+        name: str,
+        from_ref: Optional[str] = None,
+        from_version: Optional[int] = None,
+    ) -> "AsyncTable":
+        """Create a branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the new branch.
+        from_ref: str, optional
+            Source branch to fork from. Defaults to ``main``.
+        from_version: int, optional
+            A specific version on ``from_ref`` to fork from. Defaults to latest.
+        """
+        # "main" and None are two spellings of the root branch in lance; normalize
+        # so from_ref="main" behaves identically to the default.
+        if from_ref == "main":
+            from_ref = None
+        inner = await self._table.branches.create(name, from_ref, from_version)
+        return AsyncTable(inner)
+
+    async def checkout(self, name: str) -> "AsyncTable":
+        """Check out an existing branch and return a handle scoped to it."""
+        inner = await self._table.branches.checkout(name)
+        return AsyncTable(inner)
+
+    async def delete(self, name: str) -> None:
+        """Delete a branch."""
+        await self._table.branches.delete(name)

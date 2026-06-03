@@ -86,7 +86,7 @@ pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
-pub use lance::dataset::refs::{BranchContents, TagContents, Tags as LanceTags};
+pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;

@@ -928,6 +928,79 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+def test_branches(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert table.count_rows() == 2
+
+    # fork an isolated, writable branch from main
+    branch = table.branches.create("exp")
+    assert branch.count_rows() == 2
+    branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    # writes on the branch do not touch main
+    assert branch.count_rows() == 3
+    assert table.count_rows() == 2
+
+    # the branch is listed, with main (None) as its parent
+    branches = table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    # from_ref="main" is equivalent to the default
+    table.branches.create("exp2", from_ref="main")
+    assert table.branches.list()["exp2"]["parent_branch"] is None
+
+    # checkout returns a handle scoped to the branch's latest
+    checked_out = table.branches.checkout("exp")
+    assert checked_out.count_rows() == 3
+
+    # delete removes it
+    table.branches.delete("exp")
+    table.branches.delete("exp2")
+    assert "exp" not in table.branches.list()
+
+
+@pytest.mark.asyncio
+async def test_async_branches(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+
+    branch = await table.branches.create("exp")
+    assert await branch.count_rows() == 2
+    await branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    assert await branch.count_rows() == 3
+    assert await table.count_rows() == 2
+
+    branches = await table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    await table.branches.create("exp2", from_ref="main")
+    assert (await table.branches.list())["exp2"]["parent_branch"] is None
+
+    checked_out = await table.branches.checkout("exp")
+    assert await checked_out.count_rows() == 3
+
+    await table.branches.delete("exp")
+    await table.branches.delete("exp2")
+    assert "exp" not in await table.branches.list()
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
