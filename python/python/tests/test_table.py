@@ -968,6 +968,9 @@ def test_branches(tmp_path):
 
 
 def test_branches_preserve_namespace(tmp_path):
+    pytest.importorskip(
+        "lance"
+    )  # namespace_path routes through lance's DirectoryNamespace
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
     assert table.namespace == ["ns1"]
@@ -975,6 +978,10 @@ def test_branches_preserve_namespace(tmp_path):
     branch = table.branches.create("exp")
     assert branch.namespace == ["ns1"]
     assert branch.id == table.id
+
+    # opening the branch directly also preserves namespace identity
+    opened = db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert opened.namespace == ["ns1"]
 
 
 def test_open_table_with_branch(tmp_path):
@@ -987,14 +994,9 @@ def test_open_table_with_branch(tmp_path):
     # opening without branch still tracks main
     assert db.open_table("t").count_rows() == 1
 
-    # with a namespace, the opened branch handle preserves namespace identity
-    nt = db.create_table("ns_t", [{"i": 1}], namespace_path=["ns1"])
-    nt.branches.create("exp")
-    opened = db.open_table("ns_t", namespace_path=["ns1"], branch="exp")
-    assert opened.namespace == ["ns1"]
-
 
 def test_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"i": 1}])
     branch = table.branches.create("exp")
