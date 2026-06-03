@@ -1645,7 +1645,7 @@ impl Table {
         &self,
         name: &str,
         from: impl Into<lance::dataset::refs::Ref>,
-    ) -> Result<Table> {
+    ) -> Result<Self> {
         let inner = self.inner.create_branch(name, from.into()).await?;
         Ok(Self {
             inner,
@@ -1655,7 +1655,7 @@ impl Table {
     }
 
     /// Check out an existing branch and return a handle scoped to it.
-    pub async fn checkout_branch(&self, name: &str) -> Result<Table> {
+    pub async fn checkout_branch(&self, name: &str) -> Result<Self> {
         let inner = self.inner.checkout_branch(name).await?;
         Ok(Self {
             inner,
