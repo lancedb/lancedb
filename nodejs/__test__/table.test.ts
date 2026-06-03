@@ -118,6 +118,21 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(Object.keys(after)).not.toContain("exp");
     });
 
+    it("should open a branch via open_table", async () => {
+      const db = await connect(tmpDir.name);
+      await table.add([{ id: 1 }]);
+      const branch = await (await table.branches()).create("exp");
+      await branch.add([{ id: 2 }]);
+
+      // open_table(..., { branch }) returns a handle scoped to the branch
+      const opened = await db.openTable("some_table", undefined, {
+        branch: "exp",
+      });
+      expect(await opened.countRows()).toBe(2);
+      // opening without branch still tracks main
+      expect(await (await db.openTable("some_table")).countRows()).toBe(1);
+    });
+
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);

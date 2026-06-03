@@ -977,6 +977,23 @@ def test_branches_preserve_namespace(tmp_path):
     assert branch.id == table.id
 
 
+def test_open_table_with_branch(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    table.branches.create("exp").add([{"i": 2}])
+
+    # open_table(branch=...) returns a handle scoped to the branch
+    assert db.open_table("t", branch="exp").count_rows() == 2
+    # opening without branch still tracks main
+    assert db.open_table("t").count_rows() == 1
+
+    # with a namespace, the opened branch handle preserves namespace identity
+    nt = db.create_table("ns_t", [{"i": 1}], namespace_path=["ns1"])
+    nt.branches.create("exp")
+    opened = db.open_table("ns_t", namespace_path=["ns1"], branch="exp")
+    assert opened.namespace == ["ns1"]
+
+
 @pytest.mark.asyncio
 async def test_async_branches(tmp_path):
     db = await lancedb.connect_async(tmp_path)

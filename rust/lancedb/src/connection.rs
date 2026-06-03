@@ -119,6 +119,7 @@ pub struct OpenTableBuilder {
     parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    branch: Option<String>,
 }
 
 impl OpenTableBuilder {
@@ -139,6 +140,7 @@ impl OpenTableBuilder {
                 managed_versioning: None,
             },
             embedding_registry,
+            branch: None,
         }
     }
 
@@ -259,14 +261,22 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Open the table scoped to the given branch instead of the default branch.
+    ///
+    /// Reads and writes on the returned table operate in the branch's context.
+    pub fn branch(mut self, branch: impl Into<String>) -> Self {
+        self.branch = Some(branch.into());
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
-        Ok(Table::new_with_embedding_registry(
-            table,
-            self.parent,
-            self.embedding_registry,
-        ))
+        let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry);
+        match self.branch {
+            Some(branch) => table.checkout_branch(&branch).await,
+            None => Ok(table),
+        }
     }
 }
 

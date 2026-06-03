@@ -3520,6 +3520,16 @@ mod tests {
         assert_eq!(checked_out.current_branch().as_deref(), Some("exp"));
         assert_eq!(checked_out.count_rows(None).await.unwrap(), 2);
 
+        // open_table(...).branch(...) opens directly onto the branch
+        let opened = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(opened.current_branch().as_deref(), Some("exp"));
+        assert_eq!(opened.count_rows(None).await.unwrap(), 2);
+
         // delete removes it from the listing
         table.delete_branch("exp").await.unwrap();
         let branches = table.list_branches().await.unwrap();
