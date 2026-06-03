@@ -2209,7 +2209,7 @@ class LanceTable(Table):
         ``create``/``checkout`` return a new table handle scoped to the branch;
         writes on it do not affect ``main``.
         """
-        return Branches(self._table)
+        return Branches(self)
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -5885,8 +5885,9 @@ class Branches:
     Table branch manager.
     """
 
-    def __init__(self, table):
-        self._table = table
+    def __init__(self, parent: "LanceTable"):
+        self._parent = parent
+        self._table = parent._table
 
     def list(self) -> Dict[str, Any]:
         """List all branches, mapping name to branch metadata."""
@@ -5912,16 +5913,30 @@ class Branches:
         async_table = LOOP.run(
             self._table.branches.create(name, from_ref, from_version)
         )
-        return LanceTable.from_inner(async_table._inner)
+        return self._wrap(async_table)
 
     def checkout(self, name: str) -> "LanceTable":
         """Check out an existing branch and return a handle scoped to it."""
         async_table = LOOP.run(self._table.branches.checkout(name))
-        return LanceTable.from_inner(async_table._inner)
+        return self._wrap(async_table)
 
     def delete(self, name: str) -> None:
         """Delete a branch."""
         LOOP.run(self._table.branches.delete(name))
+
+    def _wrap(self, async_table: "AsyncTable") -> "LanceTable":
+        # Reuse the parent's connection + namespace context; from_inner would drop
+        # it and break identity/query routing for namespace-backed tables.
+        parent = self._parent
+        return LanceTable(
+            parent._conn,
+            async_table.name,
+            namespace_path=parent._namespace_path,
+            namespace_client=parent._namespace_client,
+            pushdown_operations=parent._pushdown_operations,
+            location=parent._location,
+            _async=async_table,
+        )
 
 
 class AsyncTags:

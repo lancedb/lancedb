@@ -967,6 +967,16 @@ def test_branches(tmp_path):
     assert "exp" not in table.branches.list()
 
 
+def test_branches_preserve_namespace(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    assert table.namespace == ["ns1"]
+
+    branch = table.branches.create("exp")
+    assert branch.namespace == ["ns1"]
+    assert branch.id == table.id
+
+
 @pytest.mark.asyncio
 async def test_async_branches(tmp_path):
     db = await lancedb.connect_async(tmp_path)
