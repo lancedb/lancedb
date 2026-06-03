@@ -25,10 +25,12 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
+  BranchContents,
   DeleteResult,
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
+  Branches as NativeBranches,
   OptimizeStats,
   TableStatistics,
   Tags,
@@ -654,6 +656,14 @@ export abstract class Table {
   abstract tags(): Promise<Tags>;
 
   /**
+   * Get the branch manager for this table.
+   *
+   * Branches are isolated, writable lines of history forked from another
+   * branch (or version). Writes on a branch do not affect `main`.
+   */
+  abstract branches(): Promise<Branches>;
+
+  /**
    * Restore the table to the currently checked out version
    *
    * This operation will fail if checkout has not been called previously
@@ -1108,6 +1118,10 @@ export class LocalTable extends Table {
     return await this.inner.tags();
   }
 
+  async branches(): Promise<Branches> {
+    return new Branches(await this.inner.branches());
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
     let cleanupOlderThanMs;
     if (
@@ -1237,4 +1251,48 @@ export interface FieldMetadataUpdate {
   metadata: Record<string, string | null>;
   /** If true, replace the field's entire metadata map instead of merging. */
   replace?: boolean;
+}
+
+/**
+ * Branch manager for a {@link Table}.
+ *
+ * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
+ * to the branch; writes on it do not affect `main`.
+ */
+export class Branches {
+  private readonly inner: NativeBranches;
+
+  constructor(inner: NativeBranches) {
+    this.inner = inner;
+  }
+
+  /** List all branches, mapping name to branch metadata. */
+  async list(): Promise<Record<string, BranchContents>> {
+    return await this.inner.list();
+  }
+
+  /**
+   * Create a branch and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param fromRef Source branch to fork from. Defaults to `main`.
+   * @param fromVersion A specific version on `fromRef`. Defaults to latest.
+   */
+  async create(
+    name: string,
+    fromRef?: string,
+    fromVersion?: number,
+  ): Promise<Table> {
+    return new LocalTable(await this.inner.create(name, fromRef, fromVersion));
+  }
+
+  /** Check out an existing branch and return a handle scoped to it. */
+  async checkout(name: string): Promise<Table> {
+    return new LocalTable(await this.inner.checkout(name));
+  }
+
+  /** Delete a branch. */
+  async delete(name: string): Promise<void> {
+    return await this.inner.delete(name);
+  }
 }

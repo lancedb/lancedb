@@ -7,7 +7,7 @@ use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, NewColumnTransform, OptimizeAction,
-    OptimizeOptions, Table as LanceDbTable,
+    OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -474,6 +474,13 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn tags(&self) -> napi::Result<Tags> {
         Ok(Tags {
+            inner: self.inner_ref()?.clone(),
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn branches(&self) -> napi::Result<Branches> {
+        Ok(Branches {
             inner: self.inner_ref()?.clone(),
         })
     }
@@ -1057,6 +1064,13 @@ pub struct TagContents {
 }
 
 #[napi]
+pub struct BranchContents {
+    pub parent_branch: Option<String>,
+    pub parent_version: i64,
+    pub manifest_size: i64,
+}
+
+#[napi]
 pub struct Tags {
     inner: LanceDbTable,
 }
@@ -1122,5 +1136,62 @@ impl Tags {
             .update(tag.as_str(), version as u64)
             .await
             .default_error()
+    }
+}
+
+#[napi]
+pub struct Branches {
+    inner: LanceDbTable,
+}
+
+#[napi]
+impl Branches {
+    #[napi]
+    pub async fn list(&self) -> napi::Result<HashMap<String, BranchContents>> {
+        let branches = self.inner.list_branches().await.default_error()?;
+        let result = branches
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    BranchContents {
+                        parent_branch: v.parent_branch,
+                        parent_version: v.parent_version as i64,
+                        manifest_size: v.manifest_size as i64,
+                    },
+                )
+            })
+            .collect();
+        Ok(result)
+    }
+
+    #[napi]
+    pub async fn create(
+        &self,
+        name: String,
+        from_ref: Option<String>,
+        from_version: Option<i64>,
+    ) -> napi::Result<Table> {
+        // "main" and None are two spellings of the root branch; normalize so
+        // from_ref = "main" behaves identically to the default.
+        let from_ref = from_ref.filter(|b| b != "main");
+        let from = Ref::Version(from_ref, from_version.map(|v| v as u64));
+        let table = self
+            .inner
+            .create_branch(&name, from)
+            .await
+            .default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn checkout(&self, name: String) -> napi::Result<Table> {
+        let table = self.inner.checkout_branch(&name).await.default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn delete(&self, name: String) -> napi::Result<()> {
+        self.inner.delete_branch(&name).await.default_error()
     }
 }
