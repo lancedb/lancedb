@@ -383,6 +383,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -399,6 +400,9 @@ class RemoteDBConnection(DBConnection):
         A LanceTable object representing the table.
         """
         from .table import RemoteTable
+
+        if branch is not None:
+            raise NotImplementedError("branching is not yet supported on remote tables")
 
         if namespace_path is None:
             namespace_path = []
