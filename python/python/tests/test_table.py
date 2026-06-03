@@ -1288,6 +1288,45 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
 
 
+def test_add_nullable_struct_with_none(mem_db: DBConnection):
+    """Regression test for issue #2654: a nullable struct column whose
+    first batch contains only None values must not crash in
+    _align_field_types with AttributeError: 'pyarrow.lib.DataType'
+    object has no attribute 'fields'.
+
+    PyArrow infers an all-None struct column as `null` (not `struct`),
+    so the type-alignment path needs to handle the case where the
+    source field type is null and use the target type directly.
+    """
+    # Use the v2.1 file format so that nullable structs are supported.
+    table = mem_db.create_table(
+        "test_nullable_struct",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "data",
+                    pa.struct([pa.field("x", pa.float32())]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        storage_options=dict(new_table_data_storage_version="2.1"),
+    )
+
+    # Adding a row with a non-null struct should work.
+    table.add([{"id": "1", "data": {"x": 1.0}}])
+
+    # Adding a row with None for the nullable struct field should also
+    # work — this is what used to crash.
+    table.add([{"id": "2", "data": None}])
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("id").to_pylist() == ["1", "2"]
+    assert result.column("data").to_pylist() == [{"x": 1.0}, None]
+
+
 def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
