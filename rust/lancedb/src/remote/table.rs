@@ -23,6 +23,7 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
+use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
@@ -2266,13 +2267,34 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
         }
         let on = value.on[0].clone();
 
+        let when_matched_update_all_filt = match value.when_matched_update_all_filt {
+            Some(MergeFilter::Sql(sql)) => Some(sql),
+            Some(MergeFilter::Expr(_)) => {
+                return Err(Error::NotSupported {
+                    message: "DataFusion expressions are not supported on remote tables".into(),
+                });
+            }
+            None => None,
+        };
+
+        let when_not_matched_by_source_delete_filt =
+            match value.when_not_matched_by_source_delete_filt {
+                Some(MergeFilter::Sql(sql)) => Some(sql),
+                Some(MergeFilter::Expr(_)) => {
+                    return Err(Error::NotSupported {
+                        message: "DataFusion expressions are not supported on remote tables".into(),
+                    });
+                }
+                None => None,
+            };
+
         Ok(Self {
             on,
             when_matched_update_all: value.when_matched_update_all,
-            when_matched_update_all_filt: value.when_matched_update_all_filt,
+            when_matched_update_all_filt,
             when_not_matched_insert_all: value.when_not_matched_insert_all,
             when_not_matched_by_source_delete: value.when_not_matched_by_source_delete,
-            when_not_matched_by_source_delete_filt: value.when_not_matched_by_source_delete_filt,
+            when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
         })
