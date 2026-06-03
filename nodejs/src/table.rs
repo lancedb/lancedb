@@ -1172,11 +1172,7 @@ impl Branches {
         from_ref: Option<String>,
         from_version: Option<i64>,
     ) -> napi::Result<Table> {
-        // "main" and None are two spellings of the root branch; normalize so
-        // from_ref = "main" behaves identically to the default.
         let from_ref = from_ref.filter(|b| b != "main");
-        // Reject a negative version up front; `as u64` would silently wrap it
-        // into a huge version number.
         let from_version = from_version
             .map(|v| {
                 u64::try_from(v).map_err(|_| {

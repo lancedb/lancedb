@@ -1639,8 +1639,7 @@ impl Table {
         self.inner.tags().await
     }
 
-    /// Create a new branch from `from` (a version, tag, or branch) and return
-    /// a writable, isolated handle scoped to it. `self` is unaffected.
+    /// Create a new branch from `from` (a version, tag, or branch)
     pub async fn create_branch(
         &self,
         name: &str,
