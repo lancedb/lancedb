@@ -1009,6 +1009,7 @@ def test_open_table_with_branch(tmp_path):
 
 @pytest.mark.asyncio
 async def test_async_namespace_open_table_with_branch(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
     await db.create_namespace(["ns1"])
     table = await db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
