@@ -526,7 +526,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
-        query.use_lsm_read = req.use_lsm_read
+        # Treat the default (False) as unset so a round-tripped query object only
+        # carries use_lsm_read when it was explicitly enabled.
+        query.use_lsm_read = req.use_lsm_read or None
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
