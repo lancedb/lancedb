@@ -21,3 +21,14 @@ updates:
         update-types:
           - minor
           - patch
+
+  - package-ecosystem: pip
+    directory: /python
+    schedule:
+      interval: weekly
+    # Only update uv.lock, never widen version requirements in pyproject.toml.
+    versioning-strategy: lockfile-only
+    groups:
+      python-deps:
+        patterns:
+          - "*"
