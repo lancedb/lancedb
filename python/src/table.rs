@@ -451,10 +451,6 @@ impl Table {
                         dict.set_item("num_indices", num_indices)?;
                     }
 
-                    if let Some(loss) = stats.loss {
-                        dict.set_item("loss", loss)?;
-                    }
-
                     Ok(Some(dict.unbind()))
                 })
             } else {
