@@ -417,6 +417,7 @@ class DBConnection(EnforceOverrides):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -448,6 +449,11 @@ class DBConnection(EnforceOverrides):
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -963,6 +969,7 @@ class LanceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -976,6 +983,11 @@ class LanceDBConnection(DBConnection):
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -1011,7 +1023,9 @@ class LanceDBConnection(DBConnection):
             )
 
         if branch is not None:
-            return tbl.branches.checkout(branch)
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
         return tbl
 
     def clone_table(
@@ -1654,6 +1668,7 @@ class AsyncConnection(object):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> AsyncTable:
         """Open a Lance Table in the database.
 
@@ -1692,6 +1707,11 @@ class AsyncConnection(object):
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -1709,8 +1729,12 @@ class AsyncConnection(object):
             managed_versioning=managed_versioning,
         )
         tbl = AsyncTable(table)
-        if branch is not None:
-            return await tbl.branches.checkout(branch)
+        # "main" is the default branch, so treat it as no branch: remote rejects
+        # every branch checkout (even "main"), and the version still applies.
+        if branch is not None and branch != "main":
+            tbl = await tbl.branches.checkout(branch, version)
+        elif version is not None:
+            await tbl.checkout(version)
         return tbl
 
     async def clone_table(

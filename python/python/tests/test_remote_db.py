@@ -154,6 +154,52 @@ async def test_async_checkout():
         assert await table.count_rows() == 300
 
 
+def test_remote_open_table_branch_and_version():
+    def handler(request):
+        # describe (table open + version validation) always succeeds
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps({"version": 2, "schema": {"fields": []}}).encode()
+        )
+
+    with mock_lancedb_connection(handler) as db:
+        # version-only (and "main" + version) is allowed: remote supports
+        # version time-travel even though it has no branches
+        assert db.open_table("test", version=2) is not None
+        assert db.open_table("test", branch="main", version=2) is not None
+
+        # a non-main branch is rejected, with or without a version
+        with pytest.raises(NotImplementedError, match="branching"):
+            db.open_table("test", branch="exp")
+        with pytest.raises(NotImplementedError, match="branching"):
+            db.open_table("test", branch="exp", version=2)
+
+
+@pytest.mark.asyncio
+async def test_async_remote_open_table_branch_and_version():
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(
+            json.dumps({"version": 2, "schema": {"fields": []}}).encode()
+        )
+
+    async with mock_lancedb_connection_async(handler) as db:
+        # version-only (and "main" + version) is allowed: "main" is the default
+        # branch, so it must not hit the unsupported remote branch path
+        assert await db.open_table("test", version=2) is not None
+        assert await db.open_table("test", branch="main", version=2) is not None
+
+        # a non-main branch is rejected, with or without a version
+        with pytest.raises(NotImplementedError, match="branching"):
+            await db.open_table("test", branch="exp")
+        with pytest.raises(NotImplementedError, match="branching"):
+            await db.open_table("test", branch="exp", version=2)
+
+
 def test_table_len_sync():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=create":

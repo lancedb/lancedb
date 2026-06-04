@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use lance::dataset::ReadParams;
+use lance::dataset::refs::MAIN_BRANCH;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
@@ -120,6 +121,7 @@ pub struct OpenTableBuilder {
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
     branch: Option<String>,
+    version: Option<u64>,
 }
 
 impl OpenTableBuilder {
@@ -141,6 +143,7 @@ impl OpenTableBuilder {
             },
             embedding_registry,
             branch: None,
+            version: None,
         }
     }
 
@@ -269,13 +272,39 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Open the table pinned to a specific version, producing a read-only "view".
+    ///
+    /// Composes with [`Self::branch`]: when a branch is also set, this opens that
+    /// branch at the given version; otherwise it opens `main` at that version.
+    /// The returned table is a detached head, so operations that modify the table
+    /// will fail until [`Table::checkout_latest`] is called.
+    ///
+    /// ```
+    /// # use lancedb::Connection;
+    /// # async fn f(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    /// let table = conn.open_table("t").branch("exp").version(3).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn version(mut self, version: u64) -> Self {
+        self.version = Some(version);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
         let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry);
-        match self.branch {
-            Some(branch) => table.checkout_branch(&branch).await,
-            None => Ok(table),
+        // "main" is the default branch, so treat it as no branch.
+        let branch = self.branch.filter(|b| b.as_str() != MAIN_BRANCH);
+        match branch {
+            Some(branch) => table.checkout_branch(&branch, self.version).await,
+            None => {
+                if let Some(version) = self.version {
+                    table.checkout(version).await?;
+                }
+                Ok(table)
+            }
         }
     }
 }

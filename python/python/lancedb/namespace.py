@@ -550,6 +550,7 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         if namespace_path is None:
             namespace_path = []
@@ -577,7 +578,9 @@ class LanceNamespaceDBConnection(DBConnection):
             _async=async_table,
         )
         if branch is not None:
-            return tbl.branches.checkout(branch)
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
         return tbl
 
     @override
@@ -989,6 +992,7 @@ class AsyncLanceNamespaceDBConnection:
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> AsyncTable:
         """Open an existing table from the namespace."""
         if namespace_path is None:
@@ -1005,8 +1009,12 @@ class AsyncLanceNamespaceDBConnection:
                 table_id = namespace_path + [name]
                 raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
             raise
-        if branch is not None:
-            table = await table.branches.checkout(branch)
+        # "main" is the default branch, so treat it as no branch (mirrors the
+        # sync remote path); the version still applies.
+        if branch is not None and branch != "main":
+            table = await table.branches.checkout(branch, version)
+        elif version is not None:
+            await table.checkout(version)
         return table._set_namespace_context(
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,

@@ -384,6 +384,7 @@ class RemoteDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
         branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -394,6 +395,14 @@ class RemoteDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
+        branch: str, optional
+            Branching is not yet supported on remote tables, so only the
+            default branch is accepted (``None`` or ``"main"``); any other
+            value raises ``NotImplementedError``.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Call ``checkout_latest`` to return to a writable
+            state.
 
         Returns
         -------
@@ -401,7 +410,9 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
-        if branch is not None:
+        # Remote supports version time-travel but not branches: reject a non-main
+        # branch, but allow a version-only open (or "main").
+        if branch is not None and branch != "main":
             raise NotImplementedError("branching is not yet supported on remote tables")
 
         if namespace_path is None:
@@ -413,12 +424,15 @@ class RemoteDBConnection(DBConnection):
             )
 
         table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
-        return RemoteTable(
+        tbl = RemoteTable(
             table,
             self.db_name,
             connection_state=self.serialize,
             namespace_path=namespace_path,
         )
+        if version is not None:
+            tbl.checkout(version)
+        return tbl
 
     def clone_table(
         self,

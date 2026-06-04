@@ -1190,8 +1190,18 @@ impl Branches {
     }
 
     #[napi]
-    pub async fn checkout(&self, name: String) -> napi::Result<Table> {
-        let table = self.inner.checkout_branch(&name).await.default_error()?;
+    pub async fn checkout(&self, name: String, version: Option<i64>) -> napi::Result<Table> {
+        let version = version
+            .map(|v| {
+                u64::try_from(v)
+                    .map_err(|_| napi::Error::from_reason("version must be a non-negative integer"))
+            })
+            .transpose()?;
+        let table = self
+            .inner
+            .checkout_branch(&name, version)
+            .await
+            .default_error()?;
         Ok(Table::new(table))
     }
 

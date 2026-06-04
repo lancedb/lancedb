@@ -1023,6 +1023,70 @@ def test_open_table_with_branch(tmp_path):
     assert db.open_table("t").count_rows() == 1
 
 
+def test_open_table_with_branch_version(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = db.create_table("t", [{"i": 0}])
+    main_v1 = t.version
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert db.open_table("t", branch="exp").count_rows() == 3
+    assert db.open_table("t").count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert old_main.count_rows() == 1
+    shared_on_main = db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch (a distinct
+    # resolution path, on the branch's manifests)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 3  # exp HEAD, not main's 4
+    pinned.add([{"i": 3}])
+    assert pinned.count_rows() == 4  # writable again
+
+
 @pytest.mark.asyncio
 async def test_async_namespace_open_table_with_branch(tmp_path):
     pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
@@ -1035,6 +1099,64 @@ async def test_async_namespace_open_table_with_branch(tmp_path):
     # open_table(branch=...) on the async namespace connection must work
     opened = await db.open_table("t", namespace_path=["ns1"], branch="exp")
     assert await opened.count_rows() == 2
+
+
+def test_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["ns1"])
+    t = db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = db.open_table("t", namespace_path=["ns1"], branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+    assert db.open_table("t", namespace_path=["ns1"], branch="exp").count_rows() == 3
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    t = await db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the async namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = await db.open_table(
+        "t", namespace_path=["ns1"], branch="exp", version=exp_v2
+    )
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+    assert (
+        await (
+            await db.open_table("t", namespace_path=["ns1"], branch="exp")
+        ).count_rows()
+        == 3
+    )
 
 
 def test_branch_to_lance_targets_branch(tmp_path):
@@ -1080,6 +1202,70 @@ async def test_async_branches(tmp_path):
     await table.branches.delete("exp")
     await table.branches.delete("exp2")
     assert "exp" not in await table.branches.list()
+
+
+@pytest.mark.asyncio
+async def test_async_open_table_with_branch_version(tmp_path):
+    db = await lancedb.connect_async(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = await db.create_table("t", [{"i": 0}])
+    main_v1 = await t.version()
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = await db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = await t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert await pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert await (await db.open_table("t", branch="exp")).count_rows() == 3
+    assert await (await db.open_table("t")).count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = await db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert await old_main.count_rows() == 1
+    shared_on_main = await db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert await shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        await pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    await pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 3  # exp HEAD, not main's 4
+    await pinned.add([{"i": 3}])
+    assert await pinned.count_rows() == 4  # writable again
 
 
 @patch("lancedb.table.AsyncTable.create_index")

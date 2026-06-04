@@ -1317,10 +1317,15 @@ impl Branches {
         })
     }
 
-    pub fn checkout(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (name, version=None))]
+    pub fn checkout(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let table = inner.checkout_branch(&name).await.infer_error()?;
+            let table = inner.checkout_branch(&name, version).await.infer_error()?;
             Ok(Table::new(table))
         })
     }

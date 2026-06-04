@@ -133,6 +133,78 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(await (await db.openTable("some_table")).countRows()).toBe(1);
     });
 
+    it("should open a branch at a version isolated from main and HEAD", async () => {
+      const db = await connect(tmpDir.name);
+      // main: a single fork-point row
+      const t = await db.createTable("bv_table", [{ id: 0 }]);
+      const mainV1 = await t.version();
+
+      // fork "exp", then advance exp AND main independently past the fork so
+      // they diverge while sharing version numbers
+      const exp = await (await t.branches()).create("exp");
+      await exp.add([{ id: 1 }]); // exp: {0, 1}
+      const expV2 = await exp.version();
+      await exp.add([{ id: 2 }]); // exp HEAD: {0, 1, 2}
+      await t.add([{ id: 100 }, { id: 101 }, { id: 102 }]); // main HEAD: {0,100,101,102}
+      expect(await t.version()).toBe(expV2);
+
+      // open exp at the shared version: the data must be exp's, not main's.
+      // count alone cannot prove this (main@v2 also exists), so assert
+      // provenance by content.
+      const pinned = await db.openTable("bv_table", undefined, {
+        branch: "exp",
+        version: expV2,
+      });
+      expect(await pinned.countRows()).toBe(2); // not exp HEAD (3), not main@v2 (4)
+      expect(await pinned.countRows("id = 1")).toBe(1); // exp's post-fork row
+      expect(await pinned.countRows("id = 100")).toBe(0); // main's rows invisible
+
+      // the same coordinate is reachable directly via branches().checkout(name, version)
+      const pinnedDirect = await (await t.branches()).checkout("exp", expV2);
+      expect(await pinnedDirect.countRows()).toBe(2);
+
+      // the HEADs are unaffected
+      expect(
+        await (
+          await db.openTable("bv_table", undefined, { branch: "exp" })
+        ).countRows(),
+      ).toBe(3);
+      expect(await (await db.openTable("bv_table")).countRows()).toBe(4);
+
+      // version-only (no branch) time-travels main itself: its fork-point
+      // version holds only main's first row, and the shared version number
+      // resolves to main's data, not the branch's ("opens main at the version")
+      const oldMain = await db.openTable("bv_table", undefined, {
+        version: mainV1,
+      });
+      expect(await oldMain.countRows()).toBe(1);
+      const sharedOnMain = await db.openTable("bv_table", undefined, {
+        version: expV2,
+      });
+      expect(await sharedOnMain.countRows()).toBe(4); // main@v2, not exp@v2 (2)
+
+      // detached head: writing to a pinned version is rejected
+      await expect(pinned.add([{ id: 9 }])).rejects.toThrow(
+        /cannot be modified/,
+      );
+
+      // a nonexistent version is rejected -- on main, and on a branch (a
+      // distinct resolution path, on the branch's manifests)
+      await expect(
+        db.openTable("bv_table", undefined, { version: 9999 }),
+      ).rejects.toThrow();
+      await expect(
+        db.openTable("bv_table", undefined, { branch: "exp", version: 9999 }),
+      ).rejects.toThrow();
+
+      // checkoutLatest re-attaches the pinned handle to the BRANCH's HEAD
+      // (writable again), not main's HEAD (4), and not staying pinned (2)
+      await pinned.checkoutLatest();
+      expect(await pinned.countRows()).toBe(3); // exp HEAD
+      await pinned.add([{ id: 3 }]);
+      expect(await pinned.countRows()).toBe(4); // writable again
+    });
+
     it("rejects invalid branch inputs", async () => {
       const branches = await table.branches();
       await expect(branches.create("")).rejects.toThrow("non-empty");
