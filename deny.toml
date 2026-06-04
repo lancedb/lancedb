@@ -145,12 +145,16 @@ allow = [
     # CDLA-Permissive-2.0 is a permissive data license used by `webpki-roots`
     # for the Mozilla CA root bundle. Data-only, distribution-compatible.
     "CDLA-Permissive-2.0",
-    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
-    # `inferno` -> `pprof` -> `lance-testing`; it is not distributed.
-    # PENDING LEGAL REVIEW before merge.
-    "CDDL-1.0",
 ]
 confidence-threshold = 0.8
+# Per-crate license exceptions: allow a license for a specific crate only,
+# rather than globally via the `allow` list above.
+exceptions = [
+    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
+    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
+    # do not distribute, so scope the allowance to `inferno` alone.
+    { allow = ["CDDL-1.0"], crate = "inferno" },
+]
 # Crates whose license cannot be determined from Cargo metadata but whose
 # license we've manually confirmed from upstream. Keep this list minimal.
 [[licenses.clarify]]
