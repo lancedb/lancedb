@@ -194,3 +194,71 @@ async def test_async_lsm_merge_insert(tmp_path):
     result = await builder.execute(_reader([3, 4, 5]))
     assert result.num_rows == 3
     await table.close_lsm_writers()
+
+
+def _lsm_upsert(table, ids):
+    """Upsert ``ids`` (value = 0..n) through the LSM merge_insert path."""
+    (
+        table.merge_insert([])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(_reader(ids))
+    )
+
+
+def test_lsm_read_sees_active_memtable(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table = db.create_table("t", _reader([1, 2, 3]))  # base ids 1,2,3
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+
+    _lsm_upsert(table, [4, 5])  # active memtable only, not committed to base
+
+    # Base-only read does not see the in-flight rows.
+    base_only = table.search().to_arrow()
+    assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
+
+    # use_lsm_read sees base ∪ active memtable.
+    lsm = table.search().use_lsm_read().to_arrow()
+    assert sorted(lsm["id"].to_pylist()) == [1, 2, 3, 4, 5]
+
+
+def test_lsm_read_dedup_newest_wins(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table = db.create_table("t", _reader([1, 2, 3]))  # id 2 -> value 1
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+
+    _lsm_upsert(table, [2, 3, 4])  # ids 2,3,4 -> values 0,1,2
+
+    lsm = table.search().use_lsm_read().to_arrow().sort_by("id")
+    assert lsm["id"].to_pylist() == [1, 2, 3, 4]
+    # id 1 from base (value 0); 2,3,4 from memtable (values 0,1,2).
+    assert lsm["value"].to_pylist() == [0, 0, 1, 2]
+
+
+def test_lsm_read_without_spec_errors(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table = db.create_table("t", _reader([1, 2, 3]))
+    table.set_unenforced_primary_key("id")  # no LSM write spec
+
+    with pytest.raises(Exception):
+        table.search().use_lsm_read().to_arrow()
+
+
+@pytest.mark.asyncio
+async def test_async_lsm_read(tmp_path):
+    db = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+    table = await db.create_table("t", _reader([1, 2, 3]))
+    await table.set_unenforced_primary_key("id")
+    await table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+
+    builder = (
+        table.merge_insert([]).when_matched_update_all().when_not_matched_insert_all()
+    )
+    await builder.execute(_reader([4, 5]))
+
+    arrow = await table.query().use_lsm_read().to_arrow()
+    assert sorted(arrow["id"].to_pylist()) == [1, 2, 3, 4, 5]

@@ -274,6 +274,7 @@ pub struct PyQueryRequest {
     pub select: PySelect,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
+    pub use_lsm_read: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub minimum_nprobes: Option<usize>,
@@ -304,6 +305,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
+                use_lsm_read: Some(query_request.use_lsm_read),
                 column: None,
                 query_vector: None,
                 minimum_nprobes: None,
@@ -328,6 +330,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
+                use_lsm_read: Some(vector_query.base.use_lsm_read),
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
                 minimum_nprobes: Some(vector_query.minimum_nprobes),
@@ -452,6 +455,10 @@ impl Query {
 
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn use_lsm_read(&mut self) {
+        self.inner = self.inner.clone().use_lsm_read();
     }
 
     pub fn with_row_id(&mut self) {
@@ -715,6 +722,10 @@ impl FTSQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
+    pub fn use_lsm_read(&mut self) {
+        self.inner = self.inner.clone().use_lsm_read();
+    }
+
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
     }
@@ -855,6 +866,10 @@ impl VectorQuery {
 
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn use_lsm_read(&mut self) {
+        self.inner = self.inner.clone().use_lsm_read();
     }
 
     pub fn with_row_id(&mut self) {

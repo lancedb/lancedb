@@ -820,6 +820,17 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
+        let use_lsm_read = match query {
+            AnyQuery::Query(q) => q.use_lsm_read,
+            AnyQuery::VectorQuery(q) => q.base.use_lsm_read,
+        };
+        if use_lsm_read {
+            return Err(Error::NotSupported {
+                message: "use_lsm_read is not supported for remote (LanceDB Cloud) tables"
+                    .to_string(),
+            });
+        }
+
         let mut request = self.post_read(&format!("/v1/table/{}/query/", self.identifier));
 
         if let Some(timeout) = options.timeout {

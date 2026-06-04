@@ -740,6 +740,30 @@ ArrowTable.
 
 ***
 
+### useLsmRead()
+
+```ts
+useLsmRead(): this
+```
+
+Read through the MemWAL LSM scanner so the query also returns data written
+via the LSM `mergeInsert` path that has not yet been compacted into the base
+table (the active/frozen in-memory memtables and the flushed generations),
+deduplicated by primary key.
+
+Requires an LSM write spec on the table (see [Table#setLsmWriteSpec](Table.md#setlsmwritespec));
+otherwise execution fails. By default reads only the base table.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.useLsmRead`
+
+***
+
 ### where()
 
 ```ts
