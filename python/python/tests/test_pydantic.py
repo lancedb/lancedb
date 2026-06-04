@@ -463,6 +463,14 @@ def test_fixed_size_list_validation():
     TestModel(vec=range(8))
 
 
+def test_bare_tuple_raises_type_error():
+    class TestModel(LanceModel):
+        items: Tuple
+
+    with pytest.raises(TypeError):
+        TestModel.to_arrow_schema()
+
+
 def test_lance_model():
     class TestModel(LanceModel):
         vector: Vector(16) = Field(default=[0.0] * 16)

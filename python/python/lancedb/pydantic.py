@@ -274,7 +274,9 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif py_type is datetime:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
-    elif getattr(py_type, "__origin__", None) in (list, tuple):
+    elif getattr(py_type, "__origin__", None) in (list, tuple) and getattr(
+        py_type, "__args__", None
+    ):
         child = py_type.__args__[0]
         return _pydantic_list_child_to_arrow(child, field)
     raise TypeError(
