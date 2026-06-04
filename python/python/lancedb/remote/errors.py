@@ -27,6 +27,9 @@ class LanceDBClientError(RuntimeError):
         self.request_id = request_id
         self.status_code = status_code
 
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (self.__class__, (str(self), self.request_id, self.status_code))
+
 
 class HttpError(LanceDBClientError):
     """An error that occurred during an HTTP request.
@@ -101,3 +104,19 @@ class RetryError(LanceDBClientError):
         self.max_request_failures = max_request_failures
         self.max_connect_failures = max_connect_failures
         self.max_read_failures = max_read_failures
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.request_failures,
+                self.connect_failures,
+                self.read_failures,
+                self.max_request_failures,
+                self.max_connect_failures,
+                self.max_read_failures,
+                self.status_code,
+            ),
+        )
