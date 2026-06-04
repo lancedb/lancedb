@@ -255,8 +255,9 @@ def test_plain_scan_query_to_pandas_blob_projection(tmp_db):
     assert df["double_id"].tolist() == [6, 8]
 
 
+@pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
 def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
-    tmp_db, monkeypatch
+    tmp_db, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
@@ -269,10 +270,69 @@ def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
 
     monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
-    df = query.to_pandas(blob_mode="bytes")
+    df = query.to_pandas(blob_mode=blob_mode)
 
     assert df["id"].tolist() == [1]
-    assert df["blob"].tolist() == [b"one"]
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
+
+
+def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
+    tmp_db, monkeypatch
+):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_desc_flatten", _blob_query_data()
+    )
+    query = table.search().where("id = 1").select(["id", "blob"])
+
+    def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before scanner pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = query.to_pandas(blob_mode="descriptions", flatten=True)
+
+    assert df["id"].tolist() == [1]
+    assert any(column == "blob" or column.startswith("blob.") for column in df.columns)
+
+
+def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = tmp_db.create_table("test_query_to_pandas_scanner_state", data.slice(0, 2))
+    table.add(data.slice(2, 2))
+
+    fragments = table.to_lance().get_fragments()
+    assert len(fragments) == 2
+
+    query = (
+        table.search()
+        .select(["id", "blob"])
+        .with_row_address()
+        .fragment_ids([fragments[1].fragment_id])
+    )
+    query_obj = query.to_query_object()
+    assert query_obj.with_row_address is True
+    assert query_obj.fragment_ids == [fragments[1].fragment_id]
+
+    df = query.to_pandas(blob_mode="descriptions")
+
+    assert df["id"].tolist() == [3, 4]
+    assert "_rowaddr" in df.columns
+    assert {rowaddr >> 32 for rowaddr in df["_rowaddr"]} == {fragments[1].fragment_id}
+
+    df_by_fragment = (
+        table.search()
+        .select(["id", "blob"])
+        .with_fragments([fragments[0]])
+        .to_pandas(blob_mode="descriptions")
+    )
+    assert df_by_fragment["id"].tolist() == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -312,8 +372,9 @@ async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
 async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
-    tmp_db_async, monkeypatch
+    tmp_db_async, monkeypatch, blob_mode
 ):
     pytest.importorskip("lance")
     table = await tmp_db_async.create_table(
@@ -326,10 +387,15 @@ async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow
 
     monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
 
-    df = await query.to_pandas(blob_mode="bytes")
+    df = await query.to_pandas(blob_mode=blob_mode)
 
     assert df["id"].tolist() == [1]
-    assert df["blob"].tolist() == [b"one"]
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
 
 
 def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
@@ -339,6 +405,18 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
     with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
             blob_mode="lazy"
+        )
+
+
+def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_vector_query_blob_descriptions", _blob_query_data()
+    )
+
+    with pytest.raises(RuntimeError, match="plain scan query"):
+        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
+            blob_mode="descriptions"
         )
 
 
