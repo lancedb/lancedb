@@ -2049,13 +2049,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         index_type: stats.index_type,
                         columns,
                         // These are left None until the server response wires
-                        // them through. See https://github.com/lancedb/lancedb/issues/3492
+                        // them through. See https://github.com/lancedb/lancedb/issues/3494
                         index_uuid: None,
+                        type_url: None,
                         created_at: None,
                         num_indexed_rows: None,
                         size_bytes: None,
-                        index_details: None,
                         num_segments: None,
+                        index_version: None,
+                        index_details: None,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -3953,22 +3955,26 @@ mod tests {
                 index_type: IndexType::IvfPq,
                 columns: vec!["vector".into()],
                 index_uuid: None,
+                type_url: None,
                 created_at: None,
                 num_indexed_rows: None,
                 size_bytes: None,
-                index_details: None,
                 num_segments: None,
+                index_version: None,
+                index_details: None,
             },
             IndexConfig {
                 name: "my_idx".into(),
                 index_type: IndexType::LabelList,
                 columns: vec!["metadata.`my.column`".into()],
                 index_uuid: None,
+                type_url: None,
                 created_at: None,
                 num_indexed_rows: None,
                 size_bytes: None,
-                index_details: None,
                 num_segments: None,
+                index_version: None,
+                index_details: None,
             },
         ];
         assert_eq!(indices, expected);

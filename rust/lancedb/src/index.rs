@@ -371,6 +371,10 @@ pub struct IndexConfig {
     /// This is the UUID of the first segment. `None` if it could not be
     /// determined (e.g. for remote tables, which do not yet surface this).
     pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub type_url: Option<String>,
     /// When the index was created, taken as the minimum creation time across
     /// all segments.
     ///
@@ -387,15 +391,19 @@ pub struct IndexConfig {
     /// `None` if size information is unavailable, such as for indices created
     /// before file sizes were tracked, or for remote tables.
     pub size_bytes: Option<u64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub num_segments: Option<u32>,
+    /// The on-disk index format version, taken from the first segment.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub index_version: Option<i32>,
     /// Index-type-specific details, serialized as JSON.
     ///
     /// The shape of this JSON varies by index type. `None` if the details
     /// could not be produced (e.g. no plugin available) or for remote tables.
     pub index_details: Option<String>,
-    /// The number of segments that make up the index.
-    ///
-    /// `None` if unavailable (e.g. for remote tables).
-    pub num_segments: Option<u32>,
 }
 
 #[skip_serializing_none]

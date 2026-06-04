@@ -2930,17 +2930,20 @@ impl BaseTable for NativeTable {
                 let segments = idx_desc.segments();
                 let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
                 let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
+                let index_version = segments.first().map(|seg| seg.index_version);
 
                 Some(IndexConfig {
                     name: idx_desc.name().to_string(),
                     index_type,
                     columns,
                     index_uuid,
+                    type_url: Some(idx_desc.type_url().to_string()),
                     created_at,
                     num_indexed_rows: Some(idx_desc.rows_indexed()),
                     size_bytes: idx_desc.total_size_bytes(),
-                    index_details: idx_desc.details().ok(),
                     num_segments: Some(segments.len() as u32),
+                    index_version,
+                    index_details: idx_desc.details().ok(),
                 })
             })
             .collect();
@@ -3405,10 +3408,12 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert!(index.index_uuid.is_some());
+        assert!(index.type_url.is_some());
         assert_eq!(index.num_segments, Some(1));
         assert_eq!(index.num_indexed_rows, Some(512));
         assert!(index.created_at.is_some());
         assert!(index.size_bytes.is_some());
+        assert!(index.index_version.is_some());
         assert!(index.index_details.is_some());
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
@@ -3762,10 +3767,12 @@ mod tests {
 
         // The richer metadata surfaced from describe_indices should be populated.
         assert!(index.index_uuid.is_some());
+        assert!(index.type_url.is_some());
         assert_eq!(index.num_segments, Some(1));
         assert_eq!(index.num_indexed_rows, Some(1));
         assert!(index.created_at.is_some());
         assert!(index.size_bytes.is_some());
+        assert!(index.index_version.is_some());
         assert!(index.index_details.is_some());
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
