@@ -885,9 +885,16 @@ class Permutation:
         for name in columns:
             value = self.selection.get(name, None)
             if value is None:
-                raise ValueError(
-                    f"Cannot select column `{name}` because it does not exist"
-                )
+                # `_rowid` is a system column the Rust reader can project on
+                # demand. It isn't part of the base table schema, so it isn't
+                # in the initial selection map, but callers can ask for it via
+                # select_columns(["_rowid", ...]).
+                if name == "_rowid":
+                    value = "_rowid"
+                else:
+                    raise ValueError(
+                        f"Cannot select column `{name}` because it does not exist"
+                    )
             new_selection[name] = value
         return self._with_selection(new_selection)
 

@@ -81,13 +81,40 @@ def _validate_blob_mode(blob_mode: BlobMode) -> None:
 
 def _field_is_blob(field: pa.Field) -> bool:
     metadata = field.metadata or {}
-    return metadata.get(b"lance-encoding:blob") == b"true" or (
-        metadata.get("lance-encoding:blob") == "true"
+    return (
+        metadata.get(b"lance-encoding:blob") == b"true"
+        or (metadata.get("lance-encoding:blob") == "true")
+        or metadata.get(b"ARROW:extension:name") == b"lance.blob.v2"
+        or (metadata.get("ARROW:extension:name") == "lance.blob.v2")
     )
 
 
 def _schema_has_blob_field(schema: pa.Schema) -> bool:
     return any(_field_is_blob(field) for field in schema)
+
+
+def _schema_blob_field_names(schema: pa.Schema) -> set[str]:
+    return {field.name for field in schema if _field_is_blob(field)}
+
+
+def _projection_returns_blob_column(columns: Any, blob_columns: set[str]) -> bool:
+    if not blob_columns:
+        return False
+    if columns is None:
+        return True
+    if isinstance(columns, dict):
+        return any(name in blob_columns for name in columns.keys())
+    if isinstance(columns, list):
+        for column in columns:
+            if isinstance(column, str) and column in blob_columns:
+                return True
+            if (
+                isinstance(column, tuple)
+                and len(column) == 2
+                and column[0] in blob_columns
+            ):
+                return True
+    return False
 
 
 def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
@@ -952,6 +979,11 @@ class LanceQueryBuilder(ABC):
                             return df
                     except Exception as err:
                         native_error = err
+                if native_error is not None and "No data in memory found" in str(
+                    native_error
+                ):
+                    tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
+                    return tbl.to_pandas(**kwargs)
                 reason = (
                     "this query shape cannot use Lance native pandas conversion"
                     if native_error is None
@@ -1168,6 +1200,23 @@ class LanceQueryBuilder(ABC):
         """
         self._with_row_id = with_row_id
         return self
+
+    def _effective_with_row_id(self) -> bool:
+        if self._with_row_id is not None:
+            return self._with_row_id
+        return self._returns_blob_column()
+
+    def _returns_blob_column(self) -> bool:
+        try:
+            blob_columns = _schema_blob_field_names(self._table.schema)
+        except Exception:
+            blob_columns = set()
+        if not blob_columns:
+            try:
+                blob_columns = set(self._table.blob_columns())
+            except Exception:
+                return False
+        return _projection_returns_blob_column(self._columns, blob_columns)
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
         """Set whether to return row addresses.
@@ -1623,7 +1672,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
-            with_row_id=self._with_row_id,
+            with_row_id=self._effective_with_row_id(),
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -1828,7 +1877,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
             postfilter=self._postfilter,
-            with_row_id=self._with_row_id,
+            with_row_id=self._effective_with_row_id(),
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -1901,7 +1950,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             columns=self._columns,
             filter=self._where,
             limit=self._limit,
-            with_row_id=self._with_row_id,
+            with_row_id=self._effective_with_row_id(),
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -2027,7 +2076,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_query=self._fts_query._query,
             reranker=self._reranker,
             limit=self._limit,
-            with_row_ids=self._with_row_id,
+            with_row_ids=self._effective_with_row_id(),
         )
 
     @staticmethod
@@ -2499,6 +2548,7 @@ class AsyncQueryBase(object):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
+        self._columns = None
 
     def to_query_object(self) -> Query:
         """
@@ -2559,6 +2609,7 @@ class AsyncQueryBase(object):
                 )
         else:
             raise TypeError("columns must be a list of column names or a dict")
+        self._columns = columns
         return self
 
     def with_row_id(self) -> Self:
@@ -2567,6 +2618,27 @@ class AsyncQueryBase(object):
         """
         self._inner.with_row_id()
         return self
+
+    async def _ensure_auto_row_id_for_blobs(self) -> None:
+        if self._table is None:
+            return
+        if self.to_query_object().with_row_id:
+            return
+        with_row_id = getattr(self._inner, "with_row_id", None)
+        if with_row_id is None:
+            return
+        try:
+            schema = await self._table.schema()
+            blob_columns = _schema_blob_field_names(schema)
+        except Exception:
+            blob_columns = set()
+        if not blob_columns:
+            try:
+                blob_columns = set(await self._table.blob_columns())
+            except Exception:
+                return
+        if _projection_returns_blob_column(self._columns, blob_columns):
+            with_row_id()
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
         """
@@ -2611,6 +2683,7 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
+        await self._ensure_auto_row_id_for_blobs()
         return AsyncRecordBatchReader(
             await self._inner.execute(
                 max_batch_length=max_batch_length, timeout=timeout
@@ -2623,6 +2696,7 @@ class AsyncQueryBase(object):
 
         This does not execute the query.
         """
+        await self._ensure_auto_row_id_for_blobs()
         return await self._inner.output_schema()
 
     async def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
