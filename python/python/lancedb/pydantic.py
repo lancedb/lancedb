@@ -251,6 +251,46 @@ def MultiVector(
     return MultiVectorList
 
 
+class Blob:
+    """Lance Blob V2 column annotation for LanceModel.
+
+    Declare a blob column on a LanceModel by annotating the field with ``Blob``:
+
+        from lancedb.pydantic import LanceModel, Blob
+
+        class Photo(LanceModel):
+            id: int
+            image: Blob
+
+    The pyarrow schema produced from the model contains a ``Struct<data, uri>``
+    field marked with the ``lance.blob.v2`` extension, matching the engine-side
+    blob v2 layout. Use ``Optional[Blob]`` for nullable columns.
+    """
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+    ) -> CoreSchema:
+        # Bytes only for the first cut. URI strings come with the URI write
+        # path in a later phase.
+        return core_schema.union_schema(
+            [
+                core_schema.bytes_schema(),
+                core_schema.none_schema(),
+            ]
+        )
+
+    @classmethod
+    def __get_validators__(cls) -> Generator[Callable, None, None]:
+        yield cls._validate
+
+    @classmethod
+    def _validate(cls, v):
+        if v is None or isinstance(v, bytes):
+            return v
+        raise TypeError(f"Blob field expects bytes or None; got {type(v).__name__}")
+
+
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     """Convert a field with native Python type to Arrow data type.
 
@@ -397,6 +437,12 @@ def is_nullable(field: FieldInfo) -> bool:
 
 def _pydantic_to_field(name: str, field: FieldInfo) -> pa.Field:
     """Convert a Pydantic field to a PyArrow Field."""
+    annotation = field.annotation
+    unwrapped = _unwrap_optional_annotation(annotation) or annotation
+    if inspect.isclass(unwrapped) and issubclass(unwrapped, Blob):
+        from lancedb.schema import blob as _blob_field
+
+        return _blob_field(name, nullable=is_nullable(field))
     dt = _pydantic_to_arrow_type(field)
     return pa.field(name, dt, is_nullable(field))
 

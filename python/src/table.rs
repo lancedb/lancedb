@@ -11,19 +11,20 @@ use crate::{
     table::scannable::PyScannable,
 };
 use arrow::{
+    array::Array,
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
+    AddDataMode, BlobFile, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
+    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
 };
 
 mod scannable;
@@ -396,6 +397,30 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
         Self {
             version: result.version,
         }
+    }
+}
+
+/// A lazy handle to a blob value.
+///
+/// Returned by ``Table.take_blob_files``. Call ``read()`` to fetch the bytes on
+/// demand, so a list of handles can be assembled cheaply and only the rows you
+/// actually need pay the read cost.
+#[pyclass(name = "BlobFile")]
+pub struct PyBlobFile {
+    inner: Arc<BlobFile>,
+}
+
+#[pymethods]
+impl PyBlobFile {
+    /// Read the blob's bytes.
+    pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let bytes = inner.read().await.map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("blob read failed: {}", e))
+            })?;
+            Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
+        })
     }
 }
 
@@ -876,6 +901,56 @@ impl Table {
         Ok(TakeQuery::new(
             self_.inner_ref()?.clone().take_row_ids(row_ids),
         ))
+    }
+
+    /// Names of blob v2 columns declared on this table.
+    pub fn blob_columns(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.blob_columns().await.infer_error()
+        })
+    }
+
+    /// Load blob bytes for the given row ids and blob column.
+    ///
+    /// Row ids should come from query results with ``with_row_id=True``.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn take_blobs(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let bytes = inner
+                .take_blobs(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Python::attach(|py| bytes.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    /// Load blob file handles for the given row ids and blob column.
+    ///
+    /// Returns a list of ``BlobFile`` objects whose bytes are read on demand,
+    /// for streaming or selective reads over large payloads.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn take_blob_files(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let files = inner
+                .take_blob_files(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Ok(files
+                .into_iter()
+                .map(|f| PyBlobFile { inner: Arc::new(f) })
+                .collect::<Vec<_>>())
+        })
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.

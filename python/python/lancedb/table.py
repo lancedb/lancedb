@@ -1969,6 +1969,81 @@ class Table(ABC):
         to check if the table is already using the new path style.
         """
 
+    @abstractmethod
+    def blob_columns(self) -> list[str]:
+        """Names of blob v2 columns declared on this table.
+
+        Returns an empty list when no blob columns are present. Remote tables
+        raise :class:`NotImplementedError` until cloud adds blob support.
+        """
+
+    @abstractmethod
+    def take_blobs(self, column: str, row_ids: Union[list[int], pa.Table]) -> pa.Array:
+        """Load blob bytes for ``column`` at the given rows.
+
+        ``row_ids`` accepts either a ``list[int]`` of row ids or a
+        ``pyarrow.Table`` from a query result that includes a blob column.
+        Blob query results include ``_rowid`` automatically.
+        The result is aligned 1:1 with the rows; null blob values stay null.
+        Remote tables raise :class:`NotImplementedError`.
+        """
+
+    @abstractmethod
+    def take_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[BlobFile]":
+        """Load lazy blob handles for ``column`` at the given rows.
+
+        Each handle has a ``read()`` method that returns the bytes on demand.
+        Remote tables raise :class:`NotImplementedError`.
+        """
+
+
+class BlobFile:
+    """Lazy handle to a blob value, returned by
+    :meth:`LanceTable.take_blob_files`.
+
+    Call :meth:`read` to materialize the blob's bytes. The point of working
+    with handles instead of bytes is that you can assemble a list of them
+    cheaply and only pay the read cost for the rows you actually need.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def read(self) -> bytes:
+        """Read the blob's bytes."""
+
+        async def _read():
+            return await self._inner.read()
+
+        return LOOP.run(_read())
+
+
+def _normalize_blob_row_ids(row_ids) -> list[int]:
+    """Coerce a query result or row-id collection into a plain ``list[int]``.
+
+    Accepts a ``pyarrow.Table`` (extracts ``_rowid``), a ``list[int]``, or
+    any iterable of ints. Raises :class:`ValueError` for inputs that don't
+    carry the row address Lance needs to resolve blob bytes.
+    """
+    if isinstance(row_ids, pa.Table):
+        if "_rowid" not in row_ids.column_names:
+            raise ValueError(
+                "take_blobs got a query result without '_rowid'. "
+                "Use a blob-returning query result, or call "
+                ".with_row_id(True) before .to_arrow()."
+            )
+        return row_ids["_rowid"].to_pylist()
+    if isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
+        raise ValueError(
+            "take_blobs got an array column (e.g. results['image']) but a "
+            "descriptor alone doesn't carry the row address Lance needs to "
+            "resolve the bytes. Pass the whole query result table instead "
+            "(take_blobs('image', hits)), or pass a list of row ids."
+        )
+    return list(row_ids)
+
 
 class LanceTable(Table):
     """
@@ -2147,6 +2222,43 @@ class LanceTable(Table):
 
     def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+
+    def blob_columns(self) -> list[str]:
+        """Return the names of blob v2 columns on this table."""
+        return LOOP.run(self._table.blob_columns())
+
+    def take_blobs(self, column: str, row_ids) -> pa.Array:
+        """Load blob bytes for ``column`` at the given rows.
+
+        ``row_ids`` can be either:
+
+        - a ``list[int]`` of row ids (typically pulled from a query result's
+          ``_rowid`` column), or
+        - a ``pyarrow.Table`` from a query result that includes a blob column;
+          the automatically included ``_rowid`` column is extracted internally.
+
+        Passing a query result that doesn't include ``_rowid`` raises a clear
+        ``ValueError``.
+
+        The result is aligned 1:1 with the rows; rows whose blob value is
+        null appear as null in the returned array.
+        """
+        return LOOP.run(
+            self._table.take_blobs(column, _normalize_blob_row_ids(row_ids))
+        )
+
+    def take_blob_files(self, column: str, row_ids) -> "list[BlobFile]":
+        """Load blob file handles for ``column`` at the given rows.
+
+        Returns a list of :class:`BlobFile` handles whose bytes are read on
+        demand. Useful for streaming or selective reads over large payloads.
+        """
+        return [
+            BlobFile(f)
+            for f in LOOP.run(
+                self._table.take_blob_files(column, _normalize_blob_row_ids(row_ids))
+            )
+        ]
 
     @property
     def tags(self) -> Tags:
@@ -5457,6 +5569,30 @@ class AsyncTable:
             A query object that can be executed to get the rows.
         """
         return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+
+    async def blob_columns(self) -> list[str]:
+        """Return the names of blob v2 columns on this table."""
+        return await self._inner.blob_columns()
+
+    async def take_blobs(self, column: str, row_ids) -> pa.Array:
+        """Load blob bytes for ``column`` at the given rows.
+
+        ``row_ids`` accepts either a ``list[int]`` of row ids or a
+        ``pyarrow.Table`` from a query result that includes a blob column.
+        Blob query results include ``_rowid`` automatically.
+        The result is aligned 1:1 with the rows; null blob values stay null.
+        """
+        return await self._inner.take_blobs(column, _normalize_blob_row_ids(row_ids))
+
+    async def take_blob_files(self, column: str, row_ids) -> list:
+        """Load blob file handles for ``column`` at the given rows.
+
+        Returns a list of native ``BlobFile`` handles. Each handle has an
+        async ``read()`` method that returns the bytes on demand.
+        """
+        return await self._inner.take_blob_files(
+            column, _normalize_blob_row_ids(row_ids)
+        )
 
     @property
     def tags(self) -> AsyncTags:
