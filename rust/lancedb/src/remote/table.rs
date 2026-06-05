@@ -4121,7 +4121,6 @@ mod tests {
             index_type: IndexType::IvfPq,
             distance_type: Some(DistanceType::L2),
             num_indices: None,
-            loss: None,
         };
         assert_eq!(indices, expected);
 

@@ -5637,8 +5637,6 @@ class IndexStatistics:
         The distance type used by the index.
     num_indices: Optional[int]
         The number of parts the index is split into.
-    loss: Optional[float]
-        The KMeans loss for the index, for only vector indices.
     """
 
     num_indexed_rows: int
@@ -5658,7 +5656,6 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
-    loss: Optional[float] = None
 
     # This exists for backwards compatibility with an older API, which returned
     # a dictionary instead of a class.

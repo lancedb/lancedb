@@ -721,7 +721,7 @@ describe("When creating an index", () => {
       columns: ["vec"],
     });
     const stats = await tbl.indexStats("vec_idx");
-    expect(stats?.loss).toBeDefined();
+    expect(stats).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
@@ -1150,7 +1150,6 @@ describe("When creating an index", () => {
     expect(stats?.distanceType).toBeUndefined();
     expect(stats?.indexType).toEqual("BTREE");
     expect(stats?.numIndices).toEqual(1);
-    expect(stats?.loss).toBeUndefined();
   });
 
   test("when getting stats on non-existent index", async () => {
