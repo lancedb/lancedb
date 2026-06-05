@@ -832,6 +832,9 @@ impl ListingDatabase {
             .or(write_params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
 
+        let data_schema = request.data.arrow_schema();
+        crate::blob::apply_blob_storage_version(&data_schema, &mut write_params);
+
         if let Some(enable_v2_manifest_paths) =
             v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
         {

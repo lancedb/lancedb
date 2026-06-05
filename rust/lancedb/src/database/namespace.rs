@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
+use lance_datafusion::utils::StreamingWriteSource;
 use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
     LanceNamespace,
@@ -207,6 +208,9 @@ impl LanceNamespaceDatabase {
         params.data_storage_version = storage_version_override
             .or(params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
+
+        let data_schema = request.data.arrow_schema();
+        crate::blob::apply_blob_storage_version(&data_schema, params);
 
         if let Some(enable_v2_manifest_paths) =
             v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)

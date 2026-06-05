@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::scannable::Scannable;
 use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
+use crate::table::datafusion::blob_coerce::BlobCoerceExec;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
@@ -178,6 +179,8 @@ impl AddDataBuilder {
             .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
             Arc::new(ScannableExec::new(self.data, tracker.clone()));
+        let table_arrow_schema = Arc::new(table_schema.as_ref().clone());
+        let plan = BlobCoerceExec::try_new(plan, table_arrow_schema)?;
         // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
             plan

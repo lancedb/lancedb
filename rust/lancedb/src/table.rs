@@ -3,7 +3,7 @@
 
 //! LanceDB Table APIs
 
-use arrow_array::{RecordBatch, RecordBatchReader};
+use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_execution::TaskContext;
@@ -86,6 +86,7 @@ pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
+pub use lance::dataset::BlobFile;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
@@ -650,6 +651,48 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+    /// Names of blob v2 columns declared on this table.
+    ///
+    /// Defaults to reading the Arrow schema and filtering for the
+    /// `lance.blob.v2` extension marker, which is sufficient for any
+    /// implementation that returns an accurate schema.
+    async fn blob_columns(&self) -> Result<Vec<String>> {
+        let schema = self.schema().await?;
+        Ok(crate::blob::blob_v2_column_names(schema.as_ref()))
+    }
+
+    /// Resolve blob payloads for the given stable row ids.
+    ///
+    /// Blob columns return lightweight descriptions from queries; use this method
+    /// (with row ids from [`QueryRequest::with_row_id`]) to load the actual bytes.
+    ///
+    /// Remote tables do not support this operation.
+    async fn take_blobs_by_row_ids(
+        &self,
+        _column: &str,
+        _row_ids: &[u64],
+    ) -> Result<Vec<BlobFile>> {
+        Err(Error::NotSupported {
+            message: "take_blobs is only supported on local tables".into(),
+        })
+    }
+
+    /// Resolve blob payloads into a [`LargeBinaryArray`] aligned 1:1 with `row_ids`.
+    ///
+    /// Implementations must preserve null alignment: row positions whose blob
+    /// value is null appear as nulls in the output. The default returns
+    /// [`Error::NotSupported`] because the aligned read needs direct dataset
+    /// access; local tables override it via [`crate::blob::take_blobs_bytes_aligned`].
+    async fn take_blobs_bytes_by_row_ids(
+        &self,
+        _column: &str,
+        _row_ids: &[u64],
+    ) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "take_blobs is only supported on local tables".into(),
+        })
+    }
+
     /// Create an ExecutionPlan for inserting data into the table.
     ///
     /// This is used by the DataFusion TableProvider implementation to support
@@ -1308,6 +1351,35 @@ impl Table {
     ///
     pub fn take_row_ids(&self, row_ids: Vec<u64>) -> TakeQuery {
         TakeQuery::from_row_ids(self.inner.clone(), row_ids)
+    }
+
+    /// Names of blob v2 columns declared on this table.
+    pub async fn blob_columns(&self) -> Result<Vec<String>> {
+        self.inner.blob_columns().await
+    }
+
+    /// Load blob file handles for the given row ids and blob column.
+    ///
+    /// Obtain row ids from query results via [`Query::with_row_id`].
+    pub async fn take_blob_files(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+    ) -> Result<Vec<BlobFile>> {
+        self.inner
+            .take_blobs_by_row_ids(column.as_ref(), row_ids)
+            .await
+    }
+
+    /// Load blob bytes for the given row ids and blob column.
+    pub async fn take_blobs(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+    ) -> Result<LargeBinaryArray> {
+        self.inner
+            .take_blobs_bytes_by_row_ids(column.as_ref(), row_ids)
+            .await
     }
 
     /// Search the table with a given query vector.
@@ -2692,6 +2764,21 @@ impl BaseTable for NativeTable {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),
         }
+    }
+
+    async fn take_blobs_by_row_ids(&self, column: &str, row_ids: &[u64]) -> Result<Vec<BlobFile>> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::ensure_blob_column(dataset.schema(), column)?;
+        Ok(dataset.take_blobs(row_ids, column).await?)
+    }
+
+    async fn take_blobs_bytes_by_row_ids(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+    ) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blobs_bytes_aligned(&dataset, column, row_ids).await
     }
 
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {

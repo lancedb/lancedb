@@ -163,6 +163,7 @@
 //! ```
 
 pub mod arrow;
+pub mod blob;
 pub mod connection;
 pub mod data;
 pub mod database;
@@ -259,9 +260,11 @@ impl Display for DistanceType {
 }
 
 /// Connect to a database
+pub use blob::{apply_blob_storage_version, blob, is_blob, is_blob_v2};
 pub use connection::connect;
 /// Connect to a namespace-backed database
 pub use connection::connect_namespace;
+pub use lance::dataset::BlobFile;
 
 /// Re-export Lance Session and ObjectStoreRegistry for custom session creation
 pub use lance::session::Session;
