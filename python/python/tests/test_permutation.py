@@ -670,6 +670,17 @@ def test_rename_columns(some_permutation: Permutation):
         some_permutation.rename_columns({"value": "id"})
 
 
+def test_select_columns_allows_rowid(mem_db: DBConnection):
+    tbl = mem_db.create_table("t", [{"id": i, "value": i} for i in range(10)])
+    perm_tbl = permutation_builder(tbl).shuffle(seed=42).execute()
+    perm = Permutation.from_tables(tbl, perm_tbl).select_columns(["_rowid", "id"])
+    rows = perm.take_offsets([0, 1, 2])
+    assert len(rows) == 3
+    sample_keys = rows[0].keys()
+    assert "_rowid" in sample_keys, f"_rowid missing from {sample_keys}"
+    assert "id" in sample_keys, f"id missing from {sample_keys}"
+
+
 def test_select_columns(some_permutation: Permutation):
     assert some_permutation.select_columns(["id"]).schema == pa.schema(
         [("id", pa.int64())]
