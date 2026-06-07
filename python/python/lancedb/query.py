@@ -43,6 +43,11 @@ from .util import flatten_columns
 
 BlobMode = Literal["lazy", "bytes", "descriptions"]
 
+MULTIPLE_WHERE_ERROR = (
+    "where() has already been called on this query; combine predicates with AND "
+    "in a single where() call"
+)
+
 _BLOB_MODE_TO_HANDLING = {
     "lazy": "blobs_descriptions",
     "bytes": "all_binary",
@@ -888,6 +893,10 @@ class LanceQueryBuilder(ABC):
         self._bypass_vector_index = None
         self._order_by = None
 
+    def _check_no_existing_where(self):
+        if self._where is not None:
+            raise ValueError(MULTIPLE_WHERE_ERROR)
+
     @deprecation.deprecated(
         deprecated_in="0.3.1",
         removed_in="0.4.0",
@@ -1149,6 +1158,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
+        self._check_no_existing_where()
         self._where = where
         self._postfilter = not prefilter
         return self
@@ -1694,6 +1704,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
+        self._check_no_existing_where()
         self._where = where
         if prefilter is not None:
             self._postfilter = not prefilter
@@ -2496,9 +2507,14 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
         self._table = table
+        self._where = None
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
+
+    def _check_no_existing_where(self):
+        if self._where is not None:
+            raise ValueError(MULTIPLE_WHERE_ERROR)
 
     def to_query_object(self) -> Query:
         """
@@ -2895,6 +2911,8 @@ class AsyncStandardQuery(AsyncQueryBase):
         Filtering performance can often be improved by creating a scalar index
         on the filter column(s).
         """
+        self._check_no_existing_where()
+        self._where = predicate
         if isinstance(predicate, Expr):
             self._inner.where_expr(predicate._inner)
         else:

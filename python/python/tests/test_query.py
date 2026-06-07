@@ -1438,6 +1438,23 @@ def test_query_serialization_sync(table: lancedb.table.Table):
     check_set_props(q, full_text_query=FullTextSearchQuery(columns=[], query="foo"))
 
 
+def test_query_builder_rejects_multiple_where_calls(table: lancedb.table.Table):
+    query = table.search().where("id = 1")
+    with pytest.raises(ValueError, match=r"where\(\) has already been called"):
+        query.where("id = 2")
+    check_set_props(query.to_query_object(), filter="id = 1")
+
+    vector_query = table.search([5.0, 6.0]).where("id = 1")
+    with pytest.raises(ValueError, match=r"where\(\) has already been called"):
+        vector_query.where("id = 2")
+    check_set_props(
+        vector_query.to_query_object(),
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        filter="id = 1",
+    )
+
+
 @pytest.mark.asyncio
 async def test_query_serialization_async(table_async: AsyncTable):
     # Simple queries
@@ -1618,6 +1635,14 @@ async def test_query_serialization_async(table_async: AsyncTable):
         full_text_query=FullTextSearchQuery(columns=None, query=phrase_query),
         with_row_id=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_async_query_rejects_multiple_where_calls(table_async: AsyncTable):
+    query = table_async.query().where("id = 1")
+    with pytest.raises(ValueError, match=r"where\(\) has already been called"):
+        query.where("id = 2")
+    check_set_props(query.to_query_object(), filter="id = 1", with_row_id=False)
 
 
 def test_query_schema(tmp_path):
