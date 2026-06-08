@@ -16,12 +16,12 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
 };
@@ -143,18 +143,20 @@ pub struct MergeResult {
     pub num_inserted_rows: u64,
     pub num_deleted_rows: u64,
     pub num_attempts: u32,
+    pub num_rows: u64,
 }
 
 #[pymethods]
 impl MergeResult {
     pub fn __repr__(&self) -> String {
         format!(
-            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={})",
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={}, num_rows={})",
             self.version,
             self.num_updated_rows,
             self.num_inserted_rows,
             self.num_deleted_rows,
-            self.num_attempts
+            self.num_attempts,
+            self.num_rows
         )
     }
 }
@@ -167,7 +169,149 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: result.num_inserted_rows,
             num_deleted_rows: result.num_deleted_rows,
             num_attempts: result.num_attempts,
+            num_rows: result.num_rows,
         }
+    }
+}
+
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `merge_insert`.
+///
+/// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
+/// classmethods, then optionally chain `with_maintained_indexes(...)` and
+/// `with_writer_config_defaults(...)`.
+#[pyclass(from_py_object)]
+#[derive(Clone, Debug)]
+pub struct LsmWriteSpec {
+    inner: lancedb::table::LsmWriteSpec,
+}
+
+#[pymethods]
+impl LsmWriteSpec {
+    /// Hash-bucket sharding by the unenforced primary key column.
+    #[staticmethod]
+    pub fn bucket(column: String, num_buckets: u32) -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::bucket(column, num_buckets),
+        }
+    }
+
+    /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// `column` must be a deterministic function of the unenforced primary
+    /// key: every row with a given primary key must always produce the same
+    /// `column` value, or upserts of that key can land in different shards
+    /// and a stale version can win. Typically `column` is the primary key
+    /// itself or a stable attribute of it.
+    #[staticmethod]
+    pub fn identity(column: String) -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::identity(column),
+        }
+    }
+
+    /// No sharding — every `merge_insert` call writes to a single
+    /// MemWAL shard.
+    #[staticmethod]
+    pub fn unsharded() -> Self {
+        Self {
+            inner: lancedb::table::LsmWriteSpec::unsharded(),
+        }
+    }
+
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that
+    /// already exists on the table at the time `set_lsm_write_spec`
+    /// is called.
+    pub fn with_maintained_indexes(&self, indexes: Vec<String>) -> Self {
+        Self {
+            inner: self.inner.clone().with_maintained_indexes(indexes),
+        }
+    }
+
+    /// Replace the default `ShardWriter` configuration recorded in the
+    /// MemWAL index, so every writer starts from the same defaults.
+    pub fn with_writer_config_defaults(&self, defaults: HashMap<String, String>) -> Self {
+        Self {
+            inner: self.inner.clone().with_writer_config_defaults(defaults),
+        }
+    }
+
+    pub fn __repr__(&self) -> String {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => format!(
+                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, num_buckets, maintained_indexes, writer_config_defaults,
+            ),
+            lancedb::table::LsmWriteSpec::Identity {
+                column,
+                maintained_indexes,
+                writer_config_defaults,
+            } => format!(
+                "LsmWriteSpec.identity(column={:?}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, maintained_indexes, writer_config_defaults,
+            ),
+            lancedb::table::LsmWriteSpec::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => format!(
+                "LsmWriteSpec.unsharded(maintained_indexes={:?}, writer_config_defaults={:?})",
+                maintained_indexes, writer_config_defaults,
+            ),
+        }
+    }
+
+    /// Discriminator string identifying the variant ("bucket", "identity",
+    /// or "unsharded").
+    #[getter]
+    pub fn spec_type(&self) -> &'static str {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::LsmWriteSpec::Identity { .. } => "identity",
+            lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
+        }
+    }
+
+    /// Bucket and identity variants: the sharding column. `None` for unsharded.
+    #[getter]
+    pub fn column(&self) -> Option<String> {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { column, .. }
+            | lancedb::table::LsmWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::LsmWriteSpec::Unsharded { .. } => None,
+        }
+    }
+
+    /// Bucket variant only: the number of buckets.
+    #[getter]
+    pub fn num_buckets(&self) -> Option<u32> {
+        match &self.inner {
+            lancedb::table::LsmWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            _ => None,
+        }
+    }
+
+    /// Names of indexes the MemWAL should keep up to date during writes.
+    #[getter]
+    pub fn maintained_indexes(&self) -> Vec<String> {
+        self.inner.maintained_indexes().to_vec()
+    }
+
+    /// Default `ShardWriter` configuration recorded by this spec.
+    #[getter]
+    pub fn writer_config_defaults(&self) -> HashMap<String, String> {
+        self.inner.writer_config_defaults().clone()
+    }
+}
+
+impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+    fn from(spec: LsmWriteSpec) -> Self {
+        spec.inner
     }
 }
 
@@ -207,6 +351,27 @@ impl AlterColumnsResult {
 
 impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
     fn from(result: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct UpdateFieldMetadataResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl UpdateFieldMetadataResult {
+    pub fn __repr__(&self) -> String {
+        format!("UpdateFieldMetadataResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(result: lancedb::table::UpdateFieldMetadataResult) -> Self {
         Self {
             version: result.version,
         }
@@ -546,10 +711,6 @@ impl Table {
                         dict.set_item("num_indices", num_indices)?;
                     }
 
-                    if let Some(loss) = stats.loss {
-                        dict.set_item("loss", loss)?;
-                    }
-
                     Ok(Some(dict.unbind()))
                 })
             } else {
@@ -798,10 +959,54 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
+        if let Some(use_lsm_write) = parameters.use_lsm_write {
+            builder.use_lsm_write(use_lsm_write);
+        }
+        if let Some(validate_single_shard) = parameters.validate_single_shard {
+            builder.validate_single_shard(validate_single_shard);
+        }
 
         future_into_py(self_.py(), async move {
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
             Ok(MergeResult::from(res))
+        })
+    }
+
+    pub fn set_unenforced_primary_key<'a>(
+        self_: PyRef<'a, Self>,
+        columns: Vec<String>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .set_unenforced_primary_key(columns)
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn set_lsm_write_spec<'a>(
+        self_: PyRef<'a, Self>,
+        spec: LsmWriteSpec,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let native_spec = lancedb::table::LsmWriteSpec::from(spec);
+        future_into_py(self_.py(), async move {
+            inner.set_lsm_write_spec(native_spec).await.infer_error()
+        })
+    }
+
+    pub fn unset_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.close_lsm_writers().await.infer_error()
         })
     }
 
@@ -914,29 +1119,55 @@ impl Table {
         field_name: String,
         metadata: &Bound<'_, PyDict>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let mut new_metadata = HashMap::<String, String>::new();
-        for (column_name, value) in metadata.into_iter() {
-            let key: String = column_name.extract()?;
-            let value: String = value.extract()?;
-            new_metadata.insert(key, value);
+        // Deprecated: forwards to the update_field_metadata path (replace mode).
+        let mut update = FieldMetadataUpdate::new(field_name).replace();
+        for (key, value) in metadata.into_iter() {
+            update = update.set(key.extract::<String>()?, value.extract::<String>()?);
         }
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let native_tbl = inner
-                .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
-            let schema = native_tbl.manifest().await.infer_error()?.schema;
-            let field = schema
-                .field(&field_name)
-                .ok_or_else(|| PyKeyError::new_err(format!("Field {} not found", field_name)))?;
-
-            native_tbl
-                .replace_field_metadata(vec![(field.id as u32, new_metadata)])
-                .await
-                .infer_error()?;
-
+            inner.update_field_metadata(&[update]).await.infer_error()?;
             Ok(())
+        })
+    }
+
+    pub fn update_field_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: Vec<Bound<PyDict>>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let updates = updates
+            .iter()
+            .map(|update| {
+                let path: String = update
+                    .get_item("path")?
+                    .ok_or_else(|| PyValueError::new_err("Missing path"))?
+                    .extract()?;
+                let mut field_update = FieldMetadataUpdate::new(path);
+                if let Some(metadata) = update.get_item("metadata")? {
+                    let metadata_dict = metadata.cast::<PyDict>()?;
+                    for (key, value) in metadata_dict.iter() {
+                        let key: String = key.extract()?;
+                        if value.is_none() {
+                            field_update = field_update.remove(key);
+                        } else {
+                            field_update = field_update.set(key, value.extract::<String>()?);
+                        }
+                    }
+                }
+                if let Some(replace) = update.get_item("replace")?
+                    && replace.extract::<bool>()?
+                {
+                    field_update = field_update.replace();
+                }
+                Ok(field_update)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.update_field_metadata(&updates).await.infer_error()?;
+            Ok(UpdateFieldMetadataResult::from(result))
         })
     }
 }
@@ -958,6 +1189,8 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition: Option<String>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
+    use_lsm_write: Option<bool>,
+    validate_single_shard: Option<bool>,
 }
 
 #[pyclass]

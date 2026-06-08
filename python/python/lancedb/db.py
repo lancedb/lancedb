@@ -8,7 +8,17 @@ from abc import abstractmethod
 from datetime import timedelta
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Generator,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Union,
+)
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -313,7 +323,7 @@ class DBConnection(EnforceOverrides):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data)
-        LanceTable(name='my_table', version=1, ...)
+        LanceTable(name='my_table', ...)
         >>> db["my_table"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -334,7 +344,7 @@ class DBConnection(EnforceOverrides):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data)
-        LanceTable(name='table2', version=1, ...)
+        LanceTable(name='table2', ...)
         >>> db["table2"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -357,7 +367,7 @@ class DBConnection(EnforceOverrides):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(name='table3', version=1, ...)
+        LanceTable(name='table3', ...)
         >>> db["table3"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -391,7 +401,7 @@ class DBConnection(EnforceOverrides):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(name='table4', version=1, ...)
+        LanceTable(name='table4', ...)
 
         """
         raise NotImplementedError
@@ -568,15 +578,15 @@ class LanceDBConnection(DBConnection):
     >>> db = lancedb.connect("./.lancedb")
     >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
     ...                                   {"vector": [0.5, 1.3], "b": 4}])
-    LanceTable(name='my_table', version=1, ...)
+    LanceTable(name='my_table', ...)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
-    LanceTable(name='another_table', version=1, ...)
+    LanceTable(name='another_table', ...)
     >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
     >>> db["my_table"]
-    LanceTable(name='my_table', version=1, ...)
+    LanceTable(name='my_table', ...)
     >>> "my_table" in db
     True
     >>> db.drop_table("my_table")
@@ -847,11 +857,20 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
     def __len__(self) -> int:
-        return len(self.table_names())
+        return sum(1 for _ in self._all_table_names())
 
     def __contains__(self, name: str) -> bool:
-        return name in self.table_names()
+        return name in self._all_table_names()
 
     @override
     def create_table(

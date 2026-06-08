@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import re
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import timedelta
 import http.server
 import json
 import multiprocessing as mp
+import pickle
+import re
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -170,6 +172,155 @@ def test_table_len_sync():
         assert len(table) == 1
 
 
+def test_remote_connection_serializes():
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"tables": []}')
+
+    with mock_lancedb_connection(handler) as db:
+        serialized = json.loads(db.serialize())
+        assert isinstance(serialized["client_config"], dict)
+        restored = lancedb.deserialize_conn(db.serialize())
+        assert restored.table_names() == []
+
+
+def test_remote_table_is_picklable():
+    def handler(request):
+        request.close_connection = True
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": {"type": "int64"}, "nullable": False}
+                        ]
+                    },
+                }
+            )
+            request.wfile.write(payload.encode())
+        elif request.path == "/v1/table/test/count_rows/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"3")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        restored = pickle.loads(pickle.dumps(table))
+        assert restored.count_rows() == 3
+
+
+def test_remote_table_open_does_not_require_picklable_client_config():
+    from lancedb.remote import HeaderProvider
+
+    class LocalHeaderProvider(HeaderProvider):
+        def get_headers(self):
+            return {"X-Test-Header": "present"}
+
+    def handler(request):
+        request.close_connection = True
+        assert request.headers.get("X-Test-Header") == "present"
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/count_rows/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"3")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with http.server.HTTPServer(
+        ("localhost", 0), make_mock_http_handler(handler)
+    ) as server:
+        port = server.server_address[1]
+        handle = threading.Thread(target=server.serve_forever)
+        handle.start()
+        try:
+            db = lancedb.connect(
+                "db://dev",
+                api_key="fake",
+                host_override=f"http://localhost:{port}",
+                client_config={
+                    "retry_config": {"retries": 0},
+                    "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+                    "header_provider": LocalHeaderProvider(),
+                },
+            )
+            table = db.open_table("test")
+            assert table.count_rows() == 3
+            with pytest.raises(ValueError, match="header_provider"):
+                pickle.dumps(table)
+        finally:
+            server.shutdown()
+            handle.join()
+
+
+def test_remote_permutation_is_picklable():
+    from lancedb.permutation import Permutation
+
+    rows = list(range(10))
+
+    def handler(request):
+        request.close_connection = True
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "a", "type": {"type": "int64"}, "nullable": False}
+                        ]
+                    },
+                }
+            )
+            request.wfile.write(payload.encode())
+        elif request.path == "/v1/table/test/count_rows/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(str(len(rows)).encode())
+        elif request.path == "/v1/table/test/query/":
+            content_len = int(request.headers.get("Content-Length"))
+            body = json.loads(request.rfile.read(content_len))
+            if "filter" in body:
+                match = re.search(r"_rowoffset in \((.*?)\)", body["filter"])
+                offsets = [int(offset.strip()) for offset in match.group(1).split(",")]
+            else:
+                offsets = rows
+            table = pa.table({"a": [rows[offset] for offset in offsets]})
+
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
+                writer.write_table(table)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        permutation = Permutation.identity(db.open_table("test"))
+        restored = pickle.loads(pickle.dumps(permutation))
+        assert restored.__getitems__([0, 2, 4]) == [{"a": 0}, {"a": 2}, {"a": 4}]
+
+
 def test_create_table_exist_ok():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=exist_ok":
@@ -268,6 +419,25 @@ def test_table_unimplemented_functions():
             table.to_pandas()
 
 
+def test_table_to_pandas_not_supported():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(NotImplementedError):
+            table.to_pandas()
+        with pytest.raises(NotImplementedError):
+            table.to_pandas(blob_mode="bytes", split_blocks=True)
+
+
 def test_table_add_in_threadpool():
     def handler(request):
         if request.path == "/v1/table/test/insert/":
@@ -342,6 +512,22 @@ def test_table_create_indices():
                     schema=dict(
                         fields=[
                             dict(name="id", type={"type": "int64"}, nullable=False),
+                            dict(name="text", type={"type": "string"}, nullable=False),
+                            dict(
+                                name="vector",
+                                type={
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        dict(
+                                            name="item",
+                                            type={"type": "float"},
+                                            nullable=True,
+                                        )
+                                    ],
+                                    "length": 2,
+                                },
+                                nullable=False,
+                            ),
                         ]
                     ),
                 )
@@ -400,22 +586,25 @@ def test_table_create_indices():
         # This is a smoke-test.
         table = db.create_table("test", [{"id": 1}])
 
-        # Test create_scalar_index with custom name
-        table.create_scalar_index(
-            "id", wait_timeout=timedelta(seconds=2), name="custom_scalar_idx"
-        )
+        # Test create_scalar_index with custom name (legacy method)
+        with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+            table.create_scalar_index(
+                "id", wait_timeout=timedelta(seconds=2), name="custom_scalar_idx"
+            )
 
-        # Test create_fts_index with custom name
-        table.create_fts_index(
-            "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
-        )
+        # Test create_fts_index with custom name (legacy method)
+        with pytest.warns(DeprecationWarning, match="create_fts_index"):
+            table.create_fts_index(
+                "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
+            )
 
-        # Test create_index with custom name
-        table.create_index(
-            vector_column_name="vector",
-            wait_timeout=timedelta(seconds=10),
-            name="custom_vector_idx",
-        )
+        # Test create_index with custom name (legacy form: vector_column_name kwarg)
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                vector_column_name="vector",
+                wait_timeout=timedelta(seconds=10),
+                name="custom_vector_idx",
+            )
 
         # Validate that the name parameter was passed correctly in requests
         assert len(received_requests) == 3
@@ -442,6 +631,98 @@ def test_table_create_indices():
         table.drop_index("custom_vector_idx")
         table.drop_index("custom_scalar_idx")
         table.drop_index("custom_fts_idx")
+
+
+def test_remote_create_index_new_api():
+    received_requests = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/create_index/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = request.rfile.read(content_len) if content_len > 0 else b""
+            received_requests.append(json.loads(body) if body else {})
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                                dict(
+                                    name="category",
+                                    type={"type": "string"},
+                                    nullable=False,
+                                ),
+                                dict(
+                                    name="text", type={"type": "string"}, nullable=False
+                                ),
+                                dict(
+                                    name="vector",
+                                    type={
+                                        "type": "fixed_size_list",
+                                        "fields": [
+                                            dict(
+                                                name="item",
+                                                type={"type": "float"},
+                                                nullable=True,
+                                            )
+                                        ],
+                                        "length": 2,
+                                    },
+                                    nullable=False,
+                                ),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    from lancedb.index import BTree, FTS, IvfPq, IvfRq
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+
+        # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
+        import warnings as _warnings
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error", DeprecationWarning)
+            table.create_index("vector", config=IvfPq(distance_type="l2"))
+            table.create_index("category", config=BTree())
+            table.create_index("text", config=FTS())
+            # IvfRq via new API
+            table.create_index("vector", config=IvfRq(distance_type="l2"))
+
+        # Legacy index_type="IVF_RQ" routes to IvfRq config under the hood.
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                vector_column_name="vector",
+                index_type="IVF_RQ",
+                num_partitions=8,
+            )
+
+        assert len(received_requests) == 5
+        assert [req["column"] for req in received_requests] == [
+            "vector",
+            "category",
+            "text",
+            "vector",
+            "vector",
+        ]
 
 
 def test_table_wait_for_index_timeout():
@@ -660,6 +941,18 @@ def test_query_sync_maximal():
             "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
+            "order_by": [
+                {
+                    "column_name": "score",
+                    "ascending": False,
+                    "nulls_first": True,
+                },
+                {
+                    "column_name": "id",
+                    "ascending": True,
+                    "nulls_first": False,
+                },
+            ],
             "vector_column": "vector2",
             "fast_search": True,
             "with_row_id": True,
@@ -677,6 +970,14 @@ def test_query_sync_maximal():
             .refine_factor(10)
             .nprobes(5)
             .where("id > 0", prefilter=True)
+            .order_by(
+                [
+                    ColumnOrdering(
+                        column_name="score", ascending=False, nulls_first=True
+                    ),
+                    ColumnOrdering(column_name="id", ascending=True, nulls_first=False),
+                ]
+            )
             .with_row_id(True)
             .select(["id", "name"])
             .to_list()
@@ -1249,6 +1550,10 @@ def _remote_fork_child(port: int, queue) -> None:
     queue.put(db.table_names())
 
 
+def _remote_table_fork_child(table, queue) -> None:
+    queue.put(table.count_rows())
+
+
 @pytest.mark.skipif(
     sys.platform != "linux",
     reason=(
@@ -1308,6 +1613,68 @@ def test_remote_connection_after_fork():
 
         # Parent connection must still be usable after the child returned.
         assert parent_db.table_names() == []
+    finally:
+        server.shutdown()
+        server_thread.join()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
+def test_inherited_remote_table_reopens_after_fork():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/count_rows/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"7")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    server = http.server.HTTPServer(("localhost", 0), make_mock_http_handler(handler))
+    port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    try:
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=f"http://localhost:{port}",
+            client_config={
+                "retry_config": {"retries": 0},
+                "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+            },
+        )
+        table = db.open_table("test")
+        assert table.count_rows() == 7
+
+        ctx = mp.get_context("fork")
+        queue = ctx.Queue()
+        proc = ctx.Process(target=_remote_table_fork_child, args=(table, queue))
+        proc.start()
+        proc.join(timeout=15)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            pytest.fail("Remote table hung after fork")
+
+        assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
+        assert not queue.empty(), "child produced no result"
+        assert queue.get() == 7
     finally:
         server.shutdown()
         server_thread.join()

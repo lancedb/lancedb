@@ -36,6 +36,7 @@ pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
+use lance_namespace::error::NamespaceError;
 use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
 use lance_table::io::commit::CommitHandler;
@@ -73,6 +74,7 @@ pub(crate) mod dataset;
 pub mod delete;
 pub mod merge;
 pub mod optimize;
+mod primary_key;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
@@ -87,12 +89,61 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
-use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
-pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
+pub use schema_evolution::{
+    AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
+    UpdateFieldMetadataResult,
+};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
+
+/// Walk a boxed error chain to find the innermost `NamespaceError`.
+///
+/// Callers like `DatasetBuilder::from_namespace` re-wrap their inner namespace error
+/// inside a fresh `lance::Error::Namespace`, so a single downcast at the top level
+/// won't find it. This walks `.source()` to unwrap arbitrarily nested layers.
+fn find_namespace_error<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a NamespaceError> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(ns_err) = e.downcast_ref::<NamespaceError>() {
+            return Some(ns_err);
+        }
+        current = e.source();
+    }
+    None
+}
+
+/// Map a `lance::Error` coming from a `lance-namespace` call into a `lancedb::Error`,
+/// preserving the fine-grained namespace error code (e.g. `TableNotFound`,
+/// `TableAlreadyExists`). Errors that aren't recognized namespace error variants fall
+/// through to a generic runtime error rather than `TableNotFound`/`TableAlreadyExists`.
+pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> Error {
+    if let Some(code) = find_namespace_error(&err).map(NamespaceError::code) {
+        match code {
+            lance_namespace::error::ErrorCode::TableNotFound => {
+                return Error::TableNotFound {
+                    name: table_name.to_string(),
+                    source: Box::new(err),
+                };
+            }
+            lance_namespace::error::ErrorCode::TableAlreadyExists => {
+                return Error::TableAlreadyExists {
+                    name: table_name.to_string(),
+                };
+            }
+            _ => {}
+        }
+    }
+    match err {
+        lance::Error::Namespace { source, .. } => Error::Runtime {
+            message: format!("Namespace error: {}", source),
+        },
+        other => other.into(),
+    }
+}
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +255,36 @@ pub enum Filter {
     Datafusion(Expr),
 }
 
+/// A predicate for filtering rows in delete operations.
+///
+/// Accepts either a SQL string or a DataFusion [`Expr`]. Use the [`From`]
+/// implementations to convert from `&str` or `&Expr` automatically.
+/// See [`Table::delete`] for usage examples.
+pub enum Predicate<'a> {
+    /// A SQL predicate string
+    String(&'a str),
+    /// A DataFusion logical expression
+    Expr(&'a Expr),
+}
+
+impl<'a> From<&'a str> for Predicate<'a> {
+    fn from(s: &'a str) -> Self {
+        Predicate::String(s)
+    }
+}
+
+impl<'a> From<&'a String> for Predicate<'a> {
+    fn from(s: &'a String) -> Self {
+        Predicate::String(s.as_str())
+    }
+}
+
+impl<'a> From<&'a Expr> for Predicate<'a> {
+    fn from(e: &'a Expr) -> Self {
+        Predicate::Expr(e)
+    }
+}
+
 #[async_trait]
 pub trait Tags: Send + Sync {
     /// List the tags of the table.
@@ -223,6 +304,182 @@ pub trait Tags: Send + Sync {
 }
 
 pub use self::merge::MergeResult;
+
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `merge_insert`.
+///
+/// Construct via [`LsmWriteSpec::bucket`], [`LsmWriteSpec::identity`], or
+/// [`LsmWriteSpec::unsharded`], then optionally chain
+/// [`LsmWriteSpec::with_maintained_indexes`] (indexes the MemWAL keeps up to
+/// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
+/// `ShardWriter` configuration recorded in the MemWAL index).
+///
+/// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
+/// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
+/// onto the MemWAL writer is a follow-up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LsmWriteSpec {
+    /// Hash-bucket sharding by a scalar column.
+    ///
+    /// `column` must be a non-nested column with a supported scalar type.
+    /// `num_buckets` must be in `[1, 1024]`.
+    /// Iceberg-compatible Murmur3-x86-32 (seed 0) is used so each row's
+    /// `bucket(column, num_buckets)` value is stable across processes.
+    Bucket {
+        column: String,
+        num_buckets: u32,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+    /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// Use this when the data is already partitioned by `column`; each
+    /// distinct value of `column` becomes its own shard.
+    Identity {
+        column: String,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+    /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
+    Unsharded {
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
+        /// Default `ShardWriter` configuration recorded in the MemWAL index.
+        writer_config_defaults: HashMap<String, String>,
+    },
+}
+
+impl LsmWriteSpec {
+    /// Construct a hash-bucket sharding spec with no maintained indexes.
+    pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
+        Self::Bucket {
+            column: column.into(),
+            num_buckets,
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Construct an identity-sharding spec (shard by the raw value of
+    /// `column`) with no maintained indexes.
+    ///
+    /// `column` must be a deterministic function of the unenforced primary
+    /// key: every row with a given primary key must always produce the same
+    /// `column` value. MemWAL dedups upserts by primary key but tracks
+    /// generations per shard, so if the same key is written with two
+    /// different `column` values its versions land in different shards and a
+    /// stale value can win. Typically `column` is the primary key itself, or
+    /// a stable attribute of it (e.g. a tenant id).
+    pub fn identity(column: impl Into<String>) -> Self {
+        Self::Identity {
+            column: column.into(),
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Construct an unsharded spec with no maintained indexes.
+    pub fn unsharded() -> Self {
+        Self::Unsharded {
+            maintained_indexes: Vec::new(),
+            writer_config_defaults: HashMap::new(),
+        }
+    }
+
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that already
+    /// exists on the table at the time `set_lsm_write_spec` is called.
+    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
+        match &mut self {
+            Self::Bucket {
+                maintained_indexes, ..
+            }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
+            | Self::Unsharded {
+                maintained_indexes, ..
+            } => *maintained_indexes = v,
+        }
+        self
+    }
+
+    /// Replace the default `ShardWriter` configuration recorded in the MemWAL
+    /// index, so every writer starts from the same defaults. Keys are
+    /// `ShardWriter` config field names (`Duration` knobs use a `_ms` suffix);
+    /// values are their string encodings.
+    pub fn with_writer_config_defaults<I, K, V>(mut self, defaults: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let m: HashMap<String, String> = defaults
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        match &mut self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => *writer_config_defaults = m,
+        }
+        self
+    }
+
+    /// Borrow the list of index names this spec asks MemWAL to maintain.
+    pub fn maintained_indexes(&self) -> &[String] {
+        match self {
+            Self::Bucket {
+                maintained_indexes, ..
+            }
+            | Self::Identity {
+                maintained_indexes, ..
+            }
+            | Self::Unsharded {
+                maintained_indexes, ..
+            } => maintained_indexes,
+        }
+    }
+
+    /// Borrow the default `ShardWriter` configuration recorded by this spec.
+    pub fn writer_config_defaults(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Bucket {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Identity {
+                writer_config_defaults,
+                ..
+            }
+            | Self::Unsharded {
+                writer_config_defaults,
+                ..
+            } => writer_config_defaults,
+        }
+    }
+}
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
@@ -272,8 +529,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
-    /// Delete rows from the table.
-    async fn delete(&self, predicate: &str) -> Result<DeleteResult>;
+    /// Delete rows from the table matching the given [`Predicate`].
+    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult>;
     /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
@@ -297,6 +554,50 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult>;
+    /// Set the unenforced primary key for the table to a single column.
+    ///
+    /// "Unenforced" means LanceDB does not check uniqueness on writes; the
+    /// column is recorded in the schema as the primary key for use by
+    /// features such as `merge_insert`. Only single-column primary keys are
+    /// supported, and the key cannot be changed once set.
+    ///
+    /// The default implementation returns `NotSupported`; table types
+    /// backed by a Lance dataset override it.
+    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_unenforced_primary_key is not supported on this table type".into(),
+        })
+    }
+    /// Install an [`LsmWriteSpec`] on this table.
+    ///
+    /// The spec selects Lance's MemWAL LSM-style write path for future
+    /// `merge_insert` calls.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations
+    /// that support the MemWAL LSM write path must override this.
+    async fn set_lsm_write_spec(&self, _spec: LsmWriteSpec) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "set_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Remove the [`LsmWriteSpec`] from this table.
+    ///
+    /// This is a no-op if no spec is currently set.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations
+    /// that support the MemWAL LSM write path must override this.
+    async fn unset_lsm_write_spec(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "unset_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Drain and close any cached MemWAL shard writers for this table.
+    ///
+    /// The default implementation is a no-op; table types that maintain
+    /// MemWAL shard writers override it.
+    async fn close_lsm_writers(&self) -> Result<()> {
+        Ok(())
+    }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -362,6 +663,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "create_insert_exec not implemented".to_string(),
         })
     }
+    /// Update per-field metadata. Merges into existing metadata by default;
+    /// [`FieldMetadataUpdate::remove`] deletes a key and
+    /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
+    ///
+    /// The default returns `NotSupported`; Lance-backed and remote tables override it.
+    async fn update_field_metadata(
+        &self,
+        _updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        Err(Error::NotSupported {
+            message: "update_field_metadata is not supported on this table type".into(),
+        })
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -391,6 +705,30 @@ mod test_utils {
                 handler.clone(),
                 None,
             ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                inner,
+                database: Some(database),
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_and_interval<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+            read_consistency_interval: Option<std::time::Duration>,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(
+                crate::remote::table::RemoteTable::new_mock_with_consistency_interval(
+                    name.into(),
+                    handler.clone(),
+                    read_consistency_interval,
+                ),
+            );
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
@@ -604,7 +942,8 @@ impl Table {
     /// Delete the rows from table that match the predicate.
     ///
     /// # Arguments
-    /// - `predicate` - The SQL predicate string to filter the rows to be deleted.
+    /// - `predicate` - A SQL string (`&str`) or DataFusion expression (`&Expr`)
+    ///   that selects the rows to delete.
     ///
     /// # Example
     ///
@@ -613,6 +952,7 @@ impl Table {
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
+    /// use datafusion_expr::{col, lit};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
@@ -642,11 +982,17 @@ impl Table {
     ///     .execute()
     ///     .await
     ///     .unwrap();
+    ///
+    /// // Using a SQL string:
     /// tbl.delete("id > 5").await.unwrap();
+    ///
+    /// // Using a DataFusion expression:
+    /// let expr = col("id").lt(lit(4));
+    /// tbl.delete(&expr).await.unwrap();
     /// # });
     /// ```
-    pub async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        self.inner.delete(predicate).await
+    pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
+        self.inner.delete(predicate.into()).await
     }
 
     /// Create an index on the provided column(s).
@@ -1010,9 +1356,83 @@ impl Table {
         self.inner.alter_columns(alterations).await
     }
 
+    /// Update per-field metadata (merges by default).
+    pub async fn update_field_metadata(
+        &self,
+        updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        self.inner.update_field_metadata(updates).await
+    }
+
     /// Remove columns from the table.
     pub async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.inner.drop_columns(columns).await
+    }
+
+    /// Set the unenforced primary key for this table to a single column.
+    ///
+    /// "Unenforced" means LanceDB does not check uniqueness on writes; the
+    /// column is recorded in the schema as the primary key so that features
+    /// such as `merge_insert` can use it.
+    ///
+    /// Only single-column primary keys are supported, and the key cannot be
+    /// changed once set — calling this on a table that already has an
+    /// unenforced primary key fails. `columns` is an iterable for binding
+    /// ergonomics but must yield exactly one column:
+    ///
+    /// - `table.set_unenforced_primary_key(["id"])`
+    pub async fn set_unenforced_primary_key<I, S>(&self, columns: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let owned: Vec<String> = columns.into_iter().map(Into::into).collect();
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        self.inner.set_unenforced_primary_key(&borrowed).await
+    }
+
+    /// Install an [`LsmWriteSpec`] on this table, selecting Lance's MemWAL
+    /// LSM-style write path for future `merge_insert` calls.
+    ///
+    /// [`LsmWriteSpec`] chooses one of three sharding strategies:
+    ///
+    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by a scalar column.
+    /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
+    /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use lancedb::table::{LsmWriteSpec, Table};
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .set_lsm_write_spec(
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+        self.inner.set_lsm_write_spec(spec).await
+    }
+
+    /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
+    /// `merge_insert` write path.
+    ///
+    /// Errors if no spec is currently set.
+    pub async fn unset_lsm_write_spec(&self) -> Result<()> {
+        self.inner.unset_lsm_write_spec().await
+    }
+
+    /// Drain and close any cached MemWAL shard writers held for this table.
+    ///
+    /// When an [`LsmWriteSpec`] is installed, `merge_insert` opens MemWAL shard
+    /// writers and caches them for reuse across calls. This closes them,
+    /// flushing pending data; writers reopen lazily on the next `merge_insert`.
+    /// It is a no-op when no writers are cached.
+    pub async fn close_lsm_writers(&self) -> Result<()> {
+        self.inner.close_lsm_writers().await
     }
 
     /// Retrieve the version of the table
@@ -1494,12 +1914,7 @@ impl NativeTable {
         // and storage options from the namespace
         let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
             .await
-            .map_err(|e| match e {
-                lance::Error::Namespace { source, .. } => Error::Runtime {
-                    message: format!("Failed to get table info from namespace: {:?}", source),
-                },
-                e => e.into(),
-            })?;
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         let dataset = builder
             .with_read_params(params)
@@ -1858,6 +2273,33 @@ impl NativeTable {
         }
     }
 
+    fn resolve_index_field(
+        schema: &lance_core::datatypes::Schema,
+        column: &str,
+    ) -> Result<(String, Field)> {
+        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid field path `{}`: {}", column, e),
+        })?;
+
+        let field_path = schema
+            .resolve_case_insensitive(column)
+            .ok_or_else(|| Error::Schema {
+                message: format!(
+                    "Field path `{}` not found in schema. Available field paths: {}",
+                    column,
+                    schema.field_paths().join(", ")
+                ),
+            })?;
+        let field = field_path.last().expect("field path should be non-empty");
+        let path_segments = field_path
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        let canonical_path = lance_core::datatypes::format_field_path(&path_segments);
+
+        Ok((canonical_path, Field::from(*field)))
+    }
+
     // Convert LanceDB Index to Lance IndexParams
     async fn make_index_params(
         &self,
@@ -2162,6 +2604,7 @@ impl NativeTable {
     ///   field id and the second element is a hashmap of metadata key-value
     ///   pairs.
     ///
+    #[deprecated(since = "0.33.1", note = "Use `update_field_metadata` instead")]
     pub async fn replace_field_metadata(
         &self,
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
@@ -2348,15 +2791,13 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
-        let schema = self.schema().await?;
-
-        let field = schema.field_with_name(&opts.columns[0])?;
-
-        let lance_idx_params = self.make_index_params(field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(field, &opts.index);
-        let columns = [field.name().as_str()];
         self.dataset.ensure_mutable()?;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+
+        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
+        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -2426,9 +2867,24 @@ impl BaseTable for NativeTable {
         merge::execute_merge_insert(self, params, new_data).await
     }
 
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        primary_key::set_unenforced_primary_key(self, columns).await
+    }
+
+    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+        merge::lsm::set_lsm_write_spec(self, spec).await
+    }
+
+    async fn unset_lsm_write_spec(&self) -> Result<()> {
+        merge::lsm::unset_lsm_write_spec(self).await
+    }
+
+    async fn close_lsm_writers(&self) -> Result<()> {
+        merge::lsm::close_lsm_writers(self).await
+    }
+
     /// Delete rows from the table
-    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        // Delegate to the submodule implementation
+    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
         delete::execute_delete(self, predicate).await
     }
 
@@ -2455,63 +2911,62 @@ impl BaseTable for NativeTable {
         schema_evolution::execute_alter_columns(self, alterations).await
     }
 
+    async fn update_field_metadata(
+        &self,
+        updates: &[FieldMetadataUpdate],
+    ) -> Result<UpdateFieldMetadataResult> {
+        schema_evolution::execute_update_field_metadata(self, updates).await
+    }
+
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         schema_evolution::execute_drop_columns(self, columns).await
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
-        let indices = dataset.load_indices().await?;
-        let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
-
-            // skip Lance internal indexes
-            if idx.name == FRAG_REUSE_INDEX_NAME {
-                return None;
-            }
-
-            let stats = match dataset.index_statistics(idx.name.as_str()).await {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to get statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let stats: serde_json::Value = match serde_json::from_str(&stats) {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to deserialize index statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
-                log::warn!("Index statistics was missing 'index_type' field for index {} ({})", idx.name, idx.uuid);
-                return None;
-            };
-
-            let index_type: crate::index::IndexType = match index_type.parse() {
-                Ok(index_type) => index_type,
-                Err(e) => {
-                    log::warn!("Failed to parse index type for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let mut columns = Vec::with_capacity(idx.fields.len());
-            for field_id in &idx.fields {
-                let Some(field) = dataset.schema().field_by_id(*field_id) else {
-                    log::warn!("The index {} ({}) referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id);
-                    return None;
+        let indices = dataset
+            .describe_indices(None)
+            .await?
+            .into_iter()
+            .filter_map(|idx_desc| {
+                let index_type: crate::index::IndexType = match idx_desc.index_type().parse() {
+                    Ok(index_type) => index_type,
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse index type for index {}: {}",
+                            idx_desc.name(),
+                            e
+                        );
+                        return None;
+                    }
                 };
-                columns.push(field.name.clone());
-            }
 
-            let name = idx.name.clone();
-            Some(IndexConfig { index_type, columns, name })
-        }).collect::<Vec<_>>().await;
+                let field_ids = idx_desc.field_ids();
+                let mut columns = Vec::with_capacity(field_ids.len());
+                for field_id in field_ids {
+                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                        Ok(field_path) => field_path,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to resolve field path for index {} field id {}: {}",
+                                idx_desc.name(),
+                                field_id,
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    columns.push(field_path);
+                }
 
-        Ok(results.into_iter().flatten().collect())
+                Some(IndexConfig {
+                    name: idx_desc.name().to_string(),
+                    index_type,
+                    columns,
+                })
+            })
+            .collect();
+        Ok(indices)
     }
 
     async fn uri(&self) -> Result<String> {
@@ -2564,20 +3019,12 @@ impl BaseTable for NativeTable {
                 .ok_or_else(|| Error::InvalidInput {
                     message: "index statistics was missing index type".to_string(),
                 })?;
-        let loss = stats
-            .indices
-            .iter()
-            .map(|index| index.loss.unwrap_or_default())
-            .sum::<f64>();
-
-        let loss = first_index.loss.map(|first_loss| first_loss + loss);
         Ok(Some(IndexStatistics {
             num_indexed_rows: stats.num_indexed_rows,
             num_unindexed_rows: stats.num_unindexed_rows,
             index_type,
             distance_type: first_index.metric_type,
             num_indices: stats.num_indices,
-            loss,
         }))
     }
 
@@ -2621,11 +3068,12 @@ impl BaseTable for NativeTable {
         let p99 = *sorted_sizes.get(num_fragments * 99 / 100).unwrap_or(&0);
         let min = sorted_sizes.first().copied().unwrap_or(0);
         let max = sorted_sizes.last().copied().unwrap_or(0);
-        let mean = if num_fragments == 0 {
-            0
-        } else {
-            sorted_sizes.iter().copied().sum::<usize>() / num_fragments
-        };
+        let mean = sorted_sizes
+            .iter()
+            .copied()
+            .sum::<usize>()
+            .checked_div(num_fragments)
+            .unwrap_or(0);
 
         let frag_stats = FragmentStatistics {
             num_fragments,
@@ -2717,8 +3165,8 @@ mod tests {
     use std::time::Duration;
 
     use arrow_array::{
-        Array, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray, RecordBatch,
-        RecordBatchIterator, RecordBatchReader, StringArray,
+        Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, StructArray,
         builder::{ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
@@ -2727,6 +3175,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
     use tempfile::tempdir;
 
     use super::*;
@@ -2737,6 +3186,7 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+    use lance_index::scalar::FullTextSearchQuery;
     #[tokio::test]
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
@@ -2977,7 +3427,6 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
-        assert!(stats.loss.is_some());
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
@@ -3325,6 +3774,222 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_index_nested_field_paths() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let num_rows = 512;
+        let dimension = 8;
+
+        let metadata = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("user_id", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let vector_values = arrow_array::Float32Array::from_iter_values(
+            (0..num_rows * dimension).map(|v| v as f32),
+        );
+        let embeddings =
+            Arc::new(create_fixed_size_list(vector_values, dimension).unwrap()) as ArrayRef;
+        let image = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new(
+                "embedding",
+                embeddings.data_type().clone(),
+                false,
+            )),
+            embeddings,
+        )]));
+
+        let payload = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("text", DataType::Utf8, false)),
+            Arc::new(StringArray::from_iter_values(
+                (0..num_rows).map(|i| format!("document {}", i)),
+            )) as ArrayRef,
+        )]));
+
+        let meta_data = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("user-id", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let literal = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("a.b", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("metadata", metadata.data_type().clone(), false),
+            Field::new("image", image.data_type().clone(), false),
+            Field::new("payload", payload.data_type().clone(), false),
+            Field::new("meta-data", meta_data.data_type().clone(), false),
+            Field::new("literal", literal.data_type().clone(), false),
+        ]));
+        let batch =
+            RecordBatch::try_new(schema, vec![metadata, image, payload, meta_data, literal])
+                .unwrap();
+
+        let table = conn
+            .create_table("nested_index_paths", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(
+                &["metadata.user_id"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("metadata_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["image.embedding"], Index::Auto)
+            .name("image_embedding_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["payload.text"], Index::FTS(Default::default()))
+            .name("payload_text_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["`meta-data`.`user-id`"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("escaped_names_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["literal.`a.b`"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("literal_dot_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        let mut index_configs = table.list_indices().await.unwrap();
+        index_configs.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let indexed_columns = index_configs
+            .iter()
+            .map(|index| {
+                (
+                    index.name.as_str(),
+                    index.columns.as_slice(),
+                    index.index_type.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            indexed_columns,
+            vec![
+                (
+                    "escaped_names_idx",
+                    &["`meta-data`.`user-id`".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "image_embedding_idx",
+                    &["image.embedding".to_string()][..],
+                    crate::index::IndexType::IvfPq,
+                ),
+                (
+                    "literal_dot_idx",
+                    &["literal.`a.b`".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "metadata_user_id_idx",
+                    &["metadata.user_id".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "payload_text_idx",
+                    &["payload.text".to_string()][..],
+                    crate::index::IndexType::FTS,
+                ),
+            ]
+        );
+
+        let vector_results = table
+            .query()
+            .nearest_to(&[0.0; 8])
+            .unwrap()
+            .column("image.embedding")
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            vector_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
+
+        let default_vector_results = table
+            .query()
+            .nearest_to(&[0.0; 8])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            default_vector_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
+
+        let fts_results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("document".to_string()))
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(!fts_results.is_empty());
+
+        let filtered_results = table
+            .query()
+            .only_if("metadata.user_id = 42")
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            filtered_results
+                .iter()
+                .map(|batch| batch.num_rows())
+                .sum::<usize>(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn test_create_bitmap_index() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -3406,6 +4071,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 5);
 
+        // list_indices returns indices in alphabetical order by name
         let mut configs_iter = index_configs.into_iter();
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
@@ -3413,19 +4079,19 @@ mod tests {
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["is_active".to_string()]);
-
-        let index = configs_iter.next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["data".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["large_data".to_string()]);
+        assert_eq!(index.columns, vec!["is_active".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["large_category".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["large_data".to_string()]);
     }
 
     #[tokio::test]
@@ -3805,10 +4471,10 @@ mod tests {
             Some(&"test_val2_update".to_string())
         );
 
-        let mut new_field_metadata = HashMap::<String, String>::new();
-        new_field_metadata.insert("test_field_key1".into(), "test_field_val1".into());
         native_tbl
-            .replace_field_metadata(vec![(field.id as u32, new_field_metadata)])
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new("i").set("test_field_key1", "test_field_val1")
+            ])
             .await
             .unwrap();
 
@@ -3819,6 +4485,375 @@ mod tests {
             field.metadata.get("test_field_key1"),
             Some(&"test_field_val1".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // Reject empty input.
+        let err = table
+            .set_unenforced_primary_key(Vec::<&str>::new())
+            .await
+            .expect_err("empty input should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject compound (multi-column) input.
+        let err = table
+            .set_unenforced_primary_key(["id", "name"])
+            .await
+            .expect_err("compound primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject unknown column.
+        let err = table
+            .set_unenforced_primary_key(["nonexistent"])
+            .await
+            .expect_err("nonexistent column should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // Reject unsupported dtype (Float64).
+        let err = table
+            .set_unenforced_primary_key(["score"])
+            .await
+            .expect_err("Float64 should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // None of the rejected calls set a primary key.
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        assert!(lance_schema.unenforced_primary_key().is_empty());
+
+        // Happy path: set the primary key to "id".
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
+        // Position metadata is 1-indexed.
+        assert_eq!(
+            pk[0].metadata.get(LANCE_UNENFORCED_PRIMARY_KEY_POSITION),
+            Some(&"1".to_string())
+        );
+
+        // The primary key is immutable: re-setting it is rejected, whether to
+        // the same column or a different one.
+        let err = table
+            .set_unenforced_primary_key(["id"])
+            .await
+            .expect_err("re-setting the same primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+        let err = table
+            .set_unenforced_primary_key(["name"])
+            .await
+            .expect_err("changing the primary key should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+
+        // The primary key is unchanged after the rejected calls.
+        let lance_schema = table.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
+    }
+
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_concurrent() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        // A long read-consistency interval keeps each handle pinned to the
+        // version it opened, so the second handle commits against a stale
+        // base — the same situation as two processes racing.
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(3600))
+            .execute()
+            .await
+            .unwrap();
+        conn.create_table("t", reader).execute().await.unwrap();
+
+        let table_a = conn.open_table("t").execute().await.unwrap();
+        let table_b = conn.open_table("t").execute().await.unwrap();
+
+        // Handle A sets the primary key first.
+        table_a.set_unenforced_primary_key(["id"]).await.unwrap();
+
+        // Handle B committed against a stale base that had no primary key, so
+        // its own up-front check did not see A's key. The commit itself must
+        // still fail rather than silently overriding A's primary key. (The
+        // cross-process race on a *different* column is caught by the Lance
+        // commit layer.)
+        let err = table_b
+            .set_unenforced_primary_key(["id"])
+            .await
+            .expect_err("concurrent primary key commit on a stale base should fail");
+        assert!(
+            !matches!(err, Error::InvalidInput { .. }),
+            "expected a commit-time conflict, not an up-front input error: {:?}",
+            err
+        );
+
+        // The committed primary key is exactly what A set — no corruption.
+        let fresh = conn.open_table("t").execute().await.unwrap();
+        let lance_schema = fresh.as_native().unwrap().manifest().await.unwrap().schema;
+        let pk = lance_schema.unenforced_primary_key();
+        assert_eq!(pk.len(), 1);
+        assert_eq!(pk[0].name, "id");
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec() {
+        use arrow_array::StringArray;
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // Reject num_buckets out of range.
+        for bad in [0u32, 1025] {
+            let err = table
+                .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
+                .await
+                .expect_err("should reject");
+            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+        }
+
+        // Happy path: install spec; verify MemWAL details record it.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap();
+
+        let native_tbl = table.as_native().unwrap();
+        let dataset = native_tbl.dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        assert_eq!(details.num_shards, 4);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let installed = &details.sharding_specs[0];
+        assert_eq!(installed.fields.len(), 1);
+        let f = &installed.fields[0];
+        assert_eq!(f.transform.as_deref(), Some("bucket"));
+        assert_eq!(
+            f.parameters.get("num_buckets").map(String::as_str),
+            Some("4")
+        );
+        // Bucket parameters must hold only `num_buckets`.
+        assert_eq!(f.parameters.len(), 1);
+
+        // Mutation rejected.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .await
+            .expect_err("mutation should be rejected");
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_unsharded() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        assert_eq!(details.num_shards, 1);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
+        assert_eq!(f.transform.as_deref(), Some("unsharded"));
+        assert!(f.source_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_identity() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::identity("region")
+                    .with_writer_config_defaults([("durable_write", "false")]),
+            )
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let details = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .expect("MemWAL index should be initialized");
+        // Identity sharding records an open-ended shard count.
+        assert_eq!(details.num_shards, 0);
+        assert_eq!(details.sharding_specs.len(), 1);
+        let f = &details.sharding_specs[0].fields[0];
+        assert_eq!(f.transform.as_deref(), Some("identity"));
+        // Writer config defaults round-trip into the MemWAL index.
+        assert_eq!(
+            details
+                .writer_config_defaults
+                .get("durable_write")
+                .map(String::as_str),
+            Some("false")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unset_lsm_write_spec() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // unset errors when no spec is set.
+        table.unset_lsm_write_spec().await.unwrap_err();
+
+        // Install a spec, then unset it.
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
+        }
+
+        table.unset_lsm_write_spec().await.unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_none());
+        }
+
+        // A second unset errors; a fresh spec can still be installed afterwards.
+        table.unset_lsm_write_spec().await.unwrap_err();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .await
+            .unwrap();
+        {
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
+        }
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.31.0-beta.11"
+version = "0.33.1-beta.2"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -19,6 +19,7 @@ arrow = { version = "58.0.0", features = ["pyarrow"] }
 async-trait = "0.1"
 bytes = "1"
 lancedb = { path = "../rust/lancedb", default-features = false }
+datafusion-common.workspace = true
 lance-core.workspace = true
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true

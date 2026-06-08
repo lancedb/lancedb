@@ -5,10 +5,63 @@
 
 import tempfile
 import shutil
+import sys
 import pytest
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lancedb.table import AsyncTable, LanceTable
+
+
+PUSHDOWN_DATA = pa.table(
+    {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
+)
+
+
+def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+class _FailingSyncInner:
+    name = "hist"
+
+    async def schema(self):
+        return PUSHDOWN_DATA.schema
+
+    async def to_arrow(self):
+        raise RuntimeError("direct table to_arrow should not be used")
+
+
+class _FailingAsyncInner:
+    def name(self):
+        return "hist"
+
+    async def schema(self):
+        return PUSHDOWN_DATA.schema
+
+    def query(self):
+        raise AssertionError("direct async query should not be used")
+
+
+class _NamespaceClient:
+    def __init__(self):
+        self.requests = []
+
+    def query_table(self, request):
+        self.requests.append(request)
+        return _ipc_file()
+
+
+def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
+    table = LanceTable.__new__(LanceTable)
+    table._table = _FailingSyncInner()
+    table._namespace_path = ["geneva"]
+    table._namespace_client = namespace_client
+    table._pushdown_operations = {"QueryTable"}
+    return table
 
 
 class TestNamespaceConnection:
@@ -75,6 +128,35 @@ class TestNamespaceConnection:
         result = table.to_pandas()
         assert len(result) == 0
         assert list(result.columns) == ["id", "vector", "text"]
+
+    def test_table_to_pandas_blob_lazy_through_namespace(self):
+        """Namespace-backed tables should use Lance blob-aware pandas conversion."""
+        pytest.importorskip("lance")
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_namespace(["test_ns"])
+        data = pa.table(
+            {
+                "id": pa.array([1, 2], pa.int64()),
+                "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+            },
+            schema=pa.schema(
+                [
+                    pa.field("id", pa.int64()),
+                    pa.field(
+                        "blob",
+                        pa.large_binary(),
+                        metadata={"lance-encoding:blob": "true"},
+                    ),
+                ]
+            ),
+        )
+
+        table = db.create_table("blob_table", data, namespace_path=["test_ns"])
+        df = table.to_pandas(blob_mode="lazy").sort_values("id")
+
+        blob = df["blob"].iloc[0]
+        assert hasattr(blob, "readall")
+        assert blob.readall() == b"hello"
 
     def test_open_table_through_namespace(self):
         """Test opening an existing table through namespace."""
@@ -707,6 +789,22 @@ class TestPushdownOperations:
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
 
+    def test_lance_table_to_arrow_uses_query_pushdown(self):
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(namespace_client)
+
+        assert table.to_arrow().equals(PUSHDOWN_DATA)
+        assert table.to_pandas()["id"].tolist() == list(range(12))
+        assert len(namespace_client.requests) == 2
+        assert [request.id for request in namespace_client.requests] == [
+            ["geneva", "hist"],
+            ["geneva", "hist"],
+        ]
+        assert [request.k for request in namespace_client.requests] == [
+            sys.maxsize,
+            sys.maxsize,
+        ]
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -742,3 +840,39 @@ class TestAsyncPushdownOperations:
         """Test that pushdown operations default to empty on async connection."""
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
+
+    async def test_async_table_to_arrow_uses_query_pushdown(self):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInner(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
+        assert (await table.to_pandas())["id"].tolist() == list(range(12))
+        assert len(namespace_client.requests) == 2
+        assert [request.id for request in namespace_client.requests] == [
+            ["geneva", "hist"],
+            ["geneva", "hist"],
+        ]
+        assert [request.k for request in namespace_client.requests] == [
+            sys.maxsize,
+            sys.maxsize,
+        ]
+
+
+def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
+    db = lancedb.connect(str(tmp_path / "db"))
+    table = db.create_table(
+        "local",
+        data=[
+            {"id": 1, "vector": [1.0, 2.0]},
+            {"id": 2, "vector": [3.0, 4.0]},
+        ],
+    )
+
+    assert table.to_arrow().column("id").to_pylist() == [1, 2]
+    assert table.to_pandas()["id"].tolist() == [1, 2]

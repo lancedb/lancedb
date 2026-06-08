@@ -94,7 +94,6 @@ def connect(
     host_override: str, optional
         The override url for LanceDB Cloud.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -104,6 +103,10 @@ def connect(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
@@ -146,6 +149,13 @@ def connect(
 
     >>> db = lancedb.connect("s3://my-bucket/lancedb",
     ...                      storage_options={"aws_access_key_id": "***"})
+
+    For tests and temporary data, use an in-memory database:
+
+    >>> db = lancedb.connect("memory://")
+
+    In-memory databases are not persisted. Tables are dropped when the last
+    connection or table handle referencing them is closed.
 
     Connect to LanceDB cloud:
 
@@ -210,6 +220,7 @@ def connect(
             request_thread_pool=request_thread_pool,
             client_config=client_config,
             storage_options=storage_options,
+            read_consistency_interval=read_consistency_interval,
             **kwargs,
         )
     _check_s3_bucket_with_dots(str(uri), storage_options)
@@ -304,6 +315,15 @@ def deserialize_conn(
             manifest_enabled=parsed.get("manifest_enabled", False),
             namespace_client_properties=parsed.get("namespace_client_properties"),
         )
+    elif connection_type == "remote":
+        return RemoteDBConnection(
+            parsed["db_url"],
+            parsed["api_key"],
+            parsed.get("region", "us-east-1"),
+            host_override=parsed.get("host_override"),
+            client_config=parsed.get("client_config"),
+            storage_options=storage_options,
+        )
     else:
         raise ValueError(f"Unknown connection_type: {connection_type}")
 
@@ -336,7 +356,6 @@ async def connect_async(
     host_override: str, optional
         The override url for LanceDB Cloud.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -346,6 +365,10 @@ async def connect_async(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
@@ -378,6 +401,8 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # For tests and temporary data, use an in-memory database
+    ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
     ...     db = await lancedb.connect_async("db://my_database", api_key="ldb_...",
     ...                                      client_config={

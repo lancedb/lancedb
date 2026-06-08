@@ -205,7 +205,7 @@ jobs:
       - name: Delete wheels
         run: rm -rf target/wheels
   pydantic1x:
-    timeout-minutes: 30
+    timeout-minutes: 60
     runs-on: "ubuntu-24.04"
     defaults:
       run:

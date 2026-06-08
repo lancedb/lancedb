@@ -144,7 +144,12 @@ def _query_to_namespace_request(
     if query.postfilter is not None:
         prefilter = not query.postfilter
 
-    k = query.limit if query.limit is not None else 10
+    if query.limit is not None:
+        k = query.limit
+    elif query.vector is None and query.full_text_query is None:
+        k = sys.maxsize
+    else:
+        k = 10
 
     # Build request kwargs, only including non-None values for optional fields
     # that Pydantic doesn't accept as None
@@ -954,7 +959,7 @@ class AsyncLanceNamespaceDBConnection:
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
-        return await self._inner.create_table(
+        table = await self._inner.create_table(
             name,
             data,
             schema=schema,
@@ -965,6 +970,11 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path,
             embedding_functions=embedding_functions,
             storage_options=storage_options,
+        )
+        return table._set_namespace_context(
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
         )
 
     async def open_table(
@@ -979,7 +989,7 @@ class AsyncLanceNamespaceDBConnection:
         if namespace_path is None:
             namespace_path = []
         try:
-            return await self._inner.open_table(
+            table = await self._inner.open_table(
                 name,
                 namespace_path=namespace_path,
                 storage_options=storage_options,
@@ -990,6 +1000,11 @@ class AsyncLanceNamespaceDBConnection:
                 table_id = namespace_path + [name]
                 raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
             raise
+        return table._set_namespace_context(
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+        )
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""

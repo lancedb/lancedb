@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import contextlib
 import functools
+import http.server
+import json
 import multiprocessing as mp
 import pickle
+import re
 import sys
+import threading
 
 import lancedb
 import pyarrow as pa
@@ -13,6 +18,107 @@ from lancedb.permutation import Permutation, Permutations, permutation_builder
 from lancedb.util import tbl_to_tensor
 
 torch = pytest.importorskip("torch")
+
+
+REMOTE_ROWS = list(range(100))
+
+
+def _make_mock_http_handler(handler):
+    class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            handler(self)
+
+        def do_POST(self):
+            handler(self)
+
+    return MockLanceDBHandler
+
+
+def _remote_schema_payload():
+    return {
+        "version": 1,
+        "schema": {
+            "fields": [
+                {"name": "a", "type": {"type": "int64"}, "nullable": False},
+            ]
+        },
+    }
+
+
+def _offsets_from_filter(filter_sql: str | None) -> list[int]:
+    if filter_sql is None:
+        return REMOTE_ROWS
+    match = re.search(r"_rowoffset in \((.*?)\)", filter_sql)
+    if match is None:
+        return REMOTE_ROWS
+    raw_offsets = match.group(1).strip()
+    if raw_offsets == "":
+        return []
+    return [int(offset.strip()) for offset in raw_offsets.split(",")]
+
+
+def _remote_dataset_handler(request):
+    request.close_connection = True
+    if request.path == "/v1/table/test/describe/":
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(_remote_schema_payload()).encode())
+    elif request.path == "/v1/table/test/count_rows/":
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(str(len(REMOTE_ROWS)).encode())
+    elif request.path == "/v1/table/test/query/":
+        content_len = int(request.headers.get("Content-Length"))
+        body = json.loads(request.rfile.read(content_len))
+        offsets = _offsets_from_filter(body.get("filter"))
+        requested_columns = body.get("columns") or ["a"]
+        if isinstance(requested_columns, dict):
+            requested_columns = list(requested_columns)
+
+        data = {}
+        for column in requested_columns:
+            if column == "a":
+                data[column] = [REMOTE_ROWS[offset] for offset in offsets]
+            elif column == "_rowoffset":
+                data[column] = offsets
+            elif column == "_rowid":
+                data[column] = offsets
+
+        table = pa.table(data)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+        request.end_headers()
+        with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
+            writer.write_table(table)
+    else:
+        request.send_response(404)
+        request.end_headers()
+
+
+@contextlib.contextmanager
+def _remote_dataset_table():
+    with http.server.ThreadingHTTPServer(
+        ("localhost", 0), _make_mock_http_handler(_remote_dataset_handler)
+    ) as server:
+        port = server.server_address[1]
+        handle = threading.Thread(target=server.serve_forever)
+        handle.start()
+        try:
+            db = lancedb.connect(
+                "db://dev",
+                api_key="fake",
+                host_override=f"http://localhost:{port}",
+                client_config={
+                    "retry_config": {"retries": 0},
+                    "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+                },
+            )
+            yield db.open_table("test")
+        finally:
+            server.shutdown()
+            handle.join()
 
 
 def _open_native_table(uri: str, table_name: str):
@@ -128,6 +234,39 @@ def test_permutation_dataloader_multiprocessing(tmp_db):
     assert seen == 1000
 
 
+def test_remote_table_dataloader_multiprocessing():
+    with _remote_dataset_table() as table:
+        dataloader = torch.utils.data.DataLoader(
+            table,
+            collate_fn=tbl_to_tensor,
+            batch_size=10,
+            num_workers=2,
+            multiprocessing_context="spawn",
+        )
+        seen = 0
+        for batch in dataloader:
+            assert batch.size(0) == 1
+            assert batch.size(1) == 10
+            seen += batch.size(1)
+        assert seen == len(REMOTE_ROWS)
+
+
+def test_remote_permutation_dataloader_multiprocessing():
+    with _remote_dataset_table() as table:
+        permutation = Permutation.identity(table)
+        dataloader = torch.utils.data.DataLoader(
+            permutation,
+            batch_size=10,
+            num_workers=2,
+            multiprocessing_context="spawn",
+        )
+        seen = 0
+        for batch in dataloader:
+            assert batch["a"].size(0) == 10
+            seen += batch["a"].size(0)
+        assert seen == len(REMOTE_ROWS)
+
+
 def test_permutation_pickle_with_connection_factory(tmp_path):
     """When the user provides a connection_factory, pickling should round-trip
     through that factory rather than introspecting the connection URI. Useful
@@ -192,6 +331,35 @@ def _multiworker_dataloader_target(db_uri: str, result_queue):
     result_queue.put(count)
 
 
+def _remote_multiworker_dataloader_target(port: int, result_queue):
+    import lancedb
+    from lancedb.permutation import Permutation
+
+    db = lancedb.connect(
+        "db://dev",
+        api_key="fake",
+        host_override=f"http://localhost:{port}",
+        client_config={
+            "retry_config": {"retries": 0},
+            "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
+        },
+    )
+    table = db.open_table("test")
+    permutation = Permutation.identity(table)
+
+    dataloader = torch.utils.data.DataLoader(
+        permutation,
+        batch_size=10,
+        num_workers=2,
+        multiprocessing_context="fork",
+    )
+    count = 0
+    for batch in dataloader:
+        assert batch["a"].size(0) == 10
+        count += 1
+    result_queue.put(count)
+
+
 @pytest.mark.skipif(
     sys.platform != "linux",
     reason=(
@@ -229,3 +397,46 @@ def test_permutation_dataloader_fork_workers(tmp_path):
     assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
     assert not queue.empty(), "child produced no batches"
     assert queue.get() == 100
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "fork() is unavailable on Windows and unsafe on macOS "
+        "(Apple frameworks/TLS are not fork-safe)"
+    ),
+)
+def test_remote_permutation_dataloader_fork_workers():
+    with http.server.ThreadingHTTPServer(
+        ("localhost", 0), _make_mock_http_handler(_remote_dataset_handler)
+    ) as server:
+        port = server.server_address[1]
+        handle = threading.Thread(target=server.serve_forever)
+        handle.start()
+        try:
+            ctx = mp.get_context("spawn")
+            queue = ctx.Queue()
+            proc = ctx.Process(
+                target=_remote_multiworker_dataloader_target,
+                args=(port, queue),
+            )
+            proc.start()
+            proc.join(timeout=30)
+
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join()
+                pytest.fail(
+                    "Remote permutation hung when iterated in a fork-based "
+                    "DataLoader worker"
+                )
+
+            assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
+            assert not queue.empty(), "child produced no batches"
+            assert queue.get() == 10
+        finally:
+            server.shutdown()
+            handle.join()

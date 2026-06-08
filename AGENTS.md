@@ -17,9 +17,33 @@ Common commands:
 * Run tests: `cargo test --quiet --features remote --tests`
 * Run specific test: `cargo test --quiet --features remote -p <package_name> --test <test_name>`
 * Lint: `cargo clippy --quiet --features remote --tests --examples`
-* Format: `cargo fmt --all`
+* Format Rust: `cargo fmt --all`
+* Format Python: `ruff format .`
+* Lint Python: `ruff check .`
+* Bootstrap Python dev env: `cd python && uv run --extra tests --extra dev maturin develop --extras tests,dev`
+* Run Python tests: `cd python && uv run --extra tests pytest python/tests -vv --durations=10 -m "not slow and not s3_test"`
+* Run specific Python test: `cd python && uv run --extra tests pytest python/tests/<test_file>.py::<test_name> -q`
 
-Before committing changes, run formatting.
+For Python validation, prefer the uv-managed environment declared by `python/uv.lock`.
+Do not treat system `python`, global `pytest`, or missing editable-install errors as
+final blockers; bootstrap or enter the uv environment instead. If `lancedb._lancedb`
+is missing or stale, or if Rust/PyO3 binding code changed, rebuild the Python
+extension with the bootstrap command above before running tests.
+
+Before committing changes, run formatting for every language you touched. At minimum:
+
+* Rust changes: run `cargo fmt --all`.
+* Python changes: run `ruff format .` and `ruff check .` from the repository root,
+  and run targeted tests through `cd python && uv run ...`.
+* TypeScript changes: run the relevant `npm`/`pnpm` lint, format, build, and docs commands in `nodejs`.
+
+Before creating a PR, the exact value passed to `gh pr create --title` must follow
+Conventional Commits, such as `fix: support nested field paths in native index creation`
+or `feat(python): add dataset multiprocessing support`. Do not use a plain natural
+language summary like `Support nested field paths in native index creation` as the PR
+title. The semantic-release check uses the PR title and body as the merge commit message,
+so a non-conventional PR title will fail CI. After creating a PR, read the remote PR title
+back and fix it immediately if it is not conventional.
 
 ## Coding tips
 

@@ -11,6 +11,7 @@ use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
     LanceNamespace,
+    error::{ErrorCode, NamespaceError},
     models::{
         CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
@@ -29,13 +30,26 @@ use crate::database::listing::{
     OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::error::{Error, Result};
-use crate::table::NativeTable;
+use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
 use super::{
     BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
     Database, OpenTableRequest, TableNamesRequest,
 };
+
+/// Returns true if the given `lance::Error` (anywhere in its source chain) is a
+/// `NamespaceError::TableAlreadyExists`.
+fn is_table_already_exists_namespace_error(err: &lance::Error) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(ns_err) = e.downcast_ref::<NamespaceError>() {
+            return ns_err.code() == ErrorCode::TableAlreadyExists;
+        }
+        current = e.source();
+    }
+    false
+}
 
 /// A database implementation that uses lance-namespace for table management
 pub struct LanceNamespaceDatabase {
@@ -356,13 +370,15 @@ impl Database for LanceNamespaceDatabase {
                         (loc, opts, response.managed_versioning)
                     }
                     Err(e)
-                        if matches!(request.mode, CreateTableMode::Create) && {
-                            let err_str = e.to_string();
-                            err_str.contains("already exists")
-                                || err_str.contains("TableAlreadyExists")
-                                || err_str.contains("table already exists")
-                        } =>
+                        if matches!(request.mode, CreateTableMode::Create)
+                            && is_table_already_exists_namespace_error(&e) =>
                     {
+                        // A declare conflict can either mean (a) the table was previously
+                        // *declared* but never written (in which case we should proceed and
+                        // create it), or (b) the table is fully realized (in which case the
+                        // user is creating something that already exists and we should
+                        // surface TableAlreadyExists). Disambiguate by describing the table
+                        // and checking whether it has both a version and a schema.
                         let response = self
                             .namespace
                             .describe_table(DescribeTableRequest {
@@ -370,11 +386,8 @@ impl Database for LanceNamespaceDatabase {
                                 ..Default::default()
                             })
                             .await
-                            .map_err(|describe_err| Error::Runtime {
-                                message: format!(
-                                    "Failed to describe existing declared table after declare conflict: {}",
-                                    describe_err
-                                ),
+                            .map_err(|describe_err| {
+                                map_namespace_lance_error(describe_err, &request.name)
                             })?;
 
                         if response.version.is_some() && response.schema.is_some() {
@@ -394,9 +407,7 @@ impl Database for LanceNamespaceDatabase {
                         (loc, opts, response.managed_versioning)
                     }
                     Err(e) => {
-                        return Err(Error::Runtime {
-                            message: format!("Failed to declare table: {}", e),
-                        });
+                        return Err(map_namespace_lance_error(e, &request.name));
                     }
                 }
             }
@@ -1086,8 +1097,120 @@ mod tests {
             .execute()
             .await;
 
-        // Verify: Should return an error
-        assert!(result.is_err());
+        // Verify: Should return TableNotFound — not a generic Runtime/internal error
+        // (regression test for ENT-1235: open_table on missing table previously surfaced as
+        // a generic 500/Runtime error rather than TableNotFound).
+        match result {
+            Err(Error::TableNotFound { name, .. }) => {
+                assert_eq!(name, "non_existent_table");
+            }
+            Err(other) => panic!("Expected TableNotFound, got: {:?}", other),
+            Ok(_) => panic!("Expected open_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_open_table_not_found_at_root() {
+        // Same as above, but at the root namespace (no parent namespace creation).
+        // Covers the common code path used by `db.open_table("foo")` without a namespace.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        let result = conn.open_table("missing_at_root").execute().await;
+
+        match result {
+            Err(Error::TableNotFound { name, .. }) => {
+                assert_eq!(name, "missing_at_root");
+            }
+            Err(other) => panic!("Expected TableNotFound, got: {:?}", other),
+            Ok(_) => panic!("Expected open_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_already_exists() {
+        // Regression test for ENT-1235: create_table on an existing table (in default
+        // Create mode) should return TableAlreadyExists, not a generic Runtime/500 error.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create the table once.
+        conn.create_table("dup_table", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table the first time");
+
+        // Try to create it again with the default Create mode.
+        let result = conn
+            .create_table("dup_table", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::TableAlreadyExists { name }) => {
+                assert_eq!(name, "dup_table");
+            }
+            Err(other) => panic!("Expected TableAlreadyExists, got: {:?}", other),
+            Ok(_) => panic!("Expected create_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_already_exists_at_root() {
+        // Same as above, but at the root namespace.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_table("dup_root", create_test_data())
+            .execute()
+            .await
+            .expect("Failed to create table the first time");
+
+        let result = conn
+            .create_table("dup_root", create_test_data())
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::TableAlreadyExists { name }) => {
+                assert_eq!(name, "dup_root");
+            }
+            Err(other) => panic!("Expected TableAlreadyExists, got: {:?}", other),
+            Ok(_) => panic!("Expected create_table to fail, but it succeeded"),
+        }
     }
 
     #[tokio::test]

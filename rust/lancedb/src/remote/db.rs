@@ -206,6 +206,7 @@ impl RemoteDatabase {
         host_override: Option<String>,
         client_config: ClientConfig,
         options: RemoteOptions,
+        read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
         let header_map = RestfulLanceDbClient::<Sender>::default_headers(
@@ -233,6 +234,7 @@ impl RemoteDatabase {
             host_override,
             header_map,
             client_config.clone(),
+            read_consistency_interval,
         )?;
 
         let table_cache = Cache::builder()

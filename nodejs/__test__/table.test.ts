@@ -28,6 +28,7 @@ import {
   List,
   Schema,
   SchemaLike,
+  Struct,
   Type,
   Uint8,
   Utf8,
@@ -113,6 +114,48 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(addRes.version).toBe(2);
       await table.add([{ id: 1 }], { mode: "overwrite" });
       await expect(table.countRows()).resolves.toBe(1);
+    });
+
+    it("should invoke the progress callback", async () => {
+      const events: import("../lancedb").WriteProgress[] = [];
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }], {
+        progress: (p) => events.push(p),
+      });
+
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1];
+      expect(last.done).toBe(true);
+      // Earlier callbacks must have done=false.
+      for (const ev of events.slice(0, -1)) {
+        expect(ev.done).toBe(false);
+      }
+      // outputRows reflects the rows added in this call, not table size.
+      expect(last.outputRows).toBe(3);
+      // The input source (an array) reports a row count, so totalRows is set.
+      expect(last.totalRows).toBe(3);
+      // outputRows is monotonic.
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i].outputRows).toBeGreaterThanOrEqual(
+          events[i - 1].outputRows,
+        );
+      }
+    });
+
+    it("should swallow errors thrown from the progress callback", async () => {
+      const warn = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const res = await table.add([{ id: 1 }, { id: 2 }], {
+          progress: () => {
+            throw new Error("callback bomb");
+          },
+        });
+        expect(res.version).toBeGreaterThan(0);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("should let me close the table", async () => {
@@ -678,7 +721,7 @@ describe("When creating an index", () => {
       columns: ["vec"],
     });
     const stats = await tbl.indexStats("vec_idx");
-    expect(stats?.loss).toBeDefined();
+    expect(stats).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
@@ -736,6 +779,113 @@ describe("When creating an index", () => {
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
     expect(indices2.length).toBe(0);
+  });
+
+  it("should create and search a nested vector index", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "nested_vector",
+      makeArrowTable(
+        Array.from({ length: 300 }, (_, id) => ({
+          id,
+          image: { embedding: [id, id + 1] },
+        })),
+        { schema: nestedSchema },
+      ),
+    );
+
+    await nestedTable.createIndex("image.embedding", {
+      name: "image_embedding_idx",
+    });
+    const indices = await nestedTable.listIndices();
+    expect(indices).toContainEqual({
+      name: "image_embedding_idx",
+      indexType: "IvfPq",
+      columns: ["image.embedding"],
+    });
+
+    const explicit = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .column("image.embedding")
+      .limit(1)
+      .toArray();
+    const inferred = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .limit(1)
+      .toArray();
+    expect(inferred[0].id).toEqual(explicit[0].id);
+  });
+
+  it("should report multiple nested vector candidates", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "text",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "multiple_nested_vectors",
+      makeArrowTable(
+        [
+          {
+            image: { embedding: [0.0, 1.0] },
+            text: { embedding: [2.0, 3.0] },
+          },
+        ],
+        { schema: nestedSchema },
+      ),
+    );
+
+    await expect(
+      nestedTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/image\.embedding.*text\.embedding/);
+  });
+
+  it("should report when no default vector column exists", async () => {
+    const db = await connect(tmpDir.name);
+    const noVectorTable = await db.createTable(
+      "no_vector",
+      makeArrowTable([{ id: 0, label: "cat" }]),
+    );
+
+    await expect(
+      noVectorTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/No vector column/);
   });
 
   it("should wait for index readiness", async () => {
@@ -1000,7 +1150,6 @@ describe("When creating an index", () => {
     expect(stats?.distanceType).toBeUndefined();
     expect(stats?.indexType).toEqual("BTREE");
     expect(stats?.numIndices).toEqual(1);
-    expect(stats?.loss).toBeUndefined();
   });
 
   test("when getting stats on non-existent index", async () => {
@@ -1419,6 +1568,33 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema3);
+  });
+
+  it("can update field metadata", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("fm", [
+      { id: 1, category: "a" },
+      { id: 2, category: "b" },
+    ]);
+
+    const res = await table.updateFieldMetadata([
+      { path: "category", metadata: { unit: "label", pii: "false" } },
+    ]);
+    expect(res).toHaveProperty("version");
+    expect(res.version).toBe(2);
+
+    let cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label");
+    expect(cat?.metadata.get("pii")).toBe("false");
+
+    // merge: add a key, delete one via null, keep the rest
+    await table.updateFieldMetadata([
+      { path: "category", metadata: { source: "import", pii: null } },
+    ]);
+    cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label"); // preserved
+    expect(cat?.metadata.get("source")).toBe("import"); // added
+    expect(cat?.metadata.has("pii")).toBe(false); // deleted
   });
 
   it("can cast to various types", async function () {
@@ -1868,6 +2044,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results = await table.search("lance").toArray();
       expect(results.length).toBe(3);
+    });
+
+    test("prewarmData errors on local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "alpha", vector: [0.1, 0.2, 0.3] },
+        { text: "beta", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("prewarm_data_test", data);
+
+      // prewarmData is only supported on remote tables. We verify the call
+      // is wired through napi and surfaces the expected error for both
+      // arg shapes (undefined and string[]).
+      await expect(table.prewarmData()).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
+      await expect(table.prewarmData(["text"])).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
     });
 
     test("full text index on list", async () => {
@@ -2327,5 +2522,226 @@ describe("when creating a table with Float32Array vectors", () => {
     expect(fsl.children[0].type.typeId).toBe(Type.Float);
     // precision: HALF=0, SINGLE=1, DOUBLE=2
     expect((fsl.children[0].type as Float32).precision).toBe(1);
+  });
+});
+
+describe("setUnenforcedPrimaryKey", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("sets a single-column primary key (string or one-element array)", async () => {
+    const conn = await connect(tmpDir.name);
+    const schema = new arrow.Schema([
+      new arrow.Field("id", new arrow.Int64(), false),
+    ]);
+    const t1 = await conn.createEmptyTable("t1", schema);
+    await t1.setUnenforcedPrimaryKey("id");
+
+    const t2 = await conn.createEmptyTable("t2", schema);
+    await t2.setUnenforcedPrimaryKey(["id"]);
+  });
+
+  it("rejects a compound primary key", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await expect(
+      table.setUnenforcedPrimaryKey(["id", "name"]),
+    ).rejects.toThrow();
+  });
+
+  it("rejects changing the primary key once set", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await expect(table.setUnenforcedPrimaryKey("name")).rejects.toThrow();
+    await expect(table.setUnenforcedPrimaryKey("id")).rejects.toThrow();
+  });
+});
+
+describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function makeTable(conn: Connection): Promise<Table> {
+    return await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Int64(), false)]),
+    );
+  }
+
+  it("installs and removes a bucket spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+    });
+    await table.unsetLsmWriteSpec();
+    // A second unset errors — there is no spec left to remove.
+    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
+    // A fresh spec can be installed after unset.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 8,
+    });
+  });
+
+  it("installs an unsharded spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("installs an identity spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("rejects an invalid spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    // num_buckets out of range.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "id",
+        numBuckets: 0,
+      }),
+    ).rejects.toThrow();
+    // Column mismatch.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "missing",
+        numBuckets: 4,
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("LSM merge insert", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function bucketTable(conn: Connection): Promise<Table> {
+    // The primary key column must be non-nullable.
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Utf8(), false),
+        new arrow.Field("value", new arrow.Float64(), true),
+      ]),
+    );
+    await table.add([
+      { id: "a", value: 1 },
+      { id: "b", value: 2 },
+    ]);
+    await table.setUnenforcedPrimaryKey("id");
+    // numBuckets = 1: every row routes to the single bucket.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 1,
+    });
+    return table;
+  }
+
+  it("routes merge_insert through the shard writer", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: "c", value: 3 },
+        { id: "d", value: 4 },
+      ]);
+    // LSM path: rows go to the MemWAL, so only numRows is populated.
+    expect(res.numRows).toBe(2);
+    expect(res.version).toBe(0);
+    expect(res.numInsertedRows).toBe(0);
+
+    await table.closeLsmWriters();
+  });
+
+  it("falls back to the standard path with useLsmWrite(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenNotMatchedInsertAll()
+      .useLsmWrite(false)
+      .execute([
+        { id: "b", value: 9 },
+        { id: "e", value: 5 },
+      ]);
+    // Standard path commits: id="e" inserted ("b" already exists).
+    expect(res.numInsertedRows).toBe(1);
+    expect(await table.countRows()).toBe(3);
+  });
+
+  it("supports validateSingleShard(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .validateSingleShard(false)
+      .execute([{ id: "f", value: 6 }]);
+    expect(res.numRows).toBe(1);
+  });
+
+  it("rejects a non-upsert merge under an LSM spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    await expect(
+      table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([{ id: "g", value: 7 }]),
+    ).rejects.toThrow();
   });
 });

@@ -203,11 +203,11 @@ impl Shuffler {
 
         // Finish writing files
         for (file_idx, mut writer) in file_writers.into_iter().enumerate() {
-            let num_written = writer.finish().await?;
+            let write_summary = writer.finish().await?;
             log::debug!(
                 "Shuffle job {}: wrote {} rows to file {}",
                 self.id,
-                num_written,
+                write_summary.num_rows,
                 file_idx
             );
         }
@@ -464,11 +464,9 @@ mod tests {
         let mut iter = ids.into_iter().map(|o| o.unwrap());
         while let Some(first) = iter.next() {
             let rows_left_in_clump = if first == 4470 { 19 } else { 29 };
-            let mut expected_next = first + 1;
-            for _ in 0..rows_left_in_clump {
+            for expected_next in (first + 1)..=(first + rows_left_in_clump) {
                 let next = iter.next().unwrap();
                 assert_eq!(next, expected_next);
-                expected_next += 1;
             }
         }
     }

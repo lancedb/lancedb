@@ -50,6 +50,20 @@ impl NativeMergeInsertBuilder {
         this
     }
 
+    #[napi]
+    pub fn use_lsm_write(&self, use_lsm_write: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.use_lsm_write(use_lsm_write);
+        this
+    }
+
+    #[napi]
+    pub fn validate_single_shard(&self, validate_single_shard: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.validate_single_shard(validate_single_shard);
+        this
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec())

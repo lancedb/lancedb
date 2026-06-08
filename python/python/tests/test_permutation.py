@@ -1109,3 +1109,29 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_take_offsets(some_permutation: Permutation):
+    result = some_permutation.take_offsets([0, 1, 2])
+
+    assert isinstance(result, list)
+    assert "id" in result[0]
+    assert "value" in result[0]
+    assert len(result) == 3
+
+
+def test_take_offsets_empty_identity_permutation(mem_db):
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    permutation = Permutation.identity(tbl)
+
+    result = permutation.take_offsets([])
+
+    assert result == []
+
+
+def test_take_offsets_empty_permutation(some_permutation: Permutation):
+    result = some_permutation.take_offsets([])
+
+    assert result == []

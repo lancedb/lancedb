@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import asyncio
+import concurrent.futures
 import os
 import threading
 import warnings
@@ -37,6 +38,24 @@ class BackgroundEventLoop:
 
 LOOP = BackgroundEventLoop()
 
+
+def _new_embedding_executor() -> concurrent.futures.ThreadPoolExecutor:
+    return concurrent.futures.ThreadPoolExecutor(thread_name_prefix="lancedb-embedding")
+
+
+# Embedding functions can block for a long time -- a heavy local model or an
+# HTTP request to a remote embeddings API. Running them on asyncio's default
+# executor lets them starve the unrelated blocking I/O that shares that pool,
+# so they get a dedicated one. See
+# https://github.com/lancedb/lancedb/issues/3310.
+_EMBEDDING_EXECUTOR = _new_embedding_executor()
+
+
+def embedding_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Return the executor dedicated to running blocking embedding calls."""
+    return _EMBEDDING_EXECUTOR
+
+
 _FORK_WARNED = False
 
 
@@ -47,6 +66,12 @@ def _reset_after_fork():
     # the new state. The Rust-side tokio runtime is reset analogously by a
     # pthread_atfork hook installed in the _lancedb extension.
     LOOP._start()
+    # The embedding executor's worker threads are dead in the child as well.
+    # Replace it with a fresh pool (threads are spawned lazily, so this is
+    # cheap); we don't shut down the old one, since joining its dead workers
+    # could hang.
+    global _EMBEDDING_EXECUTOR
+    _EMBEDDING_EXECUTOR = _new_embedding_executor()
     global _FORK_WARNED
     if not _FORK_WARNED:
         _FORK_WARNED = True

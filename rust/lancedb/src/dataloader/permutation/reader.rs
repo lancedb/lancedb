@@ -450,6 +450,10 @@ impl PermutationReader {
     }
 
     pub async fn take_offsets(&self, offsets: &[u64], selection: Select) -> Result<RecordBatch> {
+        if offsets.is_empty() {
+            return Ok(RecordBatch::new_empty(self.output_schema(selection).await?));
+        }
+
         if let Some(permutation_table) = &self.permutation_table {
             let offset_map = self.get_offset_map(permutation_table).await?;
             let row_ids = offsets
@@ -954,5 +958,63 @@ mod tests {
             .values()
             .to_vec();
         assert_eq!(idx_values, &all_idx_values[4997..5000]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_empty_identity_reader() {
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
+            .await;
+
+        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+
+        let batch = reader.take_offsets(&[], Select::All).await.unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.schema().field(0).name(), "idx");
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_empty_with_permutation_table() {
+        let (base_table, row_ids_table, _) = setup_permutation_tables(5).await;
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let batch = reader.take_offsets(&[], Select::All).await.unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.schema().fields().len(), 2);
+        assert_eq!(batch.schema().field(0).name(), "idx");
+        assert_eq!(batch.schema().field(1).name(), "other_col");
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_empty_with_column_selection() {
+        let (base_table, row_ids_table, _) = setup_permutation_tables(5).await;
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let batch = reader
+            .take_offsets(&[], Select::Columns(vec!["idx".to_string()]))
+            .await
+            .unwrap();
+
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.schema().field(0).name(), "idx");
     }
 }

@@ -6,6 +6,7 @@ import re
 import sys
 from datetime import timedelta
 import os
+from types import SimpleNamespace
 
 import lancedb
 import numpy as np
@@ -186,6 +187,43 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     # Test that namespace_path parameter can be passed as keyword
     result = list(tmp_db.table_names(namespace_path=[]))
     assert len(result) == 3
+
+
+def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConnection):
+    for idx in range(20):
+        tmp_db.create_table(f"table_{idx}", data=[{"id": idx}])
+
+    assert len(tmp_db) == 20
+    for idx in range(20):
+        assert f"table_{idx}" in tmp_db
+    assert "does_not_exist" not in tmp_db
+
+
+def test_db_contains_stops_after_matching_table_page(
+    tmp_db: lancedb.DBConnection, monkeypatch
+):
+    calls = []
+    pages = {
+        None: SimpleNamespace(tables=["table_0", "table_1"], page_token="next"),
+        "next": SimpleNamespace(tables=["table_2"], page_token=None),
+    }
+
+    def list_tables(*, page_token=None, **_kwargs):
+        calls.append(page_token)
+        return pages[page_token]
+
+    monkeypatch.setattr(tmp_db, "list_tables", list_tables)
+
+    assert "table_1" in tmp_db
+    assert calls == [None]
+
+    calls.clear()
+    assert "table_2" in tmp_db
+    assert calls == [None, "next"]
+
+    calls.clear()
+    assert len(tmp_db) == 3
+    assert calls == [None, "next"]
 
 
 @pytest.mark.asyncio
@@ -428,7 +466,8 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     assert await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d{20}\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d{20}\.manifest", manifest)
 
     # Start a table in V1 mode then migrate
     tbl = await db_no_v2_paths.create_table(
@@ -438,13 +477,15 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     assert not await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d\.manifest", manifest)
 
     await tbl.migrate_manifest_paths_v2()
     assert await tbl.uses_v2_manifest_paths()
 
     for manifest in os.listdir(manifests_dir):
-        assert re.match(r"\d{20}\.manifest", manifest)
+        if manifest.endswith(".manifest"):
+            assert re.match(r"\d{20}\.manifest", manifest)
 
 
 @pytest.mark.asyncio
@@ -912,6 +953,29 @@ def test_local_namespace_operations(tmp_path):
     # Drop namespace
     db.drop_namespace(["child"])
     assert db.list_namespaces().namespaces == []
+
+
+def test_create_namespace_invalid_mode_raises(tmp_path):
+    """Unrecognized create namespace modes raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(ValueError, match="Invalid create namespace mode"):
+        db.create_namespace(["child"], mode="frobnicate")
+
+
+def test_drop_namespace_invalid_mode_raises(tmp_path):
+    """Unrecognized drop namespace modes raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    db.create_namespace(["child"])
+    with pytest.raises(ValueError, match="Invalid drop namespace mode"):
+        db.drop_namespace(["child"], mode="frobnicate")
+
+
+def test_drop_namespace_invalid_behavior_raises(tmp_path):
+    """Unrecognized drop namespace behaviors raise a clear error."""
+    db = lancedb.connect(tmp_path)
+    db.create_namespace(["child"])
+    with pytest.raises(ValueError, match="Invalid drop namespace behavior"):
+        db.drop_namespace(["child"], behavior="frobnicate")
 
 
 def test_clone_table_latest_version(tmp_path):

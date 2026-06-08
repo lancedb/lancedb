@@ -16,6 +16,18 @@ import {
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
+import type {
+  CreateNamespaceResponse,
+  DescribeNamespaceResponse,
+  DropNamespaceResponse,
+  ListNamespacesResponse,
+} from "./native";
+export type {
+  CreateNamespaceResponse,
+  DescribeNamespaceResponse,
+  DropNamespaceResponse,
+  ListNamespacesResponse,
+};
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
 
@@ -110,6 +122,41 @@ export interface TableNamesOptions {
   /** An optional limit to the number of results to return. */
   limit?: number;
 }
+
+export interface ListNamespacesOptions {
+  /** Token from a previous response for pagination. */
+  pageToken?: string;
+  /** An optional limit to the number of results to return. */
+  limit?: number;
+}
+
+export interface CreateNamespaceOptions {
+  /** Creation mode. */
+  mode?: "create" | "exist_ok" | "overwrite";
+  /** Properties to set on the new namespace. */
+  properties?: Record<string, string>;
+}
+
+export interface DropNamespaceOptions {
+  /** Whether to skip if the namespace doesn't exist, or fail. */
+  mode?: "skip" | "fail";
+  /** Refuse to drop if non-empty (restrict) or drop recursively (cascade). */
+  behavior?: "restrict" | "cascade";
+}
+
+export interface RenameTableOptions {
+  /**
+   * The namespace path of the table being renamed. Defaults to the root
+   * namespace (`[]`) when omitted.
+   */
+  namespacePath?: string[];
+  /**
+   * The namespace path to move the table to as part of the rename. When
+   * omitted the table stays in `namespacePath`.
+   */
+  newNamespacePath?: string[];
+}
+
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -269,6 +316,69 @@ export abstract class Connection {
   abstract dropAllTables(namespacePath?: string[]): Promise<void>;
 
   /**
+   * Describe a namespace, returning its properties.
+   *
+   * @param {string[]} namespacePath - The namespace path to describe, in
+   *   parent → child order, e.g. `["analytics", "sales"]`.
+   * @returns {Promise<DescribeNamespaceResponse>} The namespace's properties
+   *   (may be undefined if the namespace has none).
+   */
+  abstract describeNamespace(
+    namespacePath: string[],
+  ): Promise<DescribeNamespaceResponse>;
+
+  /**
+   * List the immediate child namespaces under the given parent.
+   *
+   * Results may be paginated. To retrieve subsequent pages, pass the
+   * `pageToken` returned by a previous call.
+   *
+   * @param {string[]} namespacePath - The parent namespace path. Defaults
+   *   to the root namespace if omitted.
+   * @param {Partial<ListNamespacesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListNamespacesResponse>} Child namespace names and
+   *   an optional token for fetching the next page.
+   */
+  abstract listNamespaces(
+    namespacePath?: string[],
+    options?: Partial<ListNamespacesOptions>,
+  ): Promise<ListNamespacesResponse>;
+
+  /**
+   * Create a new namespace at the given path.
+   *
+   * @param {string[]} namespacePath - The namespace path to create.
+   * @param {Partial<CreateNamespaceOptions>} options - Creation `mode`
+   *   ("create" | "exist_ok" | "overwrite") and optional `properties`
+   *   to attach to the namespace.
+   * @returns {Promise<CreateNamespaceResponse>} The properties of the
+   *   created namespace and an optional transaction id.
+   */
+  abstract createNamespace(
+    namespacePath: string[],
+    options?: Partial<CreateNamespaceOptions>,
+  ): Promise<CreateNamespaceResponse>;
+
+  /**
+   * Drop a namespace.
+   *
+   * Use `behavior: "cascade"` to also drop everything contained in the
+   * namespace (sub-namespaces and tables). The default `"restrict"`
+   * behavior refuses to drop a non-empty namespace.
+   *
+   * @param {string[]} namespacePath - The namespace path to drop.
+   * @param {Partial<DropNamespaceOptions>} options - `mode` ("skip" | "fail"
+   *   for missing-namespace handling) and `behavior` ("restrict" | "cascade").
+   * @returns {Promise<DropNamespaceResponse>} Any properties returned by
+   *   the server and an optional transaction id.
+   */
+  abstract dropNamespace(
+    namespacePath: string[],
+    options?: Partial<DropNamespaceOptions>,
+  ): Promise<DropNamespaceResponse>;
+
+  /**
    * Clone a table from a source table.
    *
    * A shallow clone creates a new table that shares the underlying data files
@@ -294,6 +404,24 @@ export abstract class Connection {
       isShallow?: boolean;
     },
   ): Promise<Table>;
+
+  /**
+   * Rename a table.
+   *
+   * Currently only supported by LanceDB Cloud. Local OSS connections and
+   * namespace-backed connections (via {@link connectNamespace}) reject with
+   * a "not supported" error.
+   *
+   * @param {string} currentName - The current name of the table.
+   * @param {string} newName - The new name for the table.
+   * @param {RenameTableOptions} options - Optional namespace paths. When
+   *   `newNamespacePath` is omitted the table stays in `namespacePath`.
+   */
+  abstract renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void>;
 }
 
 /** @hideconstructor */
@@ -514,6 +642,58 @@ export class LocalConnection extends Connection {
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {
     return this.inner.dropAllTables(namespacePath ?? []);
+  }
+
+  describeNamespace(
+    namespacePath: string[],
+  ): Promise<DescribeNamespaceResponse> {
+    return this.inner.describeNamespace(namespacePath);
+  }
+
+  listNamespaces(
+    namespacePath?: string[],
+    options?: Partial<ListNamespacesOptions>,
+  ): Promise<ListNamespacesResponse> {
+    return this.inner.listNamespaces(
+      namespacePath ?? [],
+      options?.pageToken,
+      options?.limit,
+    );
+  }
+
+  createNamespace(
+    namespacePath: string[],
+    options?: Partial<CreateNamespaceOptions>,
+  ): Promise<CreateNamespaceResponse> {
+    return this.inner.createNamespace(
+      namespacePath,
+      options?.mode,
+      options?.properties,
+    );
+  }
+
+  dropNamespace(
+    namespacePath: string[],
+    options?: Partial<DropNamespaceOptions>,
+  ): Promise<DropNamespaceResponse> {
+    return this.inner.dropNamespace(
+      namespacePath,
+      options?.mode,
+      options?.behavior,
+    );
+  }
+
+  async renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void> {
+    return this.inner.renameTable(
+      currentName,
+      newName,
+      options?.namespacePath ?? [],
+      options?.newNamespacePath,
+    );
   }
 }
 

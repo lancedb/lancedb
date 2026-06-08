@@ -268,7 +268,9 @@ mod tests {
     };
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::add_data::NaNVectorBehavior;
-    use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
+    use crate::table::{
+        ColumnDefinition, ColumnKind, NewColumnTransform, Table, TableDefinition, WriteOptions,
+    };
     use crate::test_utils::TestCustomError;
     use crate::test_utils::embeddings::MockEmbed;
 
@@ -518,6 +520,225 @@ mod tests {
         }
     }
 
+    /// Regression test for https://github.com/lancedb/lancedb/issues/3136.
+    ///
+    /// When a column is added via `add_columns` AFTER an embedding column,
+    /// the table schema becomes `[..., embedding, extra]`. Subsequent
+    /// `table.add()` calls used to fail with a CastError because columns
+    /// were matched positionally rather than by name.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema.clone(),
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_evol_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Seed a row so add_columns has data to compute against.
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a new physical column AFTER the embedding column.
+        table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![("score".into(), "42.0".into())]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Now add data including the new column but WITHOUT the embedding.
+        // The input batch column order is [text, score]; after computing the
+        // embedding it becomes [text, score, text_vec], but the table schema
+        // is [text, text_vec, score]. Columns must be matched by name.
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0])),
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "score"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
+        }
+    }
+
+    /// Like `test_add_with_embeddings_after_add_columns`, but the column
+    /// added after the embedding is a nested struct rather than a scalar.
+    /// Verifies that name-based column matching also works when the
+    /// post-embedding column has a complex Arrow type.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_nested_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema,
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_nested_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a STRUCT column after the embedding column.
+        let meta_struct = DataType::Struct(
+            vec![
+                Field::new("source", DataType::Utf8, true),
+                Field::new("score", DataType::Float64, true),
+            ]
+            .into(),
+        );
+        let nested_schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            meta_struct.clone(),
+            true,
+        )]));
+        table
+            .add_columns(NewColumnTransform::AllNulls(nested_schema), None)
+            .await
+            .unwrap();
+
+        // Insert with the nested struct present but the embedding column
+        // absent. The computed batch is [text, meta, text_vec], but the
+        // table schema is [text, text_vec, meta] — only name-based matching
+        // can put `meta` (a struct) in the right slot.
+        let source = Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"]));
+        let score = Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0]));
+        let meta = Arc::new(arrow_array::StructArray::from(vec![
+            (
+                Arc::new(Field::new("source", DataType::Utf8, true)),
+                source as Arc<dyn arrow_array::Array>,
+            ),
+            (
+                Arc::new(Field::new("score", DataType::Float64, true)),
+                score as Arc<dyn arrow_array::Array>,
+            ),
+        ]));
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("meta", meta_struct, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                meta,
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "meta"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            assert_eq!(batch.schema().field(2).name(), "meta");
+            assert!(matches!(
+                batch.schema().field(2).data_type(),
+                DataType::Struct(_)
+            ));
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
+        }
+    }
+
     #[tokio::test]
     async fn test_add_casts_to_table_schema() {
         let table_schema = Arc::new(Schema::new(vec![
@@ -760,5 +981,106 @@ mod tests {
         .unwrap();
         table2.add(struct_batch).execute().await.unwrap();
         assert_eq!(table2.count_rows(None).await.unwrap(), 2);
+    }
+
+    /// Regression test: appending `arrow.json` (PyArrow `pa.json_()`) data into a table
+    /// whose schema was created with `pa.json_()` (internally stored as `lance.json`, backed
+    /// by `LargeBinary`) must succeed without a schema-mismatch error.
+    ///
+    /// Previously `build_field_exprs` would attempt a `Utf8 → LargeBinary` DataFusion cast,
+    /// which produced a field whose Arrow extension metadata still read `arrow.json` instead
+    /// of `lance.json`.  Lance-core then rejected the append with
+    /// `"json vs large_binary" schema mismatch`.
+    ///
+    /// PyArrow's `pa.json_()` may be backed by either `Utf8` or `LargeUtf8` depending on the
+    /// constructor used, so the test is parameterized over the input backing type.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8)]
+    #[tokio::test]
+    async fn test_add_arrow_json_into_lance_json_table(#[case] input_type: DataType) {
+        use arrow_array::{Array, cast::AsArray};
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+
+        // Build a table whose "data" column is lance.json (LargeBinary +
+        // ARROW:extension:name = "lance.json").
+        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let table_schema = Arc::new(Schema::new(vec![lance_json_field]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_test", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Sanity-check the stored schema.
+        let stored_field = table.schema().await.unwrap();
+        let data_field = stored_field.field_with_name("data").unwrap();
+        assert_eq!(data_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            data_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+        );
+
+        // Build an arrow.json input field (Utf8/LargeUtf8 + arrow.json extension).
+        // This is what PyArrow produces for pa.json_() arrays.
+        let arrow_json_metadata = std::collections::HashMap::from([(
+            ARROW_EXT_NAME_KEY.to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        )]);
+        let arrow_json_field =
+            Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
+        let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
+
+        let rows: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
+        let string_array: Arc<dyn arrow_array::Array> = match input_type {
+            DataType::Utf8 => Arc::new(arrow_array::StringArray::from(rows.clone())),
+            DataType::LargeUtf8 => Arc::new(arrow_array::LargeStringArray::from(rows.clone())),
+            other => panic!("unsupported arrow.json backing type for this test: {other:?}"),
+        };
+        let batch = RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+
+        // This must not fail with a schema-mismatch error.
+        table.add(batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), rows.len());
+
+        // A lance.json column is read back as Utf8 carrying arrow.json extension metadata.
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["data"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), rows.len());
+
+        let json_col = batch.column(0);
+        assert_eq!(json_col.data_type(), &DataType::Utf8);
+        let json_strs = json_col.as_string::<i32>();
+
+        for (i, expected) in rows.iter().enumerate() {
+            match expected {
+                None => assert!(json_strs.is_null(i), "row {i} expected null"),
+                Some(raw) => {
+                    assert!(!json_strs.is_null(i), "row {i} expected non-null");
+                    let actual: serde_json::Value = serde_json::from_str(json_strs.value(i))
+                        .expect("read-back JSON should be valid");
+                    let expected: serde_json::Value =
+                        serde_json::from_str(raw).expect("expected JSON should be valid");
+                    assert_eq!(actual, expected, "row {i} JSON mismatch");
+                }
+            }
+        }
     }
 }

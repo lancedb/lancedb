@@ -344,6 +344,12 @@ def test_mrr_reranker(tmp_path):
     assert len(result_deduped) == len(result)
 
 
+def test_mrr_reranker_empty_input():
+    reranker = MRRReranker()
+    with pytest.raises(ValueError, match="must not be empty"):
+        reranker.rerank_multivector([])
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
@@ -603,3 +609,89 @@ def test_cross_encoder_reranker_return_all(tmp_path):
     assert "_relevance_score" in result.column_names
     assert "_score" in result.column_names
     assert "_distance" in result.column_names
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for LinearCombinationReranker scoring bugs (issue #3154)
+# ---------------------------------------------------------------------------
+
+
+def test_linear_combination_best_match_ranks_first():
+    """
+    The document that is BOTH the closest vector match AND the only FTS match
+    must rank first.  Previously _combine_score subtracted from 1, inverting
+    the ranking so the worst document ranked highest.
+    """
+    reranker = LinearCombinationReranker(weight=0.7, return_score="all")
+
+    # rowid 0: perfect vector match, sole FTS match  → should rank 1st
+    # rowid 1: mediocre vector, no FTS match
+    # rowid 2: bad vector, no FTS match
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1, 2],
+            "_distance": [0.0, 0.5, 0.9],
+        }
+    )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0],
+            "_score": [1.0],
+        }
+    )
+
+    combined = reranker.merge_results(vector_results, fts_results, fill=1.0)
+    scores = dict(
+        zip(
+            combined["_rowid"].to_pylist(),
+            combined["_relevance_score"].to_pylist(),
+        )
+    )
+
+    # rowid 0 must have the highest relevance score
+    assert scores[0] > scores[1], (
+        f"Best match (rowid 0, score={scores[0]:.4f}) should beat "
+        f"mid match (rowid 1, score={scores[1]:.4f})"
+    )
+    assert scores[1] > scores[2], (
+        f"Mid match (rowid 1, score={scores[1]:.4f}) should beat "
+        f"bad match (rowid 2, score={scores[2]:.4f})"
+    )
+
+
+def test_linear_combination_missing_fts_is_penalised():
+    """
+    A document with no FTS match must score *lower* than a document that
+    has a mediocre FTS match, everything else being equal.  Previously
+    missing-FTS entries used fill=1.0 directly, which gave them a reward
+    (via the 1-(...) inversion) instead of a penalty.
+    """
+    reranker = LinearCombinationReranker(weight=0.5, return_score="all")
+
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1],
+            "_distance": [0.2, 0.2],  # identical vector scores
+        }
+    )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0],  # rowid 1 has no FTS match
+            "_score": [0.3],  # small FTS score
+        }
+    )
+
+    combined = reranker.merge_results(vector_results, fts_results, fill=1.0)
+    scores = dict(
+        zip(
+            combined["_rowid"].to_pylist(),
+            combined["_relevance_score"].to_pylist(),
+        )
+    )
+
+    # rowid 0 has a small FTS score; rowid 1 has none.
+    # Even a small FTS contribution should beat having none at all.
+    assert scores[0] > scores[1], (
+        f"Document with FTS score (rowid 0, {scores[0]:.4f}) should beat "
+        f"document with no FTS match (rowid 1, {scores[1]:.4f})"
+    )

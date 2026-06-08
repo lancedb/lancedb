@@ -4,6 +4,8 @@
 
 import os
 import sys
+import threading
+import warnings
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -11,7 +13,7 @@ from unittest.mock import patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -25,6 +27,28 @@ from lancedb.table import LanceTable
 from pydantic import BaseModel
 
 
+def _blob_test_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
+
+
 def test_basic(mem_db: DBConnection):
     data = [
         {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
@@ -33,7 +57,7 @@ def test_basic(mem_db: DBConnection):
     table = mem_db.create_table("test", data=data)
 
     assert table.name == "test"
-    assert "LanceTable(name='test', version=1, _conn=LanceDBConnection(" in repr(table)
+    assert "LanceTable(name='test', _conn=LanceDBConnection(" in repr(table)
     expected_schema = pa.schema(
         {
             "vector": pa.list_(pa.float32(), 2),
@@ -45,6 +69,87 @@ def test_basic(mem_db: DBConnection):
 
     expected_data = pa.Table.from_pylist(data, schema=expected_schema)
     assert table.to_arrow() == expected_data
+
+
+def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_old_call", data=data)
+
+    expected = data.to_pandas()
+    pd.testing.assert_frame_equal(table.to_pandas(), expected)
+
+
+def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_invalid_blob_mode", data=data)
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
+
+    df = table.to_pandas(blob_mode=blob_mode)
+
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"hello")
+        _assert_lazy_blob(df["blob"].iloc[1], b"world")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"hello", b"world"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"hello"
+        assert not hasattr(first, "readall")
+
+
+def test_table_to_pandas_kwargs(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = tmp_db.create_table("test_to_pandas_kwargs", data=data)
+
+    df = table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_blob_bytes", data=_blob_test_data()
+    )
+
+    df = await table.to_pandas(blob_mode="bytes")
+
+    assert df["blob"].tolist() == [b"hello", b"world"]
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_invalid_blob_mode_non_blob_table(
+    tmp_db_async: AsyncConnection,
+):
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_invalid_blob_mode",
+        data=pa.table({"id": [1, 2], "text": ["one", "two"]}),
+    )
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        await table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_kwargs(tmp_db_async: AsyncConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = await tmp_db_async.create_table("test_async_to_pandas_kwargs", data=data)
+
+    df = await table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
 
 
 def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
@@ -849,7 +954,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # Test with target_partition_size
@@ -869,7 +979,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         target_partition_size=8192,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # target_partition_size has a default value,
@@ -888,7 +1003,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -899,7 +1019,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=False,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -914,7 +1039,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -929,7 +1059,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -953,6 +1088,7 @@ def test_create_index_name_and_train_parameters(
         "vector",
         replace=True,
         config=expected_config,
+        wait_timeout=None,
         name="my_custom_index",
         train=True,
     )
@@ -960,13 +1096,82 @@ def test_create_index_name_and_train_parameters(
     # Test with train=False
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=False
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=False,
     )
 
     # Test with both name and train
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name="my_index_name", train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name="my_index_name",
+        train=True,
+    )
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_legacy_emits_deprecation_warning(
+    mock_create_index, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        "test",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with pytest.warns(DeprecationWarning, match="create_index"):
+        table.create_index(metric="l2", num_partitions=8, vector_column_name="vector")
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "category": "a", "text": "hello world"},
+            {"vector": [5.9, 26.5], "category": "b", "text": "goodbye"},
+        ],
+    )
+
+    # Vector index via new API should not warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        table.create_index("vector", config=IvfPq(distance_type="l2"))
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=IvfPq(distance_type="l2"),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # Scalar index via new API
+    table.create_index("category", config=BTree())
+    mock_create_index.assert_called_with(
+        "category",
+        replace=True,
+        config=BTree(),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # FTS index via new API
+    table.create_index("text", config=FTS(with_position=True))
+    mock_create_index.assert_called_with(
+        "text",
+        replace=True,
+        config=FTS(with_position=True),
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -1082,6 +1287,45 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     data = table.to_arrow()
     assert data["text"].to_pylist() == ["bar"]
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
+
+
+def test_add_nullable_struct_with_none(mem_db: DBConnection):
+    """Regression test for issue #2654: a nullable struct column whose
+    first batch contains only None values must not crash in
+    _align_field_types with AttributeError: 'pyarrow.lib.DataType'
+    object has no attribute 'fields'.
+
+    PyArrow infers an all-None struct column as `null` (not `struct`),
+    so the type-alignment path needs to handle the case where the
+    source field type is null and use the target type directly.
+    """
+    # Use the v2.1 file format so that nullable structs are supported.
+    table = mem_db.create_table(
+        "test_nullable_struct",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "data",
+                    pa.struct([pa.field("x", pa.float32())]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        storage_options=dict(new_table_data_storage_version="2.1"),
+    )
+
+    # Adding a row with a non-null struct should work.
+    table.add([{"id": "1", "data": {"x": 1.0}}])
+
+    # Adding a row with None for the nullable struct field should also
+    # work — this is what used to crash.
+    table.add([{"id": "2", "data": None}])
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("id").to_pylist() == ["1", "2"]
+    assert result.column("data").to_pylist() == [{"x": 1.0}, None]
 
 
 def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
@@ -1782,8 +2026,9 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
-    # Test with default name
-    table.create_scalar_index("x")
+    # Test with default name; confirm DeprecationWarning fires
+    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+        table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
@@ -1809,6 +2054,59 @@ def test_create_scalar_index(mem_db: DBConnection):
     scalar_index = indices[0]
     assert scalar_index.index_type == "BTree"
     assert scalar_index.name == "custom_y_index"
+
+
+def test_create_index_nested_field_paths(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("metadata", pa.struct([pa.field("user_id", pa.int32())])),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "metadata": {"user_id": i},
+                "image": {"embedding": [float(i), float(i + 1)]},
+            }
+            for i in range(256)
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_index_paths", data=data)
+
+    table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
+    table.create_index(
+        vector_column_name="image.embedding",
+        num_partitions=1,
+        num_sub_vectors=1,
+        name="image_embedding_idx",
+    )
+
+    indices = sorted(table.list_indices(), key=lambda idx: idx.name)
+    assert [(idx.name, idx.index_type, idx.columns) for idx in indices] == [
+        ("image_embedding_idx", "IvfPq", ["image.embedding"]),
+        ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
+    ]
+
+    vector_results = (
+        table.search([0.0, 1.0], vector_column_name="image.embedding")
+        .limit(1)
+        .to_list()
+    )
+    assert len(vector_results) == 1
+    assert vector_results[0]["metadata"]["user_id"] == 0
+
+    default_vector_results = table.search([0.0, 1.0]).limit(1).to_list()
+    assert len(default_vector_results) == 1
+    assert default_vector_results[0]["metadata"]["user_id"] == 0
+
+    filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
+    assert len(filtered_results) == 1
+    assert filtered_results[0]["metadata"]["user_id"] == 42
 
 
 def test_empty_query(mem_db: DBConnection):
@@ -1883,6 +2181,74 @@ def test_search_with_schema_inf_multiple_vector(mem_db: DBConnection):
     q = np.random.randn(10)
     with pytest.raises(ValueError):
         table.search(q).limit(1).to_arrow()
+
+
+def test_search_infers_single_nested_vector(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {"id": 0, "image": {"embedding": [0.0, 1.0]}},
+            {"id": 1, "image": {"embedding": [10.0, 11.0]}},
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_default_search", data=data)
+
+    result = table.search([0.0, 1.0]).limit(1).to_list()
+    assert result[0]["id"] == 0
+
+
+def test_search_nested_vector_multiple_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+            pa.field(
+                "text",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "image": {"embedding": [0.0, 1.0]},
+                "text": {"embedding": [2.0, 3.0]},
+            }
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_multiple_candidates", data=data)
+
+    with pytest.raises(ValueError, match="image.embedding.*text.embedding"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_nested_vector_no_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field("metadata", pa.struct([pa.field("label", pa.string())])),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [{"id": 0, "metadata": {"label": "cat"}}],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_no_candidates", data=data)
+
+    with pytest.raises(ValueError, match="no vector column"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
@@ -2170,6 +2536,30 @@ def test_alter_columns(mem_db: DBConnection):
     assert table.to_arrow().column_names == ["new_id"]
 
 
+def test_update_field_metadata(mem_db: DBConnection):
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = mem_db.create_table("my_table", data=data)
+
+    res = table.update_field_metadata(
+        {"path": "category", "metadata": {"unit": "label", "pii": "false"}}
+    )
+    assert res.version == 2
+    # Arrow field metadata is bytes-keyed
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"pii": b"false",
+    }
+
+    # merge: add a key, delete one via None, keep the rest
+    table.update_field_metadata(
+        {"path": "category", "metadata": {"source": "import", "pii": None}}
+    )
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"source": b"import",
+    }
+
+
 @pytest.mark.asyncio
 async def test_alter_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
@@ -2448,3 +2838,38 @@ def test_sanitize_data_metadata_not_stripped():
     assert result_schema.metadata is not None
     assert result_schema.metadata[b"existing_key"] == b"existing_value"
     assert result_schema.metadata[b"new_key"] == b"new_value"
+
+
+@pytest.mark.asyncio
+async def test_async_search_runs_embedding_on_dedicated_executor(
+    mem_db_async: AsyncConnection,
+):
+    # Regression test for #3310: AsyncTable.search() must run the (potentially
+    # blocking) query-embedding call on the dedicated embedding executor, not
+    # asyncio's default executor -- which is shared with other blocking I/O and
+    # can be starved by a slow embedding call under concurrent load.
+    func = MockTextEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    table = await mem_db_async.create_table("embed_executor", schema=Schema)
+    await table.add([{"text": "hello world"}])
+
+    captured_threads: List[str] = []
+    original = MockTextEmbeddingFunction.generate_embeddings
+
+    def record_thread(self, texts):
+        captured_threads.append(threading.current_thread().name)
+        return original(self, texts)
+
+    # Patch only around the search so we capture the query-embedding call, not
+    # the add-time source-embedding call.
+    with patch.object(MockTextEmbeddingFunction, "generate_embeddings", record_thread):
+        await (await table.search("a query string")).limit(1).to_list()
+
+    assert captured_threads, "search did not invoke the embedding function"
+    assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
+        f"embedding ran off the dedicated executor: {captured_threads}"
+    )
