@@ -148,14 +148,14 @@ def test_permutation_dataloader(mem_db):
     for batch in dataloader:
         assert batch["a"].size(0) == 10
 
-    # "torch" produces dict-of-batched-tensors via iter() and
-    # list-of-per-row-dicts via __getitems__ so the default DataLoader
-    # collate stacks per-row dicts back into a batched dict.
+    # "torch" produces a list of per-row dicts per batch. The default
+    # DataLoader collate stacks the per-row dicts back into a batched dict.
     torch_perm = permutation.with_format("torch")
     batch = next(torch_perm.iter(10, skip_last_batch=False))
-    assert isinstance(batch, dict)
-    assert "a" in batch
-    assert batch["a"].shape == (10,)
+    assert isinstance(batch, list)
+    assert len(batch) == 10
+    assert isinstance(batch[0], dict)
+    assert isinstance(batch[0]["a"], torch.Tensor)
     rows = torch_perm.__getitems__([0, 1, 2])
     assert isinstance(rows, list)
     assert len(rows) == 3
@@ -163,6 +163,18 @@ def test_permutation_dataloader(mem_db):
     assert isinstance(rows[0]["a"], torch.Tensor)
     dataloader = torch.utils.data.DataLoader(torch_perm, batch_size=10, shuffle=True)
     for batch in dataloader:
+        assert isinstance(batch, dict)
+        assert batch["a"].shape == (10,)
+    # Spawn-based workers exercise the pickle round-trip path: the new
+    # transform-as-list shape must survive pickling so workers produce the
+    # same per-row dicts the parent does.
+    spawn_loader = torch.utils.data.DataLoader(
+        torch_perm,
+        batch_size=10,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    for batch in spawn_loader:
         assert isinstance(batch, dict)
         assert batch["a"].shape == (10,)
 

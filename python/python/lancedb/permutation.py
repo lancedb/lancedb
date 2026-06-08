@@ -949,9 +949,10 @@ class Permutation:
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a dict of torch tensors keyed by column name
-          (one 1-D tensor per column). Works with the default
-          ``torch.utils.data.DataLoader`` collate.
+        - "torch" - the batch will be a list of per-row dicts mapping column
+          name to a 0-D torch tensor. Works with the default
+          ``torch.utils.data.DataLoader`` collate, which stacks the per-row
+          dicts back into a dict of batched tensors.
         - "torch_row" - the batch will be a list of tensors, one per row
         - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
         - "polars" - the batch will be a polars DataFrame
@@ -981,9 +982,7 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
-            new = self.with_transform(batch_to_tensor_dict)
-            new._torch_dict_format = True
-            return new
+            return self.with_transform(batch_to_tensor_dict)
         elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":
@@ -1006,7 +1005,6 @@ class Permutation:
         assert transform is not None, "transform is required"
         new = copy.copy(self)
         new.transform_fn = transform
-        new._torch_dict_format = False
         return new
 
     def take_offsets(self, offsets: list[int]) -> Any:
@@ -1035,15 +1033,7 @@ class Permutation:
         """
         Returns rows from the permutation by offset
         """
-        result = self.take_offsets(indices)
-        # For with_format("torch"), the transform produces a dict of batched
-        # tensors. Unbatch into a list of per-row dicts so PyTorch's default
-        # DataLoader collate (which expects a list of samples) can stack them
-        # back into a batched dict. iter() still yields the batched dict
-        # directly.
-        if getattr(self, "_torch_dict_format", False):
-            return [{k: v[i] for k, v in result.items()} for i in range(len(indices))]
-        return result
+        return self.take_offsets(indices)
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":

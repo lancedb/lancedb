@@ -935,17 +935,17 @@ def test_transform_fn(mem_db):
     try:
         import torch
 
-        # "torch" returns a dict of column-keyed tensors via iter().
+        # "torch" returns a list of per-row dicts. Default DataLoader collate
+        # stacks the per-row dicts back into a dict of batched tensors.
         torch_perm = permutation.with_format("torch")
-        torch_dict = list(torch_perm.iter(10, skip_last_batch=False))[0]
-        assert isinstance(torch_dict, dict)
-        assert set(torch_dict.keys()) == {"id", "value"}
-        assert isinstance(torch_dict["id"], torch.Tensor)
-        assert torch_dict["id"].shape == (10,)
-        assert torch_dict["id"].dtype == torch.int64
+        torch_batch = list(torch_perm.iter(10, skip_last_batch=False))[0]
+        assert isinstance(torch_batch, list)
+        assert len(torch_batch) == 10
+        assert isinstance(torch_batch[0], dict)
+        assert set(torch_batch[0].keys()) == {"id", "value"}
+        assert isinstance(torch_batch[0]["id"], torch.Tensor)
+        assert torch_batch[0]["id"].dtype == torch.int64
 
-        # __getitems__ unbatches into a list of per-row dicts so PyTorch's
-        # default DataLoader collate can stack them back into a batched dict.
         rows = torch_perm.__getitems__([0, 1, 2])
         assert isinstance(rows, list)
         assert len(rows) == 3
