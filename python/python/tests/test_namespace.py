@@ -28,6 +28,10 @@ def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
 class _FailingSyncInner:
     name = "hist"
 
+    def current_branch(self):
+        # The pushdown gate only routes server-side when on the default branch.
+        return None
+
     async def schema(self):
         return PUSHDOWN_DATA.schema
 
