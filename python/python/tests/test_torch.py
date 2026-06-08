@@ -149,9 +149,8 @@ def test_permutation_dataloader(mem_db):
         assert batch["a"].size(0) == 10
 
     # "torch" produces dict-of-batched-tensors via iter() and
-    # list-of-per-row-dicts via __getitems__, mirroring HuggingFace's
-    # behavior so the default DataLoader collate stacks per-row dicts back
-    # into a batched dict.
+    # list-of-per-row-dicts via __getitems__ so the default DataLoader
+    # collate stacks per-row dicts back into a batched dict.
     torch_perm = permutation.with_format("torch")
     batch = next(torch_perm.iter(10, skip_last_batch=False))
     assert isinstance(batch, dict)
@@ -167,8 +166,8 @@ def test_permutation_dataloader(mem_db):
         assert isinstance(batch, dict)
         assert batch["a"].shape == (10,)
 
-    # "torch_row" is the previous "torch" behavior: list of row tensors.
-    # Works with the default DataLoader collate (stacks rows into 2D).
+    # "torch_row" returns a list of row tensors. Works with the default
+    # DataLoader collate (stacks rows into 2D).
     row_perm = permutation.with_format("torch_row")
     dataloader = torch.utils.data.DataLoader(row_perm, batch_size=10, shuffle=True)
     for batch in dataloader:

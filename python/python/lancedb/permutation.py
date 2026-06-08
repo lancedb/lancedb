@@ -950,11 +950,9 @@ class Permutation:
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
         - "torch" - the batch will be a dict of torch tensors keyed by column name
-          (one 1-D tensor per column). This matches HuggingFace's
-          ``dataset.set_format("torch")`` and works with the default
+          (one 1-D tensor per column). Works with the default
           ``torch.utils.data.DataLoader`` collate.
-        - "torch_row" - the batch will be a list of torch tensors, one per row.
-          This was the behavior of "torch" prior to the HuggingFace alignment.
+        - "torch_row" - the batch will be a list of tensors, one per row
         - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
         - "polars" - the batch will be a polars DataFrame
 

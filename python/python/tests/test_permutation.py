@@ -935,8 +935,7 @@ def test_transform_fn(mem_db):
     try:
         import torch
 
-        # "torch" returns a dict of column-keyed tensors via iter()
-        # (HuggingFace alignment, see issue #3245).
+        # "torch" returns a dict of column-keyed tensors via iter().
         torch_perm = permutation.with_format("torch")
         torch_dict = list(torch_perm.iter(10, skip_last_batch=False))[0]
         assert isinstance(torch_dict, dict)
@@ -954,8 +953,7 @@ def test_transform_fn(mem_db):
         assert set(rows[0].keys()) == {"id", "value"}
         assert isinstance(rows[0]["id"], torch.Tensor)
 
-        # The previous list-of-row-tensors behavior is preserved under
-        # "torch_row".
+        # "torch_row" returns a list of tensors, one per row.
         torch_rows = list(
             permutation.with_format("torch_row").iter(10, skip_last_batch=False)
         )[0]
