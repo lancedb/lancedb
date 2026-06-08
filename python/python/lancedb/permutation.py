@@ -358,36 +358,28 @@ DEFAULT_BATCH_SIZE = 100
 def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     from .remote.table import RemoteTable
 
-    if isinstance(table, RemoteTable):
-        return {
-            "kind": "remote",
-            "table": table,
-        }
-
-    if not isinstance(table, LanceTable):
-        raise ValueError(f"Cannot pickle table of type {type(table)!r}")
-
-    base_uri = table._conn.uri
-    if base_uri.startswith("memory://"):
+    if isinstance(table, LanceTable) and table._conn.uri.startswith("memory://"):
         return {
             "kind": "memory",
             "name": table.name,
             "data": table.to_arrow(),
         }
 
-    return {
-        "kind": "local",
-        "name": table.name,
-        "uri": base_uri,
-        "namespace": table._namespace_path,
-        "storage_options": table._conn.storage_options,
-    }
+    if isinstance(table, (LanceTable, RemoteTable)):
+        return {
+            "kind": "table",
+            "table": table,
+        }
+
+    raise ValueError(f"Cannot pickle table of type {type(table)!r}")
 
 
 def _table_from_pickle_state(state: dict[str, Any]) -> Table:
     from . import connect
 
     kind = state["kind"]
+    if kind == "table":
+        return state["table"]
     if kind == "remote":
         return state["table"]
     if kind == "memory":

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
@@ -784,8 +785,12 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def _ensure_open(self) -> None:
+        pass
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
+        self._ensure_open()
         return self.count_rows(None)
 
     @property
@@ -1431,6 +1436,7 @@ class Table(ABC):
         pa.RecordBatch
             A record batch containing the rows at the given offsets.
         """
+        self._ensure_open()
         # We don't know the order of the results at all.  So we calculate a permutation
         # for ordering the given offsets.  Then we load the data with the _rowoffset
         # column.  Then we sort by _rowoffset and apply the inverse of the permutation
@@ -2012,6 +2018,7 @@ class LanceTable(Table):
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._init_reopen_tracking()
         if _async is not None:
             self._table = _async
         else:
@@ -2026,6 +2033,66 @@ class LanceTable(Table):
                     managed_versioning=managed_versioning,
                 )
             )
+
+    def _init_reopen_tracking(self) -> None:
+        self._checkout_version: Optional[int] = None
+        self._table_state: Optional[dict[str, Any]] = None
+        self._pid = os.getpid()
+
+    def _reopen_state(self) -> dict[str, Any]:
+        state = LOOP.run(self._table._table_reopen_state())
+        if get_uri_scheme(self._conn.uri) == "memory":
+            raise ValueError(
+                "Cannot pickle an in-memory LanceTable. Use a persisted table "
+                "or provide a worker-side connection factory."
+            )
+        return state
+
+    def _copy_reopened_table(self, table: "LanceTable") -> None:
+        self._conn = table._conn
+        self._namespace_path = table._namespace_path
+        self._location = table._location
+        self._namespace_client = table._namespace_client
+        self._pushdown_operations = table._pushdown_operations
+        self._table = table._table
+        self._pid = os.getpid()
+
+    def _ensure_open(self) -> None:
+        pid = os.getpid()
+        if getattr(self, "_table", None) is not None and self._pid == pid:
+            return
+        if self._table_state is None:
+            self._table_state = self._reopen_state()
+
+        table = self._conn.open_table(
+            self._table_state["name"],
+            namespace_path=self._table_state["namespace_path"] or None,
+            storage_options=self._table_state["storage_options"],
+        )
+        if self._checkout_version is not None:
+            table.checkout(self._checkout_version)
+        self._copy_reopened_table(table)
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {
+            "connection_state": self._conn.serialize(),
+            "table_state": self._reopen_state(),
+            "checkout_version": self._checkout_version,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        from . import deserialize_conn
+
+        self._conn = deserialize_conn(state["connection_state"], for_worker=True)
+        self._namespace_path = list(state["table_state"]["namespace_path"] or [])
+        self._location = None
+        self._namespace_client = None
+        self._pushdown_operations = set()
+        self._checkout_version = state["checkout_version"]
+        self._table_state = state["table_state"]
+        self._table = None
+        self._pid = None
+        self._ensure_open()
 
     @property
     def name(self) -> str:
@@ -2230,6 +2297,7 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        self._checkout_version = self.version
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -2238,6 +2306,7 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -2286,6 +2355,7 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -3354,6 +3424,7 @@ class LanceTable(Table):
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._init_reopen_tracking()
 
         if data_storage_version is not None:
             warnings.warn(
@@ -4655,6 +4726,10 @@ class AsyncTable:
             The storage options, or None if no storage options were configured.
         """
         return await self._inner.latest_storage_options()
+
+    async def _table_reopen_state(self) -> dict[str, Any]:
+        """Get the Rust-side table state needed to reopen this table."""
+        return await self._inner._table_reopen_state()
 
     async def add(
         self,

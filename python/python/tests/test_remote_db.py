@@ -215,8 +215,49 @@ def test_remote_table_is_picklable():
 
     with mock_lancedb_connection(handler) as db:
         table = db.open_table("test")
+        state = table.__getstate__()
+        assert state["table_state"] == {
+            "name": "test",
+            "namespace_path": [],
+            "storage_options": None,
+        }
         restored = pickle.loads(pickle.dumps(table))
         assert restored.count_rows() == 3
+
+
+def test_remote_table_reopens_when_pid_changes_without_cached_state():
+    def handler(request):
+        request.close_connection = True
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": {"type": "int64"}, "nullable": False}
+                        ]
+                    },
+                }
+            )
+            request.wfile.write(payload.encode())
+        elif request.path == "/v1/table/test/count_rows/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"3")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table._pid = -1
+        table._table_state = None
+
+        assert table.count_rows() == 3
 
 
 def test_remote_table_open_does_not_require_picklable_client_config():
