@@ -92,6 +92,12 @@ BlobMode = Literal["lazy", "bytes", "descriptions"]
 _VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
 
 
+def _should_push_down_query_table(
+    namespace_client: Optional[Any], pushdown_operations: set
+) -> bool:
+    return namespace_client is not None and "QueryTable" in pushdown_operations
+
+
 def _validate_blob_mode(blob_mode: BlobMode) -> None:
     if blob_mode not in _VALID_BLOB_MODES:
         modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
@@ -2333,6 +2339,11 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
+        if _should_push_down_query_table(
+            self._namespace_client, self._pushdown_operations
+        ):
+            return self._execute_query(Query()).read_all()
+
         return LOOP.run(self._table.to_arrow())
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
@@ -3446,9 +3457,8 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if (
-            "QueryTable" in self._pushdown_operations
-            and self._namespace_client is not None
+        if _should_push_down_query_table(
+            self._namespace_client, self._pushdown_operations
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -4182,7 +4192,14 @@ class AsyncTable:
     [AsyncTable.create_index][lancedb.table.AsyncTable.create_index].
     """
 
-    def __init__(self, table: LanceDBTable):
+    def __init__(
+        self,
+        table: LanceDBTable,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
+    ):
         """Create a new AsyncTable object.
 
         You should not create AsyncTable objects directly.
@@ -4191,6 +4208,21 @@ class AsyncTable:
         [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
         Table objects."""
         self._inner = table
+        self._namespace_path = namespace_path or []
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
+
+    def _set_namespace_context(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
+    ) -> "AsyncTable":
+        self._namespace_path = namespace_path or []
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
+        return self
 
     def __repr__(self):
         return self._inner.__repr__()
@@ -4391,6 +4423,11 @@ class AsyncTable:
         -------
         pa.Table
         """
+        if _should_push_down_query_table(
+            self._namespace_client, self._pushdown_operations
+        ):
+            return (await self._execute_query(Query())).read_all()
+
         return await self.query().to_arrow()
 
     async def create_index(
@@ -5068,6 +5105,14 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        if _should_push_down_query_table(
+            self._namespace_client, self._pushdown_operations
+        ):
+            from lancedb.namespace import _execute_server_side_query
+
+            table_id = self._namespace_path + [self.name]
+            return _execute_server_side_query(self._namespace_client, table_id, query)
+
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
         # used for that code path right now.
