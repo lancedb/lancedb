@@ -110,6 +110,23 @@ containing the new version number of the table after altering the columns.
 
 ***
 
+### branches()
+
+```ts
+abstract branches(): Promise<Branches>
+```
+
+Get the branch manager for this table.
+
+Branches are isolated, writable lines of history forked from another
+branch (or version). Writes on a branch do not affect `main`.
+
+#### Returns
+
+`Promise`&lt;[`Branches`](Branches.md)&gt;
+
+***
+
 ### checkout()
 
 ```ts

@@ -86,7 +86,7 @@ pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
-pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
+pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
@@ -625,6 +625,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
     async fn list_versions(&self) -> Result<Vec<Version>>;
+    /// Create a new branch from `from` and return a handle scoped to it.
+    async fn create_branch(
+        &self,
+        name: &str,
+        from: lance::dataset::refs::Ref,
+    ) -> Result<Arc<dyn BaseTable>>;
+    /// Check out an existing branch and return a handle scoped to it.
+    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>>;
+    /// List the branches of the table.
+    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
+    /// Delete a branch.
+    async fn delete_branch(&self, name: &str) -> Result<()>;
+    /// The branch this handle is scoped to, or `None` for `main`.
+    fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
     async fn table_definition(&self) -> Result<TableDefinition>;
     /// Get the table URI (storage location)
@@ -1625,6 +1639,45 @@ impl Table {
         self.inner.tags().await
     }
 
+    /// Create a new branch from `from` (a version, tag, or branch)
+    pub async fn create_branch(
+        &self,
+        name: &str,
+        from: impl Into<lance::dataset::refs::Ref>,
+    ) -> Result<Self> {
+        let inner = self.inner.create_branch(name, from.into()).await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
+    /// Check out an existing branch and return a handle scoped to it.
+    pub async fn checkout_branch(&self, name: &str) -> Result<Self> {
+        let inner = self.inner.checkout_branch(name).await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
+    /// List the branches of the table.
+    pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
+        self.inner.list_branches().await
+    }
+
+    /// Delete a branch.
+    pub async fn delete_branch(&self, name: &str) -> Result<()> {
+        self.inner.delete_branch(name).await
+    }
+
+    /// The branch this handle is scoped to, or `None` for `main`.
+    pub fn current_branch(&self) -> Option<String> {
+        self.inner.current_branch()
+    }
+
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
@@ -1859,6 +1912,30 @@ impl NativeTable {
     pub fn with_namespace_client(mut self, namespace_client: Arc<dyn LanceNamespace>) -> Self {
         self.namespace_client = Some(namespace_client);
         self
+    }
+
+    /// Build a sibling `NativeTable` with the same identity but a different
+    /// (independent) dataset wrapper — used to hand out branch-scoped handles.
+    fn with_dataset(&self, dataset: dataset::DatasetConsistencyWrapper) -> Self {
+        Self {
+            name: self.name.clone(),
+            namespace: self.namespace.clone(),
+            id: self.id.clone(),
+            uri: self.uri.clone(),
+            dataset,
+            read_consistency_interval: self.read_consistency_interval,
+            namespace_client: self.namespace_client.clone(),
+            pushdown_operations: self.pushdown_operations.clone(),
+        }
+    }
+
+    fn validate_branch_name(name: &str, field: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!("{field} must be a non-empty string"),
+            });
+        }
+        Ok(())
     }
 
     /// Opens an existing Table using a namespace client.
@@ -2652,6 +2729,49 @@ impl BaseTable for NativeTable {
         self.dataset.reload().await
     }
 
+    async fn create_branch(
+        &self,
+        name: &str,
+        from: lance::dataset::refs::Ref,
+    ) -> Result<Arc<dyn BaseTable>> {
+        Self::validate_branch_name(name, "branch name")?;
+        if let lance::dataset::refs::Ref::Version(Some(from_branch), _) = &from {
+            Self::validate_branch_name(from_branch, "from_ref")?;
+        }
+        let mut ds = (*self.dataset.get().await?).clone();
+        let branch_ds = ds.create_branch(name, from, None).await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_latest(
+            branch_ds,
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(self.with_dataset(dataset)))
+    }
+
+    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+        Self::validate_branch_name(name, "branch name")?;
+        let branch_ds = self.dataset.get().await?.checkout_branch(name).await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_latest(
+            branch_ds,
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(self.with_dataset(dataset)))
+    }
+
+    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
+        Ok(self.dataset.get().await?.list_branches().await?)
+    }
+
+    async fn delete_branch(&self, name: &str) -> Result<()> {
+        Self::validate_branch_name(name, "branch name")?;
+        let mut ds = (*self.dataset.get().await?).clone();
+        ds.delete_branch(name).await?;
+        Ok(())
+    }
+
+    fn current_branch(&self) -> Option<String> {
+        self.dataset.current_branch()
+    }
+
     async fn list_versions(&self) -> Result<Vec<Version>> {
         Ok(self.dataset.get().await?.versions().await?)
     }
@@ -3368,6 +3488,171 @@ mod tests {
         assert_eq!(table.version().await.unwrap(), 3);
         table.checkout_latest().await.unwrap();
         assert_eq!(table.version().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_branches() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        // main: one row at v1
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+        assert_eq!(table.current_branch(), None);
+        let main_version = table.version().await.unwrap();
+
+        // branch off main's current version; it starts with main's data
+        let branch = table.create_branch("exp", main_version).await.unwrap();
+        assert_eq!(branch.current_branch().as_deref(), Some("exp"));
+        assert_eq!(branch.count_rows(None).await.unwrap(), 1);
+
+        // writes on the branch are isolated from main
+        branch.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(branch.count_rows(None).await.unwrap(), 2);
+        assert_eq!(
+            table.count_rows(None).await.unwrap(),
+            1,
+            "main must be untouched by branch writes"
+        );
+
+        // the branch shows up in the listing
+        let branches = table.list_branches().await.unwrap();
+        assert!(branches.contains_key("exp"));
+
+        // checking out the branch from the main handle sees the branch's latest data
+        let checked_out = table.checkout_branch("exp").await.unwrap();
+        assert_eq!(checked_out.current_branch().as_deref(), Some("exp"));
+        assert_eq!(checked_out.count_rows(None).await.unwrap(), 2);
+
+        // open_table(...).branch(...) opens directly onto the branch
+        let opened = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(opened.current_branch().as_deref(), Some("exp"));
+        assert_eq!(opened.count_rows(None).await.unwrap(), 2);
+
+        // delete removes it from the listing
+        table.delete_branch("exp").await.unwrap();
+        let branches = table.list_branches().await.unwrap();
+        assert!(!branches.contains_key("exp"));
+    }
+
+    #[tokio::test]
+    async fn test_branch_name_validation() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+
+        // every entry point rejects an empty name instead of passing it down
+        assert!(matches!(
+            table.create_branch("", 1u64).await,
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            table.checkout_branch("").await,
+            Err(Error::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            table.delete_branch("").await,
+            Err(Error::InvalidInput { .. })
+        ));
+        // an empty source branch is rejected too
+        assert!(matches!(
+            table
+                .create_branch(
+                    "ok",
+                    lance::dataset::refs::Ref::Version(Some(String::new()), None)
+                )
+                .await,
+            Err(Error::InvalidInput { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_branch_handle_tracks_concurrent_writes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // interval = 0 so every read checks storage for new commits
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        let v1 = table.version().await.unwrap();
+
+        // two independent handles on the same branch
+        let writer = table.create_branch("exp", v1).await.unwrap();
+        let reader = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // a concurrent write on the branch is visible to the other handle, which
+        // tracks the branch's HEAD (not main's)
+        writer.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 2);
+        // main is untouched
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_branch_handle_without_consistency_interval_is_pinned() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // default interval (None): handles do not auto-refresh
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        let v1 = table.version().await.unwrap();
+
+        let writer = table.create_branch("exp", v1).await.unwrap();
+        let reader = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // without a consistency interval the reader stays on the version it
+        // opened, exactly like a main-branch handle...
+        writer.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 1);
+
+        // ...until it explicitly refreshes
+        reader.checkout_latest().await.unwrap();
+        assert_eq!(reader.count_rows(None).await.unwrap(), 2);
     }
 
     #[tokio::test]

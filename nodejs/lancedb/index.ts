@@ -38,6 +38,7 @@ export {
   FragmentSummaryStats,
   Tags,
   TagContents,
+  BranchContents,
   MergeResult,
   AddResult,
   AddColumnsResult,
@@ -111,6 +112,7 @@ export {
 
 export {
   Table,
+  Branches,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,

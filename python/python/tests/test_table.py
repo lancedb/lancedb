@@ -928,6 +928,160 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+def test_branches(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert table.count_rows() == 2
+
+    # fork an isolated, writable branch from main
+    branch = table.branches.create("exp")
+    assert branch.count_rows() == 2
+    branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    # writes on the branch do not touch main
+    assert branch.count_rows() == 3
+    assert table.count_rows() == 2
+
+    # the branch is listed, with main (None) as its parent
+    branches = table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    # from_ref="main" is equivalent to the default
+    table.branches.create("exp2", from_ref="main")
+    assert table.branches.list()["exp2"]["parent_branch"] is None
+
+    # checkout returns a handle scoped to the branch's latest
+    checked_out = table.branches.checkout("exp")
+    assert checked_out.count_rows() == 3
+
+    # delete removes it
+    table.branches.delete("exp")
+    table.branches.delete("exp2")
+    assert "exp" not in table.branches.list()
+
+
+def test_branch_handle_tracks_concurrent_writes(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("t", [{"id": 1}])
+
+    # two independent handles on the same branch
+    writer = table.branches.create("exp")
+    reader = db.open_table("t", branch="exp")
+    assert reader.count_rows() == 1
+
+    # a concurrent write on the branch is visible to the other handle
+    writer.add([{"id": 2}])
+    assert reader.count_rows() == 2
+    # main is unaffected
+    assert table.count_rows() == 1
+
+
+def test_branch_name_validation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}])
+
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.create("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.checkout("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.delete("")
+
+
+def test_branches_preserve_namespace(tmp_path):
+    pytest.importorskip(
+        "lance"
+    )  # namespace_path routes through lance's DirectoryNamespace
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    assert table.namespace == ["ns1"]
+
+    branch = table.branches.create("exp")
+    assert branch.namespace == ["ns1"]
+    assert branch.id == table.id
+
+    # opening the branch directly also preserves namespace identity
+    opened = db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert opened.namespace == ["ns1"]
+
+
+def test_open_table_with_branch(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    table.branches.create("exp").add([{"i": 2}])
+
+    # open_table(branch=...) returns a handle scoped to the branch
+    assert db.open_table("t", branch="exp").count_rows() == 2
+    # opening without branch still tracks main
+    assert db.open_table("t").count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    table = await db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    branch = await table.branches.create("exp")
+    await branch.add([{"id": 2}])
+
+    # open_table(branch=...) on the async namespace connection must work
+    opened = await db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert await opened.count_rows() == 2
+
+
+def test_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    branch = table.branches.create("exp")
+    branch.add([{"i": 2}])  # branch: 2 rows, main: 1 row
+
+    assert branch.to_lance().count_rows() == 2
+    assert table.to_lance().count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_branches(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+
+    branch = await table.branches.create("exp")
+    assert await branch.count_rows() == 2
+    await branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    assert await branch.count_rows() == 3
+    assert await table.count_rows() == 2
+
+    branches = await table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    await table.branches.create("exp2", from_ref="main")
+    assert (await table.branches.list())["exp2"]["parent_branch"] is None
+
+    checked_out = await table.branches.checkout("exp")
+    assert await checked_out.count_rows() == 3
+
+    await table.branches.delete("exp")
+    await table.branches.delete("exp2")
+    assert "exp" not in await table.branches.list()
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(

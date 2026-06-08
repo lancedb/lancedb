@@ -549,6 +549,7 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
     ) -> Table:
         if namespace_path is None:
             namespace_path = []
@@ -567,7 +568,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
             raise
 
-        return LanceTable(
+        tbl = LanceTable(
             self,
             name,
             namespace_path=namespace_path,
@@ -575,6 +576,9 @@ class LanceNamespaceDBConnection(DBConnection):
             pushdown_operations=self._namespace_client_pushdown_operations,
             _async=async_table,
         )
+        if branch is not None:
+            return tbl.branches.checkout(branch)
+        return tbl
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -984,6 +988,7 @@ class AsyncLanceNamespaceDBConnection:
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
     ) -> AsyncTable:
         """Open an existing table from the namespace."""
         if namespace_path is None:
@@ -1000,6 +1005,8 @@ class AsyncLanceNamespaceDBConnection:
                 table_id = namespace_path + [name]
                 raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
             raise
+        if branch is not None:
+            table = await table.branches.checkout(branch)
         return table._set_namespace_context(
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,

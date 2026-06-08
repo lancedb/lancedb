@@ -19,6 +19,8 @@
 
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
+- [BranchContents](classes/BranchContents.md)
+- [Branches](classes/Branches.md)
 - [Connection](classes/Connection.md)
 - [HeaderProvider](classes/HeaderProvider.md)
 - [Index](classes/Index.md)

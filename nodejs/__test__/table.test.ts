@@ -85,6 +85,64 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("should support branches", async () => {
+      await table.add([{ id: 1 }]);
+      expect(await table.countRows()).toBe(1);
+
+      // fork an isolated, writable branch from main
+      const branch = await (await table.branches()).create("exp");
+      expect(await branch.countRows()).toBe(1);
+      await branch.add([{ id: 2 }]);
+      expect(await branch.countRows()).toBe(2);
+      // main is untouched by branch writes
+      expect(await table.countRows()).toBe(1);
+
+      // listed, with main (null) as the parent
+      const list = await (await table.branches()).list();
+      expect(Object.keys(list)).toContain("exp");
+      expect(list["exp"].parentBranch).toBeNull();
+
+      // fromRef="main" is equivalent to the default
+      await (await table.branches()).create("exp2", "main");
+      const list2 = await (await table.branches()).list();
+      expect(list2["exp2"].parentBranch).toBeNull();
+
+      // checkout returns a handle scoped to the branch's latest
+      const checkedOut = await (await table.branches()).checkout("exp");
+      expect(await checkedOut.countRows()).toBe(2);
+
+      // delete removes it
+      await (await table.branches()).delete("exp");
+      await (await table.branches()).delete("exp2");
+      const after = await (await table.branches()).list();
+      expect(Object.keys(after)).not.toContain("exp");
+    });
+
+    it("should open a branch via open_table", async () => {
+      const db = await connect(tmpDir.name);
+      await table.add([{ id: 1 }]);
+      const branch = await (await table.branches()).create("exp");
+      await branch.add([{ id: 2 }]);
+
+      // open_table(..., { branch }) returns a handle scoped to the branch
+      const opened = await db.openTable("some_table", undefined, {
+        branch: "exp",
+      });
+      expect(await opened.countRows()).toBe(2);
+      // opening without branch still tracks main
+      expect(await (await db.openTable("some_table")).countRows()).toBe(1);
+    });
+
+    it("rejects invalid branch inputs", async () => {
+      const branches = await table.branches();
+      await expect(branches.create("")).rejects.toThrow("non-empty");
+      await expect(branches.checkout("")).rejects.toThrow("non-empty");
+      await expect(branches.delete("")).rejects.toThrow("non-empty");
+      await expect(branches.create("bad", "main", -1)).rejects.toThrow(
+        "non-negative",
+      );
+    });
+
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);

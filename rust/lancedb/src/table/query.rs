@@ -41,11 +41,14 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    // If QueryTable pushdown is enabled and namespace client is configured, use server-side query execution
+    // QueryTable pushdown runs the query server-side, but only on the main
+    // branch: the namespace request carries no branch yet, so a branch handle
+    // must fall through to local execution.
     if table
         .pushdown_operations
         .contains(&NamespaceClientPushdownOperation::QueryTable)
         && let Some(ref namespace_client) = table.namespace_client
+        && table.dataset.current_branch().is_none()
     {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
     }

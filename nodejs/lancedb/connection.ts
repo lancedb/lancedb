@@ -85,6 +85,12 @@ export interface CreateTableOptions {
 
 export interface OpenTableOptions {
   /**
+   * Open the table scoped to this branch instead of the default branch.
+   *
+   * Reads and writes on the returned table operate in the branch's context.
+   */
+  branch?: string;
+  /**
    * Configuration for object storage.
    *
    * Options already set on the connection will be inherited by the table,
@@ -483,7 +489,11 @@ export class LocalConnection extends Connection {
       options?.indexCacheSize,
     );
 
-    return new LocalTable(innerTable);
+    const table = new LocalTable(innerTable);
+    if (options?.branch != null) {
+      return (await table.branches()).checkout(options.branch);
+    }
+    return table;
   }
 
   async cloneTable(

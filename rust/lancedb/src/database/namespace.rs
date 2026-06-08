@@ -741,6 +741,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_namespace_branch_query_under_pushdown_stays_local() {
+        // With QueryTable pushdown enabled, a query on the main branch routes to
+        // the namespace server, but a branch handle must run locally: the
+        // server-side request carries no branch and would return main's rows.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .pushdown_operation(NamespaceClientPushdownOperation::QueryTable)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // main has 5 rows
+        let table = conn
+            .create_table("ref_test", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+        let main_version = table.version().await.unwrap();
+
+        // fork a branch off main, then add 5 more rows so it differs from main
+        let branch = table
+            .create_branch("exp", main_version)
+            .await
+            .expect("Failed to create branch");
+        branch
+            .add(create_test_data())
+            .execute()
+            .await
+            .expect("Failed to append to branch");
+
+        // the branch query must run locally and see the branch's 10 rows --
+        // not get routed to the server (which carries no branch) and see main's 5
+        let results = branch
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query branch")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+        let count: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(count, 10);
+    }
+
+    #[tokio::test]
     async fn test_namespace_describe_table() {
         // Setup: Create a temporary directory for the namespace
         let tmp_dir = tempdir().unwrap();
