@@ -23,6 +23,7 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
+use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::database::listing::{
@@ -214,11 +215,15 @@ impl LanceNamespaceDatabase {
             params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
-        if let Some(enable_stable_row_ids) =
-            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        let data_schema = request.data.schema();
+        if let Some(enable_stable_row_ids) = stable_row_ids_override
+            .or(self.new_table_config.enable_stable_row_ids)
+            .or(has_blob_columns(data_schema.as_ref()).then_some(true))
         {
             params.enable_stable_row_ids = enable_stable_row_ids;
         }
+
+        ensure_blob_storage_version(data_schema.as_ref(), params);
 
         Ok(())
     }

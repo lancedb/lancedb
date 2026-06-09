@@ -163,6 +163,7 @@
 //! ```
 
 pub mod arrow;
+pub mod blob;
 pub mod connection;
 pub mod data;
 pub mod database;
@@ -188,6 +189,7 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
+pub use blob::blob;
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
 use lance_linalg::distance::DistanceType as LanceDistanceType;
