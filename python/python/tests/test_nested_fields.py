@@ -172,9 +172,7 @@ def _nested_vector_schema() -> pa.Schema:
             pa.field("id", pa.int32()),
             pa.field(
                 "image",
-                pa.struct(
-                    [pa.field("embedding", pa.list_(pa.float32(), DIM))]
-                ),
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), DIM))]),
             ),
             pa.field(
                 "MetaData",
@@ -405,9 +403,7 @@ class TestNestedVectorIndexSync:
             name="image_emb_idx",
         )
         results = (
-            tbl.search(_vec(0), vector_column_name="image.embedding")
-            .limit(5)
-            .to_list()
+            tbl.search(_vec(0), vector_column_name="image.embedding").limit(5).to_list()
         )
         assert len(results) > 0
 
@@ -548,9 +544,7 @@ class TestNestedScalarIndexAsync:
     async def test_index_stats_canonical_path(self, async_db):
         """index_stats round-trip: create on nested field, verify stats."""
         tbl = await async_db.create_table("t", _nested_scalar_data())
-        await tbl.create_index(
-            "MetaData.userId", config=BTree(), name="meta_uid_idx"
-        )
+        await tbl.create_index("MetaData.userId", config=BTree(), name="meta_uid_idx")
         stats = await tbl.index_stats("meta_uid_idx")
         assert stats is not None
         assert stats.index_type == "BTREE"
@@ -560,9 +554,7 @@ class TestNestedScalarIndexAsync:
     async def test_append_and_list_indices_stable(self, async_db):
         """After appending rows the index listing must remain unchanged."""
         tbl = await async_db.create_table("t", _nested_scalar_data())
-        await tbl.create_index(
-            "MetaData.userId", config=BTree(), name="meta_uid_idx"
-        )
+        await tbl.create_index("MetaData.userId", config=BTree(), name="meta_uid_idx")
         await tbl.add(_nested_scalar_data(nrows=4))
         col_map = await _columns_by_name_async(tbl)
         assert col_map["meta_uid_idx"] == ["MetaData.userId"]
@@ -574,9 +566,7 @@ class TestNestedScalarIndexAsync:
             tmp_path / "opt_db", read_consistency_interval=timedelta(seconds=0)
         )
         tbl = await db.create_table("t", _nested_scalar_data())
-        await tbl.create_index(
-            "MetaData.userId", config=BTree(), name="meta_uid_idx"
-        )
+        await tbl.create_index("MetaData.userId", config=BTree(), name="meta_uid_idx")
         await tbl.add(_nested_scalar_data(nrows=4))
         await tbl.optimize()
         col_map = await _columns_by_name_async(tbl)
