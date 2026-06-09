@@ -58,6 +58,7 @@ from lance_namespace import (
     ListTablesRequest,
     DescribeNamespaceRequest,
     DropTableRequest,
+    RenameTableRequest,
     ListNamespacesRequest,
     CreateNamespaceRequest,
     DropNamespaceRequest,
@@ -604,9 +605,14 @@ class LanceNamespaceDBConnection(DBConnection):
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError(
-            "rename_table is not supported for namespace connections"
+        cur_table_id = cur_namespace_path + [cur_name]
+        new_namespace_id = new_namespace_path if new_namespace_path else None
+        request = RenameTableRequest(
+            id=cur_table_id,
+            new_table_name=new_name,
+            new_namespace_id=new_namespace_id,
         )
+        self._namespace_client.rename_table(request)
 
     @override
     def drop_database(self):
@@ -1036,14 +1042,19 @@ class AsyncLanceNamespaceDBConnection:
         cur_namespace_path: Optional[List[str]] = None,
         new_namespace_path: Optional[List[str]] = None,
     ):
-        """Rename is not supported for namespace connections."""
+        """Rename a table in the namespace."""
         if cur_namespace_path is None:
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError(
-            "rename_table is not supported for namespace connections"
+        cur_table_id = cur_namespace_path + [cur_name]
+        new_namespace_id = new_namespace_path if new_namespace_path else None
+        request = RenameTableRequest(
+            id=cur_table_id,
+            new_table_name=new_name,
+            new_namespace_id=new_namespace_id,
         )
+        self._namespace_client.rename_table(request)
 
     async def drop_database(self):
         """Deprecated method."""

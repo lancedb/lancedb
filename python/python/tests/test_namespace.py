@@ -257,8 +257,8 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table_not_supported(self):
-        """Test that rename_table raises NotImplementedError."""
+    def test_rename_table(self):
+        """Test that rename_table renames a table in the namespace."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Create a child namespace first
@@ -273,9 +273,24 @@ class TestNamespaceConnection:
         )
         db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
 
-        # Rename should raise NotImplementedError
-        with pytest.raises(NotImplementedError, match="rename_table is not supported"):
-            db.rename_table("old_name", "new_name")
+        # Rename the table within the same namespace
+        db.rename_table(
+            "old_name",
+            "new_name",
+            cur_namespace_path=["test_ns"],
+            new_namespace_path=["test_ns"],
+        )
+
+        # Old name should no longer exist
+        tables = list(db.table_names(namespace_path=["test_ns"]))
+        assert "old_name" not in tables
+
+        # New name should exist
+        assert "new_name" in tables
+
+        # Data should be accessible through the new name
+        renamed_table = db.open_table("new_name", namespace_path=["test_ns"])
+        assert renamed_table is not None
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""

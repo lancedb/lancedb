@@ -16,7 +16,7 @@ use lance_namespace::{
         CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
         DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
-        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse, RenameTableRequest,
     },
 };
 use lance_namespace_impls::ConnectBuilder;
@@ -488,14 +488,34 @@ impl Database for LanceNamespaceDatabase {
 
     async fn rename_table(
         &self,
-        _cur_name: &str,
-        _new_name: &str,
-        _cur_namespace_path: &[String],
-        _new_namespace_path: &[String],
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "rename_table is not supported for namespace connections".to_string(),
-        })
+        let mut cur_table_id = cur_namespace_path.to_vec();
+        cur_table_id.push(cur_name.to_string());
+
+        let new_namespace_id = if new_namespace_path.is_empty() {
+            None
+        } else {
+            Some(new_namespace_path.to_vec())
+        };
+
+        let rename_request = RenameTableRequest {
+            id: Some(cur_table_id),
+            new_table_name: new_name.to_string(),
+            new_namespace_id,
+            ..Default::default()
+        };
+        self.namespace
+            .rename_table(rename_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to rename table: {}", e),
+            })?;
+
+        Ok(())
     }
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
