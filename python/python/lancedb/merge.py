@@ -48,11 +48,21 @@ class LanceMergeInsertBuilder(object):
         If there are multiple matches then the behavior is undefined.
         Currently this causes multiple copies of the row to be created
         but that behavior is subject to change.
+
+        Parameters
+        ----------
+        where: Optional[str], default None
+            An optional filter to limit which rows are updated. Column
+            references in this expression must be prefixed with "target."
+            to refer to the existing table data. For example, to only
+            update rows where the existing color is red, use:
+            ``where="target.color = 'red'"``
         """
         self._when_matched_update_all = True
         self._when_matched_update_all_condition = where
         return self
 
+    
     def when_not_matched_insert_all(self) -> LanceMergeInsertBuilder:
         """
         Rows that exist only in the source table (new data) should
