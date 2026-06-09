@@ -385,6 +385,21 @@ def _(value: np.ndarray):
     return value_to_sql(value.tolist())
 
 
+@value_to_sql.register(np.bool_)
+def _(value: np.bool_):
+    return value_to_sql(bool(value))
+
+
+@value_to_sql.register(np.integer)
+def _(value: np.integer):
+    return value_to_sql(int(value))
+
+
+@value_to_sql.register(np.floating)
+def _(value: np.floating):
+    return value_to_sql(float(value))
+
+
 def deprecated(func):
     """This is a decorator which can be used to mark functions
     as deprecated. It will result in a warning being emitted
