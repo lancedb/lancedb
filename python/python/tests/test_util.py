@@ -149,6 +149,21 @@ def test_value_to_sql_dict():
     assert value_to_sql({}) == "named_struct()"
 
 
+def test_value_to_sql_numpy_scalars():
+    # numpy scalars (e.g. pulled from an ndarray or a pandas column) must
+    # convert the same way as their native Python counterparts. np.float64
+    # already worked by virtue of subclassing float, but the integer / bool
+    # / float32 scalars previously raised NotImplementedError.
+    import numpy as np
+
+    assert value_to_sql(np.int32(5)) == "5"
+    assert value_to_sql(np.int64(5)) == "5"
+    assert value_to_sql(np.float32(1.5)) == "1.5"
+    assert value_to_sql(np.float64(1.5)) == "1.5"
+    assert value_to_sql(np.bool_(True)) == "TRUE"
+    assert value_to_sql(np.bool_(False)) == "FALSE"
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)
