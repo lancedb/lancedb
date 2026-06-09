@@ -1290,9 +1290,15 @@ export class Branches {
     return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
   }
 
-  /** Check out an existing branch and return a handle scoped to it. */
-  async checkout(name: string): Promise<Table> {
-    return new LocalTable(await this.#inner.checkout(name));
+  /**
+   * Check out an existing branch and return a handle scoped to it.
+   *
+   * With `version` set, the returned handle is pinned to that version of the
+   * branch (a read-only, detached view); otherwise it tracks the branch's
+   * latest and stays writable.
+   */
+  async checkout(name: string, version?: number): Promise<Table> {
+    return new LocalTable(await this.#inner.checkout(name, version));
   }
 
   /** Delete a branch. */

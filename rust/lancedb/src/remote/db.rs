@@ -984,6 +984,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_open_table_branch_and_version() {
+        // Remote supports version time-travel but not branches. A version-only
+        // open (or one on the default "main" branch) must succeed; a non-main
+        // branch must be rejected, with or without a version.
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/t/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"table": "t", "version": 2, "schema": {"fields": [
+                        {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap()
+        });
+
+        // version-only: allowed (open + checkout(version) both round-trip)
+        conn.open_table("t").version(2).execute().await.unwrap();
+
+        // "main" is the default branch, so it counts as no branch
+        conn.open_table("t")
+            .branch("main")
+            .version(2)
+            .execute()
+            .await
+            .unwrap();
+
+        // a non-main branch is rejected, with or without a version
+        assert!(matches!(
+            conn.open_table("t").branch("exp").execute().await,
+            Err(Error::NotSupported { .. })
+        ));
+        assert!(matches!(
+            conn.open_table("t")
+                .branch("exp")
+                .version(2)
+                .execute()
+                .await,
+            Err(Error::NotSupported { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn test_open_table_not_found() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder()

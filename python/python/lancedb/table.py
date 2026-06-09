@@ -5942,9 +5942,19 @@ class Branches:
         )
         return self._wrap(async_table)
 
-    def checkout(self, name: str) -> "LanceTable":
-        """Check out an existing branch and return a handle scoped to it."""
-        async_table = LOOP.run(self._table.branches.checkout(name))
+    def checkout(self, name: str, version: Optional[int] = None) -> "LanceTable":
+        """Check out an existing branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the branch to check out.
+        version: int, optional
+            A specific version on the branch to pin. When set, the returned
+            handle is a read-only view of that version; when omitted it tracks
+            the branch's latest and stays writable.
+        """
+        async_table = LOOP.run(self._table.branches.checkout(name, version))
         return self._wrap(async_table)
 
     def delete(self, name: str) -> None:
@@ -6069,10 +6079,19 @@ class AsyncBranches:
         inner = await self._table.branches.create(name, from_ref, from_version)
         return AsyncTable(inner)
 
-    async def checkout(self, name: str) -> "AsyncTable":
-        """Check out an existing branch and return a handle scoped to it."""
-        inner = await self._table.branches.checkout(name)
-        return AsyncTable(inner)
+    async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":
+        """Check out an existing branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the branch to check out.
+        version: int, optional
+            A specific version on the branch to pin. When set, the returned
+            handle is a read-only view of that version; when omitted it tracks
+            the branch's latest and stays writable.
+        """
+        return AsyncTable(await self._table.branches.checkout(name, version))
 
     async def delete(self, name: str) -> None:
         """Delete a branch."""

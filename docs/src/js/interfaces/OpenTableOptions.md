@@ -55,3 +55,17 @@ Options already set on the connection will be inherited by the table,
 but can be overridden here.
 
 The available options are described at https://docs.lancedb.com/storage/
+
+***
+
+### version?
+
+```ts
+optional version: number;
+```
+
+Open the table pinned to this version, producing a read-only view.
+
+Composes with [OpenTableOptions.branch](OpenTableOptions.md#branch): when both are set, opens
+that branch at the version; otherwise opens `main` at the version. Call
+`checkoutLatest` to return to a writable state.

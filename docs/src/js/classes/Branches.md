@@ -16,14 +16,20 @@ to the branch; writes on it do not affect `main`.
 ### checkout()
 
 ```ts
-checkout(name): Promise<Table>
+checkout(name, version?): Promise<Table>
 ```
 
 Check out an existing branch and return a handle scoped to it.
 
+With `version` set, the returned handle is pinned to that version of the
+branch (a read-only, detached view); otherwise it tracks the branch's
+latest and stays writable.
+
 #### Parameters
 
 * **name**: `string`
+
+* **version?**: `number`
 
 #### Returns
 

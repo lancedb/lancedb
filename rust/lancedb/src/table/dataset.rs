@@ -76,6 +76,23 @@ impl DatasetConsistencyWrapper {
         }
     }
 
+    /// Create a new wrapper pinned to the dataset's current version.
+    ///
+    /// `dataset` must already be checked out at the desired version; this pins
+    /// to `dataset.version()` without re-resolving. The wrapper is read-only
+    /// (time-travel) until [`as_latest`](Self::as_latest) re-attaches it to the
+    /// latest version.
+    pub fn new_time_travel(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let version = dataset.version().version;
+        let wrapper = Self::new_latest(dataset, read_consistency_interval);
+        wrapper
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pinned_version = Some(version);
+        wrapper
+    }
+
     /// The MemWAL `ShardWriter` cache co-located with this dataset.
     pub(crate) fn shard_writer(&self) -> &Arc<ShardWriterCache> {
         &self.shard_writer

@@ -633,6 +633,23 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<Arc<dyn BaseTable>>;
     /// Check out an existing branch and return a handle scoped to it.
     async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>>;
+    /// Check out an existing branch at an optional version, returning a handle.
+    ///
+    /// `None` tracks the branch's latest; `Some(v)` pins it to that version
+    /// (read-only). The default implementation composes [`Self::checkout_branch`]
+    /// and [`Self::checkout`]; implementations may override it to resolve the
+    /// `(branch, version)` coordinate in a single manifest read.
+    async fn checkout_branch_version(
+        &self,
+        name: &str,
+        version: Option<u64>,
+    ) -> Result<Arc<dyn BaseTable>> {
+        let branch = self.checkout_branch(name).await?;
+        if let Some(version) = version {
+            branch.checkout(version).await?;
+        }
+        Ok(branch)
+    }
     /// List the branches of the table.
     async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
     /// Delete a branch.
@@ -1654,8 +1671,20 @@ impl Table {
     }
 
     /// Check out an existing branch and return a handle scoped to it.
-    pub async fn checkout_branch(&self, name: &str) -> Result<Self> {
-        let inner = self.inner.checkout_branch(name).await?;
+    ///
+    /// With `version` set, the returned handle is pinned to that version of the
+    /// branch: a read-only, detached view (as with [`Self::checkout`]). With
+    /// `version` as `None` it tracks the branch's latest and stays writable.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn f(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let exp_at_v3 = table.checkout_branch("exp", Some(3)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkout_branch(&self, name: &str, version: Option<u64>) -> Result<Self> {
+        let inner = self.inner.checkout_branch_version(name, version).await?;
         Ok(Self {
             inner,
             database: self.database.clone(),
@@ -2757,6 +2786,29 @@ impl BaseTable for NativeTable {
         Ok(Arc::new(self.with_dataset(dataset)))
     }
 
+    async fn checkout_branch_version(
+        &self,
+        name: &str,
+        version: Option<u64>,
+    ) -> Result<Arc<dyn BaseTable>> {
+        let Some(version) = version else {
+            return self.checkout_branch(name).await;
+        };
+        Self::validate_branch_name(name, "branch name")?;
+        // Resolve (branch, version) in a single manifest read.
+        let branch_ds = self
+            .dataset
+            .get()
+            .await?
+            .checkout_version((name, version))
+            .await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+            branch_ds,
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(self.with_dataset(dataset)))
+    }
+
     async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
         Ok(self.dataset.get().await?.list_branches().await?)
     }
@@ -3530,7 +3582,7 @@ mod tests {
         assert!(branches.contains_key("exp"));
 
         // checking out the branch from the main handle sees the branch's latest data
-        let checked_out = table.checkout_branch("exp").await.unwrap();
+        let checked_out = table.checkout_branch("exp", None).await.unwrap();
         assert_eq!(checked_out.current_branch().as_deref(), Some("exp"));
         assert_eq!(checked_out.count_rows(None).await.unwrap(), 2);
 
@@ -3551,6 +3603,186 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_branch_version_checkout() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        // main: a single fork-point row (i = 0)
+        let table = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let fork_point = table.version().await.unwrap();
+
+        // Fork "exp", then advance exp AND main independently past the fork so
+        // they diverge while sharing version numbers.
+        let branch = table.create_branch("exp", fork_point).await.unwrap();
+        let exp_fork = branch.version().await.unwrap(); // exp's shallow-clone version
+        branch.add(sample_rows(vec![1])).execute().await.unwrap(); // exp: {0, 1}
+        let exp_v2 = branch.version().await.unwrap();
+        branch.add(sample_rows(vec![2])).execute().await.unwrap(); // exp HEAD: {0, 1, 2}
+
+        // main's own commit reaches the SAME version number with different data
+        table
+            .add(sample_rows(vec![100, 101, 102]))
+            .execute()
+            .await
+            .unwrap(); // main HEAD: {0, 100, 101, 102}
+        let main_v2 = table.version().await.unwrap();
+        assert_eq!(
+            exp_v2, main_v2,
+            "branch and main must share the version number for this test to mean anything"
+        );
+
+        // Open exp at the shared version. The data must be exp's, not main's:
+        // count alone cannot prove this (main@v2 differs), so assert provenance
+        // by content.
+        let pinned = conn
+            .open_table("my_table")
+            .branch("exp")
+            .version(exp_v2)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(pinned.current_branch().as_deref(), Some("exp"));
+        // isolated from exp's HEAD (3 rows) and from main@v2 (4 rows)
+        assert_eq!(pinned.count_rows(None).await.unwrap(), 2);
+        // exp's post-fork row is visible; main's divergent rows are not
+        assert_eq!(
+            pinned.count_rows(Some("i = 1".to_string())).await.unwrap(),
+            1
+        );
+        assert_eq!(
+            pinned
+                .count_rows(Some("i = 100".to_string()))
+                .await
+                .unwrap(),
+            0
+        );
+
+        // the same coordinate is reachable directly via checkout_branch(name, version)
+        let pinned_direct = table.checkout_branch("exp", Some(exp_v2)).await.unwrap();
+        assert_eq!(pinned_direct.current_branch().as_deref(), Some("exp"));
+        assert_eq!(pinned_direct.count_rows(None).await.unwrap(), 2);
+
+        // the HEADs are unaffected
+        let head = conn
+            .open_table("my_table")
+            .branch("exp")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(head.count_rows(None).await.unwrap(), 3);
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+
+        // a pinned version is a detached head: writes are rejected
+        assert!(pinned.add(sample_rows(vec![9])).execute().await.is_err());
+
+        // version-only (no branch) time-travels main itself: its fork-point
+        // version holds only main's first row, and the shared version number
+        // resolves to main's data, not the branch's ("opens main at the version")
+        let old_main = conn
+            .open_table("my_table")
+            .version(fork_point)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(old_main.current_branch(), None);
+        assert_eq!(old_main.count_rows(None).await.unwrap(), 1);
+        let shared_on_main = conn
+            .open_table("my_table")
+            .version(exp_v2)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(shared_on_main.current_branch(), None);
+        assert_eq!(shared_on_main.count_rows(None).await.unwrap(), 4);
+
+        // a nonexistent version is rejected
+        assert!(
+            conn.open_table("my_table")
+                .version(9999)
+                .execute()
+                .await
+                .is_err()
+        );
+
+        // a nonexistent version on a branch is rejected too: this resolves on
+        // the branch's path, a distinct miss from the main lookup above
+        assert!(
+            conn.open_table("my_table")
+                .branch("exp")
+                .version(9999)
+                .execute()
+                .await
+                .is_err()
+        );
+
+        // opening the branch at its fork point (the shallow-clone manifest)
+        // shows just the cloned state: main's fork-point row
+        let exp_at_fork = conn
+            .open_table("my_table")
+            .branch("exp")
+            .version(exp_fork)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(exp_at_fork.current_branch().as_deref(), Some("exp"));
+        assert_eq!(exp_at_fork.count_rows(None).await.unwrap(), 1);
+
+        // checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+        // (writable again), not main's HEAD, and not staying pinned
+        pinned.checkout_latest().await.unwrap();
+        assert_eq!(pinned.current_branch().as_deref(), Some("exp"));
+        assert_eq!(pinned.count_rows(None).await.unwrap(), 3); // exp HEAD, not main's 4
+        pinned.add(sample_rows(vec![3])).execute().await.unwrap();
+        assert_eq!(pinned.count_rows(None).await.unwrap(), 4); // writable again
+    }
+
+    #[tokio::test]
+    async fn test_branch_version_two_branches() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("my_table", sample_rows(vec![0]))
+            .execute()
+            .await
+            .unwrap();
+        let fork_point = table.version().await.unwrap();
+
+        // two branches off the same point, each advanced once so they reach the
+        // SAME version number with divergent data
+        let exp1 = table.create_branch("exp1", fork_point).await.unwrap();
+        let exp2 = table.create_branch("exp2", fork_point).await.unwrap();
+        exp1.add(sample_rows(vec![10])).execute().await.unwrap();
+        exp2.add(sample_rows(vec![20])).execute().await.unwrap();
+        let v1 = exp1.version().await.unwrap();
+        let v2 = exp2.version().await.unwrap();
+        assert_eq!(v1, v2, "both branches must reach the same version number");
+
+        // that shared version number resolves to each branch's own data
+        let at1 = table.checkout_branch("exp1", Some(v1)).await.unwrap();
+        assert_eq!(at1.count_rows(Some("i = 10".to_string())).await.unwrap(), 1);
+        assert_eq!(at1.count_rows(Some("i = 20".to_string())).await.unwrap(), 0);
+        let at2 = table.checkout_branch("exp2", Some(v2)).await.unwrap();
+        assert_eq!(at2.count_rows(Some("i = 20".to_string())).await.unwrap(), 1);
+        assert_eq!(at2.count_rows(Some("i = 10".to_string())).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn test_branch_name_validation() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -3567,7 +3799,7 @@ mod tests {
             Err(Error::InvalidInput { .. })
         ));
         assert!(matches!(
-            table.checkout_branch("").await,
+            table.checkout_branch("", None).await,
             Err(Error::InvalidInput { .. })
         ));
         assert!(matches!(
@@ -4003,6 +4235,19 @@ mod tests {
         let batch = Ok(batch);
 
         Box::new(RecordBatchIterator::new(vec![batch], schema))
+    }
+
+    /// A single-batch reader holding the given `i` (Int32) values. Lets a test
+    /// write distinguishable rows so it can assert data provenance, not row count.
+    fn sample_rows(values: Vec<i32>) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(values))],
+        )
+        .unwrap();
+        let schema = batch.schema().clone();
+
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
     }
 
     #[tokio::test]
