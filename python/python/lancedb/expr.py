@@ -19,7 +19,7 @@ operators::
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Iterable, Union
 
 import pyarrow as pa
 
@@ -173,6 +173,11 @@ class Expr:
     def contains(self, substr: "ExprLike") -> "Expr":
         """Return True where the string contains *substr*."""
         return Expr(self._inner.contains(_coerce(substr)._inner))
+
+    def isin(self, values: "Iterable[ExprLike]") -> "Expr":
+        """Return True where the value is one of *values* (SQL ``IN``)."""
+        inner = [_coerce(v)._inner for v in values]
+        return Expr(self._inner.isin(inner))
 
     # ── type cast ────────────────────────────────────────────────────────────
 

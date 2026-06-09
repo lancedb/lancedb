@@ -9,7 +9,9 @@
 
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
 use datafusion_common::ScalarValue;
-use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
+use lancedb::expr::{
+    DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
+};
 use pyo3::types::PyBytes;
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
@@ -103,6 +105,14 @@ impl PyExpr {
     /// Test whether the string contains `substr`.
     fn contains(&self, substr: &Self) -> Self {
         Self(contains(self.0.clone(), substr.0.clone()))
+    }
+
+    // ── membership ───────────────────────────────────────────────────────────
+
+    /// Return true where the value is one of the given expressions (SQL ``IN``).
+    fn isin(&self, list: Vec<Self>) -> Self {
+        let items: Vec<DfExpr> = list.into_iter().map(|e| e.0).collect();
+        Self(is_in(self.0.clone(), items))
     }
 
     // ── type cast ────────────────────────────────────────────────────────────
