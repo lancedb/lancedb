@@ -602,6 +602,42 @@ pub struct IndexConfig {
     /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// `undefined` for remote tables, which do not yet surface this.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `undefined` for remote tables.
+    pub type_url: Option<String>,
+    /// When the index was created, as milliseconds since Unix epoch.
+    ///
+    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    pub created_at: Option<f64>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// `undefined` for remote tables.
+    pub num_indexed_rows: Option<i64>,
+    /// The number of rows not yet covered by this index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_unindexed_rows: Option<i64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `undefined` for remote tables or indices without size tracking.
+    pub size_bytes: Option<i64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_segments: Option<i32>,
+    /// The on-disk index format version.
+    ///
+    /// `undefined` for remote tables.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details, serialized as JSON.
+    ///
+    /// `undefined` for remote tables or when details are unavailable.
+    pub index_details: Option<String>,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -611,6 +647,15 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at.map(|dt| dt.timestamp_millis() as f64),
+            num_indexed_rows: value.num_indexed_rows.map(|n| n as i64),
+            num_unindexed_rows: value.num_unindexed_rows.map(|n| n as i64),
+            size_bytes: value.size_bytes.map(|n| n as i64),
+            num_segments: value.num_segments.map(|n| n as i32),
+            index_version: value.index_version,
+            index_details: value.index_details,
         }
     }
 }

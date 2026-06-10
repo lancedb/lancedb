@@ -294,6 +294,24 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// Name of the index.
     pub name: String,
+    /// The UUID of the first segment of the index.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    pub type_url: Option<String>,
+    /// When the index was created, as milliseconds since Unix epoch.
+    pub created_at: Option<i64>,
+    /// The number of rows indexed, across all segments.
+    pub num_indexed_rows: Option<u64>,
+    /// The number of rows not yet covered by this index.
+    pub num_unindexed_rows: Option<u64>,
+    /// The total size in bytes of all index files across all segments.
+    pub size_bytes: Option<u64>,
+    /// The number of segments that make up the index.
+    pub num_segments: Option<u32>,
+    /// The on-disk index format version.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details, serialized as JSON.
+    pub index_details: Option<String>,
 }
 
 #[pymethods]
@@ -312,6 +330,15 @@ impl IndexConfig {
             "index_type" => Ok(self.index_type.clone().into_pyobject(py)?.into_any()),
             "columns" => Ok(self.columns.clone().into_pyobject(py)?.into_any()),
             "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
+            "index_uuid" => Ok(self.index_uuid.clone().into_pyobject(py)?.into_any()),
+            "type_url" => Ok(self.type_url.clone().into_pyobject(py)?.into_any()),
+            "created_at" => Ok(self.created_at.into_pyobject(py)?.into_any()),
+            "num_indexed_rows" => Ok(self.num_indexed_rows.into_pyobject(py)?.into_any()),
+            "num_unindexed_rows" => Ok(self.num_unindexed_rows.into_pyobject(py)?.into_any()),
+            "size_bytes" => Ok(self.size_bytes.into_pyobject(py)?.into_any()),
+            "num_segments" => Ok(self.num_segments.into_pyobject(py)?.into_any()),
+            "index_version" => Ok(self.index_version.into_pyobject(py)?.into_any()),
+            "index_details" => Ok(self.index_details.clone().into_pyobject(py)?.into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
@@ -324,6 +351,15 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at.map(|dt| dt.timestamp_millis()),
+            num_indexed_rows: value.num_indexed_rows,
+            num_unindexed_rows: value.num_unindexed_rows,
+            size_bytes: value.size_bytes,
+            num_segments: value.num_segments,
+            index_version: value.index_version,
+            index_details: value.index_details,
         }
     }
 }

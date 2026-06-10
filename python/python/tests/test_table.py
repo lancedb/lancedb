@@ -2489,6 +2489,47 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     assert fts_results[0]["payload"]["text"] == "document 44"
 
 
+def test_index_config_fields(mem_db: DBConnection):
+    """Test that IndexConfig exposes the new rich metadata fields."""
+    vec_array = pa.array(
+        [[float(i), float(i + 1)] for i in range(300)], pa.list_(pa.float32(), 2)
+    )
+    data = pa.Table.from_pydict({"x": list(range(300)), "vector": vec_array})
+    table = mem_db.create_table("index_config_fields", data=data)
+    table.create_scalar_index("x", index_type="BTREE")
+    table.create_index(
+        vector_column_name="vector",
+        num_partitions=1,
+        num_sub_vectors=1,
+    )
+
+    indices = {idx.name: idx for idx in table.list_indices()}
+
+    scalar_idx = indices["x_idx"]
+    assert scalar_idx.index_uuid is not None
+    assert isinstance(scalar_idx.index_uuid, str)
+    assert scalar_idx.num_indexed_rows is not None
+    assert scalar_idx.num_indexed_rows == 300
+    assert scalar_idx.num_unindexed_rows is not None
+    assert scalar_idx.num_unindexed_rows == 0
+    assert scalar_idx.num_segments is not None
+    assert scalar_idx.num_segments >= 1
+    assert scalar_idx.size_bytes is not None
+    assert scalar_idx.size_bytes > 0
+    # created_at is milliseconds since epoch
+    assert scalar_idx.created_at is not None
+    assert isinstance(scalar_idx.created_at, int)
+
+    # __getitem__ compatibility
+    assert scalar_idx["index_uuid"] == scalar_idx.index_uuid
+    assert scalar_idx["num_indexed_rows"] == scalar_idx.num_indexed_rows
+    assert scalar_idx["created_at"] == scalar_idx.created_at
+
+    vector_idx = indices["vector_idx"]
+    assert vector_idx.index_uuid is not None
+    assert vector_idx.num_indexed_rows == 300
+
+
 def test_empty_query(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
