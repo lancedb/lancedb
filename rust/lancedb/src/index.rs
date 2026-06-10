@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use chrono::{DateTime, Utc};
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -364,6 +365,51 @@ pub struct IndexConfig {
     /// Currently this is always a Vec of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// An index may be made up of multiple segments, each with their own UUID.
+    /// This is the UUID of the first segment. `None` if it could not be
+    /// determined (e.g. for remote tables, which do not yet surface this).
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub type_url: Option<String>,
+    /// When the index was created, taken as the minimum creation time across
+    /// all segments.
+    ///
+    /// `None` if unavailable, such as for indices created before creation
+    /// timestamps were tracked, or for remote tables.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// This is approximate and may include rows that have since been deleted.
+    /// `None` if unavailable (e.g. for remote tables).
+    pub num_indexed_rows: Option<u64>,
+    /// The number of rows in the table that are not yet covered by this index.
+    ///
+    /// Computed as the table's total row count minus [`Self::num_indexed_rows`].
+    /// Optimizing the index will fold these rows into it. `None` if unavailable
+    /// (e.g. for remote tables).
+    pub num_unindexed_rows: Option<u64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `None` if size information is unavailable, such as for indices created
+    /// before file sizes were tracked, or for remote tables.
+    pub size_bytes: Option<u64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub num_segments: Option<u32>,
+    /// The on-disk index format version, taken from the first segment.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub index_version: Option<i32>,
+    /// Index-type-specific details, serialized as JSON.
+    ///
+    /// The shape of this JSON varies by index type. `None` if the details
+    /// could not be produced (e.g. no plugin available) or for remote tables.
+    pub index_details: Option<String>,
 }
 
 #[skip_serializing_none]

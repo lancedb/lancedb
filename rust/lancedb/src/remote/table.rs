@@ -2119,6 +2119,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         name: index.index_name,
                         index_type: stats.index_type,
                         columns,
+                        // These are left None until the server response wires
+                        // them through. See https://github.com/lancedb/lancedb/issues/3494
+                        index_uuid: None,
+                        type_url: None,
+                        created_at: None,
+                        num_indexed_rows: None,
+                        num_unindexed_rows: None,
+                        size_bytes: None,
+                        num_segments: None,
+                        index_version: None,
+                        index_details: None,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -4037,13 +4048,181 @@ mod tests {
                 name: "vector_idx".into(),
                 index_type: IndexType::IvfPq,
                 columns: vec!["vector".into()],
+                index_uuid: None,
+                type_url: None,
+                created_at: None,
+                num_indexed_rows: None,
+                num_unindexed_rows: None,
+                size_bytes: None,
+                num_segments: None,
+                index_version: None,
+                index_details: None,
             },
             IndexConfig {
                 name: "my_idx".into(),
                 index_type: IndexType::LabelList,
                 columns: vec!["metadata.`my.column`".into()],
+                index_uuid: None,
+                type_url: None,
+                created_at: None,
+                num_indexed_rows: None,
+                num_unindexed_rows: None,
+                size_bytes: None,
+                num_segments: None,
+                index_version: None,
+                index_details: None,
             },
         ];
+        assert_eq!(indices, expected);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_nested_field_paths() {
+        let schema = nested_index_schema();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap();
+                }
+                "/v1/table/my_table/index/list/" => {
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "row_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000001",
+                                "columns": ["rowId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "row_dash_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000002",
+                                "columns": ["`ROW-ID`"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000003",
+                                "columns": ["userId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "mixed_case_metadata_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000004",
+                                "columns": ["MetaData.userId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "metadata_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000005",
+                                "columns": ["Metadata.USER_ID"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "image_embedding_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000006",
+                                "columns": ["Image.Embedding"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "payload_text_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000007",
+                                "columns": ["Payload.Text"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "meta_data_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000008",
+                                "columns": ["`META-DATA`.`USER-ID`"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "literal_dot_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000009",
+                                "columns": ["literal.`A.B`"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/row_id_idx/stats/"
+                | "/v1/table/my_table/index/row_dash_id_idx/stats/"
+                | "/v1/table/my_table/index/user_id_idx/stats/"
+                | "/v1/table/my_table/index/mixed_case_metadata_user_id_idx/stats/"
+                | "/v1/table/my_table/index/metadata_user_id_idx/stats/"
+                | "/v1/table/my_table/index/meta_data_user_id_idx/stats/"
+                | "/v1/table/my_table/index/literal_dot_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "BTREE"
+                    })
+                }
+                "/v1/table/my_table/index/image_embedding_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                "/v1/table/my_table/index/payload_text_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "FTS"
+                    })
+                }
+                path => panic!("Unexpected path: {}", path),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        // The remote path leaves the rich metadata fields None until the server
+        // wires them through. See https://github.com/lancedb/lancedb/issues/3494
+        let expected: Vec<IndexConfig> = [
+            ("row_id_idx", IndexType::BTree, "rowId"),
+            ("row_dash_id_idx", IndexType::BTree, "`row-id`"),
+            ("user_id_idx", IndexType::BTree, "userId"),
+            (
+                "mixed_case_metadata_user_id_idx",
+                IndexType::BTree,
+                "MetaData.userId",
+            ),
+            ("metadata_user_id_idx", IndexType::BTree, "metadata.user_id"),
+            ("image_embedding_idx", IndexType::IvfPq, "image.embedding"),
+            ("payload_text_idx", IndexType::FTS, "payload.text"),
+            (
+                "meta_data_user_id_idx",
+                IndexType::BTree,
+                "`meta-data`.`user-id`",
+            ),
+            ("literal_dot_idx", IndexType::BTree, "literal.`a.b`"),
+        ]
+        .into_iter()
+        .map(|(name, index_type, column)| IndexConfig {
+            name: name.into(),
+            index_type,
+            columns: vec![column.into()],
+            index_uuid: None,
+            type_url: None,
+            created_at: None,
+            num_indexed_rows: None,
+            num_unindexed_rows: None,
+            size_bytes: None,
+            num_segments: None,
+            index_version: None,
+            index_details: None,
+        })
+        .collect();
         assert_eq!(indices, expected);
     }
 
