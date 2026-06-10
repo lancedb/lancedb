@@ -4124,6 +4124,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_indices_nested_field_paths() {
+        let schema = nested_index_schema();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap();
+                }
+                "/v1/table/my_table/index/list/" => {
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "row_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000001",
+                                "columns": ["rowId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "row_dash_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000002",
+                                "columns": ["`ROW-ID`"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000003",
+                                "columns": ["userId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "mixed_case_metadata_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000004",
+                                "columns": ["MetaData.userId"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "metadata_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000005",
+                                "columns": ["Metadata.USER_ID"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "image_embedding_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000006",
+                                "columns": ["Image.Embedding"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "payload_text_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000007",
+                                "columns": ["Payload.Text"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "meta_data_user_id_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000008",
+                                "columns": ["`META-DATA`.`USER-ID`"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "literal_dot_idx",
+                                "index_uuid": "00000000-0000-0000-0000-000000000009",
+                                "columns": ["literal.`A.B`"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/row_id_idx/stats/"
+                | "/v1/table/my_table/index/row_dash_id_idx/stats/"
+                | "/v1/table/my_table/index/user_id_idx/stats/"
+                | "/v1/table/my_table/index/mixed_case_metadata_user_id_idx/stats/"
+                | "/v1/table/my_table/index/metadata_user_id_idx/stats/"
+                | "/v1/table/my_table/index/meta_data_user_id_idx/stats/"
+                | "/v1/table/my_table/index/literal_dot_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "BTREE"
+                    })
+                }
+                "/v1/table/my_table/index/image_embedding_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                "/v1/table/my_table/index/payload_text_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "FTS"
+                    })
+                }
+                path => panic!("Unexpected path: {}", path),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        let expected = vec![
+            IndexConfig {
+                name: "row_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["rowId".into()],
+            },
+            IndexConfig {
+                name: "row_dash_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["`row-id`".into()],
+            },
+            IndexConfig {
+                name: "user_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["userId".into()],
+            },
+            IndexConfig {
+                name: "mixed_case_metadata_user_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["MetaData.userId".into()],
+            },
+            IndexConfig {
+                name: "metadata_user_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["metadata.user_id".into()],
+            },
+            IndexConfig {
+                name: "image_embedding_idx".into(),
+                index_type: IndexType::IvfPq,
+                columns: vec!["image.embedding".into()],
+            },
+            IndexConfig {
+                name: "payload_text_idx".into(),
+                index_type: IndexType::FTS,
+                columns: vec!["payload.text".into()],
+            },
+            IndexConfig {
+                name: "meta_data_user_id_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["`meta-data`.`user-id`".into()],
+            },
+            IndexConfig {
+                name: "literal_dot_idx".into(),
+                index_type: IndexType::BTree,
+                columns: vec!["literal.`a.b`".into()],
+            },
+        ];
+        assert_eq!(indices, expected);
+    }
+
+    #[tokio::test]
     async fn test_list_versions() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
