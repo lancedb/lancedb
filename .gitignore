@@ -27,6 +27,7 @@ python/dist
 *.so
 *.dylib
 *.dll
+*.pdb
 
 ## Javascript
 *.node

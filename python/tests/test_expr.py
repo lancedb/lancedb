@@ -450,6 +450,27 @@ def binary_table(tmp_path):
     return db.create_table("binary_test", data)
 
 
+class TestExprIsin:
+    def test_isin_ints(self):
+        assert col("id").isin([1, 2, 3]).to_sql() == "id IN (1, 2, 3)"
+
+    def test_isin_strs(self):
+        assert (
+            col("status").isin(["active", "pending"]).to_sql()
+            == "status IN ('active', 'pending')"
+        )
+
+    def test_isin_coerces_and_mixes(self):
+        assert col("id").isin([lit(1), 2]).to_sql() == "id IN (1, 2)"
+
+    def test_isin_empty(self):
+        assert col("id").isin([]).to_sql() == "id IN ()"
+
+    def test_isin_filter(self, simple_table):
+        result = simple_table.search().where(col("id").isin([1, 3, 5])).to_arrow()
+        assert result.num_rows == 3
+
+
 class TestExprBytesIntegration:
     def test_binary_equality_filter(self, binary_table):
         result = (
