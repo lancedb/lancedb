@@ -55,6 +55,7 @@ from .index import (
     Bitmap,
     IvfRq,
     LabelList,
+    Fm,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -213,6 +214,7 @@ IndexConfigType = Union[
     BTree,
     Bitmap,
     LabelList,
+    Fm,
     FTS,
 ]
 
@@ -938,7 +940,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, FTS.
+            BTree, Bitmap, LabelList, Fm, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -2487,7 +2489,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, FTS.
+            BTree, Bitmap, LabelList, Fm, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -4487,6 +4489,7 @@ class AsyncTable:
                 BTree,
                 Bitmap,
                 LabelList,
+                Fm,
                 FTS,
             ]
         ] = None,
@@ -4539,12 +4542,14 @@ class AsyncTable:
                     BTree,
                     Bitmap,
                     LabelList,
+                    Fm,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    + str(type(config))
                 )
         try:
             await self._inner.create_index(

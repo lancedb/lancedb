@@ -1750,6 +1750,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
             Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
             Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
+            Index::Fm(p) => ("FM", Some(to_json(p)?)),
             Index::FTS(p) => ("FTS", Some(to_json(p)?)),
             Index::Auto => {
                 if supported_vector_data_type(field.data_type()) {

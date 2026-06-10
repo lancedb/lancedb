@@ -51,6 +51,15 @@ pub struct BitmapIndexBuilder {}
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LabelListIndexBuilder {}
 
+/// Builder for an FM-Index.
+///
+/// An FM-Index (Ferragina–Manzini) is a scalar index over string/binary columns
+/// that accelerates substring search, i.e. `contains(col, 'needle')`. Unlike an
+/// inverted (FTS) index it matches arbitrary substrings of the raw bytes rather
+/// than tokenized words.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct FmIndexBuilder {}
+
 pub use lance_index::scalar::FullTextSearchQuery;
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;

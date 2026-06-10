@@ -1431,6 +1431,20 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create an FM index", async () => {
+    // FM-Index accelerates substring search on a string/binary column.
+    const db = await connect(tmpDir.name);
+    const fmTbl = await db.createTable("fm_table", [
+      { id: 0, text: "hello world" },
+      { id: 1, text: "foo bar" },
+    ]);
+    await fmTbl.createIndex("text", {
+      config: Index.fm(),
+    });
+    const indexDir = path.join(tmpDir.name, "fm_table.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
