@@ -3339,7 +3339,7 @@ mod tests {
     use arrow_array::{
         Array, ArrayRef, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray,
         RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, StructArray,
-        builder::{ListBuilder, StringBuilder},
+        builder::{LargeListBuilder, ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
@@ -4312,8 +4312,17 @@ mod tests {
         let num_rows = 512;
         let dimension = 8;
 
+        let row_id = Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef;
+        let row_dash_id = Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef;
+        let top_user_id = Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef;
+
         let metadata = Arc::new(StructArray::from(vec![(
             Arc::new(Field::new("user_id", DataType::Int32, false)),
+            Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
+        )]));
+
+        let mixed_case_metadata = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("userId", DataType::Int32, false)),
             Arc::new(Int32Array::from_iter_values(0..num_rows)) as ArrayRef,
         )]));
 
@@ -4349,15 +4358,31 @@ mod tests {
         )]));
 
         let schema = Arc::new(Schema::new(vec![
+            Field::new("rowId", DataType::Int32, false),
+            Field::new("row-id", DataType::Int32, false),
+            Field::new("userId", DataType::Int32, false),
             Field::new("metadata", metadata.data_type().clone(), false),
+            Field::new("MetaData", mixed_case_metadata.data_type().clone(), false),
             Field::new("image", image.data_type().clone(), false),
             Field::new("payload", payload.data_type().clone(), false),
             Field::new("meta-data", meta_data.data_type().clone(), false),
             Field::new("literal", literal.data_type().clone(), false),
         ]));
-        let batch =
-            RecordBatch::try_new(schema, vec![metadata, image, payload, meta_data, literal])
-                .unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                row_id,
+                row_dash_id,
+                top_user_id,
+                metadata,
+                mixed_case_metadata,
+                image,
+                payload,
+                meta_data,
+                literal,
+            ],
+        )
+        .unwrap();
 
         let table = conn
             .create_table("nested_index_paths", batch)
@@ -4371,6 +4396,33 @@ mod tests {
                 Index::BTree(BTreeIndexBuilder::default()),
             )
             .name("metadata_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["rowId"], Index::BTree(BTreeIndexBuilder::default()))
+            .name("row_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["`row-id`"], Index::BTree(BTreeIndexBuilder::default()))
+            .name("row_dash_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["userId"], Index::BTree(BTreeIndexBuilder::default()))
+            .name("top_user_id_idx".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["MetaData.userId"],
+                Index::BTree(BTreeIndexBuilder::default()),
+            )
+            .name("mixed_case_metadata_user_id_idx".to_string())
             .execute()
             .await
             .unwrap();
@@ -4442,9 +4494,29 @@ mod tests {
                     crate::index::IndexType::BTree,
                 ),
                 (
+                    "mixed_case_metadata_user_id_idx",
+                    &["MetaData.userId".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
                     "payload_text_idx",
                     &["payload.text".to_string()][..],
                     crate::index::IndexType::FTS,
+                ),
+                (
+                    "row_dash_id_idx",
+                    &["`row-id`".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "row_id_idx",
+                    &["rowId".to_string()][..],
+                    crate::index::IndexType::BTree,
+                ),
+                (
+                    "top_user_id_idx",
+                    &["userId".to_string()][..],
+                    crate::index::IndexType::BTree,
                 ),
             ]
         );
@@ -4688,6 +4760,52 @@ mod tests {
             .unwrap();
 
         // Verify the index was created
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_create_label_list_index_on_large_list() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "tags",
+            DataType::LargeList(Field::new("item", DataType::Utf8, true).into()),
+            true,
+        )]));
+
+        const TAGS: [&str; 3] = ["cat", "dog", "fish"];
+
+        let values_builder = StringBuilder::new();
+        let mut builder = LargeListBuilder::new(values_builder);
+        for i in 0..120 {
+            builder.values().append_value(TAGS[i % 3]);
+            if i % 3 == 0 {
+                builder.append(true)
+            }
+        }
+        let tags = Arc::new(builder.finish());
+
+        let batch = RecordBatch::try_new(schema, vec![tags]).unwrap();
+
+        let table = conn
+            .create_table("test_large_list_label_list", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["tags"], Index::LabelList(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();

@@ -257,7 +257,9 @@ pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::List(field) => supported_bitmap_data_type(field.data_type()),
+        DataType::List(field) | DataType::LargeList(field) => {
+            supported_bitmap_data_type(field.data_type())
+        }
         DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
         _ => false,
     }

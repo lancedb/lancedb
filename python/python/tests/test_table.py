@@ -2399,18 +2399,32 @@ def test_create_scalar_index(mem_db: DBConnection):
 def test_create_index_nested_field_paths(mem_db: DBConnection):
     schema = pa.schema(
         [
+            pa.field("rowId", pa.int32()),
+            pa.field("row-id", pa.int32()),
+            pa.field("userId", pa.int32()),
             pa.field("metadata", pa.struct([pa.field("user_id", pa.int32())])),
+            pa.field("MetaData", pa.struct([pa.field("userId", pa.int32())])),
             pa.field(
                 "image",
                 pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
             ),
+            pa.field("payload", pa.struct([pa.field("text", pa.string())])),
+            pa.field("meta-data", pa.struct([pa.field("user-id", pa.int32())])),
+            pa.field("literal", pa.struct([pa.field("a.b", pa.int32())])),
         ]
     )
     data = pa.Table.from_pylist(
         [
             {
+                "rowId": i,
+                "row-id": i,
+                "userId": i,
                 "metadata": {"user_id": i},
+                "MetaData": {"userId": i},
                 "image": {"embedding": [float(i), float(i + 1)]},
+                "payload": {"text": f"document {i}"},
+                "meta-data": {"user-id": i},
+                "literal": {"a.b": i},
             }
             for i in range(256)
         ],
@@ -2418,19 +2432,37 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     )
     table = mem_db.create_table("nested_index_paths", data=data)
 
+    table.create_scalar_index("rowId", name="row_id_idx")
+    table.create_scalar_index("`row-id`", name="row_dash_id_idx")
+    table.create_scalar_index("userId", name="top_user_id_idx")
     table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
+    table.create_scalar_index("MetaData.userId", name="mixed_case_metadata_user_id_idx")
+    table.create_scalar_index("`meta-data`.`user-id`", name="escaped_names_idx")
+    table.create_scalar_index("literal.`a.b`", name="literal_dot_idx")
     table.create_index(
         vector_column_name="image.embedding",
         num_partitions=1,
         num_sub_vectors=1,
         name="image_embedding_idx",
     )
+    table.create_fts_index("payload.text", with_position=False, name="payload_text_idx")
 
     indices = sorted(table.list_indices(), key=lambda idx: idx.name)
     assert [(idx.name, idx.index_type, idx.columns) for idx in indices] == [
+        ("escaped_names_idx", "BTree", ["`meta-data`.`user-id`"]),
         ("image_embedding_idx", "IvfPq", ["image.embedding"]),
+        ("literal_dot_idx", "BTree", ["literal.`a.b`"]),
         ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
+        ("mixed_case_metadata_user_id_idx", "BTree", ["MetaData.userId"]),
+        ("payload_text_idx", "FTS", ["payload.text"]),
+        ("row_dash_id_idx", "BTree", ["`row-id`"]),
+        ("row_id_idx", "BTree", ["rowId"]),
+        ("top_user_id_idx", "BTree", ["userId"]),
     ]
+    for index in indices:
+        stats = table.index_stats(index.name)
+        assert stats is not None
+        assert stats.num_indexed_rows == 256
 
     vector_results = (
         table.search([0.0, 1.0], vector_column_name="image.embedding")
@@ -2447,6 +2479,14 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
     assert len(filtered_results) == 1
     assert filtered_results[0]["metadata"]["user_id"] == 42
+
+    escaped_results = table.search().where("`row-id` = 43").limit(1).to_list()
+    assert len(escaped_results) == 1
+    assert escaped_results[0]["row-id"] == 43
+
+    fts_results = table.search("document 44", query_type="fts").limit(1).to_list()
+    assert len(fts_results) == 1
+    assert fts_results[0]["payload"]["text"] == "document 44"
 
 
 def test_empty_query(mem_db: DBConnection):
