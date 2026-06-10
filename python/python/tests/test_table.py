@@ -22,6 +22,7 @@ import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 from pydantic import BaseModel
@@ -1966,6 +1967,38 @@ def test_delete(mem_db: DBConnection):
     assert table.to_arrow()["id"].to_pylist() == [1]
 
 
+def test_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert len(table) == 3
+    delete_res = table.delete(col("id") == lit(0))
+    assert delete_res.version == 2
+    assert len(table) == 2
+    assert sorted(table.to_arrow()["id"].to_pylist()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_delete_expr_async(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert await table.count_rows() == 3
+    await table.delete(col("id") == lit(0))
+    assert await table.count_rows() == 2
+    assert sorted((await table.to_arrow())["id"].to_pylist()) == [1, 2]
+
+
 def test_update(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -2149,6 +2182,50 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a").when_matched_update_all().execute(
             new_data, timeout=timedelta(0)
         )
+
+
+def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 1
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_by_source_delete_expr_async(
+    mem_db_async: AsyncConnection,
+):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await mem_db_async.create_table("some_table", data=data)
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
 
 
 # We vary the data format because there are slight differences in how
