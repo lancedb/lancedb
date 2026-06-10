@@ -20,6 +20,7 @@ from lancedb.index import (
     IvfRq,
     Bitmap,
     LabelList,
+    Fm,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -201,6 +202,16 @@ async def test_create_fixed_size_binary_index(some_table: AsyncTable):
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["fsb"]
+
+
+@pytest.mark.asyncio
+async def test_create_fm_index(some_table: AsyncTable):
+    # FM-Index accelerates substring search on string/binary columns.
+    await some_table.create_index("data", config=Fm())
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "Fm"
+    assert indices[0].columns == ["data"]
 
 
 @pytest.mark.asyncio

@@ -94,6 +94,20 @@ class LabelList:
 
 
 @dataclass
+class Fm:
+    """Describe an FM-Index configuration.
+
+    `Fm` is a scalar index on string or binary columns that accelerates
+    substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+    `FTS` index, it matches arbitrary substrings of the raw bytes.
+
+    For example, it works with `url`, `path`, `content`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -828,4 +842,5 @@ __all__ = [
     "FTS",
     "Bitmap",
     "LabelList",
+    "Fm",
 ]
