@@ -12,7 +12,7 @@ use crate::index::vector::IvfRqIndexBuilder;
 use crate::{DistanceType, Error, Result, table::BaseTable};
 
 use self::{
-    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
+    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, LabelListIndexBuilder},
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
         IvfSqIndexBuilder,
@@ -47,6 +47,11 @@ pub enum Index {
     /// support queries with `array_contains_all` and `array_contains_any`
     /// using an underlying bitmap index.
     LabelList(LabelListIndexBuilder),
+
+    /// An `FM` index is a scalar index on string/binary columns that accelerates
+    /// substring search (`contains(col, 'needle')`). It matches arbitrary
+    /// substrings of the raw bytes, unlike the tokenized [`Index::FTS`] index.
+    Fm(FmIndexBuilder),
 
     /// Full text search index using bm25.
     FTS(FtsIndexBuilder),
@@ -306,6 +311,8 @@ pub enum IndexType {
     Bitmap,
     #[serde(alias = "LABEL_LIST")]
     LabelList,
+    #[serde(alias = "FM", alias = "FMINDEX", alias = "FMIndex")]
+    Fm,
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
@@ -324,6 +331,7 @@ impl std::fmt::Display for IndexType {
             Self::BTree => write!(f, "BTREE"),
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
+            Self::Fm => write!(f, "FM"),
             Self::FTS => write!(f, "FTS"),
         }
     }
@@ -337,6 +345,7 @@ impl std::str::FromStr for IndexType {
             "BTREE" => Ok(Self::BTree),
             "BITMAP" => Ok(Self::Bitmap),
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
+            "FM" | "FMINDEX" => Ok(Self::Fm),
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
             "IVF_SQ" => Ok(Self::IvfSq),

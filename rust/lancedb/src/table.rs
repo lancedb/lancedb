@@ -62,7 +62,8 @@ use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, Vec
 use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{
     PatchReadParam, PatchWriteParam, supported_bitmap_data_type, supported_btree_data_type,
-    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
+    supported_vector_data_type,
 };
 
 use self::dataset::DatasetConsistencyWrapper;
@@ -2460,6 +2461,12 @@ impl NativeTable {
                     BuiltinIndexType::LabelList,
                 )))
             }
+            Index::Fm(_) => {
+                Self::validate_index_type(field, "FM", supported_fm_data_type)?;
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::Fm,
+                )))
+            }
             Index::FTS(fts_opts) => {
                 Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
                 Ok(Box::new(fts_opts))
@@ -2618,6 +2625,7 @@ impl NativeTable {
             Index::BTree(_) => IndexType::BTree,
             Index::Bitmap(_) => IndexType::Bitmap,
             Index::LabelList(_) => IndexType::LabelList,
+            Index::Fm(_) => IndexType::Fm,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
             | Index::IvfSq(_)
@@ -3353,7 +3361,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
-    use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder};
+    use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder};
     use crate::index::vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder};
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
@@ -4301,6 +4309,56 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 1);
         assert_eq!(stats.num_unindexed_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_fm_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // FM-Index accelerates substring search, so it applies to a string column.
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["hello world"]))],
+        )
+        .unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["text"], Index::Fm(FmIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["text_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Fm);
+        assert_eq!(index.columns, vec!["text".to_string()]);
+
+        // The committed FM-Index must answer a substring `contains` query.
+        let count = table
+            .query()
+            .only_if("contains(text, 'world')")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
