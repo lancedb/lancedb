@@ -2152,6 +2152,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         name: index.index_name,
                         index_type: stats.index_type,
                         columns,
+                        // These are left None until the server response wires
+                        // them through. See https://github.com/lancedb/lancedb/issues/3494
+                        index_uuid: None,
+                        type_url: None,
+                        created_at: None,
+                        num_indexed_rows: None,
+                        num_unindexed_rows: None,
+                        size_bytes: None,
+                        num_segments: None,
+                        index_version: None,
+                        index_details: None,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -4114,11 +4125,29 @@ mod tests {
                 name: "vector_idx".into(),
                 index_type: IndexType::IvfPq,
                 columns: vec!["vector".into()],
+                index_uuid: None,
+                type_url: None,
+                created_at: None,
+                num_indexed_rows: None,
+                num_unindexed_rows: None,
+                size_bytes: None,
+                num_segments: None,
+                index_version: None,
+                index_details: None,
             },
             IndexConfig {
                 name: "my_idx".into(),
                 index_type: IndexType::LabelList,
                 columns: vec!["metadata.`my.column`".into()],
+                index_uuid: None,
+                type_url: None,
+                created_at: None,
+                num_indexed_rows: None,
+                num_unindexed_rows: None,
+                size_bytes: None,
+                num_segments: None,
+                index_version: None,
+                index_details: None,
             },
         ];
         assert_eq!(indices, expected);
@@ -4234,53 +4263,43 @@ mod tests {
         });
 
         let indices = table.list_indices().await.unwrap();
-        let expected = vec![
-            IndexConfig {
-                name: "row_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["rowId".into()],
-            },
-            IndexConfig {
-                name: "row_dash_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["`row-id`".into()],
-            },
-            IndexConfig {
-                name: "user_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["userId".into()],
-            },
-            IndexConfig {
-                name: "mixed_case_metadata_user_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["MetaData.userId".into()],
-            },
-            IndexConfig {
-                name: "metadata_user_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["metadata.user_id".into()],
-            },
-            IndexConfig {
-                name: "image_embedding_idx".into(),
-                index_type: IndexType::IvfPq,
-                columns: vec!["image.embedding".into()],
-            },
-            IndexConfig {
-                name: "payload_text_idx".into(),
-                index_type: IndexType::FTS,
-                columns: vec!["payload.text".into()],
-            },
-            IndexConfig {
-                name: "meta_data_user_id_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["`meta-data`.`user-id`".into()],
-            },
-            IndexConfig {
-                name: "literal_dot_idx".into(),
-                index_type: IndexType::BTree,
-                columns: vec!["literal.`a.b`".into()],
-            },
-        ];
+        // The remote path leaves the rich metadata fields None until the server
+        // wires them through. See https://github.com/lancedb/lancedb/issues/3494
+        let expected: Vec<IndexConfig> = [
+            ("row_id_idx", IndexType::BTree, "rowId"),
+            ("row_dash_id_idx", IndexType::BTree, "`row-id`"),
+            ("user_id_idx", IndexType::BTree, "userId"),
+            (
+                "mixed_case_metadata_user_id_idx",
+                IndexType::BTree,
+                "MetaData.userId",
+            ),
+            ("metadata_user_id_idx", IndexType::BTree, "metadata.user_id"),
+            ("image_embedding_idx", IndexType::IvfPq, "image.embedding"),
+            ("payload_text_idx", IndexType::FTS, "payload.text"),
+            (
+                "meta_data_user_id_idx",
+                IndexType::BTree,
+                "`meta-data`.`user-id`",
+            ),
+            ("literal_dot_idx", IndexType::BTree, "literal.`a.b`"),
+        ]
+        .into_iter()
+        .map(|(name, index_type, column)| IndexConfig {
+            name: name.into(),
+            index_type,
+            columns: vec![column.into()],
+            index_uuid: None,
+            type_url: None,
+            created_at: None,
+            num_indexed_rows: None,
+            num_unindexed_rows: None,
+            size_bytes: None,
+            num_segments: None,
+            index_version: None,
+            index_details: None,
+        })
+        .collect();
         assert_eq!(indices, expected);
     }
 

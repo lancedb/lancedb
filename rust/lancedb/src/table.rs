@@ -3104,6 +3104,7 @@ impl BaseTable for NativeTable {
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
+        let total_rows = dataset.count_rows(None).await? as u64;
         let indices = dataset
             .describe_indices(None)
             .await?
@@ -3139,10 +3140,25 @@ impl BaseTable for NativeTable {
                     columns.push(field_path);
                 }
 
+                let segments = idx_desc.segments();
+                let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
+                let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
+                let index_version = segments.first().map(|seg| seg.index_version);
+                let num_indexed_rows = idx_desc.rows_indexed();
+
                 Some(IndexConfig {
                     name: idx_desc.name().to_string(),
                     index_type,
                     columns,
+                    index_uuid,
+                    type_url: Some(idx_desc.type_url().to_string()),
+                    created_at,
+                    num_indexed_rows: Some(num_indexed_rows),
+                    num_unindexed_rows: Some(total_rows.saturating_sub(num_indexed_rows)),
+                    size_bytes: idx_desc.total_size_bytes(),
+                    num_segments: Some(segments.len() as u32),
+                    index_version,
+                    index_details: idx_desc.details().ok(),
                 })
             })
             .collect();
@@ -3942,6 +3958,15 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
+        assert!(index.index_uuid.is_some());
+        assert!(index.type_url.is_some());
+        assert_eq!(index.num_segments, Some(1));
+        assert_eq!(index.num_indexed_rows, Some(512));
+        assert_eq!(index.num_unindexed_rows, Some(0));
+        assert!(index.created_at.is_some());
+        assert!(index.size_bytes.is_some());
+        assert!(index.index_version.is_some());
+        assert!(index.index_details.is_some());
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
@@ -4303,6 +4328,17 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::BTree);
         assert_eq!(index.columns, vec!["i".to_string()]);
+
+        // The richer metadata surfaced from describe_indices should be populated.
+        assert!(index.index_uuid.is_some());
+        assert!(index.type_url.is_some());
+        assert_eq!(index.num_segments, Some(1));
+        assert_eq!(index.num_indexed_rows, Some(1));
+        assert_eq!(index.num_unindexed_rows, Some(0));
+        assert!(index.created_at.is_some());
+        assert!(index.size_bytes.is_some());
+        assert!(index.index_version.is_some());
+        assert!(index.index_details.is_some());
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
         let index_name = &indices[0].index_name;
