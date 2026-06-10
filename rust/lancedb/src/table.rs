@@ -4021,7 +4021,7 @@ mod tests {
         use lance_index::vector::VectorIndex as LanceVectorIndex;
 
         let indices = native_table.load_indices().await.unwrap();
-        let index_uuid = indices[0].index_uuid.clone();
+        let index_uuid = uuid::Uuid::parse_str(&indices[0].index_uuid).unwrap();
 
         let dataset_guard = native_table.dataset.get().await.unwrap();
         let dataset = (*dataset_guard).clone();
