@@ -2616,9 +2616,17 @@ mod tests {
         let vector_type =
             DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 8);
         Schema::new(vec![
+            Field::new("rowId", DataType::Int32, false),
+            Field::new("row-id", DataType::Int32, false),
+            Field::new("userId", DataType::Int32, false),
             Field::new(
                 "metadata",
                 DataType::Struct(vec![Field::new("user_id", DataType::Int32, false)].into()),
+                false,
+            ),
+            Field::new(
+                "MetaData",
+                DataType::Struct(vec![Field::new("userId", DataType::Int32, false)].into()),
                 false,
             ),
             Field::new(
@@ -3915,6 +3923,22 @@ mod tests {
         let schema = nested_index_schema();
         let expected_requests = Arc::new(vec![
             json!({
+                "column": "rowId",
+                "index_type": "BTREE",
+            }),
+            json!({
+                "column": "`row-id`",
+                "index_type": "BTREE",
+            }),
+            json!({
+                "column": "userId",
+                "index_type": "BTREE",
+            }),
+            json!({
+                "column": "MetaData.userId",
+                "index_type": "BTREE",
+            }),
+            json!({
                 "column": "metadata.user_id",
                 "index_type": "BTREE",
             }),
@@ -3969,6 +3993,26 @@ mod tests {
             }
         });
 
+        table
+            .create_index(&["rowId"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["`ROW-ID`"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["userId"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["MetaData.userId"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
         table
             .create_index(&["Metadata.USER_ID"], Index::BTree(Default::default()))
             .execute()

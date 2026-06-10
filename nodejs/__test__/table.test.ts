@@ -911,10 +911,22 @@ describe("When creating an index", () => {
     expect(indices2.length).toBe(0);
   });
 
-  it("should create and search a nested vector index", async () => {
+  it("should preserve canonical nested field paths across index lifecycle", async () => {
     const db = await connect(tmpDir.name);
     const nestedSchema = new Schema([
-      new Field("id", new Int32(), true),
+      new Field("rowId", new Int32(), true),
+      new Field("row-id", new Int32(), true),
+      new Field("userId", new Int32(), true),
+      new Field(
+        "metadata",
+        new Struct([new Field("user_id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "MetaData",
+        new Struct([new Field("userId", new Int32(), true)]),
+        true,
+      ),
       new Field(
         "image",
         new Struct([
@@ -926,27 +938,146 @@ describe("When creating an index", () => {
         ]),
         true,
       ),
+      new Field(
+        "payload",
+        new Struct([new Field("text", new Utf8(), true)]),
+        true,
+      ),
+      new Field(
+        "meta-data",
+        new Struct([new Field("user-id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "literal",
+        new Struct([new Field("a.b", new Int32(), true)]),
+        true,
+      ),
     ]);
     const nestedTable = await db.createTable(
-      "nested_vector",
+      "nested_field_index_lifecycle",
       makeArrowTable(
-        Array.from({ length: 300 }, (_, id) => ({
-          id,
-          image: { embedding: [id, id + 1] },
+        Array.from({ length: 300 }, (_, rowId) => ({
+          rowId,
+          "row-id": rowId,
+          userId: rowId,
+          metadata: { ["user_id"]: rowId },
+          ["MetaData"]: { userId: rowId },
+          image: { embedding: [rowId, rowId + 1] },
+          payload: { text: `document ${rowId}` },
+          "meta-data": { "user-id": rowId },
+          literal: { "a.b": rowId },
         })),
         { schema: nestedSchema },
       ),
     );
 
+    await nestedTable.createIndex("rowId", {
+      config: Index.btree(),
+      name: "row_id_idx",
+    });
+    await nestedTable.createIndex("`row-id`", {
+      config: Index.btree(),
+      name: "row_dash_id_idx",
+    });
+    await nestedTable.createIndex("userId", {
+      config: Index.btree(),
+      name: "top_user_id_idx",
+    });
+    await nestedTable.createIndex("metadata.user_id", {
+      config: Index.btree(),
+      name: "nested_user_id_idx",
+    });
+    await nestedTable.createIndex("MetaData.userId", {
+      config: Index.btree(),
+      name: "mixed_case_metadata_user_id_idx",
+    });
+    await nestedTable.createIndex("`meta-data`.`user-id`", {
+      config: Index.btree(),
+      name: "escaped_names_idx",
+    });
+    await nestedTable.createIndex("literal.`a.b`", {
+      config: Index.btree(),
+      name: "literal_dot_idx",
+    });
     await nestedTable.createIndex("image.embedding", {
       name: "image_embedding_idx",
     });
-    const indices = await nestedTable.listIndices();
-    expect(indices).toContainEqual({
-      name: "image_embedding_idx",
-      indexType: "IvfPq",
-      columns: ["image.embedding"],
+    await nestedTable.createIndex("payload.text", {
+      config: Index.fts({ withPosition: false }),
+      name: "payload_text_idx",
     });
+
+    const indices = await nestedTable.listIndices();
+    expect(indices).toEqual(
+      expect.arrayContaining([
+        {
+          name: "row_id_idx",
+          indexType: "BTree",
+          columns: ["rowId"],
+        },
+        {
+          name: "row_dash_id_idx",
+          indexType: "BTree",
+          columns: ["`row-id`"],
+        },
+        {
+          name: "top_user_id_idx",
+          indexType: "BTree",
+          columns: ["userId"],
+        },
+        {
+          name: "nested_user_id_idx",
+          indexType: "BTree",
+          columns: ["metadata.user_id"],
+        },
+        {
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        },
+        {
+          name: "escaped_names_idx",
+          indexType: "BTree",
+          columns: ["`meta-data`.`user-id`"],
+        },
+        {
+          name: "literal_dot_idx",
+          indexType: "BTree",
+          columns: ["literal.`a.b`"],
+        },
+        {
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        },
+        {
+          name: "payload_text_idx",
+          indexType: "FTS",
+          columns: ["payload.text"],
+        },
+      ]),
+    );
+
+    const stats = await nestedTable.indexStats(
+      "mixed_case_metadata_user_id_idx",
+    );
+    expect(stats?.numIndexedRows).toEqual(300);
+    expect(stats?.indexType).toEqual("BTREE");
+
+    const filtered = await nestedTable
+      .query()
+      .where("MetaData.userId = 42")
+      .limit(1)
+      .toArray();
+    expect(filtered[0].MetaData.userId).toEqual(42);
+
+    const escapedFiltered = await nestedTable
+      .query()
+      .where("`row-id` = 43")
+      .limit(1)
+      .toArray();
+    expect(escapedFiltered[0]["row-id"]).toEqual(43);
 
     const explicit = await nestedTable
       .query()
@@ -959,7 +1090,37 @@ describe("When creating an index", () => {
       .nearestTo([0.0, 1.0])
       .limit(1)
       .toArray();
-    expect(inferred[0].id).toEqual(explicit[0].id);
+    expect(inferred[0].rowId).toEqual(explicit[0].rowId);
+
+    await nestedTable.add([
+      {
+        rowId: 300,
+        "row-id": 300,
+        userId: 300,
+        metadata: { ["user_id"]: 300 },
+        ["MetaData"]: { userId: 300 },
+        image: { embedding: [300.0, 301.0] },
+        payload: { text: "document 300" },
+        "meta-data": { "user-id": 300 },
+        literal: { "a.b": 300 },
+      },
+    ]);
+    await nestedTable.optimize();
+    const indicesAfterOptimize = await nestedTable.listIndices();
+    expect(indicesAfterOptimize).toEqual(
+      expect.arrayContaining([
+        {
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        },
+        {
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        },
+      ]),
+    );
   });
 
   it("should report multiple nested vector candidates", async () => {
