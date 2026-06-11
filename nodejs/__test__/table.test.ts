@@ -845,11 +845,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfPq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfPq",
+        columns: ["vec"],
+      }),
+    );
     const stats = await tbl.indexStats("vec_idx");
     expect(stats).toBeDefined();
 
@@ -1011,51 +1013,51 @@ describe("When creating an index", () => {
     const indices = await nestedTable.listIndices();
     expect(indices).toEqual(
       expect.arrayContaining([
-        {
+        expect.objectContaining({
           name: "row_id_idx",
           indexType: "BTree",
           columns: ["rowId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "row_dash_id_idx",
           indexType: "BTree",
           columns: ["`row-id`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "top_user_id_idx",
           indexType: "BTree",
           columns: ["userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "nested_user_id_idx",
           indexType: "BTree",
           columns: ["metadata.user_id"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "mixed_case_metadata_user_id_idx",
           indexType: "BTree",
           columns: ["MetaData.userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "escaped_names_idx",
           indexType: "BTree",
           columns: ["`meta-data`.`user-id`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "literal_dot_idx",
           indexType: "BTree",
           columns: ["literal.`a.b`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "image_embedding_idx",
           indexType: "IvfPq",
           columns: ["image.embedding"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "payload_text_idx",
           indexType: "FTS",
           columns: ["payload.text"],
-        },
+        }),
       ]),
     );
 
@@ -1109,16 +1111,16 @@ describe("When creating an index", () => {
     const indicesAfterOptimize = await nestedTable.listIndices();
     expect(indicesAfterOptimize).toEqual(
       expect.arrayContaining([
-        {
+        expect.objectContaining({
           name: "mixed_case_metadata_user_id_idx",
           indexType: "BTree",
           columns: ["MetaData.userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "image_embedding_idx",
           indexType: "IvfPq",
           columns: ["image.embedding"],
-        },
+        }),
       ]),
     );
   });
@@ -1254,11 +1256,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfHnswSq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfHnswSq",
+        columns: ["vec"],
+      }),
+    );
 
     // Search without specifying the column
     let rst = await tbl
@@ -1603,6 +1607,35 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
+  });
+
+  it("should expose rich metadata fields on IndexConfig", async () => {
+    await tbl.createIndex("id", { config: Index.btree() });
+    await tbl.createIndex("vec");
+
+    const indicesByName = Object.fromEntries(
+      (await tbl.listIndices()).map((idx) => [idx.name, idx]),
+    );
+
+    const scalarIdx = indicesByName["id_idx"];
+    expect(scalarIdx).toBeDefined();
+    expect(typeof scalarIdx.indexUuid).toBe("string");
+    expect(scalarIdx.numIndexedRows).toBe(300);
+    expect(scalarIdx.numUnindexedRows).toBe(0);
+    expect(scalarIdx.numSegments).toBeGreaterThanOrEqual(1);
+    expect(scalarIdx.sizeBytes).toBeGreaterThan(0);
+    // Use toString check to avoid cross-realm instanceof failures with native Date objects
+    expect(Object.prototype.toString.call(scalarIdx.createdAt)).toBe(
+      "[object Date]",
+    );
+    expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
+    expect(typeof scalarIdx.indexDetails).toBe("object");
+
+    const vectorIdx = indicesByName["vec_idx"];
+    expect(vectorIdx).toBeDefined();
+    expect(typeof vectorIdx.indexUuid).toBe("string");
+    expect(vectorIdx.numIndexedRows).toBe(300);
+    expect(typeof vectorIdx.indexDetails).toBe("object");
   });
 });
 

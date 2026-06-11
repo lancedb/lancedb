@@ -5413,6 +5413,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "aws-lc-sys",
+ "chrono",
  "env_logger",
  "futures",
  "half",
@@ -5423,6 +5424,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "serde_json",
 ]
 
 [[package]]
@@ -5432,6 +5434,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "bytes",
+ "chrono",
  "datafusion-common",
  "env_logger",
  "futures",
@@ -5974,12 +5977,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad513ff22558f1830b595ea6eb4091da48145d09a222ce157e781896f78be0b9"
 dependencies = [
  "bitflags 2.11.1",
+ "chrono",
  "ctor 1.0.5",
  "futures",
  "napi-build",
  "napi-sys",
  "nohash-hasher",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -7509,6 +7515,7 @@ version = "0.28.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91fd8e38a3b50ed1167fb981cd6fd60147e091784c427b8f7183a7ee32c31c12"
 dependencies = [
+ "chrono",
  "libc",
  "once_cell",
  "portable-atomic",

@@ -694,13 +694,13 @@ impl Table {
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            Ok(inner
-                .list_indices()
-                .await
-                .infer_error()?
-                .into_iter()
-                .map(IndexConfig::from)
-                .collect::<Vec<_>>())
+            let indices = inner.list_indices().await.infer_error()?;
+            Python::attach(|py| {
+                Ok(indices
+                    .into_iter()
+                    .map(|idx| IndexConfig::from_lancedb(py, idx))
+                    .collect::<Vec<_>>())
+            })
         })
     }
 

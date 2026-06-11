@@ -25,8 +25,12 @@ lancedb = { path = "../rust/lancedb", default-features = false }
 lance-namespace.workspace = true
 napi = { version = "3.8.3", default-features = false, features = [
     "napi9",
-    "async"
+    "async",
+    "chrono_date",
+    "serde-json",
 ] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
 napi-derive = "3.5.2"
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "0.1", features = ["static"] }
