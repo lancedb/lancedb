@@ -2527,9 +2527,15 @@ def test_index_config_fields(mem_db: DBConnection):
     assert scalar_idx["num_indexed_rows"] == scalar_idx.num_indexed_rows
     assert scalar_idx["created_at"] == scalar_idx.created_at
 
+    # index_details is parsed from JSON into a Python object
+    assert scalar_idx.index_details is not None
+    assert isinstance(scalar_idx.index_details, dict)
+    assert scalar_idx["index_details"] == scalar_idx.index_details
+
     vector_idx = indices["vector_idx"]
     assert vector_idx.index_uuid is not None
     assert vector_idx.num_indexed_rows == 300
+    assert isinstance(vector_idx.index_details, dict)
 
 
 def test_empty_query(mem_db: DBConnection):

@@ -1629,11 +1629,13 @@ describe("When creating an index", () => {
       "[object Date]",
     );
     expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
+    expect(typeof scalarIdx.indexDetails).toBe("object");
 
     const vectorIdx = indicesByName["vec_idx"];
     expect(vectorIdx).toBeDefined();
     expect(typeof vectorIdx.indexUuid).toBe("string");
     expect(vectorIdx.numIndexedRows).toBe(300);
+    expect(typeof vectorIdx.indexDetails).toBe("object");
   });
 });
 

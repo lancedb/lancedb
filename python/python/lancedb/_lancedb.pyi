@@ -267,7 +267,7 @@ class IndexConfig:
     size_bytes: Optional[int]
     num_segments: Optional[int]
     index_version: Optional[int]
-    index_details: Optional[str]
+    index_details: Optional[Any]
 
 async def connect(
     uri: str,

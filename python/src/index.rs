@@ -13,7 +13,7 @@ use lancedb::index::{
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
 use pyo3::{
-    Bound, FromPyObject, PyAny, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyResult, Python,
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
     types::{PyAnyMethods, PyString},
@@ -311,8 +311,10 @@ pub struct IndexConfig {
     pub num_segments: Option<u32>,
     /// The on-disk index format version.
     pub index_version: Option<i32>,
-    /// Index-type-specific details, serialized as JSON.
-    pub index_details: Option<String>,
+    /// Index-type-specific details parsed as a Python object (dict, list, etc.).
+    ///
+    /// Falls back to a raw string if JSON parsing fails. `None` when unavailable.
+    pub index_details: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -339,14 +341,27 @@ impl IndexConfig {
             "size_bytes" => Ok(self.size_bytes.into_pyobject(py)?.into_any()),
             "num_segments" => Ok(self.num_segments.into_pyobject(py)?.into_any()),
             "index_version" => Ok(self.index_version.into_pyobject(py)?.into_any()),
-            "index_details" => Ok(self.index_details.clone().into_pyobject(py)?.into_any()),
+            "index_details" => Ok(self
+                .index_details
+                .as_ref()
+                .map(|obj| obj.clone_ref(py))
+                .into_pyobject(py)?
+                .into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
 }
 
-impl From<lancedb::index::IndexConfig> for IndexConfig {
-    fn from(value: lancedb::index::IndexConfig) -> Self {
+fn parse_index_details(py: Python<'_>, s: String) -> Py<PyAny> {
+    let json = py.import("json").expect("json module is always available");
+    match json.call_method1("loads", (s.as_str(),)) {
+        Ok(obj) => obj.into_any().unbind(),
+        Err(_) => s.into_pyobject(py).unwrap().into_any().unbind(),
+    }
+}
+
+impl IndexConfig {
+    pub fn from_lancedb(py: Python<'_>, value: lancedb::index::IndexConfig) -> Self {
         let index_type = format!("{:?}", value.index_type);
         Self {
             index_type,
@@ -360,7 +375,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             size_bytes: value.size_bytes,
             num_segments: value.num_segments,
             index_version: value.index_version,
-            index_details: value.index_details,
+            index_details: value.index_details.map(|s| parse_index_details(py, s)),
         }
     }
 }

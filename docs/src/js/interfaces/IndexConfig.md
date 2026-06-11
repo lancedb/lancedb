@@ -38,12 +38,13 @@ When the index was created.
 ### indexDetails?
 
 ```ts
-optional indexDetails: string;
+optional indexDetails: any;
 ```
 
-Index-type-specific details, serialized as JSON.
+Index-type-specific details parsed as a JavaScript object.
 
-`undefined` for remote tables or when details are unavailable.
+Falls back to a raw string if JSON parsing fails. `undefined` for
+remote tables or when details are unavailable.
 
 ***
 

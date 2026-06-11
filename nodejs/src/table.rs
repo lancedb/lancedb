@@ -636,10 +636,11 @@ pub struct IndexConfig {
     ///
     /// `undefined` for remote tables.
     pub index_version: Option<i32>,
-    /// Index-type-specific details, serialized as JSON.
+    /// Index-type-specific details parsed as a JavaScript object.
     ///
-    /// `undefined` for remote tables or when details are unavailable.
-    pub index_details: Option<String>,
+    /// Falls back to a raw string if JSON parsing fails. `undefined` for
+    /// remote tables or when details are unavailable.
+    pub index_details: Option<serde_json::Value>,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -657,7 +658,9 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             size_bytes: value.size_bytes.map(|n| n as i64),
             num_segments: value.num_segments.map(|n| n as i32),
             index_version: value.index_version,
-            index_details: value.index_details,
+            index_details: value
+                .index_details
+                .and_then(|s| serde_json::from_str(&s).ok()),
         }
     }
 }
