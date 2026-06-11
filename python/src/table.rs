@@ -6,6 +6,7 @@ use crate::runtime::future_into_py;
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
+    expr::PyExpr,
     index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
@@ -27,6 +28,12 @@ use pyo3::{
 };
 
 mod scannable;
+
+#[derive(FromPyObject)]
+enum PredicateArg {
+    Expr(PyExpr),
+    Sql(String),
+}
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all, from_py_object)]
@@ -561,10 +568,15 @@ impl Table {
         })
     }
 
-    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<Bound<'_, PyAny>> {
+    #[allow(private_interfaces)]
+    pub fn delete(self_: PyRef<'_, Self>, condition: PredicateArg) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.delete(&condition).await.infer_error()?;
+            let result = match &condition {
+                PredicateArg::Expr(e) => inner.delete(&e.0).await,
+                PredicateArg::Sql(s) => inner.delete(s.as_str()).await,
+            }
+            .infer_error()?;
             Ok(DeleteResult::from(result))
         })
     }
@@ -959,8 +971,13 @@ impl Table {
             builder.when_not_matched_insert_all();
         }
         if parameters.when_not_matched_by_source_delete {
-            builder
-                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+            if let Some(e) = parameters.when_not_matched_by_source_condition_expr {
+                builder.when_not_matched_by_source_delete_expr(e.0);
+            } else {
+                builder.when_not_matched_by_source_delete(
+                    parameters.when_not_matched_by_source_condition,
+                );
+            }
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
@@ -1196,6 +1213,7 @@ pub struct MergeInsertParams {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
+    when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
     use_lsm_write: Option<bool>,

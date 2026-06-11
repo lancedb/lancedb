@@ -61,6 +61,7 @@ from .index import (
     HnswFlat,
     FTS,
 )
+from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -1533,7 +1534,7 @@ class Table(ABC):
     ) -> MergeResult: ...
 
     @abstractmethod
-    def delete(self, where: str) -> DeleteResult:
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -1541,10 +1542,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -3423,8 +3424,9 @@ class LanceTable(Table):
         )
         return self
 
-    def delete(self, where: str) -> DeleteResult:
-        return LOOP.run(self._table.delete(where))
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
+        predicate = where._inner if isinstance(where, Expr) else where
+        return LOOP.run(self._table.delete(predicate))
 
     def update(
         self,
@@ -5214,6 +5216,7 @@ class AsyncTable:
                 when_not_matched_insert_all=merge._when_not_matched_insert_all,
                 when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
                 use_lsm_write=merge._use_lsm_write,
@@ -5221,7 +5224,7 @@ class AsyncTable:
             ),
         )
 
-    async def delete(self, where: str) -> DeleteResult:
+    async def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -5229,10 +5232,10 @@ class AsyncTable:
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -5271,7 +5274,8 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        return await self._inner.delete(where)
+        predicate = where._inner if isinstance(where, Expr) else where
+        return await self._inner.delete(predicate)
 
     async def update(
         self,
