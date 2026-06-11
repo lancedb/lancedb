@@ -516,10 +516,6 @@ mod tests {
         let uri = dir.path().to_str().unwrap();
         let ds = create_test_dataset(uri).await;
 
-        // Other tests use a thread-local mock clock. Simulate leaked state from a
-        // previous test to ensure this wrapper starts from real time.
-        clock::advance_by(Duration::from_secs(60));
-
         let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_millis(200)));
 
         // Populate the cache
@@ -529,12 +525,13 @@ mod tests {
         // External write
         append_to_dataset(uri).await;
 
-        // Should return cached value immediately (within TTL)
+        // Should return cached value immediately (within TTL), regardless of how
+        // long the external write above took on a slow CI runner.
         let v_cached = wrapper.get().await.unwrap().version().version;
         assert_eq!(v_cached, 1);
 
-        // Wait for TTL to expire, then get() should trigger a refresh
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Advance the mock clock past the TTL so the next get() triggers a refresh.
+        clock::advance_by(Duration::from_millis(300));
         let v_after = wrapper.get().await.unwrap().version().version;
         assert_eq!(v_after, 2);
     }

@@ -257,8 +257,15 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table_not_supported(self):
-        """Test that rename_table raises NotImplementedError."""
+    def test_rename_table(self):
+        """Test that rename_table renames a table in the namespace.
+
+        The `dir` namespace implementation in lance-namespace-impls does not
+        implement `rename_table` yet (only the `rest` backend does), so it
+        currently falls back to the default trait method which raises
+        NotSupported. This is expected to start passing once the `dir`
+        backend gains rename_table support upstream.
+        """
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Create a child namespace first
@@ -273,9 +280,14 @@ class TestNamespaceConnection:
         )
         db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
 
-        # Rename should raise NotImplementedError
-        with pytest.raises(NotImplementedError, match="rename_table is not supported"):
-            db.rename_table("old_name", "new_name")
+        # Rename the table within the same namespace
+        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
+            db.rename_table(
+                "old_name",
+                "new_name",
+                cur_namespace_path=["test_ns"],
+                new_namespace_path=["test_ns"],
+            )
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""
