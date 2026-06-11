@@ -335,7 +335,7 @@ impl IndexConfig {
             "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
             "index_uuid" => Ok(self.index_uuid.clone().into_pyobject(py)?.into_any()),
             "type_url" => Ok(self.type_url.clone().into_pyobject(py)?.into_any()),
-            "created_at" => Ok(self.created_at.clone().into_pyobject(py)?.into_any()),
+            "created_at" => Ok(self.created_at.into_pyobject(py)?.into_any()),
             "num_indexed_rows" => Ok(self.num_indexed_rows.into_pyobject(py)?.into_any()),
             "num_unindexed_rows" => Ok(self.num_unindexed_rows.into_pyobject(py)?.into_any()),
             "size_bytes" => Ok(self.size_bytes.into_pyobject(py)?.into_any()),
