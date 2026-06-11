@@ -26,10 +26,10 @@ be more columns to represent composite indices.
 ### createdAt?
 
 ```ts
-optional createdAt: number;
+optional createdAt: Date;
 ```
 
-When the index was created, as milliseconds since Unix epoch.
+When the index was created.
 
 `undefined` for remote tables or indices created before timestamps were tracked.
 

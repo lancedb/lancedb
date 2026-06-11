@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
@@ -610,10 +612,10 @@ pub struct IndexConfig {
     ///
     /// `undefined` for remote tables.
     pub type_url: Option<String>,
-    /// When the index was created, as milliseconds since Unix epoch.
+    /// When the index was created.
     ///
     /// `undefined` for remote tables or indices created before timestamps were tracked.
-    pub created_at: Option<f64>,
+    pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
     /// `undefined` for remote tables.
@@ -649,7 +651,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             name: value.name,
             index_uuid: value.index_uuid,
             type_url: value.type_url,
-            created_at: value.created_at.map(|dt| dt.timestamp_millis() as f64),
+            created_at: value.created_at,
             num_indexed_rows: value.num_indexed_rows.map(|n| n as i64),
             num_unindexed_rows: value.num_unindexed_rows.map(|n| n as i64),
             size_bytes: value.size_bytes.map(|n| n as i64),

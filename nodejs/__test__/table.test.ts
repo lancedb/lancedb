@@ -1624,8 +1624,11 @@ describe("When creating an index", () => {
     expect(scalarIdx.numUnindexedRows).toBe(0);
     expect(scalarIdx.numSegments).toBeGreaterThanOrEqual(1);
     expect(scalarIdx.sizeBytes).toBeGreaterThan(0);
-    expect(typeof scalarIdx.createdAt).toBe("number");
-    expect(scalarIdx.createdAt).toBeGreaterThan(0);
+    // Use toString check to avoid cross-realm instanceof failures with native Date objects
+    expect(Object.prototype.toString.call(scalarIdx.createdAt)).toBe(
+      "[object Date]",
+    );
+    expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
 
     const vectorIdx = indicesByName["vec_idx"];
     expect(vectorIdx).toBeDefined();
