@@ -437,8 +437,11 @@ impl Database for LanceNamespaceDatabase {
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning == Some(true) {
-            let external_store =
-                LanceNamespaceExternalManifestStore::new(self.namespace.clone(), table_id.clone());
+            let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
+                self.namespace.clone(),
+                table_id.clone(),
+                &location,
+            )?;
             let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: Arc::new(external_store),
             });

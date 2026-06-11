@@ -1905,8 +1905,11 @@ impl NativeTable {
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning && let Some(ref ns_client) = namespace_client {
-            let external_store =
-                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
+            let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
+                ns_client.clone(),
+                table_id.clone(),
+                uri,
+            )?;
             let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: Arc::new(external_store),
             });
