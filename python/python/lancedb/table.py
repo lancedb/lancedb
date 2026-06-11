@@ -242,7 +242,10 @@ def _into_pyarrow_reader(
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
     if isinstance(data, dict):
-        raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+        raise ValueError(
+            "Cannot create or add rows from a single dictionary. "
+            "Use a list of dictionaries instead."
+        )
 
     if isinstance(data, list):
         # Handle empty list case
