@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use chrono::{DateTime, Utc};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
@@ -298,8 +299,8 @@ pub struct IndexConfig {
     pub index_uuid: Option<String>,
     /// The protobuf type URL, a precise type identifier for the index.
     pub type_url: Option<String>,
-    /// When the index was created, as milliseconds since Unix epoch.
-    pub created_at: Option<i64>,
+    /// When the index was created.
+    pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     pub num_indexed_rows: Option<u64>,
     /// The number of rows not yet covered by this index.
@@ -332,7 +333,7 @@ impl IndexConfig {
             "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
             "index_uuid" => Ok(self.index_uuid.clone().into_pyobject(py)?.into_any()),
             "type_url" => Ok(self.type_url.clone().into_pyobject(py)?.into_any()),
-            "created_at" => Ok(self.created_at.into_pyobject(py)?.into_any()),
+            "created_at" => Ok(self.created_at.clone().into_pyobject(py)?.into_any()),
             "num_indexed_rows" => Ok(self.num_indexed_rows.into_pyobject(py)?.into_any()),
             "num_unindexed_rows" => Ok(self.num_unindexed_rows.into_pyobject(py)?.into_any()),
             "size_bytes" => Ok(self.size_bytes.into_pyobject(py)?.into_any()),
@@ -353,7 +354,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             name: value.name,
             index_uuid: value.index_uuid,
             type_url: value.type_url,
-            created_at: value.created_at.map(|dt| dt.timestamp_millis()),
+            created_at: value.created_at,
             num_indexed_rows: value.num_indexed_rows,
             num_unindexed_rows: value.num_unindexed_rows,
             size_bytes: value.size_bytes,

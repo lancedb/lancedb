@@ -2516,9 +2516,11 @@ def test_index_config_fields(mem_db: DBConnection):
     assert scalar_idx.num_segments >= 1
     assert scalar_idx.size_bytes is not None
     assert scalar_idx.size_bytes > 0
-    # created_at is milliseconds since epoch
     assert scalar_idx.created_at is not None
-    assert isinstance(scalar_idx.created_at, int)
+    from datetime import datetime, timezone
+
+    assert isinstance(scalar_idx.created_at, datetime)
+    assert scalar_idx.created_at.tzinfo == timezone.utc
 
     # __getitem__ compatibility
     assert scalar_idx["index_uuid"] == scalar_idx.index_uuid

@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
@@ -261,7 +261,7 @@ class IndexConfig:
     columns: List[str]
     index_uuid: Optional[str]
     type_url: Optional[str]
-    created_at: Optional[int]
+    created_at: Optional[datetime]
     num_indexed_rows: Optional[int]
     num_unindexed_rows: Optional[int]
     size_bytes: Optional[int]
