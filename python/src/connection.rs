@@ -18,7 +18,10 @@ use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
-    database::{CreateTableMode, Database, ReadConsistency},
+    database::{
+        CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode, Database,
+        ReadConsistency, RefreshMaterializedViewRequest,
+    },
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -26,6 +29,46 @@ use pyo3::{
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
 };
+
+/// A registered function, as returned by `list_functions`.
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub language: String,
+    pub return_type: String,
+    pub description: String,
+}
+
+/// A registered materialized view definition.
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct MaterializedViewInfo {
+    pub name: String,
+    pub source_table: String,
+    pub projection: Vec<String>,
+    pub udf_columns: Vec<String>,
+    pub filter: Option<String>,
+    pub auto_refresh: bool,
+}
+
+/// One inflight server-side job.
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct JobInfo {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    pub state: String,
+    pub column: Option<String>,
+    pub age_seconds: Option<i64>,
+    pub command: Option<String>,
+    pub units_done: Option<i64>,
+    pub units_total: Option<i64>,
+    pub committed: bool,
+    pub rows_skipped: u64,
+    pub error: Option<String>,
+}
 
 #[pyclass]
 pub struct Connection {
@@ -307,6 +350,163 @@ impl Connection {
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
             Ok(Table::new(table))
+        })
+    }
+
+    #[pyo3(signature = (name, language, return_type, body, options=None))]
+    pub fn create_function(
+        self_: PyRef<'_, Self>,
+        name: String,
+        language: String,
+        return_type: String,
+        body: String,
+        options: Option<HashMap<String, String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .create_function(CreateFunctionRequest {
+                    name,
+                    language,
+                    return_type,
+                    body,
+                    options: options.unwrap_or_default(),
+                })
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn list_functions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let functions = inner.list_functions().await.infer_error()?;
+            Ok(functions
+                .into_iter()
+                .map(|f| FunctionInfo {
+                    name: f.name,
+                    language: f.language,
+                    return_type: f.return_type,
+                    description: f.description,
+                })
+                .collect::<Vec<_>>())
+        })
+    }
+
+    pub fn drop_function(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_function(&name).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, query, auto_refresh=false, with_no_data=false))]
+    pub fn create_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        query: String,
+        auto_refresh: bool,
+        with_no_data: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .create_materialized_view(CreateMaterializedViewRequest {
+                    name,
+                    query,
+                    auto_refresh,
+                    with_no_data,
+                })
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, src_version=None, num_workers=None, max_workers=None))]
+    pub fn refresh_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        src_version: Option<u64>,
+        num_workers: Option<u32>,
+        max_workers: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .refresh_materialized_view(RefreshMaterializedViewRequest {
+                    name,
+                    src_version,
+                    num_workers,
+                    max_workers,
+                })
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn alter_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        auto_refresh: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .alter_materialized_view(&name, auto_refresh)
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn drop_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_materialized_view(&name).await.infer_error()
+        })
+    }
+
+    pub fn list_materialized_views(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let views = inner.list_materialized_views().await.infer_error()?;
+            Ok(views
+                .into_iter()
+                .map(|v| MaterializedViewInfo {
+                    name: v.name,
+                    source_table: v.source_table,
+                    projection: v.projection,
+                    udf_columns: v.udf_columns,
+                    filter: v.filter,
+                    auto_refresh: v.auto_refresh,
+                })
+                .collect::<Vec<_>>())
+        })
+    }
+
+    pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let jobs = inner.list_jobs().await.infer_error()?;
+            Ok(jobs
+                .into_iter()
+                .map(|j| JobInfo {
+                    table: j.table,
+                    job_id: j.job_id,
+                    job_type: j.job_type,
+                    state: j.state,
+                    column: j.column,
+                    age_seconds: j.age_seconds,
+                    command: j.command,
+                    units_done: j.units_done,
+                    units_total: j.units_total,
+                    committed: j.committed,
+                    rows_skipped: j.rows_skipped,
+                    error: j.error,
+                })
+                .collect::<Vec<_>>())
         })
     }
 

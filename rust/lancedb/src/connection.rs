@@ -23,8 +23,9 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, OpenTableRequest, ReadConsistency,
-    TableNamesRequest,
+    CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, Database,
+    DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo, OpenTableRequest,
+    ReadConsistency, RefreshMaterializedViewRequest, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -486,6 +487,64 @@ impl Connection {
             target_table_name.into(),
             source_uri.into(),
         )
+    }
+
+    // -- Derived compute: functions, materialized views, jobs -------------
+    // Server-backed features (LanceDB Enterprise / Cloud); local
+    // databases return NotSupported for now.
+
+    /// Register a UDF (CREATE FUNCTION).
+    pub async fn create_function(&self, request: CreateFunctionRequest) -> Result<()> {
+        self.internal.create_function(request).await
+    }
+
+    /// List registered functions (SHOW FUNCTIONS).
+    pub async fn list_functions(&self) -> Result<Vec<FunctionInfo>> {
+        self.internal.list_functions().await
+    }
+
+    /// Drop a registered function (DROP FUNCTION).
+    pub async fn drop_function(&self, name: &str) -> Result<()> {
+        self.internal.drop_function(name).await
+    }
+
+    /// Create a materialized view (CREATE MATERIALIZED VIEW). Returns
+    /// the initial-population job id, absent when `with_no_data`.
+    pub async fn create_materialized_view(
+        &self,
+        request: CreateMaterializedViewRequest,
+    ) -> Result<Option<String>> {
+        self.internal.create_materialized_view(request).await
+    }
+
+    /// Refresh a materialized view; returns the refresh job id.
+    pub async fn refresh_materialized_view(
+        &self,
+        request: RefreshMaterializedViewRequest,
+    ) -> Result<String> {
+        self.internal.refresh_materialized_view(request).await
+    }
+
+    /// Update a materialized view's options (ALTER MATERIALIZED VIEW).
+    pub async fn alter_materialized_view(&self, name: &str, auto_refresh: bool) -> Result<()> {
+        self.internal
+            .alter_materialized_view(name, auto_refresh)
+            .await
+    }
+
+    /// Drop a materialized view definition (DROP MATERIALIZED VIEW).
+    pub async fn drop_materialized_view(&self, name: &str) -> Result<()> {
+        self.internal.drop_materialized_view(name).await
+    }
+
+    /// List registered materialized view definitions.
+    pub async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewInfo>> {
+        self.internal.list_materialized_views().await
+    }
+
+    /// List inflight server-side jobs across the database's tables.
+    pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        self.internal.list_jobs().await
     }
 
     /// Rename a table in the database.

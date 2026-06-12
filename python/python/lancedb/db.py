@@ -563,6 +563,101 @@ class DBConnection(EnforceOverrides):
         raise NotImplementedError("serialize is not supported for this connection type")
 
 
+    # -- Derived compute: functions, materialized views, jobs -------------
+    # Server-backed features (LanceDB Enterprise / Cloud); local
+    # connections raise NotImplementedError for now.
+
+    def create_function(
+        self,
+        name: str,
+        language: str,
+        return_type: str,
+        body: str,
+        options: Optional[Dict[str, str]] = None,
+    ):
+        """Register a UDF (CREATE FUNCTION).
+
+        Parameters
+        ----------
+        name: str
+            Function name.
+        language: str
+            Implementation language (currently "python").
+        return_type: str
+            SQL return type, e.g. "FLOAT", "FLOAT[1536]",
+            "STRUCT(a FLOAT, b VARCHAR)", "TABLE(chunk VARCHAR, idx INT)".
+        body: str
+            Function body: source text, or base64 cloudpickle bytes when
+            options["body_format"] == "cloudpickle".
+        options: dict, optional
+            input_columns, pip, num_gpus, batch_size, timeout,
+            error_policy, docker_image, body_format, ...
+        """
+        LOOP.run(self._conn.create_function(name, language, return_type, body, options))
+
+    def list_functions(self):
+        """List registered functions (SHOW FUNCTIONS)."""
+        return LOOP.run(self._conn.list_functions())
+
+    def drop_function(self, name: str):
+        """Drop a registered function (DROP FUNCTION)."""
+        LOOP.run(self._conn.drop_function(name))
+
+    def create_materialized_view(
+        self,
+        name: str,
+        query: str,
+        *,
+        auto_refresh: bool = False,
+        with_no_data: bool = False,
+    ) -> Optional[str]:
+        """Create a materialized view (CREATE MATERIALIZED VIEW).
+
+        `query` is the view's SELECT statement, e.g.
+        "SELECT id, embed(body) AS vec FROM articles WHERE id > 1".
+        Returns the initial-population job id, or None when
+        with_no_data=True.
+        """
+        return LOOP.run(
+            self._conn.create_materialized_view(
+                name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
+            )
+        )
+
+    def refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        src_version: Optional[int] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Refresh a materialized view; returns the refresh job id."""
+        return LOOP.run(
+            self._conn.refresh_materialized_view(
+                name,
+                src_version=src_version,
+                num_workers=num_workers,
+                max_workers=max_workers,
+            )
+        )
+
+    def alter_materialized_view(self, name: str, *, auto_refresh: bool):
+        """Update a materialized view's options (ALTER MATERIALIZED VIEW)."""
+        LOOP.run(self._conn.alter_materialized_view(name, auto_refresh=auto_refresh))
+
+    def drop_materialized_view(self, name: str):
+        """Drop a materialized view definition (DROP MATERIALIZED VIEW)."""
+        LOOP.run(self._conn.drop_materialized_view(name))
+
+    def list_materialized_views(self):
+        """List registered materialized view definitions."""
+        return LOOP.run(self._conn.list_materialized_views())
+
+    def list_jobs(self):
+        """List inflight server-side jobs across the database's tables."""
+        return LOOP.run(self._conn.list_jobs())
+
 class LanceDBConnection(DBConnection):
     """
     A connection to a LanceDB database.
@@ -1786,6 +1881,75 @@ class AsyncConnection(object):
             is_shallow=is_shallow,
         )
         return AsyncTable(table)
+
+    # -- Derived compute: functions, materialized views, jobs -------------
+    # Server-backed features (LanceDB Enterprise / Cloud); local
+    # connections raise NotImplementedError for now.
+
+    async def create_function(
+        self,
+        name: str,
+        language: str,
+        return_type: str,
+        body: str,
+        options: Optional[Dict[str, str]] = None,
+    ):
+        """Register a UDF (CREATE FUNCTION)."""
+        await self._inner.create_function(name, language, return_type, body, options)
+
+    async def list_functions(self):
+        """List registered functions (SHOW FUNCTIONS)."""
+        return await self._inner.list_functions()
+
+    async def drop_function(self, name: str):
+        """Drop a registered function (DROP FUNCTION)."""
+        await self._inner.drop_function(name)
+
+    async def create_materialized_view(
+        self,
+        name: str,
+        query: str,
+        *,
+        auto_refresh: bool = False,
+        with_no_data: bool = False,
+    ) -> Optional[str]:
+        """Create a materialized view; returns the initial-population
+        job id, or None when with_no_data=True."""
+        return await self._inner.create_materialized_view(
+            name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
+        )
+
+    async def refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        src_version: Optional[int] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Refresh a materialized view; returns the refresh job id."""
+        return await self._inner.refresh_materialized_view(
+            name,
+            src_version=src_version,
+            num_workers=num_workers,
+            max_workers=max_workers,
+        )
+
+    async def alter_materialized_view(self, name: str, *, auto_refresh: bool):
+        """Update a materialized view's options."""
+        await self._inner.alter_materialized_view(name, auto_refresh)
+
+    async def drop_materialized_view(self, name: str):
+        """Drop a materialized view definition."""
+        await self._inner.drop_materialized_view(name)
+
+    async def list_materialized_views(self):
+        """List registered materialized view definitions."""
+        return await self._inner.list_materialized_views()
+
+    async def list_jobs(self):
+        """List inflight server-side jobs across the database's tables."""
+        return await self._inner.list_jobs()
 
     async def rename_table(
         self,
