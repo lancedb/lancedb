@@ -11,7 +11,7 @@ This skill authors column-level metadata for a LanceDB table. It connects to a L
 
 ## Step 0: Establish the connection
 
-Use the `lancedb-connect` skill (invoke it via the Skill tool) to resolve the base URL and auth headers (`x-api-key`, `x-lancedb-database`) for whichever deployment the user is working against — LanceDB Cloud, enterprise/self-hosted, or a local dev server. Skip it only if the connection details are already established in the conversation.
+Use the `lancedb-connect` skill (invoke it via the Skill tool) to resolve the base URL and auth headers (`x-api-key`, `x-lancedb-database`) for whichever deployment the user is working against — enterprise/self-hosted or a local dev server. Skip it only if the connection details are already established in the conversation.
 
 All examples below use `{base_url}` — substitute the resolved endpoint and include the resolved headers on every request.
 
@@ -31,9 +31,9 @@ Tags are open-ended — use whatever key suffix and value make sense given the u
 
 You need:
 - **Table name** (required) — e.g., `my_table` or `my_namespace.my_table`
-- **Database name** — ask if not provided and not inferable from context; it goes in the `x-lancedb-database` header (or the hostname, for LanceDB Cloud), never in the URL path
+- **Database name** — ask if not provided and not inferable from context; it goes in the `x-lancedb-database` header, never in the URL path
 
-The table identifier in the URL path is typically `table_name` for a top-level table, or `namespace.table_name` if the table lives in a namespace. The API accepts a `delimiter` query parameter to parse compound identifiers (default `.`).
+The table identifier in the URL path is typically `table_name` for a top-level table, or `namespace$table_name` if the table lives in a namespace. The API accepts a `delimiter` query parameter to parse compound identifiers (default `$`).
 
 ## Step 2: Describe the table
 

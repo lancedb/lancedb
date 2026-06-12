@@ -17,8 +17,7 @@ Produce two things every REST request needs:
 1. If the user already gave a URL and API key (or said which environment they're working against), use that.
 2. Otherwise, look for credentials already available in the environment:
    - Env vars like `LANCEDB_URI` / `LANCEDB_HOST` / `LANCEDB_API_KEY`
-   - A profile in `~/.lancedb/config.toml` (SDK and CLI config: `http_server_url`, `api_key`, `database`)
-   - A LanceDB endpoint already running or port-forwarded locally (the REST default port is 10024, i.e. `http://localhost:10024`)
+   - A LanceDB endpoint already running or port-forwarded locally (the REST default port is 2333, i.e. `http://localhost:2333`)
 3. If you didn't find both pieces, ask the user directly: **"What's your LanceDB endpoint's URL, and what's your API key?"** Also ask which database to use if it isn't obvious. Don't guess or probe further — the user knows their deployment.
 
 ## Validating the connection
