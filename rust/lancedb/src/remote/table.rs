@@ -2309,6 +2309,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "optimize is not supported on LanceDB cloud.".into(),
         })
     }
+    async fn refresh_column(
+        &self,
+        columns: &[String],
+        where_clause: Option<String>,
+        num_workers: Option<u32>,
+        max_workers: Option<u32>,
+    ) -> Result<String> {
+        let mut body = serde_json::json!({ "columns": columns });
+        if let Some(w) = where_clause {
+            body["where_clause"] = serde_json::Value::String(w);
+        }
+        if let Some(n) = num_workers {
+            body["num_workers"] = n.into();
+        }
+        if let Some(n) = max_workers {
+            body["max_workers"] = n.into();
+        }
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/refresh_column", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        #[derive(serde::Deserialize)]
+        struct RefreshColumnResponse {
+            job_id: String,
+        }
+        let body: RefreshColumnResponse = response.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
@@ -2799,6 +2830,30 @@ mod tests {
             let full_error_report = snafu::Report::from_error(result.unwrap_err()).to_string();
             assert!(full_error_report.contains("table my_table not found"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_refresh_column() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/refresh_column");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["columns"], serde_json::json!(["vec"]));
+            assert_eq!(body["num_workers"], 2);
+            assert!(body.get("where_clause").is_none());
+
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-9"}"#)
+                .unwrap()
+        });
+
+        let job_id = table
+            .refresh_column(&["vec".to_string()], None, Some(2), None)
+            .await
+            .unwrap();
+        assert_eq!(job_id, "j-9");
     }
 
     #[tokio::test]

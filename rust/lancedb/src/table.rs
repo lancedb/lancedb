@@ -620,6 +620,22 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Trigger recompute of computed columns. The expression is
+    /// resolved server-side from each column's stored binding; columns
+    /// bound to the same struct-returning function refresh together.
+    /// Returns the refresh job id. Server-backed feature (LanceDB
+    /// Enterprise / Cloud); the default returns NotSupported.
+    async fn refresh_column(
+        &self,
+        _columns: &[String],
+        _where_clause: Option<String>,
+        _num_workers: Option<u32>,
+        _max_workers: Option<u32>,
+    ) -> Result<String> {
+        Err(Error::NotSupported {
+            message: "refresh_column is not supported by this table".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -1459,6 +1475,22 @@ impl Table {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.inner.add_columns(transforms, read_columns).await
+    }
+
+    /// Trigger recompute of computed columns (REFRESH COLUMN). The
+    /// expression comes from each column's stored binding; columns
+    /// bound to the same struct-returning function refresh together.
+    /// Returns the refresh job id. Server-backed feature.
+    pub async fn refresh_column(
+        &self,
+        columns: &[String],
+        where_clause: Option<String>,
+        num_workers: Option<u32>,
+        max_workers: Option<u32>,
+    ) -> Result<String> {
+        self.inner
+            .refresh_column(columns, where_clause, num_workers, max_workers)
+            .await
     }
 
     /// Change a column's name or nullability.

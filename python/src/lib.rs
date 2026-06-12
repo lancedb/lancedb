@@ -41,6 +41,9 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<connection::FunctionInfo>()?;
+    m.add_class::<connection::MaterializedViewInfo>()?;
+    m.add_class::<connection::JobInfo>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<IndexConfig>()?;

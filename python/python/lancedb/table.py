@@ -3714,6 +3714,33 @@ class LanceTable(Table):
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms))
 
+    def refresh_column(
+        self,
+        columns,
+        *,
+        where: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Trigger recompute of computed columns (REFRESH COLUMN).
+
+        The expression is resolved server-side from each column's stored
+        binding; columns bound to the same struct-returning function
+        refresh together. Returns the refresh job id. Server-backed
+        feature (LanceDB Enterprise / Cloud).
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        return LOOP.run(
+            self._table.refresh_column(
+                list(columns),
+                where=where,
+                num_workers=num_workers,
+                max_workers=max_workers,
+            )
+        )
+
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:
@@ -5389,6 +5416,25 @@ class AsyncTable:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
         return await self._inner.update(updates_sql, where)
+
+    async def refresh_column(
+        self,
+        columns,
+        *,
+        where: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Trigger recompute of computed columns (REFRESH COLUMN).
+        Returns the refresh job id. Server-backed feature."""
+        if isinstance(columns, str):
+            columns = [columns]
+        return await self._inner.refresh_column(
+            list(columns),
+            where_clause=where,
+            num_workers=num_workers,
+            max_workers=max_workers,
+        )
 
     async def add_columns(
         self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema

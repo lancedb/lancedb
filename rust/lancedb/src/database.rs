@@ -27,7 +27,7 @@ use lance_namespace::models::{
 };
 
 use crate::data::scannable::Scannable;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -200,6 +200,129 @@ pub enum ReadConsistency {
     Strong,
 }
 
+/// A request to register a UDF (CREATE FUNCTION).
+///
+/// Functions are first-class database objects, decoupled from any
+/// column; computed columns and materialized views reference them by
+/// name. Server-backed feature (LanceDB Enterprise / Cloud).
+#[derive(Debug, Clone)]
+pub struct CreateFunctionRequest {
+    /// Function name.
+    pub name: String,
+    /// Implementation language (currently "python").
+    pub language: String,
+    /// SQL return type, e.g. `FLOAT`, `FLOAT[1536]`,
+    /// `STRUCT(a FLOAT, b VARCHAR)`, `TABLE(chunk VARCHAR, idx INT)`.
+    pub return_type: String,
+    /// Function body: source text, or base64 cloudpickle bytes when
+    /// `options["body_format"] = "cloudpickle"`.
+    pub body: String,
+    /// Options: input_columns, pip, num_gpus, batch_size, timeout,
+    /// error_policy, docker_image, body_format, ...
+    pub options: HashMap<String, String>,
+}
+
+/// A registered function, as returned by `list_functions`.
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub language: String,
+    pub return_type: String,
+    pub description: String,
+}
+
+/// A request to create a materialized view (CREATE MATERIALIZED VIEW).
+#[derive(Debug, Clone)]
+pub struct CreateMaterializedViewRequest {
+    /// View name.
+    pub name: String,
+    /// The view's SELECT statement, e.g.
+    /// `SELECT id, embed(body) AS vec FROM articles WHERE id > 1`.
+    /// Bare columns project through; function-call columns compute via
+    /// registered UDFs (a RETURNS TABLE function makes a row-expanding
+    /// chunker view).
+    pub query: String,
+    /// Refresh automatically when the source table changes.
+    pub auto_refresh: bool,
+    /// Register the definition only; skip the initial population.
+    pub with_no_data: bool,
+}
+
+impl CreateMaterializedViewRequest {
+    pub fn new(name: impl Into<String>, query: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            query: query.into(),
+            auto_refresh: false,
+            with_no_data: false,
+        }
+    }
+}
+
+/// A request to refresh a materialized view.
+#[derive(Debug, Clone)]
+pub struct RefreshMaterializedViewRequest {
+    /// View name.
+    pub name: String,
+    /// Pin the refresh to a source-table version; latest when absent.
+    pub src_version: Option<u64>,
+    /// Initial worker count.
+    pub num_workers: Option<u32>,
+    /// Elastic worker ceiling.
+    pub max_workers: Option<u32>,
+}
+
+impl RefreshMaterializedViewRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            src_version: None,
+            num_workers: None,
+            max_workers: None,
+        }
+    }
+}
+
+/// A registered materialized view definition, as returned by
+/// `list_materialized_views`.
+#[derive(Debug, Clone)]
+pub struct MaterializedViewInfo {
+    pub name: String,
+    pub source_table: String,
+    /// Source columns projected through.
+    pub projection: Vec<String>,
+    /// `alias=expression` per UDF-computed column.
+    pub udf_columns: Vec<String>,
+    pub filter: Option<String>,
+    pub auto_refresh: bool,
+}
+
+/// A row from `list_jobs`: one inflight server-side job (index build,
+/// compaction, column refresh, view refresh, ...).
+#[derive(Debug, Clone)]
+pub struct JobInfo {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "cancelling", or "stale".
+    pub state: String,
+    pub column: Option<String>,
+    pub age_seconds: Option<i64>,
+    pub command: Option<String>,
+    pub units_done: Option<i64>,
+    pub units_total: Option<i64>,
+    /// Whether the job's final commit has completed (output visible).
+    pub committed: bool,
+    pub rows_skipped: u64,
+    pub error: Option<String>,
+}
+
+fn not_supported<T>(what: &str) -> Result<T> {
+    Err(Error::NotSupported {
+        message: format!("{} is not supported by this database", what),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -245,6 +368,57 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
+
+    // -- Derived compute: functions, materialized views, jobs -------------
+    //
+    // Server-backed features (LanceDB Enterprise / Cloud). The defaults
+    // return NotSupported; the remote database overrides them. Local
+    // single-node implementations are planned.
+
+    /// Register a UDF (CREATE FUNCTION).
+    async fn create_function(&self, _request: CreateFunctionRequest) -> Result<()> {
+        not_supported("create_function")
+    }
+    /// List registered functions (SHOW FUNCTIONS).
+    async fn list_functions(&self) -> Result<Vec<FunctionInfo>> {
+        not_supported("list_functions")
+    }
+    /// Drop a registered function (DROP FUNCTION).
+    async fn drop_function(&self, _name: &str) -> Result<()> {
+        not_supported("drop_function")
+    }
+    /// Create a materialized view (CREATE MATERIALIZED VIEW). Returns
+    /// the initial-population job id, absent when `with_no_data`.
+    async fn create_materialized_view(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Option<String>> {
+        not_supported("create_materialized_view")
+    }
+    /// Refresh a materialized view; returns the refresh job id.
+    async fn refresh_materialized_view(
+        &self,
+        _request: RefreshMaterializedViewRequest,
+    ) -> Result<String> {
+        not_supported("refresh_materialized_view")
+    }
+    /// Update a materialized view's options (ALTER MATERIALIZED VIEW).
+    async fn alter_materialized_view(&self, _name: &str, _auto_refresh: bool) -> Result<()> {
+        not_supported("alter_materialized_view")
+    }
+    /// Drop a materialized view definition (DROP MATERIALIZED VIEW).
+    async fn drop_materialized_view(&self, _name: &str) -> Result<()> {
+        not_supported("drop_materialized_view")
+    }
+    /// List registered materialized view definitions.
+    async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewInfo>> {
+        not_supported("list_materialized_views")
+    }
+    /// List inflight server-side jobs across the database's tables.
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        not_supported("list_jobs")
+    }
+
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database

@@ -19,8 +19,9 @@ use lance_namespace::models::{
 
 use crate::Error;
 use crate::database::{
-    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo,
+    OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -32,6 +33,111 @@ use super::client::{
 };
 use super::table::RemoteTable;
 use super::util::parse_server_version;
+
+// Wire types for the derived-compute routes (functions, materialized
+// views, jobs). Field shapes mirror the server's REST contract.
+#[derive(serde::Serialize)]
+struct RemoteCreateFunctionRequest {
+    language: String,
+    return_type: String,
+    body: String,
+    options: std::collections::HashMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteFunctionEntry {
+    name: String,
+    language: String,
+    return_type: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListFunctionsResponse {
+    functions: Vec<RemoteFunctionEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteCreateMaterializedViewRequest {
+    query: String,
+    auto_refresh: bool,
+    with_no_data: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteCreateMaterializedViewResponse {
+    #[serde(default)]
+    job_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteRefreshMaterializedViewRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_workers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_workers: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteRefreshMaterializedViewResponse {
+    job_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteAlterMaterializedViewRequest {
+    auto_refresh: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteMaterializedViewEntry {
+    name: String,
+    source_table: String,
+    #[serde(default)]
+    projection: Vec<String>,
+    #[serde(default)]
+    udf_columns: Vec<String>,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    auto_refresh: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListMaterializedViewsResponse {
+    views: Vec<RemoteMaterializedViewEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteJobEntry {
+    table: String,
+    job_id: String,
+    job_type: String,
+    state: String,
+    #[serde(default)]
+    column: Option<String>,
+    #[serde(default)]
+    age_seconds: Option<i64>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    units_done: Option<i64>,
+    #[serde(default)]
+    units_total: Option<i64>,
+    #[serde(default)]
+    committed: bool,
+    #[serde(default)]
+    rows_skipped: u64,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListJobsResponse {
+    jobs: Vec<RemoteJobEntry>,
+}
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -639,6 +745,149 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
+    }
+
+    async fn create_function(&self, request: CreateFunctionRequest) -> Result<()> {
+        let body = RemoteCreateFunctionRequest {
+            language: request.language,
+            return_type: request.return_type,
+            body: request.body,
+            options: request.options,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/function/{}/create", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn list_functions(&self) -> Result<Vec<FunctionInfo>> {
+        let req = self.client.get("/v1/function/list");
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListFunctionsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body
+            .functions
+            .into_iter()
+            .map(|f| FunctionInfo {
+                name: f.name,
+                language: f.language,
+                return_type: f.return_type,
+                description: f.description,
+            })
+            .collect())
+    }
+
+    async fn drop_function(&self, name: &str) -> Result<()> {
+        let req = self.client.post(&format!("/v1/function/{}/drop", name));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn create_materialized_view(
+        &self,
+        request: CreateMaterializedViewRequest,
+    ) -> Result<Option<String>> {
+        let body = RemoteCreateMaterializedViewRequest {
+            query: request.query,
+            auto_refresh: request.auto_refresh,
+            with_no_data: request.with_no_data,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/create", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteCreateMaterializedViewResponse =
+            rsp.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
+    async fn refresh_materialized_view(
+        &self,
+        request: RefreshMaterializedViewRequest,
+    ) -> Result<String> {
+        let body = RemoteRefreshMaterializedViewRequest {
+            src_version: request.src_version,
+            num_workers: request.num_workers,
+            max_workers: request.max_workers,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/refresh", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteRefreshMaterializedViewResponse =
+            rsp.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
+    async fn alter_materialized_view(&self, name: &str, auto_refresh: bool) -> Result<()> {
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/alter", name))
+            .json(&RemoteAlterMaterializedViewRequest { auto_refresh });
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn drop_materialized_view(&self, name: &str) -> Result<()> {
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/drop", name));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewInfo>> {
+        let req = self.client.get("/v1/materialized_view/list");
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListMaterializedViewsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body
+            .views
+            .into_iter()
+            .map(|v| MaterializedViewInfo {
+                name: v.name,
+                source_table: v.source_table,
+                projection: v.projection,
+                udf_columns: v.udf_columns,
+                filter: v.filter,
+                auto_refresh: v.auto_refresh,
+            })
+            .collect())
+    }
+
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        let req = self.client.get("/v1/job/list");
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body
+            .jobs
+            .into_iter()
+            .map(|j| JobInfo {
+                table: j.table,
+                job_id: j.job_id,
+                job_type: j.job_type,
+                state: j.state,
+                column: j.column,
+                age_seconds: j.age_seconds,
+                command: j.command,
+                units_done: j.units_done,
+                units_total: j.units_total,
+                committed: j.committed,
+                rows_skipped: j.rows_skipped,
+                error: j.error,
+            })
+            .collect())
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -1578,6 +1827,156 @@ mod tests {
             }
             _ => panic!("Expected Runtime error from header provider"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_derived_compute_routes() {
+        // create_function
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/embed/create");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["language"], "python");
+            assert_eq!(body["return_type"], "FLOAT[4]");
+            assert_eq!(body["body"], "def embed(x): ...");
+            assert_eq!(body["options"]["pip"], "torch");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"embed","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.create_function(crate::database::CreateFunctionRequest {
+            name: "embed".into(),
+            language: "python".into(),
+            return_type: "FLOAT[4]".into(),
+            body: "def embed(x): ...".into(),
+            options: [("pip".to_string(), "torch".to_string())].into(),
+        })
+        .await
+        .unwrap();
+
+        // list_functions
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/function/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"functions":[{"name":"embed","language":"python","return_type":"Float32","description":""}]}"#,
+                )
+                .unwrap()
+        });
+        let functions = conn.list_functions().await.unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "embed");
+
+        // drop_function
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/embed/drop");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"embed","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.drop_function("embed").await.unwrap();
+
+        // create_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/create");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["query"], "SELECT id, embed(body) AS vec FROM docs");
+            assert_eq!(body["auto_refresh"], true);
+            assert_eq!(body["with_no_data"], false);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","job_id":"j-1"}"#)
+                .unwrap()
+        });
+        let mut request = crate::database::CreateMaterializedViewRequest::new(
+            "mv1",
+            "SELECT id, embed(body) AS vec FROM docs",
+        );
+        request.auto_refresh = true;
+        let job_id = conn.create_materialized_view(request).await.unwrap();
+        assert_eq!(job_id.as_deref(), Some("j-1"));
+
+        // refresh_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/refresh");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["num_workers"], 2);
+            assert!(body.get("src_version").is_none());
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-2"}"#)
+                .unwrap()
+        });
+        let mut request = crate::database::RefreshMaterializedViewRequest::new("mv1");
+        request.num_workers = Some(2);
+        let job_id = conn.refresh_materialized_view(request).await.unwrap();
+        assert_eq!(job_id, "j-2");
+
+        // alter_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/alter");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["auto_refresh"], false);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.alter_materialized_view("mv1", false).await.unwrap();
+
+        // drop_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/drop");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.drop_materialized_view("mv1").await.unwrap();
+
+        // list_materialized_views
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/materialized_view/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"views":[{"name":"mv1","source_table":"docs","projection":["id"],"udf_columns":["vec=embed(body)"],"filter":null,"auto_refresh":true}]}"#,
+                )
+                .unwrap()
+        });
+        let views = conn.list_materialized_views().await.unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].source_table, "docs");
+        assert!(views[0].auto_refresh);
+
+        // list_jobs
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/job/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"jobs":[{"table":"docs","job_id":"j-3","job_type":"udf_virtual_column_backfill","state":"running","column":"vec","age_seconds":4,"command":null,"units_done":1,"units_total":2,"committed":false,"rows_skipped":0,"error":null}]}"#,
+                )
+                .unwrap()
+        });
+        let jobs = conn.list_jobs().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].state, "running");
+        assert_eq!(jobs[0].units_total, Some(2));
     }
 
     #[tokio::test]
