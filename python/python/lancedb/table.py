@@ -702,6 +702,22 @@ def _normalize_progress(progress):
     return progress, False
 
 
+
+def _computed_groups(computed):
+    """Group {column: (sql_type, expression)} by expression, preserving
+    declaration order (struct-returning functions need their columns
+    adjacent so schema order matches field order)."""
+    groups = []
+    for name, (sql_type, expression) in computed.items():
+        for expr, cols in groups:
+            if expr == expression:
+                cols.append((name, sql_type))
+                break
+        else:
+            groups.append((expression, [(name, sql_type)]))
+    return groups
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -3815,9 +3831,20 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+        self,
+        transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema | None = None,
+        *,
+        computed: Optional[Dict[str, tuple]] = None,
+    ) -> Optional[AddColumnsResult]:
+        result = None
+        if transforms is not None:
+            result = LOOP.run(self._table.add_columns(transforms))
+        if computed:
+            # computed: {column: (sql_type, expression)} -- declares the
+            # binding only; the server fills the values (server-backed).
+            result_unused = LOOP.run(self._table.add_columns(computed=computed))
+            del result_unused
+        return result
 
     def refresh_column(
         self,
@@ -5617,8 +5644,11 @@ class AsyncTable:
         )
 
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ) -> AddColumnsResult:
+        self,
+        transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema | None = None,
+        *,
+        computed: Optional[Dict[str, tuple]] = None,
+    ) -> Optional[AddColumnsResult]:
         """
         Add new columns with defined values.
 
@@ -5637,6 +5667,7 @@ class AsyncTable:
             version: the new version number of the table after adding columns.
 
         """
+        result = None
         if isinstance(transforms, pa.Field):
             transforms = [transforms]
         if isinstance(transforms, list) and all(
@@ -5644,9 +5675,15 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if isinstance(transforms, pa.Schema):
-            return await self._inner.add_columns_with_schema(transforms)
-        else:
-            return await self._inner.add_columns(list(transforms.items()))
+            result = await self._inner.add_columns_with_schema(transforms)
+        elif transforms is not None:
+            result = await self._inner.add_columns(list(transforms.items()))
+        if computed:
+            # computed: {column: (sql_type, expression)} -- declares the
+            # binding only; the server fills the values (server-backed).
+            for expression, cols in _computed_groups(computed):
+                await self._inner.add_computed_columns(cols, expression)
+        return result
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
