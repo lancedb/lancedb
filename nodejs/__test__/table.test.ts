@@ -89,8 +89,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ id: 1 }]);
       expect(await table.countRows()).toBe(1);
 
+      expect(table.currentBranch()).toBeNull();
+
       // fork an isolated, writable branch from main
       const branch = await (await table.branches()).create("exp");
+      expect(branch.currentBranch()).toBe("exp");
       expect(await branch.countRows()).toBe(1);
       await branch.add([{ id: 2 }]);
       expect(await branch.countRows()).toBe(2);
@@ -109,6 +112,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       // checkout returns a handle scoped to the branch's latest
       const checkedOut = await (await table.branches()).checkout("exp");
+      expect(checkedOut.currentBranch()).toBe("exp");
       expect(await checkedOut.countRows()).toBe(2);
 
       // delete removes it

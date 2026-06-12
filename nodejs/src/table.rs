@@ -487,6 +487,12 @@ impl Table {
         })
     }
 
+    /// The branch this handle is scoped to, or `null` for the main branch.
+    #[napi]
+    pub fn current_branch(&self) -> napi::Result<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
+    }
+
     #[napi(catch_unwind)]
     pub async fn optimize(
         &self,

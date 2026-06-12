@@ -985,45 +985,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_table_branch_and_version() {
-        // Remote supports version time-travel but not branches. A version-only
-        // open (or one on the default "main" branch) must succeed; a non-main
-        // branch must be rejected, with or without a version.
         let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/table/t/describe/");
-            http::Response::builder()
-                .status(200)
-                .body(
-                    r#"{"table": "t", "version": 2, "schema": {"fields": [
-                        {"name": "a", "type": { "type": "int32" }, "nullable": false}
-                    ]}}"#,
-                )
-                .unwrap()
+            let body = if request.url().path() == "/v1/table/t/branches/list/" {
+                // checkout_branch validates the branch exists via list_branches.
+                r#"{"branches":{"exp":{"parentVersion":1,"createAt":1,"manifestSize":1}}}"#
+            } else {
+                // describe (table open + version/branch validation)
+                r#"{"table": "t", "version": 2, "schema": {"fields": [
+                    {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                ]}}"#
+            };
+            http::Response::builder().status(200).body(body).unwrap()
         });
 
-        // version-only: allowed (open + checkout(version) both round-trip)
-        conn.open_table("t").version(2).execute().await.unwrap();
-
-        // "main" is the default branch, so it counts as no branch
-        conn.open_table("t")
+        // version-only (and "main" + version) time-travel the main chain
+        let v2 = conn.open_table("t").version(2).execute().await.unwrap();
+        assert_eq!(v2.current_branch(), None);
+        let main_v2 = conn
+            .open_table("t")
             .branch("main")
             .version(2)
             .execute()
             .await
             .unwrap();
+        assert_eq!(main_v2.current_branch(), None);
 
-        // a non-main branch is rejected, with or without a version
-        assert!(matches!(
-            conn.open_table("t").branch("exp").execute().await,
-            Err(Error::NotSupported { .. })
-        ));
-        assert!(matches!(
-            conn.open_table("t")
-                .branch("exp")
-                .version(2)
-                .execute()
-                .await,
-            Err(Error::NotSupported { .. })
-        ));
+        // a non-main branch opens a handle scoped to that branch
+        let exp = conn.open_table("t").branch("exp").execute().await.unwrap();
+        assert_eq!(exp.current_branch(), Some("exp".to_string()));
+        let exp_v2 = conn
+            .open_table("t")
+            .branch("exp")
+            .version(2)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(exp_v2.current_branch(), Some("exp".to_string()));
     }
 
     #[tokio::test]

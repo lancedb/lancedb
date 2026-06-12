@@ -295,6 +295,23 @@ await table.createIndex("my_float_col");
 
 ***
 
+### currentBranch()
+
+```ts
+abstract currentBranch(): null | string
+```
+
+The branch this table handle is scoped to, or `null` for the main branch.
+
+A handle returned by [Branches.create](Branches.md#create) or [Branches.checkout](Branches.md#checkout)
+reports the branch it targets; a handle opened normally reports `null`.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
 ### delete()
 
 ```ts

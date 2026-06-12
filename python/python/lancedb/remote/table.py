@@ -56,7 +56,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
-from ..table import AsyncTable, BlobMode, IndexStatistics, Query, Table, Tags
+from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
 from ..types import BaseTokenizerType
 
 
@@ -75,6 +75,9 @@ class RemoteTable(Table):
         self._connection_state = connection_state
         self._namespace_path = list(namespace_path or [])
         self._checkout_version: Optional[int] = None
+        # The branch this handle is scoped to (None == main). Persisted so a
+        # fork/pickle reopen restores the branch instead of reverting to main.
+        self._branch: Optional[str] = None
         self._pid = os.getpid()
 
     def _serialized_connection_state(self) -> str:
@@ -109,9 +112,14 @@ class RemoteTable(Table):
         from lancedb import deserialize_conn
 
         db = deserialize_conn(self._serialized_connection_state(), for_worker=True)
-        table = db.open_table(self._name, namespace_path=self._namespace_path)
-        if self._checkout_version is not None:
-            table.checkout(self._checkout_version)
+        # Reopen on the same branch and pinned version (branch=None / version=None
+        # reproduce the plain main-latest open).
+        table = db.open_table(
+            self._name,
+            namespace_path=self._namespace_path,
+            branch=self._branch,
+            version=self._checkout_version,
+        )
 
         self._table_handle = table._table
         self.db_name = table.db_name
@@ -124,6 +132,7 @@ class RemoteTable(Table):
             "name": self.name,
             "namespace_path": self._namespace_path,
             "checkout_version": self._checkout_version,
+            "branch": self._branch,
         }
 
     def __setstate__(self, state: dict) -> None:
@@ -133,6 +142,7 @@ class RemoteTable(Table):
         self._connection_state = state["connection_state"]
         self._namespace_path = state["namespace_path"]
         self._checkout_version = state["checkout_version"]
+        self._branch = state.get("branch")
         self._pid = None
 
     @property
@@ -159,6 +169,34 @@ class RemoteTable(Table):
     @property
     def tags(self) -> Tags:
         return Tags(self._table)
+
+    @property
+    def branches(self) -> Branches:
+        """Branch management for the table.
+
+        ``create``/``checkout`` return a new table handle scoped to the branch;
+        writes on it do not affect ``main``.
+        """
+        return Branches(self)
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        return self._table.current_branch()
+
+    def _wrap_branch_handle(
+        self, async_table: AsyncTable, version: Optional[int] = None
+    ) -> "RemoteTable":
+        # A branch handle stays a RemoteTable with the same connection context.
+        # Record the branch and version pin so a fork/pickle reopen restores both.
+        handle = RemoteTable(
+            async_table,
+            self.db_name,
+            connection_state=self._connection_state,
+            namespace_path=self._namespace_path,
+        )
+        handle._branch = async_table.current_branch()
+        handle._checkout_version = version
+        return handle
 
     @cached_property
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:

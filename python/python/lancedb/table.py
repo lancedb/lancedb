@@ -796,6 +796,10 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        raise NotImplementedError
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -2222,6 +2226,21 @@ class LanceTable(Table):
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
+
+    def _wrap_branch_handle(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "LanceTable":
+        # version is unused locally: the pin already lives on async_table and a
+        # local handle is not reopened via a serialized connection.
+        return LanceTable(
+            self._conn,
+            async_table.name,
+            namespace_path=self._namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._pushdown_operations,
+            location=self._location,
+            _async=async_table,
+        )
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -5934,7 +5953,7 @@ class Branches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
-    ) -> "LanceTable":
+    ) -> "Table":
         """Create a branch and return a handle scoped to it.
 
         Parameters
@@ -5951,7 +5970,7 @@ class Branches:
         )
         return self._wrap(async_table)
 
-    def checkout(self, name: str, version: Optional[int] = None) -> "LanceTable":
+    def checkout(self, name: str, version: Optional[int] = None) -> "Table":
         """Check out an existing branch and return a handle scoped to it.
 
         Parameters
@@ -5964,25 +5983,19 @@ class Branches:
             the branch's latest and stays writable.
         """
         async_table = LOOP.run(self._table.branches.checkout(name, version))
-        return self._wrap(async_table)
+        return self._wrap(async_table, version)
 
     def delete(self, name: str) -> None:
         """Delete a branch."""
         LOOP.run(self._table.branches.delete(name))
 
-    def _wrap(self, async_table: "AsyncTable") -> "LanceTable":
-        # Reuse the parent's connection + namespace context; from_inner would drop
-        # it and break identity/query routing for namespace-backed tables.
-        parent = self._parent
-        return LanceTable(
-            parent._conn,
-            async_table.name,
-            namespace_path=parent._namespace_path,
-            namespace_client=parent._namespace_client,
-            pushdown_operations=parent._pushdown_operations,
-            location=parent._location,
-            _async=async_table,
-        )
+    def _wrap(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "Table":
+        # Delegate to the parent so the branch handle keeps its concrete type
+        # (LanceTable / RemoteTable) and connection context; `version` is the
+        # explicit pin so a remote handle can restore branch+version on reopen.
+        return self._parent._wrap_branch_handle(async_table, version)
 
 
 class AsyncTags:
