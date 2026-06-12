@@ -1060,6 +1060,20 @@ impl Table {
         })
     }
 
+    pub fn add_computed_columns(
+        self_: PyRef<'_, Self>,
+        columns: Vec<(String, String)>,
+        expression: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .add_computed_columns(&columns, &expression)
+                .await
+                .infer_error()
+        })
+    }
+
     #[pyo3(signature = (columns, where_clause=None, num_workers=None, max_workers=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,

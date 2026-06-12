@@ -620,6 +620,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns bound to a registered function: each
+    /// `(name, sql_type)` is added all-null with the expression stored
+    /// as its binding; no compute happens here (the server's lazy
+    /// detector or refresh_column fills them). Several columns map a
+    /// struct-returning function's fields positionally. Server-backed
+    /// feature; the default returns NotSupported.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+        _expression: &str,
+    ) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported by this table".into(),
+        })
+    }
     /// Trigger recompute of computed columns. The expression is
     /// resolved server-side from each column's stored binding; columns
     /// bound to the same struct-returning function refresh together.
@@ -1475,6 +1490,17 @@ impl Table {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.inner.add_columns(transforms, read_columns).await
+    }
+
+    /// Declare computed columns bound to a registered function
+    /// (`(name, sql_type)` pairs + a `f(args)` expression). No compute
+    /// happens here. Server-backed feature.
+    pub async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        expression: &str,
+    ) -> Result<()> {
+        self.inner.add_computed_columns(columns, expression).await
     }
 
     /// Trigger recompute of computed columns (REFRESH COLUMN). The

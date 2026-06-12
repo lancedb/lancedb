@@ -2309,6 +2309,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "optimize is not supported on LanceDB cloud.".into(),
         })
     }
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        expression: &str,
+    ) -> Result<()> {
+        let new_columns: Vec<serde_json::Value> = columns
+            .iter()
+            .map(|(name, data_type)| {
+                serde_json::json!({
+                    "name": name,
+                    "computed": { "data_type": data_type, "expression": expression },
+                })
+            })
+            .collect();
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
+            .json(&serde_json::json!({ "new_columns": new_columns }));
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
+
     async fn refresh_column(
         &self,
         columns: &[String],
