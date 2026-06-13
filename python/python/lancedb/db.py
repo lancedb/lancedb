@@ -569,18 +569,26 @@ class DBConnection(EnforceOverrides):
 
     def create_function(
         self,
-        name: str,
-        language: str,
-        return_type: str,
-        body: str,
+        name,
+        language: str = "python",
+        return_type: Optional[str] = None,
+        body: Optional[str] = None,
         options: Optional[Dict[str, str]] = None,
+        *,
+        replace: bool = False,
     ):
         """Register a UDF (CREATE FUNCTION).
 
+        Pass a ``@udf`` / ``@table_udf``-decorated function (preferred):
+
+            db.create_function(embed)
+
+        or the explicit fields:
+
         Parameters
         ----------
-        name: str
-            Function name.
+        name: str or Udf
+            A decorated UDF object, or the function name.
         language: str
             Implementation language (currently "python").
         return_type: str
@@ -592,7 +600,25 @@ class DBConnection(EnforceOverrides):
         options: dict, optional
             input_columns, pip, num_gpus, batch_size, timeout,
             error_policy, docker_image, body_format, ...
+        replace: bool
+            Drop an existing function of the same name first.
         """
+        from .udf import Udf
+
+        if isinstance(name, Udf):
+            req = name.create_request()
+            name, language, return_type, body, options = (
+                req["name"],
+                req["language"],
+                req["return_type"],
+                req["body"],
+                req["options"],
+            )
+        if replace:
+            try:
+                self.drop_function(name)
+            except Exception:
+                pass
         LOOP.run(self._conn.create_function(name, language, return_type, body, options))
 
     def list_functions(self):
@@ -623,6 +649,45 @@ class DBConnection(EnforceOverrides):
                 name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
             )
         )
+
+    def create_view(
+        self,
+        name: str,
+        source,
+        select,
+        *,
+        where: Optional[str] = None,
+        auto_refresh: bool = False,
+        replace: bool = False,
+    ):
+        """Create a materialized view from a source and select items, and
+        return a `View` handle.
+
+        `source` is a table name or table; `select` items are column names,
+        expression strings ("embed(body)"), (alias, expression) tuples, or
+        ``@udf`` / ``@table_udf`` objects. Sugar over create_materialized_view:
+        it assembles the SELECT, which the server parses (one parser, shared
+        with SQL).
+        """
+        from .udf import build_view_query, View
+
+        query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            try:
+                self.drop_materialized_view(name)
+            except Exception:
+                pass
+        self.create_materialized_view(name, query, auto_refresh=auto_refresh)
+        return View(self, name)
+
+    def job(self, job_id: str):
+        """A `JobHandle` for polling/cancelling an inflight job by id (e.g.
+        ``db.job(tbl.refresh_column("c")).wait()``)."""
+        from .udf import JobHandle
+
+        return JobHandle(self, job_id)
 
     def refresh_materialized_view(
         self,
