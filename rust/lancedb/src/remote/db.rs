@@ -139,6 +139,11 @@ struct RemoteListJobsResponse {
     jobs: Vec<RemoteJobEntry>,
 }
 
+#[derive(serde::Deserialize)]
+struct RemoteCancelJobResponse {
+    cancelled: bool,
+}
+
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
 struct RemoteCloneTableRequest {
@@ -888,6 +893,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 error: j.error,
             })
             .collect())
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<bool> {
+        let req = self.client.post(&format!("/v1/job/{}/cancel", job_id));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteCancelJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.cancelled)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -1977,6 +1990,27 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].state, "running");
         assert_eq!(jobs[0].units_total, Some(2));
+
+        // cancel_job
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/job/j-3/cancel");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"cancelled":true}"#)
+                .unwrap()
+        });
+        assert!(conn.cancel_job("j-3").await.unwrap());
+
+        // cancel_job: no such inflight job -> false, not an error
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/job/gone/cancel");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"cancelled":false}"#)
+                .unwrap()
+        });
+        assert!(!conn.cancel_job("gone").await.unwrap());
     }
 
     #[tokio::test]

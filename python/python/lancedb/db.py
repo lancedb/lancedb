@@ -658,6 +658,15 @@ class DBConnection(EnforceOverrides):
         """List inflight server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())
 
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel an inflight server-side job by id (CANCEL JOB).
+
+        Returns True if a matching inflight job was found and flagged for
+        cancellation, False if none was inflight (already finished or
+        unknown id) -- cancellation is best-effort.
+        """
+        return LOOP.run(self._conn.cancel_job(job_id))
+
 class LanceDBConnection(DBConnection):
     """
     A connection to a LanceDB database.
@@ -1950,6 +1959,14 @@ class AsyncConnection(object):
     async def list_jobs(self):
         """List inflight server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an inflight server-side job by id (CANCEL JOB).
+
+        Returns True if a matching inflight job was found and flagged for
+        cancellation, False otherwise (best-effort).
+        """
+        return await self._inner.cancel_job(job_id)
 
     async def rename_table(
         self,

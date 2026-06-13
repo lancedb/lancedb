@@ -547,6 +547,12 @@ impl Connection {
         self.internal.list_jobs().await
     }
 
+    /// Cancel an inflight server-side job by id. Returns true if a
+    /// matching inflight job was flagged for cancellation.
+    pub async fn cancel_job(&self, job_id: &str) -> Result<bool> {
+        self.internal.cancel_job(job_id).await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
