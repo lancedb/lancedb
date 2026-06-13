@@ -29,6 +29,7 @@ remote connection.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import functools
@@ -394,6 +395,17 @@ def build_view_query(source, select) -> str:
     return f"SELECT {', '.join(items)} FROM {src}"
 
 
+def _job_id_matches(handle_id: str, listed_id: str) -> bool:
+    # The refresh/backfill endpoints return the submission id (a uuid), but
+    # the agent names the manifest job "<table>-<type>-<first 8 of the
+    # submission id>" -- which is what list_jobs and cancel report. Match the
+    # canonical id directly, or by that submission prefix.
+    if listed_id == handle_id:
+        return True
+    prefix = handle_id[:8]
+    return len(prefix) >= 4 and prefix in listed_id
+
+
 class View:
     """A reference to a materialized view (name + connection). View
     operations are server-backed connection calls bound to the name."""
@@ -440,14 +452,7 @@ class JobHandle:
         self._seen = False
 
     def _matches(self, listed_id: str) -> bool:
-        # The refresh/backfill endpoints return the submission id (a uuid),
-        # but the agent names the manifest job "<table>-<type>-<first 8 of
-        # the submission id>" -- which is what list_jobs and cancel report.
-        # Match the canonical id directly, or by that submission prefix.
-        if listed_id == self.id:
-            return True
-        prefix = self.id[:8]
-        return len(prefix) >= 4 and prefix in listed_id
+        return _job_id_matches(self.id, listed_id)
 
     def _job(self):
         for j in self.conn.list_jobs():
@@ -493,3 +498,80 @@ class JobHandle:
         # via the submission prefix; fall back to the raw id.
         job = self._job()
         self.conn.cancel_job(job.job_id if job is not None else self.id)
+
+
+class AsyncView:
+    """Async reference to a materialized view (name + async connection)."""
+
+    def __init__(self, conn, name: str):
+        self.conn = conn
+        self.name = name
+
+    async def refresh(self, full: bool = False):
+        if full:
+            raise NotImplementedError(
+                "full=True refresh is not supported yet (engine gap: the "
+                "refresh event has no full-rebuild flag)"
+            )
+        return await self.conn.refresh_materialized_view(self.name)
+
+    async def explain_refresh(self, full: bool = False):
+        return await self.conn.explain_refresh_materialized_view(self.name, full=full)
+
+    async def alter(self, auto_refresh: bool) -> None:
+        await self.conn.alter_materialized_view(self.name, auto_refresh=auto_refresh)
+
+    async def drop(self) -> None:
+        await self.conn.drop_materialized_view(self.name)
+
+
+class AsyncJobHandle:
+    """Async reference to an inflight server-side job, with polling helpers."""
+
+    GRACE_SECONDS = 20.0
+
+    def __init__(self, conn, job_id: str):
+        self.conn = conn
+        self.id = job_id
+        self._created = time.monotonic()
+        self._seen = False
+
+    async def _job(self):
+        for j in await self.conn.list_jobs():
+            if _job_id_matches(self.id, j.job_id):
+                return j
+        return None
+
+    async def status(self) -> str:
+        job = await self._job()
+        if job is not None:
+            self._seen = True
+            return job.state
+        if not self._seen and time.monotonic() - self._created < self.GRACE_SECONDS:
+            return "pending"
+        return "finished"
+
+    async def progress(self) -> "tuple[int, int] | None":
+        job = await self._job()
+        if job is not None and job.units_total is not None:
+            return job.units_done or 0, job.units_total
+        return None
+
+    async def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = await self.status()
+            if state in ("finished", "stale"):
+                return state
+            if state == "pending":
+                await asyncio.sleep(min(poll, 0.5))
+                continue
+            job = await self._job()
+            if job is not None and job.committed:
+                return "finished"
+            await asyncio.sleep(poll)
+        raise TimeoutError(f"job {self.id} still {await self.status()} after {timeout}s")
+
+    async def cancel(self) -> None:
+        job = await self._job()
+        await self.conn.cancel_job(job.job_id if job is not None else self.id)
