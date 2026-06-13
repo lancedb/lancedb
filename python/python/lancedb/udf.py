@@ -439,9 +439,19 @@ class JobHandle:
         self._created = time.monotonic()
         self._seen = False
 
+    def _matches(self, listed_id: str) -> bool:
+        # The refresh/backfill endpoints return the submission id (a uuid),
+        # but the agent names the manifest job "<table>-<type>-<first 8 of
+        # the submission id>" -- which is what list_jobs and cancel report.
+        # Match the canonical id directly, or by that submission prefix.
+        if listed_id == self.id:
+            return True
+        prefix = self.id[:8]
+        return len(prefix) >= 4 and prefix in listed_id
+
     def _job(self):
         for j in self.conn.list_jobs():
-            if j.job_id == self.id:
+            if self._matches(j.job_id):
                 return j
         return None
 
@@ -479,4 +489,7 @@ class JobHandle:
         raise TimeoutError(f"job {self.id} still {self.status()} after {timeout}s")
 
     def cancel(self) -> None:
-        self.conn.cancel_job(self.id)
+        # Cancel by the canonical manifest id (what cancel matches), found
+        # via the submission prefix; fall back to the raw id.
+        job = self._job()
+        self.conn.cancel_job(job.job_id if job is not None else self.id)
