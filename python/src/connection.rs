@@ -510,6 +510,13 @@ impl Connection {
         })
     }
 
+    pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.cancel_job(&job_id).await.infer_error()
+        })
+    }
+
     #[pyo3(signature = (cur_name, new_name, cur_namespace_path=None, new_namespace_path=None))]
     pub fn rename_table(
         self_: PyRef<'_, Self>,

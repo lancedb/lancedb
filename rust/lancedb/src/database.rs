@@ -418,6 +418,12 @@ pub trait Database:
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         not_supported("list_jobs")
     }
+    /// Cancel an inflight server-side job by id. Returns true if a
+    /// matching inflight job was found and flagged for cancellation,
+    /// false if none was inflight (best-effort, like SQL `CANCEL JOB`).
+    async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
+        not_supported("cancel_job")
+    }
 
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
