@@ -5546,6 +5546,43 @@ class AsyncTable:
                 await self._inner.add_computed_columns(cols, expression)
         return result
 
+    async def add_computed_column(
+        self,
+        columns,
+        fn,
+        args: Optional[List[str]] = None,
+        types=None,
+    ) -> None:
+        """Declare computed column(s) bound to a UDF (async). See the sync
+        `Table.add_computed_column`. Server-backed (Enterprise / Cloud)."""
+        from .udf import Udf, struct_field_types
+
+        multi = isinstance(columns, (tuple, list))
+        if isinstance(fn, Udf):
+            expr = fn.expression(*(args or []))
+            if types is None:
+                if multi:
+                    if not fn.returns.upper().startswith("STRUCT"):
+                        raise ValueError(
+                            "several columns need a STRUCT-returning function"
+                        )
+                    types = struct_field_types(fn.returns)
+                else:
+                    types = fn.returns
+        else:
+            if types is None:
+                raise ValueError("pass types= when fn is a name string")
+            expr = f"{fn}({', '.join(args or [])})"
+        if multi:
+            if len(types) != len(columns):
+                raise ValueError(
+                    f"{len(columns)} columns but {len(types)} output types"
+                )
+            computed = {c: (t, expr) for c, t in zip(columns, types)}
+        else:
+            computed = {columns: (types, expr)}
+        await self.add_columns(computed=computed)
+
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
     ) -> AlterColumnsResult:

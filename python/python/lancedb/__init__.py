@@ -17,7 +17,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .udf import udf, table_udf, Udf, JobHandle, View
+from .udf import udf, table_udf, Udf, JobHandle, View, AsyncJobHandle, AsyncView
 from .schema import vector
 from .table import AsyncTable, Table
 from ._lancedb import Session
@@ -454,6 +454,8 @@ __all__ = [
     "Udf",
     "JobHandle",
     "View",
+    "AsyncJobHandle",
+    "AsyncView",
     "connect",
     "connect_async",
     "connect_namespace",

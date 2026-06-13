@@ -1979,13 +1979,33 @@ class AsyncConnection(object):
 
     async def create_function(
         self,
-        name: str,
-        language: str,
-        return_type: str,
-        body: str,
+        name,
+        language: str = "python",
+        return_type: Optional[str] = None,
+        body: Optional[str] = None,
         options: Optional[Dict[str, str]] = None,
+        *,
+        replace: bool = False,
     ):
-        """Register a UDF (CREATE FUNCTION)."""
+        """Register a UDF (CREATE FUNCTION). Accepts a ``@udf``/``@table_udf``
+        object (preferred) or the explicit (name, language, return_type, body,
+        options)."""
+        from .udf import Udf
+
+        if isinstance(name, Udf):
+            req = name.create_request()
+            name, language, return_type, body, options = (
+                req["name"],
+                req["language"],
+                req["return_type"],
+                req["body"],
+                req["options"],
+            )
+        if replace:
+            try:
+                await self.drop_function(name)
+            except Exception:
+                pass
         await self._inner.create_function(name, language, return_type, body, options)
 
     async def list_functions(self):
@@ -2009,6 +2029,37 @@ class AsyncConnection(object):
         return await self._inner.create_materialized_view(
             name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
         )
+
+    async def create_view(
+        self,
+        name: str,
+        source,
+        select,
+        *,
+        where: Optional[str] = None,
+        auto_refresh: bool = False,
+        replace: bool = False,
+    ):
+        """Create a materialized view from a source + select items; returns
+        an `AsyncView`. See the sync `create_view` for the select grammar."""
+        from .udf import build_view_query, AsyncView
+
+        query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            try:
+                await self.drop_materialized_view(name)
+            except Exception:
+                pass
+        await self.create_materialized_view(name, query, auto_refresh=auto_refresh)
+        return AsyncView(self, name)
+
+    def job(self, job_id: str):
+        """An `AsyncJobHandle` for polling/cancelling an inflight job by id."""
+        from .udf import AsyncJobHandle
+
+        return AsyncJobHandle(self, job_id)
 
     async def refresh_materialized_view(
         self,
