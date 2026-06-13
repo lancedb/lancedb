@@ -24,7 +24,7 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, Database,
-    DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo, OpenTableRequest,
+    DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest,
     ReadConsistency, RefreshMaterializedViewRequest, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
@@ -523,6 +523,19 @@ impl Connection {
         request: RefreshMaterializedViewRequest,
     ) -> Result<String> {
         self.internal.refresh_materialized_view(request).await
+    }
+
+    /// Plan a materialized-view refresh without submitting work
+    /// (EXPLAIN REFRESH).
+    pub async fn explain_refresh_materialized_view(
+        &self,
+        name: &str,
+        full: bool,
+        src_version: Option<u64>,
+    ) -> Result<MvRefreshPlan> {
+        self.internal
+            .explain_refresh_materialized_view(name, full, src_version)
+            .await
     }
 
     /// Update a materialized view's options (ALTER MATERIALIZED VIEW).

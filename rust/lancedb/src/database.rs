@@ -317,6 +317,22 @@ pub struct JobInfo {
     pub error: Option<String>,
 }
 
+/// The plan a `REFRESH MATERIALIZED VIEW` would execute, as returned by
+/// `explain_refresh_materialized_view` (EXPLAIN REFRESH). No work is run.
+#[derive(Debug, Clone)]
+pub struct MvRefreshPlan {
+    pub table_name: String,
+    /// Whether a refresh would do anything (rebuild or non-empty units).
+    pub has_work: bool,
+    pub source_version: u64,
+    pub last_refreshed_version: Option<u64>,
+    pub full_refresh: bool,
+    /// Source changed non-append-only since the last refresh -> rebuild.
+    pub rebuild: bool,
+    /// Number of row-range work units the refresh would process.
+    pub units_total: u64,
+}
+
 fn not_supported<T>(what: &str) -> Result<T> {
     Err(Error::NotSupported {
         message: format!("{} is not supported by this database", what),
@@ -401,6 +417,17 @@ pub trait Database:
         _request: RefreshMaterializedViewRequest,
     ) -> Result<String> {
         not_supported("refresh_materialized_view")
+    }
+    /// Plan a materialized-view refresh without submitting work
+    /// (EXPLAIN REFRESH). `full` plans a full rebuild (incremental
+    /// planning requires stable row IDs on the source).
+    async fn explain_refresh_materialized_view(
+        &self,
+        _name: &str,
+        _full: bool,
+        _src_version: Option<u64>,
+    ) -> Result<MvRefreshPlan> {
+        not_supported("explain_refresh_materialized_view")
     }
     /// Update a materialized view's options (ALTER MATERIALIZED VIEW).
     async fn alter_materialized_view(&self, _name: &str, _auto_refresh: bool) -> Result<()> {

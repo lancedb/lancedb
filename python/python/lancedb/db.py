@@ -642,6 +642,23 @@ class DBConnection(EnforceOverrides):
             )
         )
 
+    def explain_refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+    ):
+        """Plan a refresh without running it (EXPLAIN REFRESH). Returns a
+        plan with .has_work / .source_version / .last_refreshed_version /
+        .full_refresh / .rebuild / .units_total. `full=True` plans a full
+        rebuild (incremental planning needs stable row IDs on the source)."""
+        return LOOP.run(
+            self._conn.explain_refresh_materialized_view(
+                name, full=full, src_version=src_version
+            )
+        )
+
     def alter_materialized_view(self, name: str, *, auto_refresh: bool):
         """Update a materialized view's options (ALTER MATERIALIZED VIEW)."""
         LOOP.run(self._conn.alter_materialized_view(name, auto_refresh=auto_refresh))
@@ -1942,6 +1959,18 @@ class AsyncConnection(object):
             src_version=src_version,
             num_workers=num_workers,
             max_workers=max_workers,
+        )
+
+    async def explain_refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+    ):
+        """Plan a refresh without running it (EXPLAIN REFRESH)."""
+        return await self._inner.explain_refresh_materialized_view(
+            name, full=full, src_version=src_version
         )
 
     async def alter_materialized_view(self, name: str, *, auto_refresh: bool):

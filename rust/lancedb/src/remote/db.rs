@@ -21,7 +21,8 @@ use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo,
-    OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest, TableNamesRequest,
+    MvRefreshPlan, OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -84,6 +85,25 @@ struct RemoteRefreshMaterializedViewRequest {
 #[derive(serde::Deserialize)]
 struct RemoteRefreshMaterializedViewResponse {
     job_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteExplainRefreshRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src_version: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteExplainRefreshResponse {
+    table_name: String,
+    has_work: bool,
+    source_version: u64,
+    last_refreshed_version: Option<u64>,
+    full_refresh: bool,
+    rebuild: bool,
+    units_total: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -830,6 +850,34 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let body: RemoteRefreshMaterializedViewResponse =
             rsp.json().await.err_to_http(request_id)?;
         Ok(body.job_id)
+    }
+
+    async fn explain_refresh_materialized_view(
+        &self,
+        name: &str,
+        full: bool,
+        src_version: Option<u64>,
+    ) -> Result<MvRefreshPlan> {
+        let body = RemoteExplainRefreshRequest {
+            full: Some(full),
+            src_version,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/explain_refresh", name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteExplainRefreshResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(MvRefreshPlan {
+            table_name: body.table_name,
+            has_work: body.has_work,
+            source_version: body.source_version,
+            last_refreshed_version: body.last_refreshed_version,
+            full_refresh: body.full_refresh,
+            rebuild: body.rebuild,
+            units_total: body.units_total,
+        })
     }
 
     async fn alter_materialized_view(&self, name: &str, auto_refresh: bool) -> Result<()> {

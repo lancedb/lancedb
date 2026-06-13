@@ -70,6 +70,19 @@ pub struct JobInfo {
     pub error: Option<String>,
 }
 
+/// The plan a REFRESH MATERIALIZED VIEW would execute (EXPLAIN REFRESH).
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct MvRefreshPlan {
+    pub table_name: String,
+    pub has_work: bool,
+    pub source_version: u64,
+    pub last_refreshed_version: Option<u64>,
+    pub full_refresh: bool,
+    pub rebuild: bool,
+    pub units_total: u64,
+}
+
 #[pyclass]
 pub struct Connection {
     inner: Option<LanceConnection>,
@@ -441,6 +454,31 @@ impl Connection {
                 })
                 .await
                 .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, full=false, src_version=None))]
+    pub fn explain_refresh_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        full: bool,
+        src_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let p = inner
+                .explain_refresh_materialized_view(&name, full, src_version)
+                .await
+                .infer_error()?;
+            Ok(MvRefreshPlan {
+                table_name: p.table_name,
+                has_work: p.has_work,
+                source_version: p.source_version,
+                last_refreshed_version: p.last_refreshed_version,
+                full_refresh: p.full_refresh,
+                rebuild: p.rebuild,
+                units_total: p.units_total,
+            })
         })
     }
 
