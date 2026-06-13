@@ -823,6 +823,47 @@ class Table(ABC):
         """The number of rows in this Table"""
         return self.count_rows(None)
 
+    def add_computed_column(
+        self,
+        columns,
+        fn,
+        args: Optional[List[str]] = None,
+        types=None,
+    ) -> None:
+        """Declare computed column(s) bound to a UDF -- no compute happens
+        here (the agent fills them lazily, or refresh_column() triggers a
+        run). Sugar over add_columns(computed=): column types come from the
+        UDF's declared return type (a STRUCT return maps its fields to the
+        columns positionally); pass `types` when `fn` is a bare name string.
+        Register the function first. Server-backed (Enterprise / Cloud)."""
+        from .udf import Udf, struct_field_types
+
+        multi = isinstance(columns, (tuple, list))
+        if isinstance(fn, Udf):
+            expr = fn.expression(*(args or []))
+            if types is None:
+                if multi:
+                    if not fn.returns.upper().startswith("STRUCT"):
+                        raise ValueError(
+                            "several columns need a STRUCT-returning function"
+                        )
+                    types = struct_field_types(fn.returns)
+                else:
+                    types = fn.returns
+        else:
+            if types is None:
+                raise ValueError("pass types= when fn is a name string")
+            expr = f"{fn}({', '.join(args or [])})"
+        if multi:
+            if len(types) != len(columns):
+                raise ValueError(
+                    f"{len(columns)} columns but {len(types)} output types"
+                )
+            computed = {c: (t, expr) for c, t in zip(columns, types)}
+        else:
+            computed = {columns: (types, expr)}
+        self.add_columns(computed=computed)
+
     @property
     @abstractmethod
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
