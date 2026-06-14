@@ -16,11 +16,15 @@ Register and use them through the existing connection/table API:
     def embed(text: str) -> list[float]:
         return model.encode(text).tolist()
 
-    db.create_function(embed)                 # CREATE FUNCTION
+    db.create_function(embed)                 # CREATE FUNCTION (once)
     tbl = db.open_table("docs")
-    tbl.add_computed_column("vec", embed)     # declare (no compute yet)
+    tbl.add_columns(computed={"vec": embed("text")})  # bind embed(text) -> vec
     db.job(tbl.refresh_column("vec")).wait()  # materialize
     view = db.create_view("chunks", tbl, ["id", chunk_fn])
+
+`embed("text")` applies the registered function to the `text` column and yields
+the expression `embed(text)`; the function itself stays decoupled from any
+column, so the same `embed` works on any column or table.
 
 These operations are server-backed (LanceDB Enterprise / Cloud); the
 decorator itself works locally (define + call), only registration needs a
@@ -140,6 +144,68 @@ def param_types(fn) -> "list[tuple[str, str]]":
     return out
 
 
+# -- column expressions -------------------------------------------------
+
+
+class ColumnExpr(str):
+    """A computed-column expression produced by applying a registered
+    function to column names, e.g. ``embed("data") -> "embed(data)"``.
+
+    It IS the expression string everywhere a string is expected (views, SQL,
+    logging), and additionally carries the function's declared return type so
+    ``add_columns(computed=...)`` can declare the column without a hand-written
+    type. ``field_types`` holds the per-field SQL types of a STRUCT return, for
+    fanning one expression out to several columns.
+    """
+
+    data_type: "str | None"
+    field_types: "list[str] | None"
+
+    def __new__(cls, expr: str, data_type=None, field_types=None):
+        obj = super().__new__(cls, expr)
+        obj.data_type = data_type
+        obj.field_types = field_types
+        return obj
+
+
+def _normalize_computed(computed: dict) -> dict:
+    """Normalize the user-facing ``computed=`` mapping to the canonical
+    ``{name: (sql_type, expression)}`` form.
+
+    Accepts, per entry:
+      - value is a `ColumnExpr` (from ``fn("col")``): the column's SQL type
+        comes from the function's return type -- no hand-written type needed. A
+        tuple key (``("chunk", "idx")``) fans a STRUCT return out to one
+        (type, expression) entry per field, in declared order.
+      - value is a legacy ``(sql_type, expression)`` tuple: passed through (the
+        escape hatch, e.g. bare-name function strings).
+    """
+    out: dict = {}
+    for key, val in computed.items():
+        if isinstance(val, ColumnExpr):
+            expr = str(val)
+            if isinstance(key, (tuple, list)):
+                if not val.field_types:
+                    raise ValueError(
+                        f"columns {tuple(key)} need a STRUCT-returning function; "
+                        f"{expr} returns a single value"
+                    )
+                if len(val.field_types) != len(key):
+                    raise ValueError(
+                        f"{len(key)} columns but {len(val.field_types)} struct fields "
+                        f"in {expr}"
+                    )
+                for name, t in zip(key, val.field_types):
+                    out[name] = (t, expr)
+            else:
+                if val.data_type is None:
+                    raise ValueError(f"cannot infer a type for {expr}; pass types=")
+                out[key] = (val.data_type, expr)
+        else:
+            out[key] = val
+    return out
+
+
 # -- the @udf / @table_udf decorators -----------------------------------
 
 
@@ -221,14 +287,23 @@ class Udf:
 
     def __call__(self, *args, **kwargs):
         """Call with real values to run locally; call with column-name
-        strings to build an expression for backfills and views."""
+        strings to build an expression for backfills and views, e.g.
+        ``embed("data")`` -> the expression ``embed(data)`` (a `ColumnExpr`
+        carrying the function's return type for `add_columns(computed=...)`)."""
         if args and all(isinstance(a, str) for a in args) and not kwargs:
-            return f"{self.name}({', '.join(args)})"
+            return self.expression(*args)
         return self.fn(*args, **kwargs)
 
-    def expression(self, *columns: str) -> str:
+    def expression(self, *columns: str) -> ColumnExpr:
+        """The expression applying this function to `columns` (default: the
+        function's own parameter names). Returns a `ColumnExpr` -- a string
+        that also carries the declared return type (and struct field types)."""
         cols = columns or [p for p, _ in self.params]
-        return f"{self.name}({', '.join(cols)})"
+        expr = f"{self.name}({', '.join(cols)})"
+        field_types = None
+        if self.returns.upper().startswith("STRUCT"):
+            field_types = struct_field_types(self.returns)
+        return ColumnExpr(expr, data_type=self.returns, field_types=field_types)
 
     def _body(self) -> "tuple[str, str]":
         """(body literal, body_format). Source when requested and

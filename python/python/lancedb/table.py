@@ -704,11 +704,14 @@ def _normalize_progress(progress):
 
 
 def _computed_groups(computed):
-    """Group {column: (sql_type, expression)} by expression, preserving
-    declaration order (struct-returning functions need their columns
-    adjacent so schema order matches field order)."""
+    """Group computed columns by expression, preserving declaration order
+    (struct-returning functions need their columns adjacent so schema order
+    matches field order). Accepts the ergonomic forms -- `fn("col")` values
+    and tuple keys for struct fan-out -- via `_normalize_computed`."""
+    from .udf import _normalize_computed
+
     groups = []
-    for name, (sql_type, expression) in computed.items():
+    for name, (sql_type, expression) in _normalize_computed(computed).items():
         for expr, cols in groups:
             if expr == expression:
                 cols.append((name, sql_type))
@@ -831,11 +834,23 @@ class Table(ABC):
         types=None,
     ) -> None:
         """Declare computed column(s) bound to a UDF -- no compute happens
-        here (the agent fills them lazily, or refresh_column() triggers a
-        run). Sugar over add_columns(computed=): column types come from the
-        UDF's declared return type (a STRUCT return maps its fields to the
-        columns positionally); pass `types` when `fn` is a bare name string.
-        Register the function first. Server-backed (Enterprise / Cloud)."""
+        here (the agent fills them lazily, or refresh_column() triggers a run).
+
+        .. deprecated::
+            A computed column is an expression over a registered function, so
+            bind it as one: ``add_columns(computed={"vec": embed("data")})``.
+            ``embed("data")`` applies the function to the `data` column and
+            infers the type from the function's return signature -- the
+            function never couples to a particular column. Prefer that form.
+        """
+        import warnings
+
+        warnings.warn(
+            'add_computed_column is deprecated; use add_columns(computed='
+            '{"vec": embed("data")}).',
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from .udf import Udf, struct_field_types
 
         multi = isinstance(columns, (tuple, list))
@@ -3770,14 +3785,18 @@ class LanceTable(Table):
         self,
         transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema | None = None,
         *,
-        computed: Optional[Dict[str, tuple]] = None,
+        computed: Optional[Dict] = None,
     ) -> Optional[AddColumnsResult]:
         result = None
         if transforms is not None:
             result = LOOP.run(self._table.add_columns(transforms))
         if computed:
-            # computed: {column: (sql_type, expression)} -- declares the
-            # binding only; the server fills the values (server-backed).
+            # computed binds an expression over a registered function to a
+            # column: {col: fn("input_col")} -- fn("input_col") yields the
+            # expression and carries the inferred type; a tuple key fans a
+            # STRUCT return out to several columns. Declares the binding only;
+            # the server fills the values (server-backed). The legacy
+            # {col: (sql_type, expression)} tuple form is still accepted.
             result_unused = LOOP.run(self._table.add_columns(computed=computed))
             del result_unused
         return result
@@ -5508,7 +5527,7 @@ class AsyncTable:
         self,
         transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema | None = None,
         *,
-        computed: Optional[Dict[str, tuple]] = None,
+        computed: Optional[Dict] = None,
     ) -> Optional[AddColumnsResult]:
         """
         Add new columns with defined values.
@@ -5540,8 +5559,12 @@ class AsyncTable:
         elif transforms is not None:
             result = await self._inner.add_columns(list(transforms.items()))
         if computed:
-            # computed: {column: (sql_type, expression)} -- declares the
-            # binding only; the server fills the values (server-backed).
+            # computed binds an expression over a registered function to a
+            # column: {col: fn("input_col")} -- fn("input_col") yields the
+            # expression and carries the inferred type; a tuple key fans a
+            # STRUCT return out to several columns. Declares the binding only;
+            # the server fills the values (server-backed). The legacy
+            # {col: (sql_type, expression)} tuple form is still accepted.
             for expression, cols in _computed_groups(computed):
                 await self._inner.add_computed_columns(cols, expression)
         return result
@@ -5553,8 +5576,21 @@ class AsyncTable:
         args: Optional[List[str]] = None,
         types=None,
     ) -> None:
-        """Declare computed column(s) bound to a UDF (async). See the sync
-        `Table.add_computed_column`. Server-backed (Enterprise / Cloud)."""
+        """Declare computed column(s) bound to a UDF (async).
+
+        .. deprecated::
+            Use ``add_columns(computed={"col": fn("input_col")})`` -- a computed
+            column is an expression over a registered function, so bind it that
+            way instead of coupling the UDF to the column here.
+        """
+        import warnings
+
+        warnings.warn(
+            'add_computed_column is deprecated; use add_columns(computed='
+            '{"col": fn("input_col")}).',
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from .udf import Udf, struct_field_types
 
         multi = isinstance(columns, (tuple, list))
