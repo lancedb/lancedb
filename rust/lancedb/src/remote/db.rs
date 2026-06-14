@@ -64,6 +64,8 @@ struct RemoteCreateMaterializedViewRequest {
     query: String,
     auto_refresh: bool,
     with_no_data: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition_by: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -820,6 +822,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             query: request.query,
             auto_refresh: request.auto_refresh,
             with_no_data: request.with_no_data,
+            partition_by: request.partition_by,
         };
         let req = self
             .client

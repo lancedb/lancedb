@@ -413,13 +413,14 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, query, auto_refresh=false, with_no_data=false))]
+    #[pyo3(signature = (name, query, auto_refresh=false, with_no_data=false, partition_by=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
         query: String,
         auto_refresh: bool,
         with_no_data: bool,
+        partition_by: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
@@ -429,6 +430,7 @@ impl Connection {
                     query,
                     auto_refresh,
                     with_no_data,
+                    partition_by,
                 })
                 .await
                 .infer_error()
