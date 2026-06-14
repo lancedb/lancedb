@@ -2452,6 +2452,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         num_workers: Option<u32>,
         max_workers: Option<u32>,
         batch_size: Option<u32>,
+        priority: Option<String>,
     ) -> Result<String> {
         let mut body = serde_json::json!({ "columns": columns });
         if let Some(w) = where_clause {
@@ -2465,6 +2466,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         if let Some(n) = batch_size {
             body["batch_size"] = n.into();
+        }
+        if let Some(p) = priority {
+            body["priority"] = serde_json::Value::String(p);
         }
         let request = self
             .client
@@ -2992,7 +2996,7 @@ mod tests {
         });
 
         let job_id = table
-            .refresh_column(&["vec".to_string()], None, Some(2), None, None)
+            .refresh_column(&["vec".to_string()], None, Some(2), None, None, None)
             .await
             .unwrap();
         assert_eq!(job_id, "j-9");
