@@ -3808,6 +3808,7 @@ class LanceTable(Table):
         where: Optional[str] = None,
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
     ) -> str:
         """Trigger recompute of computed columns (REFRESH COLUMN).
 
@@ -3815,6 +3816,10 @@ class LanceTable(Table):
         binding; columns bound to the same struct-returning function
         refresh together. Returns the refresh job id. Server-backed
         feature (LanceDB Enterprise / Cloud).
+
+        num_workers / max_workers / batch_size are per-refresh scheduling
+        knobs (how to run THIS refresh) and override any default the
+        function carries.
         """
         if isinstance(columns, str):
             columns = [columns]
@@ -3824,6 +3829,7 @@ class LanceTable(Table):
                 where=where,
                 num_workers=num_workers,
                 max_workers=max_workers,
+                batch_size=batch_size,
             )
         )
 
@@ -5511,9 +5517,14 @@ class AsyncTable:
         where: Optional[str] = None,
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
     ) -> str:
         """Trigger recompute of computed columns (REFRESH COLUMN).
-        Returns the refresh job id. Server-backed feature."""
+        Returns the refresh job id. Server-backed feature.
+
+        num_workers / max_workers / batch_size are per-refresh scheduling
+        knobs (how to run THIS refresh); they override any default the
+        function carries."""
         if isinstance(columns, str):
             columns = [columns]
         return await self._inner.refresh_column(
@@ -5521,6 +5532,7 @@ class AsyncTable:
             where_clause=where,
             num_workers=num_workers,
             max_workers=max_workers,
+            batch_size=batch_size,
         )
 
     async def add_columns(
