@@ -636,6 +636,7 @@ class DBConnection(EnforceOverrides):
         *,
         auto_refresh: bool = False,
         with_no_data: bool = False,
+        partition_by: Optional[str] = None,
     ) -> Optional[str]:
         """Create a materialized view (CREATE MATERIALIZED VIEW).
 
@@ -643,10 +644,20 @@ class DBConnection(EnforceOverrides):
         "SELECT id, embed(body) AS vec FROM articles WHERE id > 1".
         Returns the initial-population job id, or None when
         with_no_data=True.
+
+        `partition_by` partitions the view's (single) table function on a source
+        column. If that column has an IVF vector index the server partitions by
+        its index clusters (image-dedup style); otherwise it groups by distinct
+        value. (Geneva's `partition_by` and `partition_by_indexed_column` unify
+        here -- the engine picks the strategy from the column.)
         """
         return LOOP.run(
             self._conn.create_materialized_view(
-                name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
+                name,
+                query,
+                auto_refresh=auto_refresh,
+                with_no_data=with_no_data,
+                partition_by=partition_by,
             )
         )
 
@@ -659,6 +670,7 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         auto_refresh: bool = False,
         replace: bool = False,
+        partition_by: Optional[str] = None,
     ):
         """Create a materialized view from a source and select items, and
         return a `View` handle.
@@ -668,6 +680,10 @@ class DBConnection(EnforceOverrides):
         ``@udf`` / ``@table_udf`` objects. Sugar over create_materialized_view:
         it assembles the SELECT, which the server parses (one parser, shared
         with SQL).
+
+        `partition_by` partitions the view's table function on a source column;
+        the server partitions by index clusters if that column is IVF-indexed,
+        else by distinct value (see create_materialized_view).
         """
         from .udf import build_view_query, View
 
@@ -679,7 +695,9 @@ class DBConnection(EnforceOverrides):
                 self.drop_materialized_view(name)
             except Exception:
                 pass
-        self.create_materialized_view(name, query, auto_refresh=auto_refresh)
+        self.create_materialized_view(
+            name, query, auto_refresh=auto_refresh, partition_by=partition_by
+        )
         return View(self, name)
 
     def job(self, job_id: str):
@@ -2023,11 +2041,18 @@ class AsyncConnection(object):
         *,
         auto_refresh: bool = False,
         with_no_data: bool = False,
+        partition_by: Optional[str] = None,
     ) -> Optional[str]:
         """Create a materialized view; returns the initial-population
-        job id, or None when with_no_data=True."""
+        job id, or None when with_no_data=True. `partition_by` partitions the
+        view's table function on a source column (index-cluster if the column is
+        IVF-indexed, else distinct-value); see the sync method."""
         return await self._inner.create_materialized_view(
-            name, query, auto_refresh=auto_refresh, with_no_data=with_no_data
+            name,
+            query,
+            auto_refresh=auto_refresh,
+            with_no_data=with_no_data,
+            partition_by=partition_by,
         )
 
     async def create_view(
@@ -2039,6 +2064,7 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         auto_refresh: bool = False,
         replace: bool = False,
+        partition_by: Optional[str] = None,
     ):
         """Create a materialized view from a source + select items; returns
         an `AsyncView`. See the sync `create_view` for the select grammar."""
@@ -2052,7 +2078,9 @@ class AsyncConnection(object):
                 await self.drop_materialized_view(name)
             except Exception:
                 pass
-        await self.create_materialized_view(name, query, auto_refresh=auto_refresh)
+        await self.create_materialized_view(
+            name, query, auto_refresh=auto_refresh, partition_by=partition_by
+        )
         return AsyncView(self, name)
 
     def job(self, job_id: str):

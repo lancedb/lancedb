@@ -246,6 +246,10 @@ pub struct CreateMaterializedViewRequest {
     pub auto_refresh: bool,
     /// Register the definition only; skip the initial population.
     pub with_no_data: bool,
+    /// Optional source column to partition the view's table function on. If the
+    /// column has an IVF vector index the server partitions by its clusters
+    /// (image-dedup style); otherwise it groups by distinct value.
+    pub partition_by: Option<String>,
 }
 
 impl CreateMaterializedViewRequest {
@@ -255,6 +259,7 @@ impl CreateMaterializedViewRequest {
             query: query.into(),
             auto_refresh: false,
             with_no_data: false,
+            partition_by: None,
         }
     }
 }
