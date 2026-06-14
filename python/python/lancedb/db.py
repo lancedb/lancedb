@@ -562,7 +562,6 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
-
     # -- Derived compute: functions, materialized views, jobs -------------
     # Server-backed features (LanceDB Enterprise / Cloud); local
     # connections raise NotImplementedError for now.
@@ -711,14 +710,20 @@ class DBConnection(EnforceOverrides):
         self,
         name: str,
         *,
+        full: bool = False,
         src_version: Optional[int] = None,
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
     ) -> str:
-        """Refresh a materialized view; returns the refresh job id."""
+        """Refresh a materialized view; returns the refresh job id.
+
+        ``full=True`` forces a full rebuild (recompute and replace every row)
+        instead of the default incremental refresh.
+        """
         return LOOP.run(
             self._conn.refresh_materialized_view(
                 name,
+                full=full,
                 src_version=src_version,
                 num_workers=num_workers,
                 max_workers=max_workers,
@@ -766,6 +771,7 @@ class DBConnection(EnforceOverrides):
         unknown id) -- cancellation is best-effort.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -2093,13 +2099,19 @@ class AsyncConnection(object):
         self,
         name: str,
         *,
+        full: bool = False,
         src_version: Optional[int] = None,
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
     ) -> str:
-        """Refresh a materialized view; returns the refresh job id."""
+        """Refresh a materialized view; returns the refresh job id.
+
+        ``full=True`` forces a full rebuild (recompute and replace every row)
+        instead of the default incremental refresh.
+        """
         return await self._inner.refresh_materialized_view(
             name,
+            full=full,
             src_version=src_version,
             num_workers=num_workers,
             max_workers=max_workers,

@@ -499,14 +499,13 @@ class View:
         self.name = name
 
     def refresh(self, full: bool = False):
-        if full:
-            # full/force-rebuild is not honored on any surface yet (the
-            # refresh event carries no `full` flag) -- do not pretend.
-            raise NotImplementedError(
-                "full=True refresh is not supported yet (engine gap: the "
-                "refresh event has no full-rebuild flag)"
-            )
-        return self.conn.refresh_materialized_view(self.name)
+        """Refresh the materialized view; returns the refresh job id.
+
+        ``full=True`` forces a full rebuild (recompute and replace every row)
+        instead of the default incremental refresh. A full rebuild preserves
+        the view's indexes -- they are reindexed by the distributed indexer.
+        """
+        return self.conn.refresh_materialized_view(self.name, full=full)
 
     def explain_refresh(self, full: bool = False):
         """Plan a refresh without running it (EXPLAIN REFRESH)."""
@@ -616,12 +615,12 @@ class AsyncView:
         self.name = name
 
     async def refresh(self, full: bool = False):
-        if full:
-            raise NotImplementedError(
-                "full=True refresh is not supported yet (engine gap: the "
-                "refresh event has no full-rebuild flag)"
-            )
-        return await self.conn.refresh_materialized_view(self.name)
+        """Refresh the materialized view; returns the refresh job id.
+
+        ``full=True`` forces a full rebuild instead of an incremental refresh
+        (indexes are preserved and reindexed by the distributed indexer).
+        """
+        return await self.conn.refresh_materialized_view(self.name, full=full)
 
     async def explain_refresh(self, full: bool = False):
         return await self.conn.explain_refresh_materialized_view(self.name, full=full)

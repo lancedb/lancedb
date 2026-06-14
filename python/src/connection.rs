@@ -437,10 +437,11 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, src_version=None, num_workers=None, max_workers=None))]
+    #[pyo3(signature = (name, full=false, src_version=None, num_workers=None, max_workers=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
+        full: bool,
         src_version: Option<u64>,
         num_workers: Option<u32>,
         max_workers: Option<u32>,
@@ -450,6 +451,7 @@ impl Connection {
             inner
                 .refresh_materialized_view(RefreshMaterializedViewRequest {
                     name,
+                    full,
                     src_version,
                     num_workers,
                     max_workers,

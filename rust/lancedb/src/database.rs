@@ -269,6 +269,9 @@ impl CreateMaterializedViewRequest {
 pub struct RefreshMaterializedViewRequest {
     /// View name.
     pub name: String,
+    /// Force a full rebuild (recompute and replace every row) instead of the
+    /// default incremental refresh.
+    pub full: bool,
     /// Pin the refresh to a source-table version; latest when absent.
     pub src_version: Option<u64>,
     /// Initial worker count.
@@ -281,6 +284,7 @@ impl RefreshMaterializedViewRequest {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            full: false,
             src_version: None,
             num_workers: None,
             max_workers: None,
