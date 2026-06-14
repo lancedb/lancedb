@@ -87,7 +87,11 @@ def _struct_fields(hint):
     if dataclasses.is_dataclass(hint):
         return [(f.name, f.type) for f in dataclasses.fields(hint)]
     # TypedDict detection: a dict subclass with __annotations__.
-    if isinstance(hint, type) and issubclass(hint, dict) and typing.get_type_hints(hint):
+    if (
+        isinstance(hint, type)
+        and issubclass(hint, dict)
+        and typing.get_type_hints(hint)
+    ):
         return list(typing.get_type_hints(hint).items())
     return None
 
@@ -398,17 +402,22 @@ def _format_env(env: "dict[str, str] | list[str]") -> str:
 def _escape_body(body: str) -> str:
     # The server unescapes \n / \t in single-quoted bodies; encode real
     # newlines accordingly and escape quotes.
-    return body.replace("\\", "\\\\").replace("'", "''").replace("\n", "\\n").replace("\t", "\\t")
+    return (
+        body.replace("\\", "\\\\")
+        .replace("'", "''")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
 
 
 def udf(fn=None, **kwargs):
     """Decorate a function as a scalar (or struct-returning) UDF.
 
-        @udf
-        def doubled(val: int) -> float: ...
+    @udf
+    def doubled(val: int) -> float: ...
 
-        @udf(pip=["torch>=2"], num_gpus=1)
-        def embed(body: str) -> list[float]: ...
+    @udf(pip=["torch>=2"], num_gpus=1)
+    def embed(body: str) -> list[float]: ...
     """
     if fn is not None:
         return Udf(fn, **kwargs)
@@ -508,6 +517,30 @@ class View:
 
     def drop(self) -> None:
         self.conn.drop_materialized_view(self.name)
+
+    # A materialized view is a first-class table: it can be indexed and
+    # searched like any other. These open the materialized dataset by name and
+    # delegate. Indexes declared this way are recorded against the view, so the
+    # engine re-applies them after a full refresh rebuilds the dataset (a full
+    # refresh overwrites the dataset, which would otherwise drop its indices).
+    def _table(self):
+        return self.conn.open_table(self.name)
+
+    def create_index(self, *args, **kwargs):
+        """Build an index on the materialized view (see Table.create_index)."""
+        return self._table().create_index(*args, **kwargs)
+
+    def create_scalar_index(self, *args, **kwargs):
+        """Build a scalar index on the materialized view."""
+        return self._table().create_scalar_index(*args, **kwargs)
+
+    def create_fts_index(self, *args, **kwargs):
+        """Build a full-text-search index on the materialized view."""
+        return self._table().create_fts_index(*args, **kwargs)
+
+    def search(self, *args, **kwargs):
+        """Search the materialized view (vector / FTS / hybrid)."""
+        return self._table().search(*args, **kwargs)
 
 
 _PROGRESS = re.compile(r"(\d+)/(\d+)")
@@ -645,7 +678,9 @@ class AsyncJobHandle:
             if job is not None and job.committed:
                 return "finished"
             await asyncio.sleep(poll)
-        raise TimeoutError(f"job {self.id} still {await self.status()} after {timeout}s")
+        raise TimeoutError(
+            f"job {self.id} still {await self.status()} after {timeout}s"
+        )
 
     async def cancel(self) -> None:
         job = await self._job()
