@@ -113,6 +113,12 @@ ignore = [
     # rand from a custom logger; upgrade once all pinned chains accept 0.8.6+.
     # https://rustsec.org/advisories/RUSTSEC-2026-0097
     { id = "RUSTSEC-2026-0097", reason = "transitive rand 0.8.5; LanceDB does not call ThreadRng from custom logging" },
+
+    # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0176
+    # https://rustsec.org/advisories/RUSTSEC-2026-0177
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
 ]
 
 # ---------------------------------------------------------------------------
