@@ -1074,7 +1074,7 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (columns, where_clause=None, num_workers=None, max_workers=None, batch_size=None))]
+    #[pyo3(signature = (columns, where_clause=None, num_workers=None, max_workers=None, batch_size=None, priority=None))]
     pub fn refresh_column(
         self_: PyRef<'_, Self>,
         columns: Vec<String>,
@@ -1082,11 +1082,19 @@ impl Table {
         num_workers: Option<u32>,
         max_workers: Option<u32>,
         batch_size: Option<u32>,
+        priority: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner
-                .refresh_column(&columns, where_clause, num_workers, max_workers, batch_size)
+                .refresh_column(
+                    &columns,
+                    where_clause,
+                    num_workers,
+                    max_workers,
+                    batch_size,
+                    priority,
+                )
                 .await
                 .infer_error()
         })

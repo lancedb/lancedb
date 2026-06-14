@@ -904,6 +904,8 @@ class RemoteTable(Table):
         where: Optional[str] = None,
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        priority: Optional[str] = None,
     ) -> str:
         """Trigger recompute of computed columns (REFRESH COLUMN).
 
@@ -911,6 +913,11 @@ class RemoteTable(Table):
         binding; columns bound to the same struct-returning function
         refresh together. Returns the refresh job id. Server-backed
         feature (LanceDB Enterprise / Cloud).
+
+        num_workers / max_workers / batch_size / priority are per-refresh
+        scheduling knobs (how to run THIS refresh) and override any default
+        the function carries. `priority` is a Kueue tier
+        (training | interactive | backfill).
         """
         if isinstance(columns, str):
             columns = [columns]
@@ -920,9 +927,10 @@ class RemoteTable(Table):
                 where=where,
                 num_workers=num_workers,
                 max_workers=max_workers,
+                batch_size=batch_size,
+                priority=priority,
             )
         )
-
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
