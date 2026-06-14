@@ -687,6 +687,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _where_clause: Option<String>,
         _num_workers: Option<u32>,
         _max_workers: Option<u32>,
+        _batch_size: Option<u32>,
     ) -> Result<String> {
         Err(Error::NotSupported {
             message: "refresh_column is not supported by this table".into(),
@@ -1554,9 +1555,10 @@ impl Table {
         where_clause: Option<String>,
         num_workers: Option<u32>,
         max_workers: Option<u32>,
+        batch_size: Option<u32>,
     ) -> Result<String> {
         self.inner
-            .refresh_column(columns, where_clause, num_workers, max_workers)
+            .refresh_column(columns, where_clause, num_workers, max_workers, batch_size)
             .await
     }
 
