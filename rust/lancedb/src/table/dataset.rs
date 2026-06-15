@@ -518,6 +518,10 @@ mod tests {
 
         let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_millis(200)));
 
+        // Freeze `cached_at` on the mock clock so a slow external write below can't
+        // expire the TTL before the explicit advance_by() does (flake on loaded CI).
+        clock::pin();
+
         // Populate the cache
         let v1 = wrapper.get().await.unwrap().version().version;
         assert_eq!(v1, 1);

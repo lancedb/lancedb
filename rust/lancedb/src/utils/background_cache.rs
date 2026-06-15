@@ -329,6 +329,15 @@ pub mod clock {
         });
     }
 
+    /// Start mock time at the current instant if not already pinned.
+    pub fn pin() {
+        MOCK_NOW.with(|mock| {
+            if mock.get().is_none() {
+                mock.set(Some(Instant::now()));
+            }
+        });
+    }
+
     #[allow(dead_code)]
     pub fn clear_mock() {
         MOCK_NOW.with(|mock| mock.set(None));
