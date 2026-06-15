@@ -191,30 +191,36 @@ describe("remote connection", () => {
     );
   });
 
-  it("allows version on remote but rejects a non-main branch", async () => {
+  it("supports version time-travel and branches on remote", async () => {
     await withMockDatabase(
-      (_req, res) => {
-        // describe (table open + version validation) always succeeds
-        const body = JSON.stringify({
-          name: "t",
-          version: 2,
-          schema: { fields: [] },
-        });
+      (req, res) => {
+        const body = req.url?.includes("/branches/list")
+          ? JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            })
+          : JSON.stringify({ name: "t", version: 2, schema: { fields: [] } });
         res.writeHead(200, { "Content-Type": "application/json" }).end(body);
       },
       async (db) => {
-        // version-only (and "main" + version) is allowed: remote supports
-        // version time-travel even though it has no branches
-        await db.openTable("t", undefined, { version: 2 });
-        await db.openTable("t", undefined, { branch: "main", version: 2 });
+        // version-only (and "main" + version) time-travel the main chain
+        const v2 = await db.openTable("t", undefined, { version: 2 });
+        expect(v2.currentBranch()).toBeNull();
+        const mainV2 = await db.openTable("t", undefined, {
+          branch: "main",
+          version: 2,
+        });
+        expect(mainV2.currentBranch()).toBeNull();
 
-        // a non-main branch is rejected, with or without a version
-        await expect(
-          db.openTable("t", undefined, { branch: "exp" }),
-        ).rejects.toThrow(/branching/);
-        await expect(
-          db.openTable("t", undefined, { branch: "exp", version: 2 }),
-        ).rejects.toThrow(/branching/);
+        // a non-main branch opens a handle scoped to that branch
+        const exp = await db.openTable("t", undefined, { branch: "exp" });
+        expect(exp.currentBranch()).toBe("exp");
+        const expV2 = await db.openTable("t", undefined, {
+          branch: "exp",
+          version: 2,
+        });
+        expect(expV2.currentBranch()).toBe("exp");
       },
     );
   });

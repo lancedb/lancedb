@@ -154,50 +154,116 @@ async def test_async_checkout():
         assert await table.count_rows() == 300
 
 
+def _branch_open_handler(request):
+    if "/branches/list" in request.path:
+        body = json.dumps(
+            {
+                "branches": {
+                    "exp": {
+                        "parentBranch": None,
+                        "parentVersion": 1,
+                        "createAt": 1,
+                        "manifestSize": 1,
+                    }
+                }
+            }
+        ).encode()
+    else:
+        # describe (table open + version/branch validation)
+        body = json.dumps({"version": 2, "schema": {"fields": []}}).encode()
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(body)
+
+
 def test_remote_open_table_branch_and_version():
+    with mock_lancedb_connection(_branch_open_handler) as db:
+        # version-only (and "main" + version) time-travels the main chain
+        assert db.open_table("test", version=2) is not None
+        assert db.open_table("test", branch="main", version=2).current_branch() is None
+
+        # a non-main branch opens a handle scoped to that branch, with or
+        # without a version
+        assert db.open_table("test", branch="exp").current_branch() == "exp"
+        assert db.open_table("test", branch="exp", version=2).current_branch() == "exp"
+
+
+def test_remote_table_branches_sync():
+    # Branch CRUD + current_branch on the sync RemoteTable. The handle returned
+    # by create/checkout must stay a RemoteTable scoped to the branch.
+    from lancedb.remote.table import RemoteTable
+
     def handler(request):
-        # describe (table open + version validation) always succeeds
+        if "/branches/list" in request.path:
+            body = json.dumps(
+                {
+                    "branches": {
+                        "exp": {
+                            "parentBranch": None,
+                            "parentVersion": 1,
+                            "createAt": 1,
+                            "manifestSize": 1,
+                        }
+                    }
+                }
+            ).encode()
+        elif "/branches/create" in request.path or "/branches/delete" in request.path:
+            body = b"{}"
+        else:
+            # describe (table open + checkout validation)
+            body = json.dumps({"version": 1, "schema": {"fields": []}}).encode()
         request.send_response(200)
         request.send_header("Content-Type", "application/json")
         request.end_headers()
-        request.wfile.write(
-            json.dumps({"version": 2, "schema": {"fields": []}}).encode()
-        )
+        request.wfile.write(body)
 
     with mock_lancedb_connection(handler) as db:
-        # version-only (and "main" + version) is allowed: remote supports
-        # version time-travel even though it has no branches
-        assert db.open_table("test", version=2) is not None
-        assert db.open_table("test", branch="main", version=2) is not None
+        table = db.open_table("test")
+        assert isinstance(table, RemoteTable)
+        assert table.current_branch() is None
 
-        # a non-main branch is rejected, with or without a version
-        with pytest.raises(NotImplementedError, match="branching"):
-            db.open_table("test", branch="exp")
-        with pytest.raises(NotImplementedError, match="branching"):
-            db.open_table("test", branch="exp", version=2)
+        branch = table.branches.create("exp")
+        assert isinstance(branch, RemoteTable)
+        assert branch.current_branch() == "exp"
+
+        # list + checkout round trip; checkout also yields a branch-scoped handle
+        assert "exp" in table.branches.list()
+        checked = table.branches.checkout("exp")
+        assert isinstance(checked, RemoteTable)
+        assert checked.current_branch() == "exp"
+
+        table.branches.delete("exp")
 
 
 @pytest.mark.asyncio
 async def test_async_remote_open_table_branch_and_version():
-    def handler(request):
-        request.send_response(200)
-        request.send_header("Content-Type", "application/json")
-        request.end_headers()
-        request.wfile.write(
-            json.dumps({"version": 2, "schema": {"fields": []}}).encode()
-        )
-
-    async with mock_lancedb_connection_async(handler) as db:
-        # version-only (and "main" + version) is allowed: "main" is the default
-        # branch, so it must not hit the unsupported remote branch path
+    async with mock_lancedb_connection_async(_branch_open_handler) as db:
+        # version-only (and "main" + version) time-travels the main chain
         assert await db.open_table("test", version=2) is not None
-        assert await db.open_table("test", branch="main", version=2) is not None
+        main_v2 = await db.open_table("test", branch="main", version=2)
+        assert main_v2.current_branch() is None
 
-        # a non-main branch is rejected, with or without a version
-        with pytest.raises(NotImplementedError, match="branching"):
-            await db.open_table("test", branch="exp")
-        with pytest.raises(NotImplementedError, match="branching"):
-            await db.open_table("test", branch="exp", version=2)
+        # a non-main branch opens a handle scoped to that branch
+        exp = await db.open_table("test", branch="exp")
+        assert exp.current_branch() == "exp"
+        exp_v2 = await db.open_table("test", branch="exp", version=2)
+        assert exp_v2.current_branch() == "exp"
+
+
+def test_remote_table_branch_survives_pickle():
+    # Regression: a branch-scoped handle must keep its branch across a
+    # pickle/fork round-trip (it used to reopen on main).
+    with mock_lancedb_connection(_branch_open_handler) as db:
+        branch = db.open_table("test", branch="exp")
+        assert branch.current_branch() == "exp"
+        restored = pickle.loads(pickle.dumps(branch))
+        assert restored.current_branch() == "exp"
+
+        # the pinned version is carried through as well
+        branch_v2 = db.open_table("test", branch="exp", version=2)
+        restored_v2 = pickle.loads(pickle.dumps(branch_v2))
+        assert restored_v2.current_branch() == "exp"
 
 
 def test_table_len_sync():

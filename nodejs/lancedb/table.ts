@@ -664,6 +664,14 @@ export abstract class Table {
   abstract branches(): Promise<Branches>;
 
   /**
+   * The branch this table handle is scoped to, or `null` for the main branch.
+   *
+   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
+   * reports the branch it targets; a handle opened normally reports `null`.
+   */
+  abstract currentBranch(): string | null;
+
+  /**
    * Restore the table to the currently checked out version
    *
    * This operation will fail if checkout has not been called previously
@@ -1120,6 +1128,10 @@ export class LocalTable extends Table {
 
   async branches(): Promise<Branches> {
     return new Branches(await this.inner.branches());
+  }
+
+  currentBranch(): string | null {
+    return this.inner.currentBranch() ?? null;
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
