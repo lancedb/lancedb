@@ -45,6 +45,7 @@ use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
@@ -1251,6 +1252,114 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
+impl<S: HttpSend + 'static> RemoteTable<S> {
+    /// Parse the response from `/index/list/` into `IndexConfig` entries.
+    ///
+    /// When the server returns `index_type` inline, all enriched fields are
+    /// used directly and no further requests are made. When `index_type` is
+    /// absent (legacy servers), a `/index/{name}/stats/` call is made for each
+    /// index to retrieve the type.
+    async fn parse_index_list_response(
+        &self,
+        body: &str,
+        request_id: &str,
+        schema: &SchemaRef,
+    ) -> Result<Vec<IndexConfig>> {
+        use crate::index::IndexType;
+
+        #[derive(Deserialize)]
+        struct ListIndicesResponse {
+            indexes: Vec<IndexListEntry>,
+        }
+
+        #[derive(Deserialize)]
+        struct IndexListEntry {
+            index_name: String,
+            columns: Vec<String>,
+            // Present on enriched responses; absent on legacy servers.
+            // Used as the sentinel to decide whether to skip the stats call.
+            index_type: Option<IndexType>,
+            index_uuid: Option<String>,
+            #[serde(default, with = "chrono::serde::ts_milliseconds_option")]
+            created_at: Option<DateTime<Utc>>,
+            num_indexed_rows: Option<u64>,
+            num_unindexed_rows: Option<u64>,
+            size_bytes: Option<u64>,
+            num_segments: Option<u32>,
+            index_version: Option<i32>,
+            index_details: Option<String>,
+            type_url: Option<String>,
+        }
+
+        let response: ListIndicesResponse =
+            serde_json::from_str(body).map_err(|err| Error::Http {
+                source: format!(
+                    "Failed to parse list_indices response: {}, body: {}",
+                    err, body
+                )
+                .into(),
+                request_id: request_id.to_string(),
+                status_code: None,
+            })?;
+
+        let mut futures = Vec::with_capacity(response.indexes.len());
+        for entry in response.indexes {
+            let columns = entry
+                .columns
+                .iter()
+                .map(|column| {
+                    resolve_arrow_field_path(schema, column)
+                        .map(|(canonical_column, _)| canonical_column)
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let future = async move {
+                if let Some(index_type) = entry.index_type {
+                    // Enriched response: all fields available, no stats call needed.
+                    Ok(Some(IndexConfig {
+                        name: entry.index_name,
+                        index_type,
+                        columns,
+                        index_uuid: entry.index_uuid,
+                        type_url: entry.type_url,
+                        created_at: entry.created_at,
+                        num_indexed_rows: entry.num_indexed_rows,
+                        num_unindexed_rows: entry.num_unindexed_rows,
+                        size_bytes: entry.size_bytes,
+                        num_segments: entry.num_segments,
+                        index_version: entry.index_version,
+                        index_details: entry.index_details,
+                    }))
+                } else {
+                    // Legacy response: fetch index type via stats endpoint.
+                    match self.index_stats(&entry.index_name).await {
+                        Ok(Some(stats)) => Ok(Some(IndexConfig {
+                            name: entry.index_name,
+                            index_type: stats.index_type,
+                            columns,
+                            index_uuid: None,
+                            type_url: None,
+                            created_at: None,
+                            num_indexed_rows: None,
+                            num_unindexed_rows: None,
+                            size_bytes: None,
+                            num_segments: None,
+                            index_version: None,
+                            index_details: None,
+                        })),
+                        Ok(None) => Ok(None), // Index deleted since we listed it.
+                        Err(e) => Err(e),
+                    }
+                }
+            };
+            futures.push(future);
+        }
+
+        let results = futures::future::try_join_all(futures).await?;
+        Ok(results.into_iter().flatten().collect())
+    }
+}
+
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -2101,79 +2210,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        // Make request to list the indices
         let mut request = self.post_read(&format!("/v1/table/{}/index/list/", self.identifier));
         let version = self.current_version().await;
-        let body = serde_json::json!({ "version": version });
-        request = request.json(&body);
+        request = request.json(&serde_json::json!({ "version": version }));
 
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
-
-        #[derive(Deserialize)]
-        struct ListIndicesResponse {
-            indexes: Vec<IndexConfigResponse>,
-        }
-
-        #[derive(Deserialize)]
-        struct IndexConfigResponse {
-            index_name: String,
-            columns: Vec<String>,
-        }
-
         let body = response.text().await.err_to_http(request_id.clone())?;
-        let body: ListIndicesResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
-            source: format!(
-                "Failed to parse list_indices response: {}, body: {}",
-                err, body
-            )
-            .into(),
-            request_id,
-            status_code: None,
-        })?;
-
         let schema = self.schema().await?;
 
-        // Make request to get stats for each index, so we get the index type.
-        // This is a bit inefficient, but it's the only way to get the index type.
-        let mut futures = Vec::with_capacity(body.indexes.len());
-        for index in body.indexes {
-            let columns = index
-                .columns
-                .iter()
-                .map(|column| {
-                    resolve_arrow_field_path(&schema, column)
-                        .map(|(canonical_column, _)| canonical_column)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let future = async move {
-                match self.index_stats(&index.index_name).await {
-                    Ok(Some(stats)) => Ok(Some(IndexConfig {
-                        name: index.index_name,
-                        index_type: stats.index_type,
-                        columns,
-                        // These are left None until the server response wires
-                        // them through. See https://github.com/lancedb/lancedb/issues/3494
-                        index_uuid: None,
-                        type_url: None,
-                        created_at: None,
-                        num_indexed_rows: None,
-                        num_unindexed_rows: None,
-                        size_bytes: None,
-                        num_segments: None,
-                        index_version: None,
-                        index_details: None,
-                    })),
-                    Ok(None) => Ok(None), // The index must have been deleted since we listed it.
-                    Err(e) => Err(e),
-                }
-            };
-            futures.push(future);
-        }
-        let results = futures::future::try_join_all(futures).await?;
-        let index_configs = results.into_iter().flatten().collect();
-
-        Ok(index_configs)
+        self.parse_index_list_response(&body, &request_id, &schema)
+            .await
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
@@ -4301,6 +4348,112 @@ mod tests {
         })
         .collect();
         assert_eq!(indices, expected);
+    }
+
+    /// Verifies that when the server returns `index_type` in the list response,
+    /// `list_indices` uses all enriched fields directly and does **not** make a
+    /// per-index `/index/{name}/stats/` call.
+    #[tokio::test]
+    async fn test_list_indices_enriched() {
+        let schema = Schema::new(vec![
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 8),
+                false,
+            ),
+            Field::new("text", DataType::Utf8, false),
+        ]);
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "vector_idx",
+                                "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["vector"],
+                                "index_type": "IVF_PQ",
+                                "index_status": "done",
+                                "num_indexed_rows": 1000,
+                                "num_unindexed_rows": 50,
+                                "size_bytes": 204800,
+                                "num_segments": 2,
+                                "index_version": 1,
+                                "index_details": "{\"num_partitions\":16}",
+                                "created_at": 1700000000000i64,
+                                "type_url": "type.googleapis.com/lance.index.vector.IvfPq",
+                            },
+                            {
+                                "index_name": "text_idx",
+                                "index_uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_status": "done",
+                                "num_indexed_rows": 1000,
+                                "num_unindexed_rows": 0,
+                                "size_bytes": 8192,
+                                "num_segments": 1,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                // stats endpoint must NOT be called for enriched responses
+                path => panic!("Unexpected path (stats should not be called): {}", path),
+            }
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 2);
+
+        let vec_idx = &indices[0];
+        assert_eq!(vec_idx.name, "vector_idx");
+        assert_eq!(vec_idx.index_type, IndexType::IvfPq);
+        assert_eq!(vec_idx.columns, vec!["vector".to_string()]);
+        assert_eq!(
+            vec_idx.index_uuid,
+            Some("3fa85f64-5717-4562-b3fc-2c963f66afa6".to_string())
+        );
+        assert_eq!(vec_idx.num_indexed_rows, Some(1000));
+        assert_eq!(vec_idx.num_unindexed_rows, Some(50));
+        assert_eq!(vec_idx.size_bytes, Some(204800));
+        assert_eq!(vec_idx.num_segments, Some(2));
+        assert_eq!(vec_idx.index_version, Some(1));
+        assert_eq!(
+            vec_idx.index_details,
+            Some("{\"num_partitions\":16}".to_string())
+        );
+        assert_eq!(
+            vec_idx.type_url,
+            Some("type.googleapis.com/lance.index.vector.IvfPq".to_string())
+        );
+        assert!(vec_idx.created_at.is_some());
+
+        let text_idx = &indices[1];
+        assert_eq!(text_idx.name, "text_idx");
+        assert_eq!(text_idx.index_type, IndexType::FTS);
+        assert_eq!(text_idx.columns, vec!["text".to_string()]);
+        assert_eq!(
+            text_idx.index_uuid,
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string())
+        );
+        assert_eq!(text_idx.num_indexed_rows, Some(1000));
+        assert_eq!(text_idx.num_unindexed_rows, Some(0));
+        assert_eq!(text_idx.size_bytes, Some(8192));
+        assert_eq!(text_idx.num_segments, Some(1));
+        // optional fields not present in the response are None
+        assert_eq!(text_idx.index_version, None);
+        assert_eq!(text_idx.index_details, None);
+        assert_eq!(text_idx.type_url, None);
+        assert_eq!(text_idx.created_at, None);
     }
 
     #[tokio::test]
