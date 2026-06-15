@@ -34,7 +34,7 @@ pub(super) fn coerce_blob_expr(
     config: &Arc<ConfigOptions>,
 ) -> Result<(Arc<dyn PhysicalExpr>, FieldRef)> {
     match input_field.data_type() {
-        DataType::Binary | DataType::LargeBinary => {}
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {}
         DataType::Struct(children) => {
             if !children
                 .iter()
@@ -52,7 +52,7 @@ pub(super) fn coerce_blob_expr(
             return Err(Error::InvalidInput {
                 message: format!(
                     "cannot coerce column '{}' with type {} into a blob v2 struct. \
-                     expected Binary, LargeBinary, or a Struct with a 'data' or 'uri' child",
+                     expected Binary, LargeBinary, BinaryView, or a Struct with a 'data' or 'uri' child",
                     table_field.name(),
                     other,
                 ),
@@ -129,8 +129,10 @@ fn coerce_array(column: &ArrayRef, field: &Field) -> Result<ArrayRef> {
     };
 
     match column.data_type() {
-        DataType::Binary | DataType::LargeBinary => {
-            let bytes = if column.data_type() == &DataType::Binary {
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+            let bytes = if column.data_type() == &DataType::LargeBinary {
+                column.clone()
+            } else {
                 arrow_cast::cast(column, &DataType::LargeBinary).map_err(|e| {
                     Error::InvalidInput {
                         message: format!(
@@ -140,8 +142,6 @@ fn coerce_array(column: &ArrayRef, field: &Field) -> Result<ArrayRef> {
                         ),
                     }
                 })?
-            } else {
-                column.clone()
             };
             binary_to_blob_struct(&bytes, declared_fields)
         }
@@ -149,7 +149,7 @@ fn coerce_array(column: &ArrayRef, field: &Field) -> Result<ArrayRef> {
         other => Err(Error::InvalidInput {
             message: format!(
                 "cannot coerce column '{}' with type {} into a blob v2 struct. \
-                 expected Binary, LargeBinary, or a Struct with a 'data' or 'uri' child",
+                 expected Binary, LargeBinary, BinaryView, or a Struct with a 'data' or 'uri' child",
                 field.name(),
                 other,
             ),
@@ -221,8 +221,8 @@ mod tests {
     use super::*;
     use crate::blob::blob;
     use arrow_array::{
-        BinaryArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch, StringArray,
-        UInt8Array, UInt64Array,
+        BinaryArray, BinaryViewArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch,
+        StringArray, UInt8Array, UInt64Array,
     };
     use arrow_schema::Schema;
     use datafusion::prelude::SessionContext;
@@ -333,6 +333,18 @@ mod tests {
                 .unwrap()
                 .is_blob_v2()
         );
+    }
+
+    #[tokio::test]
+    async fn binary_view_coerces_to_declared_blob_struct() {
+        let batch = batch_with_image(
+            Field::new("image", DataType::BinaryView, true),
+            Arc::new(BinaryViewArray::from_iter_values([b"view".as_slice()])),
+        );
+        let coerced = coerce(batch, &blob_table_schema()).await;
+        let data = image_struct(&coerced).column_by_name("data").unwrap();
+        let data: &LargeBinaryArray = data.as_any().downcast_ref().unwrap();
+        assert_eq!(data.value(0), b"view");
     }
 
     #[tokio::test]
