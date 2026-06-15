@@ -21,6 +21,7 @@ use lancedb::blob::BlobFile;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    LoadColumnsRequest,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
@@ -1331,6 +1332,43 @@ impl Table {
                 )
                 .await
                 .infer_error()
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (source_uris, source_format, target_key, columns, source_key=None, source_storage_options=None, on_missing=None, num_workers=None, max_workers=None, batch_size=None, commit_granularity=None, priority=None))]
+    pub fn load_columns(
+        self_: PyRef<'_, Self>,
+        source_uris: Vec<String>,
+        source_format: String,
+        target_key: String,
+        columns: Vec<(String, Option<String>)>,
+        source_key: Option<String>,
+        source_storage_options: Option<std::collections::HashMap<String, String>>,
+        on_missing: Option<String>,
+        num_workers: Option<u32>,
+        max_workers: Option<u32>,
+        batch_size: Option<u32>,
+        commit_granularity: Option<u32>,
+        priority: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let request = LoadColumnsRequest {
+            source_uris,
+            source_format,
+            source_storage_options,
+            target_key,
+            source_key,
+            columns,
+            on_missing,
+            num_workers,
+            max_workers,
+            batch_size,
+            commit_granularity,
+            priority,
+        };
+        future_into_py(self_.py(), async move {
+            inner.load_columns(request).await.infer_error()
         })
     }
 
