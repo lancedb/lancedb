@@ -932,6 +932,70 @@ class RemoteTable(Table):
             )
         )
 
+    def load_columns(
+        self,
+        source: Union[str, Iterable[str]],
+        pk: str,
+        columns: Union[Iterable[str], Dict[str, str]],
+        *,
+        source_format: str = "parquet",
+        source_pk: Optional[str] = None,
+        on_missing: str = "carry",
+        source_storage_options: Optional[Dict[str, str]] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        commit_granularity: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> str:
+        """Fill existing columns from an external source by primary-key join.
+
+        The distributed-job equivalent of Geneva's ``Table.load_columns()``:
+        imports precomputed values (e.g. embeddings) from Parquet/Lance/IPC into
+        this table, matching on a primary key. Returns the load job id.
+        Server-backed feature (LanceDB Enterprise / Cloud).
+
+        Parameters
+        ----------
+        source: str | list[str]
+            One source URI or a list of URIs.
+        pk: str
+            Destination primary-key column. Also the source key unless
+            ``source_pk`` is given.
+        columns: list[str] | dict[str, str]
+            Value columns to load. A list loads same-named columns; a dict maps
+            ``{target: source}``.
+        source_format: str
+            ``"parquet"`` (default), ``"lance"``, or ``"ipc"``.
+        source_pk: str, optional
+            Source primary-key column when it differs from ``pk``.
+        on_missing: str
+            Behavior for destination rows with no source match:
+            ``"carry"`` (default, keep existing), ``"null"``, or ``"error"``.
+        """
+        if isinstance(source, str):
+            source = [source]
+        if isinstance(columns, dict):
+            mappings = [(target, src) for target, src in columns.items()]
+        else:
+            mappings = [(c, None) for c in columns]
+        return LOOP.run(
+            self._table.load_columns(
+                list(source),
+                source_format,
+                pk,
+                mappings,
+                source_key=source_pk,
+                source_storage_options=source_storage_options,
+                on_missing=on_missing,
+                num_workers=num_workers,
+                max_workers=max_workers,
+                batch_size=batch_size,
+                commit_granularity=commit_granularity,
+                priority=priority,
+            )
+        )
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:

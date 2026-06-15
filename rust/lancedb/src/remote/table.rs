@@ -2371,6 +2371,64 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(body.job_id)
     }
 
+    async fn load_columns(&self, request: crate::table::LoadColumnsRequest) -> Result<String> {
+        let columns: Vec<serde_json::Value> = request
+            .columns
+            .iter()
+            .map(|(target, source)| {
+                serde_json::json!({
+                    "target": target,
+                    "source": source.clone().unwrap_or_else(|| target.clone()),
+                })
+            })
+            .collect();
+        let mut source = serde_json::json!({
+            "uris": request.source_uris,
+            "format": request.source_format,
+        });
+        if let Some(opts) = request.source_storage_options {
+            source["storage_options"] = serde_json::to_value(opts).unwrap_or_default();
+        }
+        let mut body = serde_json::json!({
+            "columns": columns,
+            "source": source,
+            "target_key": request.target_key,
+        });
+        if let Some(k) = request.source_key {
+            body["source_key"] = serde_json::Value::String(k);
+        }
+        if let Some(m) = request.on_missing {
+            body["on_missing"] = serde_json::Value::String(m);
+        }
+        if let Some(n) = request.num_workers {
+            body["num_workers"] = n.into();
+        }
+        if let Some(n) = request.max_workers {
+            body["max_workers"] = n.into();
+        }
+        if let Some(n) = request.batch_size {
+            body["batch_size"] = n.into();
+        }
+        if let Some(n) = request.commit_granularity {
+            body["commit_granularity"] = n.into();
+        }
+        if let Some(p) = request.priority {
+            body["priority"] = serde_json::Value::String(p);
+        }
+        let http_request = self
+            .client
+            .post(&format!("/v1/table/{}/load_columns", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(http_request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        #[derive(serde::Deserialize)]
+        struct LoadColumnsResponse {
+            job_id: String,
+        }
+        let body: LoadColumnsResponse = response.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
@@ -2885,6 +2943,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job_id, "j-9");
+    }
+
+    #[tokio::test]
+    async fn test_load_columns() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/load_columns");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body["columns"],
+                serde_json::json!([{"target": "embedding", "source": "emb"}])
+            );
+            assert_eq!(body["source"]["format"], "parquet");
+            assert_eq!(
+                body["source"]["uris"],
+                serde_json::json!(["s3://b/x.parquet"])
+            );
+            assert_eq!(body["target_key"], "document_id");
+            assert_eq!(body["source_key"], "doc_id");
+            assert_eq!(body["on_missing"], "null");
+            assert_eq!(body["num_workers"], 4);
+
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"lc-7"}"#)
+                .unwrap()
+        });
+
+        let request = crate::table::LoadColumnsRequest {
+            source_uris: vec!["s3://b/x.parquet".to_string()],
+            source_format: "parquet".to_string(),
+            source_storage_options: None,
+            target_key: "document_id".to_string(),
+            source_key: Some("doc_id".to_string()),
+            columns: vec![("embedding".to_string(), Some("emb".to_string()))],
+            on_missing: Some("null".to_string()),
+            num_workers: Some(4),
+            max_workers: None,
+            batch_size: None,
+            commit_granularity: None,
+            priority: None,
+        };
+        let job_id = table.load_columns(request).await.unwrap();
+        assert_eq!(job_id, "lc-7");
     }
 
     #[tokio::test]

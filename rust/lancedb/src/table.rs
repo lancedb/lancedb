@@ -471,6 +471,33 @@ impl LsmWriteSpec {
     }
 }
 
+/// Request to fill existing table columns from an external source by
+/// primary-key join (Geneva `Table.load_columns()` parity). Server-backed
+/// feature (LanceDB Enterprise / Cloud).
+#[derive(Debug, Clone)]
+pub struct LoadColumnsRequest {
+    /// External source URIs.
+    pub source_uris: Vec<String>,
+    /// Source format: "parquet" | "lance" | "ipc".
+    pub source_format: String,
+    /// Source-only storage options (e.g. cloud credentials).
+    pub source_storage_options: Option<HashMap<String, String>>,
+    /// Destination primary-key column.
+    pub target_key: String,
+    /// Source primary-key column. Defaults to `target_key` when None.
+    pub source_key: Option<String>,
+    /// Value column mappings as `(target, source)`; a None source defaults to
+    /// the target name.
+    pub columns: Vec<(String, Option<String>)>,
+    /// Missing-row policy: "carry" (default) | "null" | "error".
+    pub on_missing: Option<String>,
+    pub num_workers: Option<u32>,
+    pub max_workers: Option<u32>,
+    pub batch_size: Option<u32>,
+    pub commit_granularity: Option<u32>,
+    pub priority: Option<String>,
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -651,6 +678,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<String> {
         Err(Error::NotSupported {
             message: "refresh_column is not supported by this table".into(),
+        })
+    }
+    /// Fill existing columns from an external source by primary-key join
+    /// (Geneva `load_columns`). Returns the load job id. Server-backed feature;
+    /// the default returns NotSupported.
+    async fn load_columns(&self, _request: LoadColumnsRequest) -> Result<String> {
+        Err(Error::NotSupported {
+            message: "load_columns is not supported by this table".into(),
         })
     }
     /// Alter columns in the table.
@@ -1528,6 +1563,12 @@ impl Table {
                 priority,
             )
             .await
+    }
+
+    /// Fill existing columns from an external Parquet/Lance/IPC source by
+    /// primary-key join (Geneva `Table.load_columns()`). Returns the job id.
+    pub async fn load_columns(&self, request: LoadColumnsRequest) -> Result<String> {
+        self.inner.load_columns(request).await
     }
 
     /// Change a column's name or nullability.
