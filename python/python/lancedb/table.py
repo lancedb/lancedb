@@ -3813,22 +3813,26 @@ class LanceTable(Table):
         max_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         priority: Optional[str] = None,
-    ) -> str:
+    ) -> "JobHandle":
         """Trigger recompute of computed columns (REFRESH COLUMN).
 
         The expression is resolved server-side from each column's stored
         binding; columns bound to the same struct-returning function
-        refresh together. Returns the refresh job id. Server-backed
-        feature (LanceDB Enterprise / Cloud).
+        refresh together. Returns a `JobHandle` to wait on, poll, or cancel
+        (``tbl.refresh_column("col").wait()``) -- mirrors
+        `MaterializedView.refresh()`. Server-backed feature (LanceDB
+        Enterprise / Cloud).
 
         num_workers / max_workers / batch_size / priority are per-refresh
         scheduling knobs (how to run THIS refresh) and override any default
         the function carries. `priority` is a Kueue tier
         (training | interactive | backfill).
         """
+        from .udf import JobHandle
+
         if isinstance(columns, str):
             columns = [columns]
-        return LOOP.run(
+        job_id = LOOP.run(
             self._table.refresh_column(
                 list(columns),
                 where=where,
@@ -3838,6 +3842,7 @@ class LanceTable(Table):
                 priority=priority,
             )
         )
+        return JobHandle(self._conn, job_id)
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]

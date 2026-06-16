@@ -677,7 +677,7 @@ class DBConnection(EnforceOverrides):
         job_id = LOOP.run(
             self._conn.create_materialized_view(
                 name,
-                query,
+                query=query,
                 auto_refresh=auto_refresh,
                 with_no_data=with_no_data,
                 partition_by=partition_by,
@@ -741,7 +741,7 @@ class DBConnection(EnforceOverrides):
         instead of the default incremental refresh.
         """
         return LOOP.run(
-            self._conn.refresh_materialized_view(
+            self._conn._refresh_materialized_view(
                 name,
                 full=full,
                 src_version=src_version,
