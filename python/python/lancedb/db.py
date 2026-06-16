@@ -705,7 +705,7 @@ class DBConnection(EnforceOverrides):
 
         return JobHandle(self, job_id)
 
-    def refresh_materialized_view(
+    def _refresh_materialized_view(
         self,
         name: str,
         *,
@@ -714,7 +714,10 @@ class DBConnection(EnforceOverrides):
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
     ) -> str:
-        """Refresh a materialized view; returns the refresh job id.
+        """Internal: submit a materialized-view refresh, return the job id.
+        The public surface is ``MaterializedView.refresh()`` (which returns a
+        `JobHandle`); this stays private so refresh is only reached through the
+        handle.
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
         instead of the default incremental refresh.
@@ -2094,7 +2097,7 @@ class AsyncConnection(object):
 
         return AsyncJobHandle(self, job_id)
 
-    async def refresh_materialized_view(
+    async def _refresh_materialized_view(
         self,
         name: str,
         *,
@@ -2103,7 +2106,8 @@ class AsyncConnection(object):
         num_workers: Optional[int] = None,
         max_workers: Optional[int] = None,
     ) -> str:
-        """Refresh a materialized view; returns the refresh job id.
+        """Internal: submit a refresh, return the job id. The public surface is
+        ``AsyncMaterializedView.refresh()`` (returns an `AsyncJobHandle`).
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
         instead of the default incremental refresh.
