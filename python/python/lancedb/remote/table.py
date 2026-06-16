@@ -13,10 +13,14 @@ from typing import (
     Iterable,
     List,
     Optional,
+    TYPE_CHECKING,
     Union,
     Literal,
     overload,
 )
+
+if TYPE_CHECKING:
+    from ..udf import JobHandle
 import warnings
 
 from lancedb import __version__
@@ -906,22 +910,25 @@ class RemoteTable(Table):
         max_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         priority: Optional[str] = None,
-    ) -> str:
+    ) -> "JobHandle":
         """Trigger recompute of computed columns (REFRESH COLUMN).
 
         The expression is resolved server-side from each column's stored
         binding; columns bound to the same struct-returning function
-        refresh together. Returns the refresh job id. Server-backed
-        feature (LanceDB Enterprise / Cloud).
+        refresh together. Returns a `JobHandle` to wait on, poll, or cancel
+        (``tbl.refresh_column("c").wait()``). Server-backed feature
+        (LanceDB Enterprise / Cloud).
 
         num_workers / max_workers / batch_size / priority are per-refresh
         scheduling knobs (how to run THIS refresh) and override any default
         the function carries. `priority` is a Kueue tier
         (training | interactive | backfill).
         """
+        from ..udf import JobHandle
+
         if isinstance(columns, str):
             columns = [columns]
-        return LOOP.run(
+        job_id = LOOP.run(
             self._table.refresh_column(
                 list(columns),
                 where=where,
@@ -931,6 +938,19 @@ class RemoteTable(Table):
                 priority=priority,
             )
         )
+        return JobHandle(self._job_conn(), job_id)
+
+    def _job_conn(self):
+        """A client connection for polling jobs this table spawns. Built lazily
+        from the table's serialized connection state and cached (not pickled --
+        a forked/unpickled table rebuilds it on next use)."""
+        from lancedb import deserialize_conn
+
+        conn = getattr(self, "_job_conn_cache", None)
+        if conn is None:
+            conn = deserialize_conn(self._serialized_connection_state())
+            self._job_conn_cache = conn
+        return conn
 
     def load_columns(
         self,

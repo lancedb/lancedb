@@ -19,8 +19,8 @@ Register and use them through the existing connection/table API:
     db.create_function(embed)                 # CREATE FUNCTION (once)
     tbl = db.open_table("docs")
     tbl.add_columns(computed={"vec": embed("text")})  # bind embed(text) -> vec
-    db.job(tbl.refresh_column("vec")).wait()  # materialize
-    view = db.create_view("chunks", tbl, ["id", chunk_fn])
+    tbl.refresh_column("vec").wait()          # materialize (returns a JobHandle)
+    view = db.create_materialized_view("chunks", tbl, ["id", chunk_fn])
 
 `embed("text")` applies the registered function to the `text` column and yields
 the expression `embed(text)`; the function itself stays decoupled from any
@@ -490,22 +490,38 @@ def _job_id_matches(handle_id: str, listed_id: str) -> bool:
     return len(prefix) >= 4 and prefix in listed_id
 
 
-class View:
-    """A reference to a materialized view (name + connection). View
-    operations are server-backed connection calls bound to the name."""
+class MaterializedView:
+    """A reference to a materialized view (name + connection). Operations are
+    server-backed connection calls bound to the name.
 
-    def __init__(self, conn, name: str):
+    ``create_materialized_view`` returns one of these; ``job_id`` is the
+    initial-population job (None when the view was created with no data), so
+    ``db.create_materialized_view(...).wait()`` blocks until it is populated.
+    """
+
+    def __init__(self, conn, name: str, job_id: "str | None" = None):
         self.conn = conn
         self.name = name
+        #: initial-population job id from create, or None (with_no_data).
+        self.job_id = job_id
 
-    def refresh(self, full: bool = False):
-        """Refresh the materialized view; returns the refresh job id.
+    def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
+        """Block until the initial-population job (from create) finishes.
+        A no-op when the view was created with no data."""
+        if self.job_id is None:
+            return "finished"
+        return JobHandle(self.conn, self.job_id).wait(timeout=timeout, poll=poll)
+
+    def refresh(self, full: bool = False) -> "JobHandle":
+        """Refresh the materialized view; returns a `JobHandle` to wait on,
+        poll, or cancel (``view.refresh().wait()``).
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
         instead of the default incremental refresh. A full rebuild preserves
         the view's indexes -- they are reindexed by the distributed indexer.
         """
-        return self.conn.refresh_materialized_view(self.name, full=full)
+        job_id = self.conn.refresh_materialized_view(self.name, full=full)
+        return JobHandle(self.conn, job_id)
 
     def explain_refresh(self, full: bool = False):
         """Plan a refresh without running it (EXPLAIN REFRESH)."""
@@ -607,20 +623,33 @@ class JobHandle:
         self.conn.cancel_job(job.job_id if job is not None else self.id)
 
 
-class AsyncView:
+class AsyncMaterializedView:
     """Async reference to a materialized view (name + async connection)."""
 
-    def __init__(self, conn, name: str):
+    def __init__(self, conn, name: str, job_id: "str | None" = None):
         self.conn = conn
         self.name = name
+        #: initial-population job id from create, or None (with_no_data).
+        self.job_id = job_id
 
-    async def refresh(self, full: bool = False):
-        """Refresh the materialized view; returns the refresh job id.
+    async def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
+        """Block until the initial-population job (from create) finishes.
+        A no-op when the view was created with no data."""
+        if self.job_id is None:
+            return "finished"
+        return await AsyncJobHandle(self.conn, self.job_id).wait(
+            timeout=timeout, poll=poll
+        )
+
+    async def refresh(self, full: bool = False) -> "AsyncJobHandle":
+        """Refresh the materialized view; returns an `AsyncJobHandle` to wait
+        on, poll, or cancel.
 
         ``full=True`` forces a full rebuild instead of an incremental refresh
         (indexes are preserved and reindexed by the distributed indexer).
         """
-        return await self.conn.refresh_materialized_view(self.name, full=full)
+        job_id = await self.conn.refresh_materialized_view(self.name, full=full)
+        return AsyncJobHandle(self.conn, job_id)
 
     async def explain_refresh(self, full: bool = False):
         return await self.conn.explain_refresh_materialized_view(self.name, full=full)
