@@ -22,7 +22,7 @@ use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo,
     MvRefreshPlan, OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest,
-    TableNamesRequest,
+    TableLineageRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -856,6 +856,26 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let body: RemoteRefreshMaterializedViewResponse =
             rsp.json().await.err_to_http(request_id)?;
         Ok(body.job_id)
+    }
+
+    async fn table_lineage(&self, request: TableLineageRequest) -> Result<String> {
+        let mut req = self
+            .client
+            .get(&format!("/v1/table/{}/lineage", request.name));
+        if let Some(column) = &request.column {
+            req = req.query(&[("column", column)]);
+        }
+        if let Some(direction) = &request.direction {
+            req = req.query(&[("direction", direction)]);
+        }
+        if let Some(depth) = request.depth {
+            req = req.query(&[("depth", depth.to_string())]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        // Server-defined lineage JSON, returned opaque (the client does not
+        // model the lineage schema; the Python layer deserializes it).
+        rsp.text().await.err_to_http(request_id)
     }
 
     async fn explain_refresh_materialized_view(
