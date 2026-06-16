@@ -520,7 +520,7 @@ class MaterializedView:
         instead of the default incremental refresh. A full rebuild preserves
         the view's indexes -- they are reindexed by the distributed indexer.
         """
-        job_id = self.conn.refresh_materialized_view(self.name, full=full)
+        job_id = self.conn._refresh_materialized_view(self.name, full=full)
         return JobHandle(self.conn, job_id)
 
     def explain_refresh(self, full: bool = False):
@@ -648,7 +648,7 @@ class AsyncMaterializedView:
         ``full=True`` forces a full rebuild instead of an incremental refresh
         (indexes are preserved and reindexed by the distributed indexer).
         """
-        job_id = await self.conn.refresh_materialized_view(self.name, full=full)
+        job_id = await self.conn._refresh_materialized_view(self.name, full=full)
         return AsyncJobHandle(self.conn, job_id)
 
     async def explain_refresh(self, full: bool = False):
