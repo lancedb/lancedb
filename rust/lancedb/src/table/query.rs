@@ -167,6 +167,10 @@ pub async fn create_plan(
             scanner.nearest(&column, query_vector.as_ref(), top_k)?;
         }
 
+        if let Some(approx_mode) = query.approx_mode {
+            scanner.approx_mode(approx_mode.into());
+        }
+
         scanner.minimum_nprobes(query.minimum_nprobes);
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             scanner.maximum_nprobes(maximum_nprobes);
@@ -778,5 +782,43 @@ mod tests {
             display.contains("query_index"),
             "Plan should add query_index column"
         );
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_accepts_approx_mode() {
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        use crate::connect;
+        use crate::table::query::create_plan;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+        ]));
+
+        let batch = RecordBatch::new_empty(schema);
+        let table = conn
+            .create_table("test_approx_mode_plan", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        let native_table = table.as_native().unwrap();
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0]));
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector],
+            approx_mode: Some(crate::ApproxMode::Accurate),
+            ..Default::default()
+        });
+
+        create_plan(native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
     }
 }
