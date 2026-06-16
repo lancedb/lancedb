@@ -677,7 +677,7 @@ class DBConnection(EnforceOverrides):
         job_id = LOOP.run(
             self._conn.create_materialized_view(
                 name,
-                query,
+                query=query,
                 auto_refresh=auto_refresh,
                 with_no_data=with_no_data,
                 partition_by=partition_by,
