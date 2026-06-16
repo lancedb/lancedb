@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
+    from .udf import MaterializedView, AsyncMaterializedView
 
 from .namespace_utils import (
     _normalize_create_namespace_mode,
@@ -631,18 +632,28 @@ class DBConnection(EnforceOverrides):
     def create_materialized_view(
         self,
         name: str,
-        query: str,
+        source=None,
+        select=None,
         *,
+        query: Optional[str] = None,
+        where: Optional[str] = None,
         auto_refresh: bool = False,
         with_no_data: bool = False,
+        replace: bool = False,
         partition_by: Optional[str] = None,
-    ) -> Optional[str]:
-        """Create a materialized view (CREATE MATERIALIZED VIEW).
+    ) -> "MaterializedView":
+        """Create a materialized view (CREATE MATERIALIZED VIEW); returns a
+        `MaterializedView` handle (``.wait()`` blocks until it is populated).
 
-        `query` is the view's SELECT statement, e.g.
-        "SELECT id, embed(body) AS vec FROM articles WHERE id > 1".
-        Returns the initial-population job id, or None when
-        with_no_data=True.
+        Two ways to specify the view body:
+
+        - ergonomic: pass ``source`` (a table name or table) and ``select``
+          items -- column names, expression strings ("embed(body)"),
+          (alias, expression) tuples, or ``@udf`` / ``@table_udf`` objects.
+          The SELECT is assembled and parsed server-side (one parser, shared
+          with SQL).
+        - raw: pass ``query=`` with a full SELECT, e.g.
+          "SELECT id, embed(body) AS vec FROM articles WHERE id > 1".
 
         `partition_by` partitions the view's (single) table function on a source
         column. If that column has an IVF vector index the server partitions by
@@ -650,7 +661,20 @@ class DBConnection(EnforceOverrides):
         value. (Geneva's `partition_by` and `partition_by_indexed_column` unify
         here -- the engine picks the strategy from the column.)
         """
-        return LOOP.run(
+        from .udf import build_view_query, MaterializedView
+
+        if query is None:
+            if source is None or select is None:
+                raise ValueError(
+                    "create_materialized_view needs either query= or both "
+                    "source and select"
+                )
+            query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            self._drop_view_if_exists(name)
+        job_id = LOOP.run(
             self._conn.create_materialized_view(
                 name,
                 query,
@@ -659,49 +683,24 @@ class DBConnection(EnforceOverrides):
                 partition_by=partition_by,
             )
         )
+        return MaterializedView(self, name, job_id=job_id)
 
-    def create_view(
-        self,
-        name: str,
-        source,
-        select,
-        *,
-        where: Optional[str] = None,
-        auto_refresh: bool = False,
-        replace: bool = False,
-        partition_by: Optional[str] = None,
-    ):
-        """Create a materialized view from a source and select items, and
-        return a `View` handle.
-
-        `source` is a table name or table; `select` items are column names,
-        expression strings ("embed(body)"), (alias, expression) tuples, or
-        ``@udf`` / ``@table_udf`` objects. Sugar over create_materialized_view:
-        it assembles the SELECT, which the server parses (one parser, shared
-        with SQL).
-
-        `partition_by` partitions the view's table function on a source column;
-        the server partitions by index clusters if that column is IVF-indexed,
-        else by distinct value (see create_materialized_view).
-        """
-        from .udf import build_view_query, View
-
-        query = build_view_query(source, select)
-        if where:
-            query += f" WHERE {where}"
-        if replace:
-            try:
-                self.drop_materialized_view(name)
-            except Exception:
-                pass
-        self.create_materialized_view(
-            name, query, auto_refresh=auto_refresh, partition_by=partition_by
-        )
-        return View(self, name)
+    def _drop_view_if_exists(self, name: str) -> None:
+        # `replace=True` is "drop if present"; only a not-found error is
+        # benign here. Anything else (perms, server fault) must surface rather
+        # than be masked by a later create failure.
+        try:
+            self.drop_materialized_view(name)
+        except Exception as e:
+            msg = str(e).lower()
+            if "not found" not in msg and "does not exist" not in msg:
+                raise
 
     def job(self, job_id: str):
-        """A `JobHandle` for polling/cancelling an inflight job by id (e.g.
-        ``db.job(tbl.refresh_column("c")).wait()``)."""
+        """A `JobHandle` for reconnecting to an inflight job by id -- e.g. an
+        id you stored, or one returned from the SQL / REST surface. Submit
+        methods (`refresh_column`, `MaterializedView.refresh`) already return a
+        handle directly, so you do not need this to wait on a fresh submission."""
         from .udf import JobHandle
 
         return JobHandle(self, job_id)
@@ -2043,54 +2042,54 @@ class AsyncConnection(object):
     async def create_materialized_view(
         self,
         name: str,
-        query: str,
+        source=None,
+        select=None,
         *,
+        query: Optional[str] = None,
+        where: Optional[str] = None,
         auto_refresh: bool = False,
         with_no_data: bool = False,
+        replace: bool = False,
         partition_by: Optional[str] = None,
-    ) -> Optional[str]:
-        """Create a materialized view; returns the initial-population
-        job id, or None when with_no_data=True. `partition_by` partitions the
-        view's table function on a source column (index-cluster if the column is
-        IVF-indexed, else distinct-value); see the sync method."""
-        return await self._inner.create_materialized_view(
+    ) -> "AsyncMaterializedView":
+        """Create a materialized view; returns an `AsyncMaterializedView`
+        handle (``.wait()`` blocks until populated). Pass either ``query=`` (a
+        full SELECT) or ``source`` + ``select`` items; `partition_by`
+        partitions the view's table function on a source column (index-cluster
+        if the column is IVF-indexed, else distinct-value). See the sync
+        method for the select grammar."""
+        from .udf import build_view_query, AsyncMaterializedView
+
+        if query is None:
+            if source is None or select is None:
+                raise ValueError(
+                    "create_materialized_view needs either query= or both "
+                    "source and select"
+                )
+            query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            try:
+                await self.drop_materialized_view(name)
+            except Exception as e:
+                msg = str(e).lower()
+                if "not found" not in msg and "does not exist" not in msg:
+                    raise
+        job_id = await self._inner.create_materialized_view(
             name,
             query,
             auto_refresh=auto_refresh,
             with_no_data=with_no_data,
             partition_by=partition_by,
         )
-
-    async def create_view(
-        self,
-        name: str,
-        source,
-        select,
-        *,
-        where: Optional[str] = None,
-        auto_refresh: bool = False,
-        replace: bool = False,
-        partition_by: Optional[str] = None,
-    ):
-        """Create a materialized view from a source + select items; returns
-        an `AsyncView`. See the sync `create_view` for the select grammar."""
-        from .udf import build_view_query, AsyncView
-
-        query = build_view_query(source, select)
-        if where:
-            query += f" WHERE {where}"
-        if replace:
-            try:
-                await self.drop_materialized_view(name)
-            except Exception:
-                pass
-        await self.create_materialized_view(
-            name, query, auto_refresh=auto_refresh, partition_by=partition_by
-        )
-        return AsyncView(self, name)
+        return AsyncMaterializedView(self, name, job_id=job_id)
 
     def job(self, job_id: str):
-        """An `AsyncJobHandle` for polling/cancelling an inflight job by id."""
+        """An `AsyncJobHandle` for reconnecting to an inflight job by id (a
+        stored id, or one from the SQL / REST surface). Submit methods already
+        return a handle, so this is only needed to re-attach to an existing
+        job."""
         from .udf import AsyncJobHandle
 
         return AsyncJobHandle(self, job_id)
