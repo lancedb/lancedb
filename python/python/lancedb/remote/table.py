@@ -940,6 +940,15 @@ class RemoteTable(Table):
         )
         return JobHandle(self._job_conn(), job_id)
 
+    def lineage(self, column=None, *, direction=None, depth=None):
+        """Derived-compute lineage of this table, or one of its columns:
+        upstream sources, downstream dependents, and the function version +
+        location that produced each derived column (with a drift flag). Returns
+        a `Lineage`. See `Connection.lineage`."""
+        return self._job_conn().lineage(
+            self._name, column, direction=direction, depth=depth
+        )
+
     def _job_conn(self):
         """A client connection for polling jobs this table spawns. Built lazily
         from the table's serialized connection state and cached (not pickled --

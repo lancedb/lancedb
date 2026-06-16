@@ -26,6 +26,7 @@ from .udf import (
     AsyncJobHandle,
     AsyncMaterializedView,
 )
+from .lineage import Lineage, Node, Edge, FunctionRef
 from .schema import vector
 from .table import AsyncTable, Table
 from ._lancedb import Session
@@ -464,6 +465,10 @@ __all__ = [
     "MaterializedView",
     "AsyncJobHandle",
     "AsyncMaterializedView",
+    "Lineage",
+    "Node",
+    "Edge",
+    "FunctionRef",
     "connect",
     "connect_async",
     "connect_namespace",

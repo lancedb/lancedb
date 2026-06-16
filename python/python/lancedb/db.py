@@ -705,6 +705,24 @@ class DBConnection(EnforceOverrides):
 
         return JobHandle(self, job_id)
 
+    def lineage(
+        self,
+        table: str,
+        column: Optional[str] = None,
+        *,
+        direction: Optional[str] = None,
+        depth: Optional[int] = None,
+    ):
+        """Derived-compute lineage of a table/view, or one of its columns:
+        upstream sources, downstream dependents, and the function version +
+        location that produced each derived column (with a drift flag). Returns
+        a `Lineage`. `direction` is "upstream" | "downstream" | "both" (server
+        default both); `depth` limits column-hops (transitive when omitted)."""
+        from .lineage import Lineage
+
+        raw = LOOP.run(self._conn.table_lineage(table, column, direction, depth))
+        return Lineage.from_json(raw)
+
     def _refresh_materialized_view(
         self,
         name: str,
@@ -2096,6 +2114,21 @@ class AsyncConnection(object):
         from .udf import AsyncJobHandle
 
         return AsyncJobHandle(self, job_id)
+
+    async def lineage(
+        self,
+        table: str,
+        column: Optional[str] = None,
+        *,
+        direction: Optional[str] = None,
+        depth: Optional[int] = None,
+    ):
+        """Derived-compute lineage of a table/view (or column). See the sync
+        `Connection.lineage`. Returns a `Lineage`."""
+        from .lineage import Lineage
+
+        raw = await self._inner.table_lineage(table, column, direction, depth)
+        return Lineage.from_json(raw)
 
     async def _refresh_materialized_view(
         self,
