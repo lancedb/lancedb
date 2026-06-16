@@ -718,10 +718,11 @@ class DBConnection(EnforceOverrides):
         location that produced each derived column (with a drift flag). Returns
         a `Lineage`. `direction` is "upstream" | "downstream" | "both" (server
         default both); `depth` limits column-hops (transitive when omitted)."""
-        from .lineage import Lineage
-
-        raw = LOOP.run(self._conn.table_lineage(table, column, direction, depth))
-        return Lineage.from_json(raw)
+        # `self._conn` is the AsyncConnection; drive its async `lineage`
+        # (which parses the JSON) on the loop, mirroring create_materialized_view.
+        return LOOP.run(
+            self._conn.lineage(table, column, direction=direction, depth=depth)
+        )
 
     def _refresh_materialized_view(
         self,
