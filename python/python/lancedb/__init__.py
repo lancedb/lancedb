@@ -28,6 +28,7 @@ from .udf import (
     AsyncJobHandle,
     AsyncMaterializedView,
 )
+from .lineage import Lineage, Node, Edge, FunctionRef
 from .schema import blob, vector, BlobType
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
@@ -507,6 +508,10 @@ __all__ = [
     "MaterializedView",
     "AsyncJobHandle",
     "AsyncMaterializedView",
+    "Lineage",
+    "Node",
+    "Edge",
+    "FunctionRef",
     "connect",
     "connect_async",
     "tokenize",

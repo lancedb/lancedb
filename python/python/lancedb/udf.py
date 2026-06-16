@@ -557,6 +557,12 @@ class MaterializedView:
         """Search the materialized view (vector / FTS / hybrid)."""
         return self._table().search(*args, **kwargs)
 
+    def lineage(self, column=None, *, direction=None, depth=None):
+        """Lineage of the materialized view (or one of its columns). Delegates
+        to the backing table; the server already includes the view's sources
+        and downstream dependents. Returns a `Lineage`."""
+        return self._table().lineage(column, direction=direction, depth=depth)
+
 
 _PROGRESS = re.compile(r"(\d+)/(\d+)")
 
@@ -659,6 +665,12 @@ class AsyncMaterializedView:
 
     async def drop(self) -> None:
         await self.conn.drop_materialized_view(self.name)
+
+    async def lineage(self, column=None, *, direction=None, depth=None):
+        """Lineage of the materialized view (or column). Returns a `Lineage`."""
+        return await self.conn.lineage(
+            self.name, column, direction=direction, depth=depth
+        )
 
 
 class AsyncJobHandle:
