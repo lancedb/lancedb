@@ -723,7 +723,7 @@ class DBConnection(EnforceOverrides):
         instead of the default incremental refresh.
         """
         return LOOP.run(
-            self._conn.refresh_materialized_view(
+            self._conn._refresh_materialized_view(
                 name,
                 full=full,
                 src_version=src_version,
