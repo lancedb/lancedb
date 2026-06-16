@@ -280,6 +280,21 @@ pub struct RefreshMaterializedViewRequest {
     pub max_workers: Option<u32>,
 }
 
+/// A request for the derived-compute lineage of a table/view (or one of its
+/// columns). The response is server-defined lineage JSON, returned opaque so
+/// this client need not model the server's lineage schema.
+#[derive(Debug, Clone, Default)]
+pub struct TableLineageRequest {
+    /// Table or view name.
+    pub name: String,
+    /// Column for column-level lineage; whole table/view when absent.
+    pub column: Option<String>,
+    /// "upstream" | "downstream" | "both" (server default when absent).
+    pub direction: Option<String>,
+    /// Column-hops to walk; transitive when absent.
+    pub depth: Option<u32>,
+}
+
 impl RefreshMaterializedViewRequest {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -426,6 +441,11 @@ pub trait Database:
         _request: RefreshMaterializedViewRequest,
     ) -> Result<String> {
         not_supported("refresh_materialized_view")
+    }
+    /// Derived-compute lineage of a table/view (or column), as server-defined
+    /// JSON. Read-only.
+    async fn table_lineage(&self, _request: TableLineageRequest) -> Result<String> {
+        not_supported("table_lineage")
     }
     /// Plan a materialized-view refresh without submitting work
     /// (EXPLAIN REFRESH). `full` plans a full rebuild (incremental

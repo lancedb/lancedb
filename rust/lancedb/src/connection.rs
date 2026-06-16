@@ -25,7 +25,7 @@ use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, Database,
     DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest,
-    ReadConsistency, RefreshMaterializedViewRequest, TableNamesRequest,
+    ReadConsistency, RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -523,6 +523,12 @@ impl Connection {
         request: RefreshMaterializedViewRequest,
     ) -> Result<String> {
         self.internal.refresh_materialized_view(request).await
+    }
+
+    /// Derived-compute lineage of a table/view (or column), as server-defined
+    /// JSON. Read-only.
+    pub async fn table_lineage(&self, request: TableLineageRequest) -> Result<String> {
+        self.internal.table_lineage(request).await
     }
 
     /// Plan a materialized-view refresh without submitting work

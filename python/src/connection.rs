@@ -20,7 +20,7 @@ use lancedb::{
     database::namespace::LanceNamespaceDatabase,
     database::{
         CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode, Database,
-        ReadConsistency, RefreshMaterializedViewRequest,
+        ReadConsistency, RefreshMaterializedViewRequest, TableLineageRequest,
     },
 };
 use pyo3::{
@@ -455,6 +455,29 @@ impl Connection {
                     src_version,
                     num_workers,
                     max_workers,
+                })
+                .await
+                .infer_error()
+        })
+    }
+
+    /// Derived-compute lineage of a table/view (or column), returned as the
+    /// server's lineage JSON string (the Python layer parses it).
+    pub fn table_lineage(
+        self_: PyRef<'_, Self>,
+        name: String,
+        column: Option<String>,
+        direction: Option<String>,
+        depth: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .table_lineage(TableLineageRequest {
+                    name,
+                    column,
+                    direction,
+                    depth,
                 })
                 .await
                 .infer_error()
