@@ -480,6 +480,12 @@ pub trait Database:
     async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
         not_supported("cancel_job")
     }
+    /// Point-access for a single job by id -- the `wait()`/status poll path.
+    /// `table_hint` (the job's table, which `wait()` callers know) enables an
+    /// O(1) server-side lookup. `None` if the job is unknown or not active.
+    async fn get_job(&self, _job_id: &str, _table_hint: Option<&str>) -> Result<Option<JobInfo>> {
+        not_supported("get_job")
+    }
 
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;

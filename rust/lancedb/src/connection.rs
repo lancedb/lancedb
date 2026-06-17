@@ -572,6 +572,14 @@ impl Connection {
         self.internal.cancel_job(job_id).await
     }
 
+    /// Look up a single server-side job by id -- the `wait()`/status poll path.
+    /// `table_hint` (the job's table) enables an O(1) server-side lookup; `None`
+    /// scans the database's active jobs. A `None` result means unknown / not
+    /// active.
+    pub async fn get_job(&self, job_id: &str, table_hint: Option<&str>) -> Result<Option<JobInfo>> {
+        self.internal.get_job(job_id, table_hint).await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.

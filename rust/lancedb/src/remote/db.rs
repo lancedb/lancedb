@@ -164,8 +164,33 @@ struct RemoteListJobsResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct RemoteGetJobResponse {
+    #[serde(default)]
+    job: Option<RemoteJobEntry>,
+}
+
+#[derive(serde::Deserialize)]
 struct RemoteCancelJobResponse {
     cancelled: bool,
+}
+
+impl From<RemoteJobEntry> for JobInfo {
+    fn from(j: RemoteJobEntry) -> Self {
+        JobInfo {
+            table: j.table,
+            job_id: j.job_id,
+            job_type: j.job_type,
+            state: j.state,
+            column: j.column,
+            age_seconds: j.age_seconds,
+            command: j.command,
+            units_done: j.units_done,
+            units_total: j.units_total,
+            committed: j.committed,
+            rows_skipped: j.rows_skipped,
+            error: j.error,
+        }
+    }
 }
 
 // Request structure for the remote clone table API
@@ -949,24 +974,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, rsp) = self.client.send(req).await?;
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
-        Ok(body
-            .jobs
-            .into_iter()
-            .map(|j| JobInfo {
-                table: j.table,
-                job_id: j.job_id,
-                job_type: j.job_type,
-                state: j.state,
-                column: j.column,
-                age_seconds: j.age_seconds,
-                command: j.command,
-                units_done: j.units_done,
-                units_total: j.units_total,
-                committed: j.committed,
-                rows_skipped: j.rows_skipped,
-                error: j.error,
-            })
-            .collect())
+        Ok(body.jobs.into_iter().map(JobInfo::from).collect())
+    }
+
+    async fn get_job(&self, job_id: &str, table: Option<&str>) -> Result<Option<JobInfo>> {
+        // Point-access poll path: GET /v1/job/{id}, with the table as the O(1)
+        // hint when known. `query` handles URL-encoding the table name.
+        let mut req = self.client.get(&format!("/v1/job/{job_id}"));
+        if let Some(t) = table {
+            req = req.query(&[("table", t)]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteGetJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.job.map(JobInfo::from))
     }
 
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {
