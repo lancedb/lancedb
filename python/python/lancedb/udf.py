@@ -510,7 +510,9 @@ class MaterializedView:
         A no-op when the view was created with no data."""
         if self.job_id is None:
             return "finished"
-        return JobHandle(self.conn, self.job_id).wait(timeout=timeout, poll=poll)
+        return JobHandle(self.conn, self.job_id, table=self.name).wait(
+            timeout=timeout, poll=poll
+        )
 
     def refresh(self, full: bool = False) -> "JobHandle":
         """Refresh the materialized view; returns a `JobHandle` to wait on,
@@ -521,7 +523,7 @@ class MaterializedView:
         the view's indexes -- they are reindexed by the distributed indexer.
         """
         job_id = self.conn._refresh_materialized_view(self.name, full=full)
-        return JobHandle(self.conn, job_id)
+        return JobHandle(self.conn, job_id, table=self.name)
 
     def explain_refresh(self, full: bool = False):
         """Plan a refresh without running it (EXPLAIN REFRESH)."""
@@ -574,20 +576,20 @@ class JobHandle:
     #: -> agent cycle -> manifest write is async).
     GRACE_SECONDS = 20.0
 
-    def __init__(self, conn, job_id: str):
+    def __init__(self, conn, job_id: str, table: "str | None" = None):
         self.conn = conn
         self.id = job_id
+        #: The job's table, when known (refresh_column / MV refresh). Lets the
+        #: server resolve this job with an O(1) single-node read; without it the
+        #: lookup scans the database's active jobs (still correct).
+        self.table = table
         self._created = time.monotonic()
         self._seen = False
 
-    def _matches(self, listed_id: str) -> bool:
-        return _job_id_matches(self.id, listed_id)
-
     def _job(self):
-        for j in self.conn.list_jobs():
-            if self._matches(j.job_id):
-                return j
-        return None
+        # Poll by id (one job), not list_jobs (every active job): the server
+        # matches the submission/manifest id and reads just this table's node.
+        return self.conn.get_job(self.id, self.table)
 
     def status(self) -> str:
         """pending / running / cancelling / stale, or 'finished' once the
@@ -643,7 +645,7 @@ class AsyncMaterializedView:
         A no-op when the view was created with no data."""
         if self.job_id is None:
             return "finished"
-        return await AsyncJobHandle(self.conn, self.job_id).wait(
+        return await AsyncJobHandle(self.conn, self.job_id, table=self.name).wait(
             timeout=timeout, poll=poll
         )
 
@@ -655,7 +657,7 @@ class AsyncMaterializedView:
         (indexes are preserved and reindexed by the distributed indexer).
         """
         job_id = await self.conn._refresh_materialized_view(self.name, full=full)
-        return AsyncJobHandle(self.conn, job_id)
+        return AsyncJobHandle(self.conn, job_id, table=self.name)
 
     async def explain_refresh(self, full: bool = False):
         return await self.conn.explain_refresh_materialized_view(self.name, full=full)
@@ -678,17 +680,17 @@ class AsyncJobHandle:
 
     GRACE_SECONDS = 20.0
 
-    def __init__(self, conn, job_id: str):
+    def __init__(self, conn, job_id: str, table: "str | None" = None):
         self.conn = conn
         self.id = job_id
+        #: See JobHandle.table -- enables an O(1) by-id lookup when known.
+        self.table = table
         self._created = time.monotonic()
         self._seen = False
 
     async def _job(self):
-        for j in await self.conn.list_jobs():
-            if _job_id_matches(self.id, j.job_id):
-                return j
-        return None
+        # Poll by id, not list_jobs (see JobHandle._job).
+        return await self.conn.get_job(self.id, self.table)
 
     async def status(self) -> str:
         job = await self._job()

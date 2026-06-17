@@ -784,6 +784,15 @@ class DBConnection(EnforceOverrides):
         """List inflight server-side jobs across the database's tables."""
         return LOOP.run(self._conn.list_jobs())
 
+    def get_job(self, job_id: str, table: "str | None" = None):
+        """Look up one server-side job by id (the wait()/status poll path).
+
+        Passing ``table`` (the job's table) lets the server answer with an O(1)
+        single-node read instead of scanning the database's active jobs.
+        Returns the job's status, or None if it's unknown or no longer active.
+        """
+        return LOOP.run(self._conn.get_job(job_id, table))
+
     def cancel_job(self, job_id: str) -> bool:
         """Cancel an inflight server-side job by id (CANCEL JOB).
 
@@ -2181,6 +2190,12 @@ class AsyncConnection(object):
     async def list_jobs(self):
         """List inflight server-side jobs across the database's tables."""
         return await self._inner.list_jobs()
+
+    async def get_job(self, job_id: str, table: "str | None" = None):
+        """Look up one server-side job by id (the wait()/status poll path).
+        ``table`` (the job's table) enables an O(1) server-side lookup.
+        Returns the job's status, or None if unknown / no longer active."""
+        return await self._inner.get_job(job_id, table)
 
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel an inflight server-side job by id (CANCEL JOB).

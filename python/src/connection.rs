@@ -582,6 +582,35 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (job_id, table=None))]
+    pub fn get_job(
+        self_: PyRef<'_, Self>,
+        job_id: String,
+        table: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner
+                .get_job(&job_id, table.as_deref())
+                .await
+                .infer_error()?;
+            Ok(job.map(|j| JobInfo {
+                table: j.table,
+                job_id: j.job_id,
+                job_type: j.job_type,
+                state: j.state,
+                column: j.column,
+                age_seconds: j.age_seconds,
+                command: j.command,
+                units_done: j.units_done,
+                units_total: j.units_total,
+                committed: j.committed,
+                rows_skipped: j.rows_skipped,
+                error: j.error,
+            }))
+        })
+    }
+
     #[pyo3(signature = (cur_name, new_name, cur_namespace_path=None, new_namespace_path=None))]
     pub fn rename_table(
         self_: PyRef<'_, Self>,
