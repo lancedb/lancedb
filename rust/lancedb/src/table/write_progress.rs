@@ -142,11 +142,21 @@ impl WriteProgressTracker {
         cb(&progress);
     }
 
-    /// Record wire bytes from the insert layer (e.g. IPC-encoded bytes for
-    /// remote writes). When wire bytes are recorded, they take precedence over
-    /// the in-memory Arrow bytes tracked by [`record_batch`].
+    /// Record wire bytes from the insert layer.
+    ///
+    /// These bytes may be IPC-encoded bytes for remote writes or bytes handed
+    /// to Lance's local writer. When wire bytes are recorded, they take
+    /// precedence over the in-memory Arrow bytes tracked by [`record_batch`].
     pub fn record_bytes(&self, bytes: usize) {
         self.wire_bytes.fetch_add(bytes, Ordering::Relaxed);
+        let mut cb = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .rows_and_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let progress = self.snapshot(guard.0, guard.1, false);
+        drop(guard);
+        cb(&progress);
     }
 
     /// Emit the final progress callback indicating the write is complete.
@@ -169,8 +179,6 @@ impl WriteProgressTracker {
         let wire = self.wire_bytes.load(Ordering::Relaxed);
         // Prefer wire bytes (actual I/O size) when the insert layer is
         // tracking them; fall back to in-memory Arrow size otherwise.
-        // TODO: for local writes, track actual bytes written by Lance
-        // instead of using in-memory Arrow size as a proxy.
         let output_bytes = if wire > 0 { wire } else { in_memory_bytes };
         WriteProgress {
             elapsed: self.start.elapsed(),
@@ -381,6 +389,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_progress_uses_lance_write_bytes_for_local_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("local_write_bytes", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
+        let in_memory_bytes = new_data.get_array_memory_size();
+        let final_bytes = Arc::new(AtomicUsize::new(0));
+        let seen_non_memory_bytes = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let final_bytes_cb = final_bytes.clone();
+        let seen_non_memory_bytes_cb = seen_non_memory_bytes.clone();
+
+        table
+            .add(new_data)
+            .write_parallelism(1)
+            .progress(move |p| {
+                if p.output_bytes() > 0 && p.output_bytes() != in_memory_bytes {
+                    seen_non_memory_bytes_cb.store(true, Ordering::SeqCst);
+                }
+                if p.done() {
+                    final_bytes_cb.store(p.output_bytes(), Ordering::SeqCst);
+                }
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        assert!(
+            seen_non_memory_bytes.load(Ordering::SeqCst),
+            "progress should report Lance writer bytes, not only Arrow memory bytes"
+        );
+        assert_ne!(
+            final_bytes.load(Ordering::SeqCst),
+            in_memory_bytes,
+            "final progress bytes should come from Lance write stats"
+        );
     }
 
     #[test]
