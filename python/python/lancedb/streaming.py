@@ -15,6 +15,7 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
 
 import logging
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterator
 
 from torch.utils.data import IterableDataset, get_worker_info
@@ -28,7 +29,8 @@ logger = logging.getLogger(__name__)
 # distinct seeds for any practically encountered epoch count.
 _EPOCH_PRIME = 100003
 
-DEFAULT_PREFETCH_CHUNK = 64
+DEFAULT_READ_BATCH_SIZE = 64
+DEFAULT_PREFETCH_BATCHES = 4
 
 
 class StreamingDataset(IterableDataset):
@@ -57,11 +59,16 @@ class StreamingDataset(IterableDataset):
         This process's rank in the distributed training group.
     world_size:
         Total number of processes in the distributed training group.
-    prefetch_chunk:
+    read_batch_size:
         Number of rows fetched from each split in a single ``take_offsets``
         call.  Larger values amortise per-request overhead (critical on object
         storage) at the cost of higher memory usage per split buffer.  Defaults
-        to ``DEFAULT_PREFETCH_CHUNK`` (64).
+        to ``DEFAULT_READ_BATCH_SIZE`` (64).
+    prefetch_batches:
+        Number of batches to prefetch in parallel per split using background
+        threads.  Each batch is ``read_batch_size`` rows.  Higher values
+        overlap I/O with training compute at the cost of more memory and
+        threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES`` (4).
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -79,7 +86,8 @@ class StreamingDataset(IterableDataset):
         epoch: int = 0,
         rank: int = 0,
         world_size: int = 1,
-        prefetch_chunk: int = DEFAULT_PREFETCH_CHUNK,
+        read_batch_size: int = DEFAULT_READ_BATCH_SIZE,
+        prefetch_batches: int = DEFAULT_PREFETCH_BATCHES,
         worker_info_override=None,
     ):
         super().__init__()
@@ -95,7 +103,8 @@ class StreamingDataset(IterableDataset):
         self._epoch = epoch
         self._rank = rank
         self._world_size = world_size
-        self._prefetch_chunk = prefetch_chunk
+        self._read_batch_size = read_batch_size
+        self._prefetch_batches = prefetch_batches
         self._worker_info_override = worker_info_override
 
         # Number of samples each split has already been consumed.  At global
@@ -169,50 +178,64 @@ class StreamingDataset(IterableDataset):
         initial_offset = self._resume_offset
         local_consumed = [0] * n
 
-        # Per-split prefetch buffers.  Each call to take_offsets fetches
-        # prefetch_chunk rows at once, amortising the per-request overhead
-        # (critical on object storage where a single round-trip is ~100ms).
-        chunk = self._prefetch_chunk
-        buffers: list[deque] = [deque() for _ in range(n)]
+        batch_size = self._read_batch_size
+        max_prefetch = self._prefetch_batches
 
-        def _refill(i: int) -> None:
-            remaining = split_sizes[i] - local_consumed[i] - len(buffers[i])
-            fetch = min(chunk, remaining)
-            if fetch <= 0:
+        # Per-split: how many rows have been submitted to the executor so far.
+        fetch_head = [0] * n
+        # Per-split queues of in-flight Future objects (each resolves to a list of
+        # rows).
+        pending: list[deque] = [deque() for _ in range(n)]
+        # Per-split deques of rows already fetched and ready to yield.
+        ready: list[deque] = [deque() for _ in range(n)]
+
+        def _submit_one(i: int) -> None:
+            remaining = split_sizes[i] - fetch_head[i]
+            if remaining <= 0:
                 return
-            start = local_consumed[i] + len(buffers[i])
-            rows = permutations[i].__getitems__(list(range(start, start + fetch)))
-            buffers[i].extend(rows)
+            fetch = min(batch_size, remaining)
+            start = fetch_head[i]
+            fetch_head[i] += fetch
+            pending[i].append(
+                executor.submit(
+                    permutations[i].__getitems__, list(range(start, start + fetch))
+                )
+            )
 
-        for i in range(n):
-            _refill(i)
+        def _fill_pipeline(i: int) -> None:
+            while len(pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
+                _submit_one(i)
 
-        while True:
-            # Stop when any split is exhausted (all exhausted simultaneously
-            # because splits have equal size and the epoch parameters guarantee
-            # num_rows % num_splits == 0).
-            if any(local_consumed[i] >= split_sizes[i] for i in range(n)):
-                break
+        def _ensure_ready(i: int) -> None:
+            if not ready[i] and pending[i]:
+                ready[i].extend(pending[i].popleft().result())
 
-            # Round-robin: one sample from each split per cycle.
+        with ThreadPoolExecutor(max_workers=n * max_prefetch) as executor:
+            # Prime the pipeline: submit up to max_prefetch batches per split.
             for i in range(n):
-                if not buffers[i]:
-                    _refill(i)
-                row = buffers[i].popleft()
-                local_consumed[i] += 1
+                _fill_pipeline(i)
 
-                # Refill when the buffer drops to half capacity so the next
-                # fetch overlaps with yielding rather than stalling the loop.
-                if len(buffers[i]) <= chunk // 2:
-                    _refill(i)
+            while True:
+                # Stop when any split is exhausted (all exhaust simultaneously
+                # because splits have equal size and num_rows % num_splits == 0).
+                if any(local_consumed[i] >= split_sizes[i] for i in range(n)):
+                    break
 
-                # Update the global offset before yielding the last split's
-                # sample so that state_dict() called while paused here returns
-                # the correct count for the completed cycle.
-                if i == n - 1:
-                    self._resume_offset = initial_offset + local_consumed[i]
+                # Round-robin: one sample from each split per cycle.
+                for i in range(n):
+                    # Block until the oldest in-flight batch lands, then keep
+                    # the pipeline full for this split.
+                    _ensure_ready(i)
+                    row = ready[i].popleft()
+                    local_consumed[i] += 1
+                    _fill_pipeline(i)
 
-                yield row
+                    # Update the global offset after the last split in each
+                    # cycle so state_dict() returns the completed-cycle count.
+                    if i == n - 1:
+                        self._resume_offset = initial_offset + local_consumed[i]
+
+                    yield row
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
