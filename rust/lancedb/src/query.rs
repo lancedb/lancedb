@@ -20,12 +20,12 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 
-use crate::DistanceType;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
 use crate::utils::{MaxBatchLengthStream, TimeoutStream};
+use crate::{ApproxMode, DistanceType};
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     table::AnyQuery,
@@ -935,6 +935,8 @@ pub struct VectorQueryRequest {
     pub refine_factor: Option<u32>,
     /// The distance type to use for the search
     pub distance_type: Option<DistanceType>,
+    /// The speed / accuracy tradeoff to use for approximate vector search
+    pub approx_mode: Option<ApproxMode>,
     /// Default is true. Set to false to enforce a brute force search.
     pub use_index: bool,
 }
@@ -952,6 +954,7 @@ impl Default for VectorQueryRequest {
             ef: None,
             refine_factor: None,
             distance_type: None,
+            approx_mode: None,
             use_index: true,
         }
     }
@@ -1189,6 +1192,15 @@ impl VectorQuery {
     /// By default [`DistanceType::L2`] is used.
     pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
         self.request.distance_type = Some(distance_type);
+        self
+    }
+
+    /// Set the speed / accuracy tradeoff for approximate vector search.
+    ///
+    /// This setting is currently only used by RQ-quantized indexes, such as
+    /// IVF_RQ. Other index types ignore this setting.
+    pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
+        self.request.approx_mode = Some(approx_mode);
         self
     }
 
@@ -1546,6 +1558,7 @@ mod tests {
             .nprobes(1000)
             .postfilter()
             .distance_type(DistanceType::Cosine)
+            .approx_mode(ApproxMode::Accurate)
             .refine_factor(999);
 
         assert_eq!(
@@ -1564,7 +1577,47 @@ mod tests {
         assert_eq!(query.request.maximum_nprobes, Some(1000));
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
+        assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[test]
+    fn test_approx_mode_serde_parse_default_and_display() {
+        assert_eq!(ApproxMode::default(), ApproxMode::Normal);
+        assert_eq!(
+            serde_json::to_string(&ApproxMode::Fast).unwrap(),
+            "\"fast\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ApproxMode>("\"accurate\"").unwrap(),
+            ApproxMode::Accurate
+        );
+        assert_eq!("normal".parse::<ApproxMode>().unwrap(), ApproxMode::Normal);
+        assert_eq!(ApproxMode::try_from("FAST").unwrap(), ApproxMode::Fast);
+        assert_eq!(ApproxMode::Accurate.to_string(), "accurate");
+        assert!(ApproxMode::try_from("invalid").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_vector_query_approx_mode_builder() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .approx_mode(ApproxMode::Fast);
+
+        assert_eq!(query.request.approx_mode, Some(ApproxMode::Fast));
     }
 
     #[tokio::test]

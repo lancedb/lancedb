@@ -706,6 +706,9 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(distance_type) = query.distance_type {
             body["distance_type"] = serde_json::json!(distance_type);
         }
+        if let Some(approx_mode) = query.approx_mode {
+            body["approx_mode"] = serde_json::json!(approx_mode);
+        }
         // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
         // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
         // New client / old server: old server will only see nprobes, make sure to set both
@@ -3603,6 +3606,61 @@ mod tests {
             .query()
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
+            .execute()
+            .await;
+        let data = data.unwrap().collect::<Vec<_>>().await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_query_vector_approx_mode_sent_when_set() {
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let mut expected_body = serde_json::json!({
+                "prefilter": true,
+                "nprobes": 20,
+                "minimum_nprobes": 20,
+                "maximum_nprobes": 20,
+                "approx_mode": "accurate",
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
+                "k": 10,
+                "ef": Option::<usize>::None,
+                "refine_factor": null,
+                "version": null,
+            });
+            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
+            assert_eq!(body, expected_body);
+
+            let response_body = write_ipc_file(&expected_data_ref);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let data = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .approx_mode(crate::ApproxMode::Accurate)
             .execute()
             .await;
         let data = data.unwrap().collect::<Vec<_>>().await;

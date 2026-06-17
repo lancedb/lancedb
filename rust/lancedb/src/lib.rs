@@ -184,12 +184,13 @@ pub mod table;
 pub mod test_utils;
 pub mod utils;
 
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
+use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
 
@@ -255,6 +256,79 @@ impl<'a> TryFrom<&'a str> for DistanceType {
 impl Display for DistanceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         LanceDistanceType::from(*self).fmt(f)
+    }
+}
+
+/// Controls the speed / accuracy tradeoff for approximate vector search.
+///
+/// This currently only affects RQ-quantized vector indexes, such as IVF_RQ.
+/// Other index types ignore this setting.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+#[serde(rename_all = "lowercase")]
+pub enum ApproxMode {
+    /// Prefer lower query latency, which can reduce recall.
+    Fast,
+    /// Use the default balance between query latency and recall.
+    #[default]
+    Normal,
+    /// Prefer higher recall, which can increase query latency.
+    Accurate,
+}
+
+impl From<ApproxMode> for LanceApproxMode {
+    fn from(value: ApproxMode) -> Self {
+        match value {
+            ApproxMode::Fast => Self::Fast,
+            ApproxMode::Normal => Self::Normal,
+            ApproxMode::Accurate => Self::Accurate,
+        }
+    }
+}
+
+impl From<LanceApproxMode> for ApproxMode {
+    fn from(value: LanceApproxMode) -> Self {
+        match value {
+            LanceApproxMode::Fast => Self::Fast,
+            LanceApproxMode::Normal => Self::Normal,
+            LanceApproxMode::Accurate => Self::Accurate,
+        }
+    }
+}
+
+impl TryFrom<&str> for ApproxMode {
+    type Error = Error;
+
+    fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
+        Self::from_str(value)
+    }
+}
+
+impl FromStr for ApproxMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "fast" => Ok(Self::Fast),
+            "normal" => Ok(Self::Normal),
+            "accurate" => Ok(Self::Accurate),
+            _ => Err(Error::InvalidInput {
+                message: format!(
+                    "approx_mode must be one of 'fast', 'normal', or 'accurate', got '{}'",
+                    value
+                ),
+            }),
+        }
+    }
+}
+
+impl Display for ApproxMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fast => write!(f, "fast"),
+            Self::Normal => write!(f, "normal"),
+            Self::Accurate => write!(f, "accurate"),
+        }
     }
 }
 
