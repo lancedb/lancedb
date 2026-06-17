@@ -188,6 +188,18 @@ def test_nested_struct_list():
     assert schema == expect_schema
 
 
+def test_bare_generic_raises_type_error():
+    # A bare, unparameterised List/Tuple has no element type to map to Arrow.
+    # It should raise a clear TypeError, not crash with AttributeError: __args__.
+    for bare in (List, Tuple):
+
+        class TestModel(pydantic.BaseModel):
+            items: bare
+
+        with pytest.raises(TypeError, match="unsupported type"):
+            pydantic_to_schema(TestModel)
+
+
 def test_nested_struct_list_optional():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
