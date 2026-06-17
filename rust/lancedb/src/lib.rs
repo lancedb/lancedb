@@ -296,7 +296,7 @@ impl From<LanceApproxMode> for ApproxMode {
     }
 }
 
-impl<'a> TryFrom<&'a str> for ApproxMode {
+impl TryFrom<&str> for ApproxMode {
     type Error = Error;
 
     fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
