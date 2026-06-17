@@ -4,7 +4,7 @@
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
@@ -29,6 +29,9 @@ use crate::database::listing::{
     NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, OPT_NEW_TABLE_STORAGE_VERSION,
     OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
+use crate::database::read_freshness::{
+    FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
+};
 use crate::error::{Error, Result};
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
@@ -51,6 +54,10 @@ fn is_table_already_exists_namespace_error(err: &lance::Error) -> bool {
     false
 }
 
+/// Object-id delimiter default (matches `RestNamespaceBuilder`'s); overridable
+/// via the `delimiter` property.
+const DEFAULT_NAMESPACE_DELIMITER: &str = "$";
+
 /// A database implementation that uses lance-namespace for table management
 pub struct LanceNamespaceDatabase {
     namespace: Arc<dyn LanceNamespace>,
@@ -70,6 +77,17 @@ pub struct LanceNamespaceDatabase {
     ns_properties: HashMap<String, String>,
     // Options for tables created by this connection
     new_table_config: NewTableConfig,
+    // Per-table read-freshness baselines, shared with the context provider.
+    freshness_baselines: FreshnessBaselines,
+    // Delimiter for building freshness keys; see `table_freshness`.
+    delimiter: String,
+}
+
+fn resolve_delimiter(ns_properties: &HashMap<String, String>) -> String {
+    ns_properties
+        .get("delimiter")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_NAMESPACE_DELIMITER.to_string())
 }
 
 impl LanceNamespaceDatabase {
@@ -82,6 +100,9 @@ impl LanceNamespaceDatabase {
         session: Option<Arc<lance::session::Session>>,
         namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
+        // Client is pre-built, so we can't install the freshness provider here;
+        // baselines are still tracked for a uniform bump path.
+        let delimiter = resolve_delimiter(&namespace_client_properties);
         Self {
             namespace: namespace_client,
             storage_options,
@@ -92,6 +113,8 @@ impl LanceNamespaceDatabase {
             ns_impl: namespace_client_impl,
             ns_properties: namespace_client_properties,
             new_table_config: NewTableConfig::default(),
+            freshness_baselines: Arc::new(Mutex::new(HashMap::new())),
+            delimiter,
         }
     }
 
@@ -136,10 +159,19 @@ impl LanceNamespaceDatabase {
         if let Some(ref sess) = session {
             builder = builder.session(sess.clone());
         }
+
+        // Install the read-freshness provider before building the client.
+        let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
+        builder = builder.context_provider(Arc::new(ReadFreshnessContextProvider::new(
+            freshness_baselines.clone(),
+            read_consistency_interval,
+        )));
+
         let namespace = builder.connect().await.map_err(|e| Error::InvalidInput {
             message: format!("Failed to connect to namespace: {:?}", e),
         })?;
 
+        let delimiter = resolve_delimiter(&ns_properties);
         Ok(Self {
             namespace,
             storage_options,
@@ -150,7 +182,18 @@ impl LanceNamespaceDatabase {
             ns_impl: ns_impl.to_string(),
             ns_properties,
             new_table_config,
+            freshness_baselines,
+            delimiter,
         })
+    }
+
+    /// Build a table's freshness handle, keyed to match the `object_id` the
+    /// namespace client sends on reads (table-id parts joined by the delimiter).
+    fn table_freshness(&self, namespace_path: &[String], name: &str) -> TableFreshness {
+        let mut parts = namespace_path.to_vec();
+        parts.push(name.to_string());
+        let key = parts.join(&self.delimiter);
+        TableFreshness::new(self.freshness_baselines.clone(), key)
     }
 
     fn extract_storage_overrides(
@@ -331,7 +374,8 @@ impl Database for LanceNamespaceDatabase {
                         self.pushdown_operations.clone(),
                         self.session.clone(),
                     )
-                    .await?;
+                    .await?
+                    .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
                     return Ok(Arc::new(native_table));
                 }
@@ -462,7 +506,8 @@ impl Database for LanceNamespaceDatabase {
             self.pushdown_operations.clone(),
             self.session.clone(),
         )
-        .await?;
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
         Ok(Arc::new(native_table))
     }
@@ -478,7 +523,8 @@ impl Database for LanceNamespaceDatabase {
             self.pushdown_operations.clone(),
             self.session.clone(),
         )
-        .await?;
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
         Ok(Arc::new(native_table))
     }

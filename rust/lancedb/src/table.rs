@@ -43,6 +43,7 @@ use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
+use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
@@ -1763,6 +1764,8 @@ pub struct NativeTable {
     // Operations to push down to the namespace server.
     // pub(crate) so query.rs can access the field for server-side query execution.
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    // Read-freshness baseline; `Some` only for namespace-backed tables.
+    freshness: Option<TableFreshness>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1923,6 +1926,7 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client,
             pushdown_operations,
+            freshness: None,
         })
     }
 
@@ -1931,6 +1935,12 @@ impl NativeTable {
     /// When set, queries will be executed on the namespace server instead of locally.
     pub fn with_namespace_client(mut self, namespace_client: Arc<dyn LanceNamespace>) -> Self {
         self.namespace_client = Some(namespace_client);
+        self
+    }
+
+    /// Attach the read-freshness baseline handle (namespace connections only).
+    pub(crate) fn with_freshness(mut self, freshness: TableFreshness) -> Self {
+        self.freshness = Some(freshness);
         self
     }
 
@@ -1946,6 +1956,14 @@ impl NativeTable {
             read_consistency_interval: self.read_consistency_interval,
             namespace_client: self.namespace_client.clone(),
             pushdown_operations: self.pushdown_operations.clone(),
+            freshness: self.freshness.clone(),
+        }
+    }
+
+    /// Bump the read-freshness baseline; no-op for non-namespace tables.
+    fn bump_freshness(&self) {
+        if let Some(freshness) = &self.freshness {
+            freshness.bump();
         }
     }
 
@@ -2045,6 +2063,7 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client: stored_namespace_client,
             pushdown_operations,
+            freshness: None,
         })
     }
 
@@ -2134,6 +2153,7 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client,
             pushdown_operations,
+            freshness: None,
         })
     }
 
@@ -2265,6 +2285,7 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client: stored_namespace_client,
             pushdown_operations,
+            freshness: None,
         })
     }
 
@@ -2424,6 +2445,8 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_latest(&self) -> Result<()> {
+        // Bump before resolving "latest" so that request carries the floor.
+        self.bump_freshness();
         self.dataset.as_latest().await?;
         self.dataset.reload().await
     }
@@ -2511,6 +2534,8 @@ impl BaseTable for NativeTable {
             debug_assert_eq!(dataset.version().version, version);
             dataset.restore().await?;
         }
+        // Restore moves "latest", so bump before resolving it (as RemoteTable does).
+        self.bump_freshness();
         self.dataset.as_latest().await?;
         Ok(())
     }
@@ -2624,6 +2649,7 @@ impl BaseTable for NativeTable {
         }
 
         let version = ds_wrapper.get().await?.manifest().version;
+        self.bump_freshness();
         Ok(AddResult { version })
     }
 
@@ -2674,7 +2700,9 @@ impl BaseTable for NativeTable {
 
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
         // Delegate to the submodule implementation
-        update::execute_update(self, update).await
+        let result = update::execute_update(self, update).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn create_plan(
@@ -2706,7 +2734,9 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
-        merge::execute_merge_insert(self, params, new_data).await
+        let result = merge::execute_merge_insert(self, params, new_data).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
@@ -2727,7 +2757,9 @@ impl BaseTable for NativeTable {
 
     /// Delete rows from the table
     async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
-        delete::execute_delete(self, predicate).await
+        let result = delete::execute_delete(self, predicate).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -2746,22 +2778,30 @@ impl BaseTable for NativeTable {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
-        schema_evolution::execute_add_columns(self, transforms, read_columns).await
+        let result = schema_evolution::execute_add_columns(self, transforms, read_columns).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
-        schema_evolution::execute_alter_columns(self, alterations).await
+        let result = schema_evolution::execute_alter_columns(self, alterations).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn update_field_metadata(
         &self,
         updates: &[FieldMetadataUpdate],
     ) -> Result<UpdateFieldMetadataResult> {
-        schema_evolution::execute_update_field_metadata(self, updates).await
+        let result = schema_evolution::execute_update_field_metadata(self, updates).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
-        schema_evolution::execute_drop_columns(self, columns).await
+        let result = schema_evolution::execute_drop_columns(self, columns).await?;
+        self.bump_freshness();
+        Ok(result)
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
