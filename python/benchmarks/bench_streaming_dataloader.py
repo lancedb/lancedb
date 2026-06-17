@@ -4,7 +4,7 @@
 
 """Benchmark for StreamingDataset throughput.
 
-Sweeps prefetch_chunk from 1 to 16384 to show how amortising the per-request
+Sweeps read_batch_size from 1 to 16384 to show how amortising the per-request
 overhead scales.  Each row at each chunk size is timed via the real
 StreamingDataset so the numbers reflect production code.
 
@@ -49,6 +49,7 @@ CHUNK_SIZES = [1, 4, 16, 64, 256, 1024, 4096, 16384]
 # Table helpers
 # ---------------------------------------------------------------------------
 
+
 def make_table(db_path: str) -> lancedb.table.Table:
     db = lancedb.connect(db_path)
     payload = b"x" * ROW_BYTES
@@ -65,11 +66,12 @@ def make_table(db_path: str) -> lancedb.table.Table:
 # Timing
 # ---------------------------------------------------------------------------
 
+
 def bench_chunk(table, chunk_size: int, steps: int) -> tuple[int, float]:
     """Return (rows_drained, elapsed_seconds) for one timed run."""
     total_rows = steps * NUM_SPLITS
     ds = StreamingDataset(
-        table, num_splits=NUM_SPLITS, shuffle_seed=42, prefetch_chunk=chunk_size
+        table, num_splits=NUM_SPLITS, shuffle_seed=42, read_batch_size=chunk_size
     )
     count = 0
     t0 = time.perf_counter()
@@ -83,6 +85,7 @@ def bench_chunk(table, chunk_size: int, steps: int) -> tuple[int, float]:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     rows_per_split = NUM_ROWS // NUM_SPLITS
@@ -98,13 +101,16 @@ def main() -> None:
         print("Creating table...", flush=True)
         table = make_table(tmp)
 
-        print(f"\n{'chunk':>6}  {'rows':>6}  {'elapsed':>8}  {'rows/s':>10}  {'ms/step':>9}")
+        cols = (
+            f"{'chunk':>6}  {'rows':>6}  {'elapsed':>8}  {'rows/s':>10}  {'ms/step':>9}"
+        )
+        print(f"\n{cols}")
         print("-" * 52)
 
         for chunk in CHUNK_SIZES:
             # Warm-up pass (one step's worth of rows)
             warmup_ds = StreamingDataset(
-                table, num_splits=NUM_SPLITS, shuffle_seed=42, prefetch_chunk=chunk
+                table, num_splits=NUM_SPLITS, shuffle_seed=42, read_batch_size=chunk
             )
             warmup_count = 0
             for _ in warmup_ds:
