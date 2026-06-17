@@ -108,6 +108,7 @@ http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
 test-log = "0.2"
 serial_test = "3"
+pprof = { version = "0.14", features = ["flamegraph"] }
 
 
 [features]
@@ -163,6 +164,9 @@ required-features = ["sentence-transformers"]
 [[example]]
 name = "bedrock"
 required-features = ["bedrock"]
+
+[[example]]
+name = "bench_streaming_dataloader"
 
 [[example]]
 name = "simple"

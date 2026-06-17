@@ -21,6 +21,7 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::UInt64Type;
 use arrow_array::{RecordBatch, UInt64Array};
 use arrow_schema::SchemaRef;
+use datafusion_expr::{Expr, col, lit};
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
@@ -196,17 +197,10 @@ impl PermutationReader {
             .expect_ok()?
             .values();
 
-        let filter = format!(
-            "_rowid in ({})",
-            row_ids
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
 
         let base_query = QueryRequest {
-            filter: Some(QueryFilter::Sql(filter)),
+            filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
             select: selection,
             with_row_id: true,
             ..Default::default()
