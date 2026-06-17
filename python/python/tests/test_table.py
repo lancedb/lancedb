@@ -301,6 +301,16 @@ def test_create_table(mem_db: DBConnection):
         assert expected == tbl
 
 
+def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        mem_db.create_table("test", data=data)
+    assert (
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
+    )
+
+
 def test_empty_table(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -330,8 +340,8 @@ def test_add_dictionary(mem_db: DBConnection):
     with pytest.raises(ValueError) as excep_info:
         tbl.add(data=data)
     assert (
-        str(excep_info.value)
-        == "Cannot add a single dictionary to a table. Use a list."
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
     )
 
 
