@@ -14,6 +14,7 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
 """
 
 import logging
+from collections import deque
 from typing import Any, Iterator
 
 from torch.utils.data import IterableDataset, get_worker_info
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 # seed.  Chosen to be a large prime so different (seed, epoch) pairs produce
 # distinct seeds for any practically encountered epoch count.
 _EPOCH_PRIME = 100003
+
+DEFAULT_PREFETCH_CHUNK = 64
 
 
 class StreamingDataset(IterableDataset):
@@ -54,6 +57,11 @@ class StreamingDataset(IterableDataset):
         This process's rank in the distributed training group.
     world_size:
         Total number of processes in the distributed training group.
+    prefetch_chunk:
+        Number of rows fetched from each split in a single ``take_offsets``
+        call.  Larger values amortise per-request overhead (critical on object
+        storage) at the cost of higher memory usage per split buffer.  Defaults
+        to ``DEFAULT_PREFETCH_CHUNK`` (64).
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -71,6 +79,7 @@ class StreamingDataset(IterableDataset):
         epoch: int = 0,
         rank: int = 0,
         world_size: int = 1,
+        prefetch_chunk: int = DEFAULT_PREFETCH_CHUNK,
         worker_info_override=None,
     ):
         super().__init__()
@@ -86,6 +95,7 @@ class StreamingDataset(IterableDataset):
         self._epoch = epoch
         self._rank = rank
         self._world_size = world_size
+        self._prefetch_chunk = prefetch_chunk
         self._worker_info_override = worker_info_override
 
         # Number of samples each split has already been consumed.  At global
@@ -159,6 +169,24 @@ class StreamingDataset(IterableDataset):
         initial_offset = self._resume_offset
         local_consumed = [0] * n
 
+        # Per-split prefetch buffers.  Each call to take_offsets fetches
+        # prefetch_chunk rows at once, amortising the per-request overhead
+        # (critical on object storage where a single round-trip is ~100ms).
+        chunk = self._prefetch_chunk
+        buffers: list[deque] = [deque() for _ in range(n)]
+
+        def _refill(i: int) -> None:
+            remaining = split_sizes[i] - local_consumed[i] - len(buffers[i])
+            fetch = min(chunk, remaining)
+            if fetch <= 0:
+                return
+            start = local_consumed[i] + len(buffers[i])
+            rows = permutations[i].__getitems__(list(range(start, start + fetch)))
+            buffers[i].extend(rows)
+
+        for i in range(n):
+            _refill(i)
+
         while True:
             # Stop when any split is exhausted (all exhausted simultaneously
             # because splits have equal size and the epoch parameters guarantee
@@ -167,9 +195,16 @@ class StreamingDataset(IterableDataset):
                 break
 
             # Round-robin: one sample from each split per cycle.
-            for i, perm in enumerate(permutations):
-                rows = perm.__getitems__([local_consumed[i]])
+            for i in range(n):
+                if not buffers[i]:
+                    _refill(i)
+                row = buffers[i].popleft()
                 local_consumed[i] += 1
+
+                # Refill when the buffer drops to half capacity so the next
+                # fetch overlaps with yielding rather than stalling the loop.
+                if len(buffers[i]) <= chunk // 2:
+                    _refill(i)
 
                 # Update the global offset before yielding the last split's
                 # sample so that state_dict() called while paused here returns
@@ -177,8 +212,7 @@ class StreamingDataset(IterableDataset):
                 if i == n - 1:
                     self._resume_offset = initial_offset + local_consumed[i]
 
-                for row in rows:
-                    yield row
+                yield row
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
