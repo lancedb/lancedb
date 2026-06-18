@@ -91,7 +91,9 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, columns=["id"], name="id_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="id_idx", index_type="BTree", columns=["id"]'
+    )
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["id"]
@@ -198,7 +200,9 @@ async def test_create_nested_scalar_index_lists_canonical_paths(db_async):
 async def test_create_fixed_size_binary_index(some_table: AsyncTable):
     await some_table.create_index("fsb", config=BTree())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, columns=["fsb"], name="fsb_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="fsb_idx", index_type="BTree", columns=["fsb"]'
+    )
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["fsb"]
@@ -247,7 +251,9 @@ async def test_create_bitmap_index(some_table: AsyncTable):
 async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="LabelList", columns=["tags"]'
+    )
     plan = await some_table.query().where("array_has(tags, 'tag0')").explain_plan()
     assert "ScalarIndexQuery" in plan
 
@@ -262,7 +268,9 @@ async def test_create_large_list_label_list_index(db_async):
 
     await table.create_index("tags", config=LabelList())
     indices = await table.list_indices()
-    assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="LabelList", columns=["tags"]'
+    )
     plan = await table.query().where("array_has(tags, 'shared')").explain_plan()
     assert "ScalarIndexQuery" in plan
 
@@ -299,7 +307,9 @@ async def test_create_label_list_index_rejects_list_struct(db_async):
 async def test_full_text_search_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=FTS(with_position=False))
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(FTS, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="FTS", columns=["tags"]'
+    )
 
     await some_table.prewarm_index("tags_idx")
 
