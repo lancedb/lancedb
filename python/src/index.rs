@@ -319,11 +319,45 @@ pub struct IndexConfig {
 
 #[pymethods]
 impl IndexConfig {
-    pub fn __repr__(&self) -> String {
-        format!(
-            "Index({}, columns={:?}, name=\"{}\")",
-            self.index_type, self.columns, self.name
-        )
+    pub fn __repr__(&self, py: Python<'_>) -> String {
+        let mut fields = vec![
+            format!("name={:?}", self.name),
+            format!("index_type={:?}", self.index_type),
+            format!("columns={:?}", self.columns),
+        ];
+        if let Some(v) = &self.index_uuid {
+            fields.push(format!("index_uuid={:?}", v));
+        }
+        if let Some(v) = &self.type_url {
+            fields.push(format!("type_url={:?}", v));
+        }
+        if let Some(v) = &self.created_at {
+            fields.push(format!("created_at={}", v.to_rfc3339()));
+        }
+        if let Some(v) = self.num_indexed_rows {
+            fields.push(format!("num_indexed_rows={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.num_unindexed_rows {
+            fields.push(format!("num_unindexed_rows={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.size_bytes {
+            fields.push(format!("size_bytes={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.num_segments {
+            fields.push(format!("num_segments={}", v));
+        }
+        if let Some(v) = self.index_version {
+            fields.push(format!("index_version={}", v));
+        }
+        if let Some(v) = &self.index_details {
+            let details = v
+                .bind(py)
+                .repr()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|_| "<unavailable>".to_string());
+            fields.push(format!("index_details={}", details));
+        }
+        format!("IndexConfig({})", fields.join(", "))
     }
 
     // For backwards-compatibility with the old sync SDK, we also support getting
@@ -350,6 +384,23 @@ impl IndexConfig {
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
+}
+
+/// Format an integer with `_` thousands separators, e.g. `24_500_213`.
+///
+/// Underscores are valid Python int-literal syntax, so the repr stays
+/// copy-pasteable and machine-parseable while remaining readable.
+fn fmt_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push('_');
+        }
+        out.push(*b as char);
+    }
+    out
 }
 
 fn parse_index_details(py: Python<'_>, s: String) -> Py<PyAny> {
