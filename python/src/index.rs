@@ -331,8 +331,16 @@ impl IndexConfig {
         if let Some(v) = &self.type_url {
             fields.push(format!("type_url={:?}", v));
         }
-        if let Some(v) = &self.created_at {
-            fields.push(format!("created_at={}", v.to_rfc3339()));
+        if let Some(v) = self.created_at {
+            // Render the datetime's own Python repr so the value round-trips,
+            // falling back to RFC 3339 if the conversion ever fails.
+            let rendered = v
+                .into_pyobject(py)
+                .ok()
+                .and_then(|obj| obj.into_any().repr().ok())
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| v.to_rfc3339());
+            fields.push(format!("created_at={}", rendered));
         }
         if let Some(v) = self.num_indexed_rows {
             fields.push(format!("num_indexed_rows={}", fmt_thousands(v)));
