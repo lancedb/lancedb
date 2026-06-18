@@ -1352,6 +1352,35 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
+/// Deserialize an index's `created_at` field.
+///
+/// The server returns this as an RFC 3339 string (e.g. `"2026-06-18T21:37:36.637Z"`),
+/// but older deployments sent a unix timestamp in milliseconds. Accept both so the
+/// client works against any server version.
+fn deserialize_created_at<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum CreatedAt {
+        Rfc3339(String),
+        Millis(i64),
+    }
+
+    match Option::<CreatedAt>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(CreatedAt::Rfc3339(s)) => DateTime::parse_from_rfc3339(&s)
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(D::Error::custom),
+        Some(CreatedAt::Millis(ms)) => Ok(DateTime::from_timestamp_millis(ms)),
+    }
+}
+
 impl<S: HttpSend + 'static> RemoteTable<S> {
     /// Parse the response from `/index/list/` into `IndexConfig` entries.
     ///
@@ -1380,7 +1409,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             // Used as the sentinel to decide whether to skip the stats call.
             index_type: Option<IndexType>,
             index_uuid: Option<String>,
-            #[serde(default, with = "chrono::serde::ts_milliseconds_option")]
+            #[serde(default, deserialize_with = "deserialize_created_at")]
             created_at: Option<DateTime<Utc>>,
             num_indexed_rows: Option<u64>,
             num_unindexed_rows: Option<u64>,
@@ -4678,7 +4707,7 @@ mod tests {
                                 "num_segments": 2,
                                 "index_version": 1,
                                 "index_details": "{\"num_partitions\":16}",
-                                "created_at": 1700000000000i64,
+                                "created_at": "2026-06-18T21:37:36.637Z",
                                 "type_url": "type.googleapis.com/lance.index.vector.IvfPq",
                             },
                             {
@@ -4728,7 +4757,10 @@ mod tests {
             vec_idx.type_url,
             Some("type.googleapis.com/lance.index.vector.IvfPq".to_string())
         );
-        assert!(vec_idx.created_at.is_some());
+        assert_eq!(
+            vec_idx.created_at,
+            Some("2026-06-18T21:37:36.637Z".parse::<DateTime<Utc>>().unwrap())
+        );
 
         let text_idx = &indices[1];
         assert_eq!(text_idx.name, "text_idx");
@@ -4747,6 +4779,33 @@ mod tests {
         assert_eq!(text_idx.index_details, None);
         assert_eq!(text_idx.type_url, None);
         assert_eq!(text_idx.created_at, None);
+    }
+
+    #[test]
+    fn test_deserialize_created_at() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "deserialize_created_at")]
+            created_at: Option<DateTime<Utc>>,
+        }
+
+        // RFC 3339 string (current server format).
+        let w: Wrapper =
+            serde_json::from_str(r#"{"created_at": "2026-06-18T21:37:36.637Z"}"#).unwrap();
+        assert_eq!(
+            w.created_at,
+            Some("2026-06-18T21:37:36.637Z".parse::<DateTime<Utc>>().unwrap())
+        );
+
+        // Unix milliseconds (legacy server format).
+        let w: Wrapper = serde_json::from_str(r#"{"created_at": 1700000000000}"#).unwrap();
+        assert_eq!(w.created_at, DateTime::from_timestamp_millis(1700000000000));
+
+        // Null and missing both yield None.
+        let w: Wrapper = serde_json::from_str(r#"{"created_at": null}"#).unwrap();
+        assert_eq!(w.created_at, None);
+        let w: Wrapper = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(w.created_at, None);
     }
 
     #[tokio::test]
