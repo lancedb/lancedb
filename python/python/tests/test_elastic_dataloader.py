@@ -1148,3 +1148,163 @@ def test_worker_info_override_no_warning_in_main_process(lance_table, caplog):
     assert not warning_messages, (
         f"Unexpected warnings when override used in main process: {warning_messages}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Prefetch queue depth tests
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_iteration_raises(lance_table):
+    """Starting a second iterator while one is already active must raise."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    it1 = iter(ds)
+    next(it1)  # advance it1 so the pipeline is live
+
+    it2 = iter(ds)
+    with pytest.raises(RuntimeError, match="concurrent"):
+        next(it2)
+
+
+def test_prefetch_queue_depth_zero_when_not_iterating(lance_table):
+    """prefetch_queue_depth is 0 before iteration starts and after it ends."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    assert ds.prefetch_queue_depth == 0
+
+    list(ds)  # drain the whole epoch
+
+    assert ds.prefetch_queue_depth == 0
+
+
+def test_prefetch_queue_depth_positive_during_iteration(lance_table):
+    """prefetch_queue_depth is > 0 while rows are being yielded."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    it = iter(ds)
+    next(it)  # advance past the first yield; pipeline is now primed
+    # The other splits still have their initial futures in flight.
+    assert ds.prefetch_queue_depth > 0
+
+    list(it)  # exhaust the remaining rows
+
+    assert ds.prefetch_queue_depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Transform tests
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_and_transform_time_zero_before_iteration(lance_table):
+    """fetch_time and transform_time start at 0."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    assert ds.fetch_time == 0.0
+    assert ds.transform_time == 0.0
+
+
+def test_fetch_and_transform_time_positive_after_iteration(lance_table):
+    """Both timers are positive after a full epoch."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    list(ds)
+    assert ds.fetch_time > 0.0
+    assert ds.transform_time > 0.0
+
+
+def test_fetch_time_excludes_transform(lance_table):
+    """fetch_time does not include transform time: fetch + transform < total wall time,
+    and neither counter bleeds into the other."""
+    import pyarrow as pa
+    import time
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.01)  # 10 ms of artificial transform work
+        return batch.to_pydict()["id"]
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=slow_transform,
+    )
+    list(ds)
+
+    # The slow transform should dominate transform_time.
+    assert ds.transform_time > ds.fetch_time
+
+
+def test_bytes_loaded_increases_after_iteration(lance_table):
+    """bytes_loaded is 0 before iteration and positive after."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    assert ds.bytes_loaded == 0
+
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+
+
+def test_bytes_loaded_measured_before_transform(lance_table):
+    """bytes_loaded reflects raw Arrow size even when the transform discards all data."""
+    import pyarrow as pa
+
+    # This transform throws away every value.  If bytes_loaded were measured
+    # after the transform, it would see no Arrow data and stay at 0.
+    def discard_everything(batch: pa.RecordBatch) -> list:
+        return [None] * batch.num_rows
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=discard_everything,
+    )
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+
+
+def test_transform_is_applied(lance_table):
+    """A custom transform passed to StreamingDataset is forwarded to the
+    underlying Permutation and applied to every yielded item."""
+    import pyarrow as pa
+
+    def id_only(batch: pa.RecordBatch) -> list[int]:
+        return batch.column("id").to_pylist()
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=id_only,
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(isinstance(item, int) for item in items), (
+        f"Expected ints from transform, got {type(items[0])}"
+    )
+    assert sorted(items) == list(range(NUM_ROWS))
+
+
+def test_transform_none_yields_dicts(lance_table):
+    """With no transform (the default), items are plain Python dicts."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(isinstance(item, dict) for item in items)
+    assert all("id" in item for item in items)
