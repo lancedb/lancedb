@@ -4806,6 +4806,9 @@ mod tests {
         assert_eq!(w.created_at, None);
         let w: Wrapper = serde_json::from_str(r#"{}"#).unwrap();
         assert_eq!(w.created_at, None);
+
+        // A malformed string is rejected rather than silently dropped to None.
+        assert!(serde_json::from_str::<Wrapper>(r#"{"created_at": "not-a-date"}"#).is_err());
     }
 
     #[tokio::test]

@@ -109,6 +109,27 @@ async def test_create_scalar_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_index_config_repr(db_async):
+    # Use >= 1000 rows so the thousands separator in the repr is exercised.
+    nrows = 1500
+    table = await db_async.create_table(
+        "repr_table", pa.Table.from_pydict({"id": list(range(nrows))})
+    )
+    await table.create_index("id", config=BTree())
+    indices = await table.list_indices()
+    assert len(indices) == 1
+
+    r = repr(indices[0])
+    assert r.startswith('IndexConfig(name="id_idx", index_type="BTree", columns=["id"]')
+    # Integer counts use `_` thousands separators (valid Python int syntax).
+    assert "num_indexed_rows=1_500" in r
+    assert "num_unindexed_rows=0" in r
+    # created_at renders as a datetime so the value round-trips.
+    assert "created_at=datetime.datetime(" in r
+    assert r.endswith(")")
+
+
+@pytest.mark.asyncio
 async def test_create_nested_scalar_index_lists_canonical_paths(db_async):
     metadata_type = pa.struct(
         [
