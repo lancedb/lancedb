@@ -3060,7 +3060,7 @@ class LanceTable(Table):
             "prefix_only": False,
         }
 
-    def add(
+        def add(
         self,
         data: DATA,
         mode: AddMode = "append",
