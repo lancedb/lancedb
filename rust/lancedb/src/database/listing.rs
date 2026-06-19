@@ -43,6 +43,8 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
 pub const OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS: &str = "new_table_enable_stable_row_ids";
+pub const OPT_AUTO_CLEANUP_INTERVAL: &str = "auto_cleanup_interval";
+pub const OPT_AUTO_CLEANUP_OLDER_THAN_SECS: &str = "auto_cleanup_older_than_secs";
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -62,6 +64,16 @@ pub struct NewTableConfig {
     /// and merges. This is useful for materialized views and other use cases
     /// that need to track source rows across these operations.
     pub enable_stable_row_ids: Option<bool>,
+    /// The auto cleanup interval for new tables
+    ///
+    /// When set, old versions will be automatically cleaned up every N commits.
+    /// Set to 0 to disable auto cleanup. If unset, the lance default (20) is used.
+    pub auto_cleanup_interval: Option<u64>,
+    /// The minimum age of versions to clean up, in seconds
+    ///
+    /// Only versions older than this duration will be removed during auto cleanup.
+    /// If unset, the lance default (14 days) is used.
+    pub auto_cleanup_older_than_secs: Option<u64>,
 }
 
 /// Options specific to the listing database
@@ -109,6 +121,28 @@ impl ListingDatabaseOptions {
                     })
                 })
                 .transpose()?,
+            auto_cleanup_interval: map
+                .get(OPT_AUTO_CLEANUP_INTERVAL)
+                .map(|s| {
+                    s.parse::<u64>().map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "auto_cleanup_interval must be a non-negative integer, received {}",
+                            s
+                        ),
+                    })
+                })
+                .transpose()?,
+            auto_cleanup_older_than_secs: map
+                .get(OPT_AUTO_CLEANUP_OLDER_THAN_SECS)
+                .map(|s| {
+                    s.parse::<u64>().map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "auto_cleanup_older_than_secs must be a non-negative integer, received {}",
+                            s
+                        ),
+                    })
+                })
+                .transpose()?,
         };
         // We just assume that any options that are not new table config options are storage options
         let storage_options = map
@@ -117,6 +151,8 @@ impl ListingDatabaseOptions {
                 key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
                     && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
                     && key.as_str() != OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS
+                    && key.as_str() != OPT_AUTO_CLEANUP_INTERVAL
+                    && key.as_str() != OPT_AUTO_CLEANUP_OLDER_THAN_SECS
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -145,6 +181,20 @@ impl DatabaseOptions for ListingDatabaseOptions {
             map.insert(
                 OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
                 enable_stable_row_ids.to_string(),
+            );
+        }
+        if let Some(auto_cleanup_interval) = self.new_table_config.auto_cleanup_interval {
+            map.insert(
+                OPT_AUTO_CLEANUP_INTERVAL.to_string(),
+                auto_cleanup_interval.to_string(),
+            );
+        }
+        if let Some(auto_cleanup_older_than_secs) =
+            self.new_table_config.auto_cleanup_older_than_secs
+        {
+            map.insert(
+                OPT_AUTO_CLEANUP_OLDER_THAN_SECS.to_string(),
+                auto_cleanup_older_than_secs.to_string(),
             );
         }
     }
@@ -181,6 +231,23 @@ impl ListingDatabaseOptionsBuilder {
     /// * `enable_v2_manifest_paths` - Whether to enable V2 manifest paths for new tables
     pub fn enable_v2_manifest_paths(mut self, enable_v2_manifest_paths: bool) -> Self {
         self.options.new_table_config.enable_v2_manifest_paths = Some(enable_v2_manifest_paths);
+        self
+    }
+
+    /// Set the auto cleanup interval for new tables
+    ///
+    /// When set, old versions will be automatically cleaned up every N commits.
+    /// Set to 0 to disable auto cleanup.
+    pub fn auto_cleanup_interval(mut self, interval: u64) -> Self {
+        self.options.new_table_config.auto_cleanup_interval = Some(interval);
+        self
+    }
+
+    /// Set the minimum age (in seconds) of versions to clean up for new tables
+    ///
+    /// Only versions older than this duration will be removed during auto cleanup.
+    pub fn auto_cleanup_older_than_secs(mut self, older_than_secs: u64) -> Self {
+        self.options.new_table_config.auto_cleanup_older_than_secs = Some(older_than_secs);
         self
     }
 
@@ -798,7 +865,7 @@ impl ListingDatabase {
         storage_version_override: Option<LanceFileVersion>,
         v2_manifest_override: Option<bool>,
         stable_row_ids_override: Option<bool>,
-    ) -> lance::dataset::WriteParams {
+    ) -> Result<lance::dataset::WriteParams> {
         let mut write_params = request
             .write_options
             .lance_write_params
@@ -845,13 +912,40 @@ impl ListingDatabase {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
 
+        // Apply auto cleanup config. interval == 0 is the explicit "disable" sentinel
+        // and must win over any older_than setting from the same config.
+        let disabled = self.new_table_config.auto_cleanup_interval == Some(0);
+        if disabled {
+            write_params.auto_cleanup = None;
+        } else {
+            if let Some(interval) = self.new_table_config.auto_cleanup_interval {
+                let mut params = write_params.auto_cleanup.unwrap_or_default();
+                params.interval = interval as usize;
+                write_params.auto_cleanup = Some(params);
+            }
+            if let Some(older_than_secs) = self.new_table_config.auto_cleanup_older_than_secs {
+                let older_than = i64::try_from(older_than_secs)
+                    .ok()
+                    .and_then(chrono::TimeDelta::try_seconds)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: format!(
+                            "auto_cleanup_older_than_secs={} is out of range",
+                            older_than_secs
+                        ),
+                    })?;
+                let mut params = write_params.auto_cleanup.unwrap_or_default();
+                params.older_than = older_than;
+                write_params.auto_cleanup = Some(params);
+            }
+        }
+
         if matches!(&request.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
 
         write_params.session = Some(self.session.clone());
 
-        write_params
+        Ok(write_params)
     }
 
     /// Handle the case where table already exists based on the create mode
@@ -1038,7 +1132,7 @@ impl Database for ListingDatabase {
             storage_version_override,
             v2_manifest_override,
             stable_row_ids_override,
-        );
+        )?;
 
         let data_schema = request.data.arrow_schema();
 

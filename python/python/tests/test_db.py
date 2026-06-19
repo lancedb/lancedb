@@ -4,6 +4,7 @@
 
 import re
 import sys
+import tempfile
 from datetime import timedelta
 import os
 from types import SimpleNamespace
@@ -850,6 +851,23 @@ async def test_create_in_v2_mode():
     await tbl.add(make_table())
 
     assert await is_in_v2_mode(tbl)
+
+
+@pytest.mark.asyncio
+async def test_auto_cleanup_disabled():
+    import lance
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await lancedb.connect_async(
+            tmp, storage_options={"auto_cleanup_interval": "0"}
+        )
+        data = pa.table({"x": [1, 2, 3]})
+        tbl = await db.create_table("test", data=data)
+        uri = await tbl.uri()
+        ds = lance.dataset(uri)
+        config = ds.config()
+        assert "lance.auto_cleanup.interval" not in config
+        assert "lance.auto_cleanup.older_than" not in config
 
 
 def test_replace_index(mem_db: lancedb.DBConnection):
