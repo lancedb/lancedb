@@ -71,6 +71,9 @@ from lancedb.embeddings import EmbeddingFunctionConfig
 from ._lancedb import Session
 
 
+_MAX_QUERY_K = 2**31 - 1
+
+
 def _query_to_namespace_request(
     table_id: List[str],
     query: "Query",
@@ -148,7 +151,8 @@ def _query_to_namespace_request(
     if query.limit is not None:
         k = query.limit
     elif query.vector is None and query.full_text_query is None:
-        k = sys.maxsize
+        # limit k to max i32 value to avoid client overflows
+        k = _MAX_QUERY_K
     else:
         k = 10
 

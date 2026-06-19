@@ -5,11 +5,11 @@
 
 import tempfile
 import shutil
-import sys
 import pytest
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lancedb.namespace import _MAX_QUERY_K
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -816,10 +816,13 @@ class TestPushdownOperations:
             ["geneva", "hist"],
             ["geneva", "hist"],
         ]
+        # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
+        # field is i32); sys.maxsize would overflow the Rust binding.
         assert [request.k for request in namespace_client.requests] == [
-            sys.maxsize,
-            sys.maxsize,
+            _MAX_QUERY_K,
+            _MAX_QUERY_K,
         ]
+        assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
 
 @pytest.mark.asyncio
@@ -874,10 +877,13 @@ class TestAsyncPushdownOperations:
             ["geneva", "hist"],
             ["geneva", "hist"],
         ]
+        # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
+        # field is i32); sys.maxsize would overflow the Rust binding.
         assert [request.k for request in namespace_client.requests] == [
-            sys.maxsize,
-            sys.maxsize,
+            _MAX_QUERY_K,
+            _MAX_QUERY_K,
         ]
+        assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
 
 def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
