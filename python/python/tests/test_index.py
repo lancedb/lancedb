@@ -91,7 +91,9 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, columns=["id"], name="id_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="id_idx", index_type="BTree", columns=["id"]'
+    )
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["id"]
@@ -104,6 +106,27 @@ async def test_create_scalar_index(some_table: AsyncTable):
     await some_table.drop_index("id_idx")
     indices = await some_table.list_indices()
     assert len(indices) == 0
+
+
+@pytest.mark.asyncio
+async def test_index_config_repr(db_async):
+    # Use >= 1000 rows so the thousands separator in the repr is exercised.
+    nrows = 1500
+    table = await db_async.create_table(
+        "repr_table", pa.Table.from_pydict({"id": list(range(nrows))})
+    )
+    await table.create_index("id", config=BTree())
+    indices = await table.list_indices()
+    assert len(indices) == 1
+
+    r = repr(indices[0])
+    assert r.startswith('IndexConfig(name="id_idx", index_type="BTree", columns=["id"]')
+    # Integer counts use `_` thousands separators (valid Python int syntax).
+    assert "num_indexed_rows=1_500" in r
+    assert "num_unindexed_rows=0" in r
+    # created_at renders as a datetime so the value round-trips.
+    assert "created_at=datetime.datetime(" in r
+    assert r.endswith(")")
 
 
 @pytest.mark.asyncio
@@ -198,7 +221,9 @@ async def test_create_nested_scalar_index_lists_canonical_paths(db_async):
 async def test_create_fixed_size_binary_index(some_table: AsyncTable):
     await some_table.create_index("fsb", config=BTree())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, columns=["fsb"], name="fsb_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="fsb_idx", index_type="BTree", columns=["fsb"]'
+    )
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["fsb"]
@@ -247,7 +272,9 @@ async def test_create_bitmap_index(some_table: AsyncTable):
 async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="LabelList", columns=["tags"]'
+    )
     plan = await some_table.query().where("array_has(tags, 'tag0')").explain_plan()
     assert "ScalarIndexQuery" in plan
 
@@ -262,7 +289,9 @@ async def test_create_large_list_label_list_index(db_async):
 
     await table.create_index("tags", config=LabelList())
     indices = await table.list_indices()
-    assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="LabelList", columns=["tags"]'
+    )
     plan = await table.query().where("array_has(tags, 'shared')").explain_plan()
     assert "ScalarIndexQuery" in plan
 
@@ -299,7 +328,9 @@ async def test_create_label_list_index_rejects_list_struct(db_async):
 async def test_full_text_search_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=FTS(with_position=False))
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(FTS, columns=["tags"], name="tags_idx")]'
+    assert str(indices).startswith(
+        '[IndexConfig(name="tags_idx", index_type="FTS", columns=["tags"]'
+    )
 
     await some_table.prewarm_index("tags_idx")
 
