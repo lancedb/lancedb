@@ -70,13 +70,6 @@ from lancedb.embeddings import EmbeddingFunctionConfig
 from ._lancedb import Session
 
 
-# The namespace ``query_table`` request models ``k`` as a 32-bit integer (the
-# OpenAPI contract; the Rust binding deserializes it into an ``i32``). An
-# "unlimited" read therefore must not use ``sys.maxsize`` (i64::MAX) as the
-# sentinel — it overflows when the request is marshaled into the binding with
-# ``OverflowError: out of range integral type conversion attempted``. i32::MAX
-# is effectively unbounded for any realistic table (no single query returns
-# more than ~2.1B rows).
 _MAX_QUERY_K = 2**31 - 1
 
 
@@ -157,9 +150,7 @@ def _query_to_namespace_request(
     if query.limit is not None:
         k = query.limit
     elif query.vector is None and query.full_text_query is None:
-        # No explicit limit: read everything. Capped at i32::MAX so the
-        # request fits the namespace ``query_table`` ``k`` field — see
-        # ``_MAX_QUERY_K``.
+        # limit k to max i32 value to avoid client overflows
         k = _MAX_QUERY_K
     else:
         k = 10
