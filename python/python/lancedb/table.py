@@ -3095,6 +3095,24 @@ class LanceTable(Table):
             The number of vectors in the table.
         """
         progress, owns = _normalize_progress(progress)
+        
+        # --- PYTORCH WINDOWS DEADLOCK FIX ---
+        # Sanitize the data and generate embeddings synchronously on the main thread
+        # before passing it to the BackgroundEventLoop daemon thread.
+        schema = self.schema
+        if on_bad_vectors != "error" or (
+            schema.metadata is not None and b"embedding_functions" in schema.metadata
+        ):
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=schema.metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                allow_subschema=True,
+            )
+        # ------------------------------------
+        
         try:
             return LOOP.run(
                 self._table.add(
