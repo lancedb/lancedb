@@ -26,6 +26,9 @@ pub enum AddDataMode {
     #[default]
     Append,
     /// The existing table will be overwritten with the new data
+    ///
+    /// On overwrite, raw binary is not coerced into a blob struct. The input
+    /// must declare blob v2 for the column to stay a blob column.
     Overwrite,
 }
 
