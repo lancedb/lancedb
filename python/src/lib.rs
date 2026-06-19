@@ -44,6 +44,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<connection::FunctionInfo>()?;
     m.add_class::<connection::MaterializedViewInfo>()?;
     m.add_class::<connection::JobInfo>()?;
+    m.add_class::<connection::JobHistoryEntry>()?;
+    m.add_class::<connection::JobErrorEntry>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<IndexConfig>()?;

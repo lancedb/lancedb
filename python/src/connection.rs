@@ -70,6 +70,39 @@ pub struct JobInfo {
     pub error: Option<String>,
 }
 
+/// One durable, completed/terminal server-side job record (SHOW JOB HISTORY).
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct JobHistoryEntry {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    pub state: String,
+    pub column: Option<String>,
+    pub created_ms: i64,
+    pub updated_ms: i64,
+    pub completed_ms: Option<i64>,
+    pub rows_processed: Option<i64>,
+    pub rows_skipped: Option<i64>,
+    pub error: Option<String>,
+    pub events: Option<String>,
+}
+
+/// One per-row UDF error recorded by `error_policy=skip` (SHOW ERRORS).
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct JobErrorEntry {
+    pub job_id: String,
+    pub table: String,
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub fragment_id: Option<i64>,
+    pub source_row_id: Option<i64>,
+    pub table_version: Option<i64>,
+    pub age_seconds: Option<i64>,
+}
+
 /// The plan a REFRESH MATERIALIZED VIEW would execute (EXPLAIN REFRESH).
 #[pyclass(get_all)]
 #[derive(Clone)]
@@ -608,6 +641,63 @@ impl Connection {
                 rows_skipped: j.rows_skipped,
                 error: j.error,
             }))
+        })
+    }
+
+    #[pyo3(signature = (job_id=None))]
+    pub fn job_history(
+        self_: PyRef<'_, Self>,
+        job_id: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let rows = inner.job_history(job_id.as_deref()).await.infer_error()?;
+            Ok(rows
+                .into_iter()
+                .map(|r| JobHistoryEntry {
+                    table: r.table,
+                    job_id: r.job_id,
+                    job_type: r.job_type,
+                    state: r.state,
+                    column: r.column,
+                    created_ms: r.created_ms,
+                    updated_ms: r.updated_ms,
+                    completed_ms: r.completed_ms,
+                    rows_processed: r.rows_processed,
+                    rows_skipped: r.rows_skipped,
+                    error: r.error,
+                    events: r.events,
+                })
+                .collect::<Vec<_>>())
+        })
+    }
+
+    #[pyo3(signature = (job_id=None, table=None))]
+    pub fn errors(
+        self_: PyRef<'_, Self>,
+        job_id: Option<String>,
+        table: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let rows = inner
+                .errors(job_id.as_deref(), table.as_deref())
+                .await
+                .infer_error()?;
+            Ok(rows
+                .into_iter()
+                .map(|e| JobErrorEntry {
+                    job_id: e.job_id,
+                    table: e.table,
+                    column: e.column,
+                    error_type: e.error_type,
+                    error_message: e.error_message,
+                    fragment_id: e.fragment_id,
+                    source_row_id: e.source_row_id,
+                    table_version: e.table_version,
+                    age_seconds: e.age_seconds,
+                })
+                .collect::<Vec<_>>())
         })
     }
 

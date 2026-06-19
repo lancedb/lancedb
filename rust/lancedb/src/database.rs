@@ -341,6 +341,42 @@ pub struct JobInfo {
     pub error: Option<String>,
 }
 
+/// A row from `job_history`: one durable, completed/terminal server-side job
+/// record (SHOW JOB HISTORY), read from a table's `_job_history` store. Unlike
+/// `JobInfo` (live, inflight jobs) this carries created/updated/completed
+/// timestamps and the lifecycle event log.
+#[derive(Debug, Clone)]
+pub struct JobHistoryInfo {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    pub state: String,
+    pub column: Option<String>,
+    pub created_ms: i64,
+    pub updated_ms: i64,
+    pub completed_ms: Option<i64>,
+    pub rows_processed: Option<i64>,
+    pub rows_skipped: Option<i64>,
+    pub error: Option<String>,
+    /// Newline-joined lifecycle event log, oldest first.
+    pub events: Option<String>,
+}
+
+/// A row from `errors`: one per-row UDF failure recorded by `error_policy=skip`
+/// (SHOW ERRORS).
+#[derive(Debug, Clone)]
+pub struct JobErrorInfo {
+    pub job_id: String,
+    pub table: String,
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub fragment_id: Option<i64>,
+    pub source_row_id: Option<i64>,
+    pub table_version: Option<i64>,
+    pub age_seconds: Option<i64>,
+}
+
 /// The plan a `REFRESH MATERIALIZED VIEW` would execute, as returned by
 /// `explain_refresh_materialized_view` (EXPLAIN REFRESH). No work is run.
 #[derive(Debug, Clone)]
@@ -485,6 +521,20 @@ pub trait Database:
     /// O(1) server-side lookup. `None` if the job is unknown or not active.
     async fn get_job(&self, _job_id: &str, _table_hint: Option<&str>) -> Result<Option<JobInfo>> {
         not_supported("get_job")
+    }
+    /// Durable job history (SHOW JOB HISTORY) across the database's tables,
+    /// optionally narrowed to a single `job_id`.
+    async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<JobHistoryInfo>> {
+        not_supported("job_history")
+    }
+    /// Per-row UDF errors (SHOW ERRORS) recorded by `error_policy=skip` across
+    /// the database's tables, optionally filtered by `job_id` and/or `table`.
+    async fn errors(
+        &self,
+        _job_id: Option<&str>,
+        _table: Option<&str>,
+    ) -> Result<Vec<JobErrorInfo>> {
+        not_supported("errors")
     }
 
     /// Open a table in the database

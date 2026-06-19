@@ -802,6 +802,20 @@ class DBConnection(EnforceOverrides):
         """
         return LOOP.run(self._conn.cancel_job(job_id))
 
+    def job_history(self, job_id: "str | None" = None):
+        """Durable history of completed server-side jobs (SHOW JOB HISTORY).
+
+        Pass ``job_id`` to narrow to a single job. Unlike :meth:`list_jobs`
+        (live, inflight) these are the terminal records.
+        """
+        return LOOP.run(self._conn.job_history(job_id))
+
+    def errors(self, job_id: "str | None" = None, table: "str | None" = None):
+        """Per-row UDF errors recorded by ``error_policy=skip`` (SHOW ERRORS),
+        optionally filtered by ``job_id`` and/or ``table``.
+        """
+        return LOOP.run(self._conn.errors(job_id, table))
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -2204,6 +2218,22 @@ class AsyncConnection(object):
         cancellation, False otherwise (best-effort).
         """
         return await self._inner.cancel_job(job_id)
+
+    async def job_history(self, job_id: "str | None" = None):
+        """Durable history of completed server-side jobs (SHOW JOB HISTORY).
+
+        Reads each table's durable job-history store. Pass ``job_id`` to narrow
+        to a single job. Unlike :meth:`list_jobs` (live, inflight) these are the
+        terminal records, with created/updated/completed timestamps.
+        """
+        return await self._inner.job_history(job_id)
+
+    async def errors(self, job_id: "str | None" = None, table: "str | None" = None):
+        """Per-row UDF errors recorded by ``error_policy=skip`` (SHOW ERRORS).
+
+        Optionally filtered by ``job_id`` and/or ``table``.
+        """
+        return await self._inner.errors(job_id, table)
 
     async def rename_table(
         self,

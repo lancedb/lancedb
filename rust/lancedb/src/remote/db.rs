@@ -20,9 +20,9 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
-    CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo,
-    MvRefreshPlan, OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest,
-    TableLineageRequest, TableNamesRequest,
+    CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobErrorInfo, JobHistoryInfo,
+    JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest, ReadConsistency,
+    RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -189,6 +189,90 @@ impl From<RemoteJobEntry> for JobInfo {
             committed: j.committed,
             rows_skipped: j.rows_skipped,
             error: j.error,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteJobHistoryEntry {
+    table: String,
+    job_id: String,
+    job_type: String,
+    state: String,
+    #[serde(default)]
+    column: Option<String>,
+    created_ms: i64,
+    updated_ms: i64,
+    #[serde(default)]
+    completed_ms: Option<i64>,
+    #[serde(default)]
+    rows_processed: Option<i64>,
+    #[serde(default)]
+    rows_skipped: Option<i64>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    events: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteJobHistoryResponse {
+    jobs: Vec<RemoteJobHistoryEntry>,
+}
+
+impl From<RemoteJobHistoryEntry> for JobHistoryInfo {
+    fn from(j: RemoteJobHistoryEntry) -> Self {
+        JobHistoryInfo {
+            table: j.table,
+            job_id: j.job_id,
+            job_type: j.job_type,
+            state: j.state,
+            column: j.column,
+            created_ms: j.created_ms,
+            updated_ms: j.updated_ms,
+            completed_ms: j.completed_ms,
+            rows_processed: j.rows_processed,
+            rows_skipped: j.rows_skipped,
+            error: j.error,
+            events: j.events,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteErrorEntry {
+    job_id: String,
+    table: String,
+    column: String,
+    error_type: String,
+    error_message: String,
+    #[serde(default)]
+    fragment_id: Option<i64>,
+    #[serde(default)]
+    source_row_id: Option<i64>,
+    #[serde(default)]
+    table_version: Option<i64>,
+    #[serde(default)]
+    age_seconds: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteErrorsResponse {
+    errors: Vec<RemoteErrorEntry>,
+}
+
+impl From<RemoteErrorEntry> for JobErrorInfo {
+    fn from(e: RemoteErrorEntry) -> Self {
+        JobErrorInfo {
+            job_id: e.job_id,
+            table: e.table,
+            column: e.column,
+            error_type: e.error_type,
+            error_message: e.error_message,
+            fragment_id: e.fragment_id,
+            source_row_id: e.source_row_id,
+            table_version: e.table_version,
+            age_seconds: e.age_seconds,
         }
     }
 }
@@ -996,6 +1080,31 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let body: RemoteCancelJobResponse = rsp.json().await.err_to_http(request_id)?;
         Ok(body.cancelled)
+    }
+
+    async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<JobHistoryInfo>> {
+        let mut req = self.client.get("/v1/job/history");
+        if let Some(j) = job_id {
+            req = req.query(&[("job", j)]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteJobHistoryResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.jobs.into_iter().map(JobHistoryInfo::from).collect())
+    }
+
+    async fn errors(&self, job_id: Option<&str>, table: Option<&str>) -> Result<Vec<JobErrorInfo>> {
+        let mut req = self.client.get("/v1/job/errors");
+        if let Some(j) = job_id {
+            req = req.query(&[("job", j)]);
+        }
+        if let Some(t) = table {
+            req = req.query(&[("table", t)]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteErrorsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.errors.into_iter().map(JobErrorInfo::from).collect())
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -2106,6 +2215,52 @@ mod tests {
                 .unwrap()
         });
         assert!(!conn.cancel_job("gone").await.unwrap());
+
+        // job_history: GET /v1/job/history, no filter
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/job/history");
+            assert!(request.url().query().is_none());
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"jobs":[{"table":"docs","job_id":"j-1","job_type":"udf_virtual_column_backfill","state":"done","column":"vec","created_ms":1000,"updated_ms":2000,"completed_ms":2000,"rows_processed":42,"rows_skipped":3,"error":null,"events":"created\ndone"}]}"#,
+                )
+                .unwrap()
+        });
+        let hist = conn.job_history(None).await.unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].state, "done");
+        assert_eq!(hist[0].rows_processed, Some(42));
+        assert_eq!(hist[0].events.as_deref(), Some("created\ndone"));
+
+        // job_history: ?job= narrows to one job
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/job/history");
+            assert_eq!(request.url().query(), Some("job=j-1"));
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs":[]}"#)
+                .unwrap()
+        });
+        assert!(conn.job_history(Some("j-1")).await.unwrap().is_empty());
+
+        // errors: GET /v1/job/errors with job + table filters
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/job/errors");
+            assert_eq!(request.url().query(), Some("job=j-1&table=docs"));
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"errors":[{"job_id":"j-1","table":"docs","column":"vec","error_type":"ValueError","error_message":"boom","fragment_id":0,"source_row_id":42,"table_version":7,"age_seconds":5}]}"#,
+                )
+                .unwrap()
+        });
+        let errs = conn.errors(Some("j-1"), Some("docs")).await.unwrap();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].error_type, "ValueError");
+        assert_eq!(errs[0].source_row_id, Some(42));
     }
 
     #[tokio::test]
