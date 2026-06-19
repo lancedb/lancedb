@@ -24,8 +24,9 @@ use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, Database,
-    DatabaseOptions, FunctionInfo, JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest,
-    ReadConsistency, RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
+    DatabaseOptions, FunctionInfo, JobErrorInfo, JobHistoryInfo, JobInfo, MaterializedViewInfo,
+    MvRefreshPlan, OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest,
+    TableLineageRequest, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -578,6 +579,22 @@ impl Connection {
     /// active.
     pub async fn get_job(&self, job_id: &str, table_hint: Option<&str>) -> Result<Option<JobInfo>> {
         self.internal.get_job(job_id, table_hint).await
+    }
+
+    /// Durable job history (SHOW JOB HISTORY) across the database's tables.
+    /// Pass `job_id` to narrow to a single job.
+    pub async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<JobHistoryInfo>> {
+        self.internal.job_history(job_id).await
+    }
+
+    /// Per-row UDF errors (SHOW ERRORS) across the database's tables, optionally
+    /// filtered by `job_id` and/or `table`.
+    pub async fn errors(
+        &self,
+        job_id: Option<&str>,
+        table: Option<&str>,
+    ) -> Result<Vec<JobErrorInfo>> {
+        self.internal.errors(job_id, table).await
     }
 
     /// Rename a table in the database.
