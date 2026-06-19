@@ -569,6 +569,20 @@ class MaterializedView:
 _PROGRESS = re.compile(r"(\d+)/(\d+)")
 
 
+class JobFailedError(RuntimeError):
+    """Raised by ``JobHandle.wait()`` when the server reports the job ``failed``.
+
+    Carries the server-side error so a doomed backfill (e.g. a multi-column
+    ``REFRESH COLUMN`` of a scalar UDF) surfaces its real cause promptly,
+    instead of the caller blocking until ``wait()``'s timeout.
+    """
+
+    def __init__(self, job_id: str, error: "str | None"):
+        self.job_id = job_id
+        self.error = error
+        super().__init__(f"job {job_id} failed: {error or 'unknown error'}")
+
+
 class JobHandle:
     """A reference to an inflight server-side job, with polling helpers."""
 
@@ -615,6 +629,11 @@ class JobHandle:
             state = self.status()
             if state in ("finished", "stale"):
                 return state
+            if state == "failed":
+                # Terminal failure -- surface the server error now, don't block
+                # until `timeout`. `finalize` wrote it to the job's status node.
+                job = self._job()
+                raise JobFailedError(self.id, job.error if job is not None else None)
             if state == "pending":
                 time.sleep(min(poll, 0.5))
                 continue
@@ -713,6 +732,11 @@ class AsyncJobHandle:
             state = await self.status()
             if state in ("finished", "stale"):
                 return state
+            if state == "failed":
+                # Terminal failure -- surface the server error now, don't block
+                # until `timeout`. `finalize` wrote it to the job's status node.
+                job = await self._job()
+                raise JobFailedError(self.id, job.error if job is not None else None)
             if state == "pending":
                 await asyncio.sleep(min(poll, 0.5))
                 continue
