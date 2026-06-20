@@ -845,7 +845,8 @@ class RemoteTable(Table):
         """
         warnings.warn(
             "cleanup_old_versions() is a no-op on LanceDB Cloud. "
-            "Tables are automatically cleaned up and optimized."
+            "Tables are automatically cleaned up and optimized.",
+            stacklevel=2,
         )
         pass
 
@@ -857,7 +858,8 @@ class RemoteTable(Table):
         """
         warnings.warn(
             "compact_files() is a no-op on LanceDB Cloud. "
-            "Tables are automatically compacted and optimized."
+            "Tables are automatically compacted and optimized.",
+            stacklevel=2,
         )
         pass
 
@@ -874,7 +876,8 @@ class RemoteTable(Table):
         """
         warnings.warn(
             "optimize() is a no-op on LanceDB Cloud. "
-            "Indices are optimized automatically."
+            "Indices are optimized automatically.",
+            stacklevel=2,
         )
         pass
 

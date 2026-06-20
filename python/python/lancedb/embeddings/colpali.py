@@ -81,6 +81,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
             warnings.warn(
                 "use_token_pooling is deprecated, use pooling_strategy=None instead",
                 DeprecationWarning,
+                stacklevel=2,
             )
             self.pooling_strategy = None
 
