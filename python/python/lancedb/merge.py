@@ -62,7 +62,6 @@ class LanceMergeInsertBuilder(object):
         self._when_matched_update_all_condition = where
         return self
 
-    
     def when_not_matched_insert_all(self) -> LanceMergeInsertBuilder:
         """
         Rows that exist only in the source table (new data) should
