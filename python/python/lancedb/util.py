@@ -308,12 +308,16 @@ def infer_vector_column_name(
         return None
 
     if query is not None or query_type == "hybrid":
-        try:
-            vector_column_name = inf_vector_column_query(
-                schema, dim=_query_vector_dim(query)
-            )
-        except Exception as e:
-            raise e
+        vector_column_name = inf_vector_column_query(
+            schema, dim=_query_vector_dim(query)
+        )
+
+    if vector_column_name is None:
+        raise ValueError(
+            "No vector column found in the schema. Please specify the "
+            "vector column name explicitly via the `vector_column_name` "
+            "parameter."
+        )
 
     return vector_column_name
 
