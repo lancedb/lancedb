@@ -589,27 +589,18 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Ok(())
     }
     /// Names of the blob v2 columns in this table, in declaration order.
-    ///
-    /// The default implementation returns `NotSupported`; tables backed by a
-    /// Lance dataset override it.
     async fn blob_columns(&self) -> Result<Vec<String>> {
         Err(Error::NotSupported {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
-    ///
-    /// The default implementation returns `NotSupported`; tables backed by a
-    /// Lance dataset override it.
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
             message: "fetch_blobs is not supported on this table type".into(),
         })
     }
     /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
-    ///
-    /// The default implementation returns `NotSupported`; tables backed by a
-    /// Lance dataset override it.
     async fn fetch_blob_files(
         &self,
         _column: &str,
@@ -961,46 +952,35 @@ impl Table {
 
     /// Names of the blob v2 columns in this table, in declaration order.
     ///
-    /// Empty when the table has no blob columns. Declare columns with
-    /// [`crate::blob::blob`] at create time.
-    ///
-    /// Returns [`Error::NotSupported`] on table types without blob support.
+    /// Nested blobs use dotted paths (e.g. `info.blob`). Returns
+    /// [`Error::NotSupported`] on table types without blob support.
     pub async fn blob_columns(&self) -> Result<Vec<String>> {
         self.inner.blob_columns().await
     }
 
     /// Materialize blob bytes for the given row ids.
     ///
-    /// `row_ids` are stable row ids from a query with `with_row_id`. Output
-    /// matches `row_ids` in length and order; null blob rows are null entries.
-    /// Zero-length blobs also read back as null.
-    ///
-    /// Materializes every payload into memory. For large blobs or large
-    /// selections, prefer [`Self::fetch_blob_files`].
+    /// Output matches `row_ids` in length and order. Null and zero-length rows
+    /// are null. Prefer [`Self::fetch_blob_files`] for large selections.
     ///
     /// ```
+    /// use arrow_array::UInt64Array;
     /// use futures::TryStreamExt;
     /// use lancedb::query::{ExecutableQuery, QueryBase};
     ///
     /// # use lancedb::Table;
     /// # async fn materialize(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// let hits = table
-    ///     .query()
-    ///     .with_row_id()
-    ///     .limit(10)
-    ///     .execute()
-    ///     .await?
-    ///     .try_collect::<Vec<_>>()
-    ///     .await?;
-    /// let row_ids = hits
-    ///     .iter()
-    ///     .flat_map(|batch| {
-    ///         let ids = batch.column_by_name("_rowid").unwrap();
-    ///         let ids = ids.as_any().downcast_ref::<arrow_array::UInt64Array>().unwrap();
-    ///         ids.values().to_vec()
-    ///     })
-    ///     .collect::<Vec<u64>>();
-    /// let images = table.fetch_blobs("image", &row_ids).await?;
+    /// let mut stream = table.query().with_row_id().limit(10).execute().await?;
+    /// while let Some(batch) = stream.try_next().await? {
+    ///     let row_ids = batch
+    ///         .column_by_name("_rowid")
+    ///         .unwrap()
+    ///         .as_any()
+    ///         .downcast_ref::<UInt64Array>()
+    ///         .unwrap();
+    ///     let images = table.fetch_blobs("image", row_ids.values()).await?;
+    ///     let _ = images;
+    /// }
     /// # Ok(())
     /// # }
     /// ```
@@ -1018,8 +998,8 @@ impl Table {
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
     ///
-    /// Same length and order as `row_ids`. Null and zero-length rows are `None`.
-    /// Payload bytes move on [`BlobFile::read`].
+    /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
+    /// read from disk until a call to [`BlobFile::read`].
     ///
     /// ```
     /// # use lancedb::Table;

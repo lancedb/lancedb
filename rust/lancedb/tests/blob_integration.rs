@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, BinaryArray, Int64Array, LargeBinaryArray, RecordBatch, StringArray, StructArray,
-    UInt64Array,
+    Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, RecordBatch, StringArray,
+    StructArray, UInt64Array,
 };
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
 use lance_encoding::version::LanceFileVersion;
 use lancedb::{
@@ -93,10 +93,10 @@ async fn query_image_struct(table: &Table) -> StructArray {
     let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
     batch
         .column_by_name("image")
-        .unwrap()
+        .expect("image column present")
         .as_any()
         .downcast_ref::<StructArray>()
-        .unwrap()
+        .expect("image column is a descriptor struct")
         .clone()
 }
 
@@ -299,6 +299,8 @@ async fn namespace_create_applies_blob_defaults() -> Result<()> {
     Ok(())
 }
 
+// Overwrite takes the input schema as-is. A raw-binary overwrite drops the blob
+// marker; re-declaring blob v2 in the input restores it.
 #[tokio::test]
 async fn overwrite_replaces_blob_schema_with_input_schema() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -429,6 +431,76 @@ async fn fetch_blobs_round_trips_bytes() -> Result<()> {
     let bytes = table.fetch_blobs("image", &ids).await?;
     assert_eq!(bytes.len(), 1);
     assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+
+    let blob_field = blob("blob", true);
+    let DataType::Struct(blob_children) = blob_field.data_type().clone() else {
+        unreachable!("blob field is a struct")
+    };
+    let blob_array = StructArray::new(
+        blob_children,
+        vec![
+            Arc::new(LargeBinaryArray::from_iter_values([
+                b"hello".as_slice(),
+                b"world".as_slice(),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None::<&str>, None::<&str>])) as ArrayRef,
+        ],
+        None,
+    );
+    let info_fields: Fields = vec![Field::new("name", DataType::Utf8, false), blob_field].into();
+    let info_array = StructArray::new(
+        info_fields.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            Arc::new(blob_array) as ArrayRef,
+        ],
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "info",
+        DataType::Struct(info_fields),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(info_array) as ArrayRef]).unwrap();
+    let table = db.create_table("t", batch).execute().await?;
+
+    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(uses_stable_row_ids(&table).await);
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("info.blob", &ids).await?;
+    assert_eq!(bytes.len(), 2);
+    let values: std::collections::HashSet<&[u8]> =
+        (0..bytes.len()).map(|i| bytes.value(i)).collect();
+    assert!(values.contains(b"hello".as_slice()));
+    assert!(values.contains(b"world".as_slice()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_columns_lists_nested_dotted_paths() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let blob_field = blob("blob", true);
+    let info = Field::new(
+        "info",
+        DataType::Struct(vec![Field::new("name", DataType::Utf8, false), blob_field].into()),
+        true,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        blob("thumbnail", true),
+        Field::new("id", DataType::Int64, false),
+        info,
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail", "info.blob"]);
     Ok(())
 }
 
