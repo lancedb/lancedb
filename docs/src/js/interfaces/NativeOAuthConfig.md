@@ -73,6 +73,8 @@ optional refreshBufferSecs: number;
 ```
 
 Seconds before expiry to trigger proactive refresh (default: 300).
+Keep this well below the token TTL; if it is greater than or equal to
+the TTL, each request refreshes the token.
 
 ***
 
