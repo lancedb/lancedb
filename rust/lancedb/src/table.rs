@@ -3,7 +3,7 @@
 
 //! LanceDB Table APIs
 
-use arrow_array::{RecordBatch, RecordBatchReader};
+use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_execution::TaskContext;
@@ -12,6 +12,7 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use lance::dataset::BlobFile;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
@@ -587,6 +588,28 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn close_lsm_writers(&self) -> Result<()> {
         Ok(())
     }
+    /// Names of the blob v2 columns in this table, in declaration order.
+    async fn blob_columns(&self) -> Result<Vec<String>> {
+        Err(Error::NotSupported {
+            message: "blob_columns is not supported on this table type".into(),
+        })
+    }
+    /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
+    async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "fetch_blobs is not supported on this table type".into(),
+        })
+    }
+    /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
+    async fn fetch_blob_files(
+        &self,
+        _column: &str,
+        _row_ids: &[u64],
+    ) -> Result<Vec<Option<BlobFile>>> {
+        Err(Error::NotSupported {
+            message: "fetch_blob_files is not supported on this table type".into(),
+        })
+    }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -925,6 +948,76 @@ impl Table {
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
         self.inner.count_rows(filter.map(Filter::Sql)).await
+    }
+
+    /// Names of the blob v2 columns in this table, in declaration order.
+    ///
+    /// Nested blobs use dotted paths (e.g. `info.blob`). Returns
+    /// [`Error::NotSupported`] on table types without blob support.
+    pub async fn blob_columns(&self) -> Result<Vec<String>> {
+        self.inner.blob_columns().await
+    }
+
+    /// Materialize blob bytes for the given row ids.
+    ///
+    /// Output matches `row_ids` in length and order. Null and zero-length rows
+    /// are null. Prefer [`Self::fetch_blob_files`] for large selections.
+    ///
+    /// ```
+    /// use arrow_array::UInt64Array;
+    /// use futures::TryStreamExt;
+    /// use lancedb::query::{ExecutableQuery, QueryBase};
+    ///
+    /// # use lancedb::Table;
+    /// # async fn materialize(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut stream = table.query().with_row_id().limit(10).execute().await?;
+    /// while let Some(batch) = stream.try_next().await? {
+    ///     let row_ids = batch
+    ///         .column_by_name("_rowid")
+    ///         .unwrap()
+    ///         .as_any()
+    ///         .downcast_ref::<UInt64Array>()
+    ///         .unwrap();
+    ///     let images = table.fetch_blobs("image", row_ids.values()).await?;
+    ///     let _ = images;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Returns [`Error::InvalidInput`] when the column does not exist or is
+    /// not a blob v2 column, and [`Error::NotSupported`] on table types
+    /// without blob support.
+    pub async fn fetch_blobs(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+    ) -> Result<LargeBinaryArray> {
+        self.inner.fetch_blobs(column.as_ref(), row_ids).await
+    }
+
+    /// Open lazy [`BlobFile`] handles for the given row ids.
+    ///
+    /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
+    /// read from disk until a call to [`BlobFile::read`].
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn lazy_read(table: &Table, row_ids: &[u64]) -> Result<(), Box<dyn std::error::Error>> {
+    /// let handles = table.fetch_blob_files("image", row_ids).await?;
+    /// if let Some(Some(first)) = handles.first() {
+    ///     let bytes = first.read().await?;
+    ///     println!("first blob is {} bytes", bytes.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn fetch_blob_files(
+        &self,
+        column: impl AsRef<str>,
+        row_ids: &[u64],
+    ) -> Result<Vec<Option<BlobFile>>> {
+        self.inner.fetch_blob_files(column.as_ref(), row_ids).await
     }
 
     /// Insert new records into this Table
@@ -2759,6 +2852,25 @@ impl BaseTable for NativeTable {
 
     async fn close_lsm_writers(&self) -> Result<()> {
         merge::lsm::close_lsm_writers(self).await
+    }
+
+    async fn blob_columns(&self) -> Result<Vec<String>> {
+        let schema = self.schema().await?;
+        Ok(crate::blob::blob_column_names(schema.as_ref()))
+    }
+
+    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
+    }
+
+    async fn fetch_blob_files(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+    ) -> Result<Vec<Option<BlobFile>>> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
     }
 
     /// Delete rows from the table

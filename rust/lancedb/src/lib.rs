@@ -189,7 +189,7 @@ use std::{fmt::Display, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-pub use blob::blob;
+pub use blob::{blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
 use lance_index::vector::ApproxMode as LanceApproxMode;
