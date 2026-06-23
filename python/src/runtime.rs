@@ -140,3 +140,12 @@ where
 {
     pyo3_async_runtimes::generic::future_into_py::<LanceRuntime, _, T>(py, fut)
 }
+
+/// Block on a tokio future from sync Python callers.
+pub fn block_on<F, T>(fut: F) -> T
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    get_runtime().block_on(fut)
+}

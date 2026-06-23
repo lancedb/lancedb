@@ -990,6 +990,21 @@ class RemoteTable(Table):
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
         )
 
+    def blob_columns(self) -> list[str]:
+        raise NotImplementedError(
+            "blob_columns() is not yet supported on the LanceDB Cloud"
+        )
+
+    def fetch_blobs(self, column: str, row_ids) -> pa.LargeBinaryArray:
+        raise NotImplementedError(
+            "fetch_blobs() is not yet supported on the LanceDB Cloud"
+        )
+
+    def fetch_blob_files(self, column: str, row_ids):
+        raise NotImplementedError(
+            "fetch_blob_files() is not yet supported on the LanceDB Cloud"
+        )
+
     def head(self, n=5) -> pa.Table:
         """
         Return the first `n` rows of the table.
