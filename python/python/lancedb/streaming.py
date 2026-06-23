@@ -120,9 +120,10 @@ class StreamingDataset(IterableDataset):
         self._transform = transform
         self._worker_info_override = worker_info_override
 
-        # Reference to the live per-split pending-futures deques while __iter__
-        # is running.  None when not iterating.  Used by prefetch_queue_depth.
+        # References to the live per-split deques while __iter__ is running.
+        # None when not iterating.  Used by prefetch_queue_depth.
         self._pending_ref: Optional[list[deque]] = None
+        self._ready_ref: Optional[list[deque]] = None
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -263,6 +264,7 @@ class StreamingDataset(IterableDataset):
 
         with ThreadPoolExecutor(max_workers=n * max_prefetch) as executor:
             self._pending_ref = pending
+            self._ready_ref = ready
             try:
                 # Prime the pipeline: submit up to max_prefetch batches per split.
                 for i in range(n):
@@ -291,6 +293,7 @@ class StreamingDataset(IterableDataset):
                         yield row
             finally:
                 self._pending_ref = None
+                self._ready_ref = None
 
     @property
     def bytes_loaded(self) -> int:
@@ -325,16 +328,16 @@ class StreamingDataset(IterableDataset):
 
     @property
     def prefetch_queue_depth(self) -> int:
-        """Number of batches currently in-flight across all splits.
+        """Number of rows fetched and ready to yield across all splits.
 
-        Each in-flight batch is a ``take_offsets`` call submitted to the
-        background thread pool that has not yet been consumed.  The maximum
-        value is ``num_assigned_splits * prefetch_batches``.  Returns 0 when
-        not iterating.
+        Counts only rows whose ``take_offsets`` future has already completed
+        and whose data is sitting in memory waiting for the main thread —
+        i.e. rows that can be handed off with no storage wait.  Does not
+        count futures that are still in-flight.  Returns 0 when not iterating.
         """
-        if self._pending_ref is None:
+        if self._ready_ref is None:
             return 0
-        return sum(len(q) for q in self._pending_ref)
+        return sum(len(q) for q in self._ready_ref)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
