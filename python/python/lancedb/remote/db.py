@@ -124,6 +124,7 @@ class RemoteDBConnection(DBConnection):
                 "request_thread_pool is no longer used and will be removed in "
                 "a future release.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         if connection_timeout is not None:
@@ -132,6 +133,7 @@ class RemoteDBConnection(DBConnection):
                 "release. Please use client_config.timeout_config.connect_timeout "
                 "instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.connect_timeout = timedelta(
                 seconds=connection_timeout
@@ -142,6 +144,7 @@ class RemoteDBConnection(DBConnection):
                 "read_timeout is deprecated and will be removed in a future release. "
                 "Please use client_config.timeout_config.read_timeout instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.read_timeout = timedelta(seconds=read_timeout)
 

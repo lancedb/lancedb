@@ -3409,18 +3409,20 @@ class LanceTable(Table):
 
         if data_storage_version is not None:
             warnings.warn(
-                "setting data_storage_version directly on create_table is deprecated. ",
+                "setting data_storage_version directly on create_table is deprecated. "
                 "Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
             storage_options["new_table_data_storage_version"] = data_storage_version
         if enable_v2_manifest_paths is not None:
             warnings.warn(
-                "setting enable_v2_manifest_paths directly on create_table is ",
+                "setting enable_v2_manifest_paths directly on create_table is "
                 "deprecated. Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
@@ -5662,6 +5664,7 @@ class AsyncTable:
                 "The 'retrain' parameter is deprecated and will be removed in a "
                 "future version.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         return await self._inner.optimize(
