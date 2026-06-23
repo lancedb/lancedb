@@ -924,3 +924,23 @@ def test_sanitize_data_stream():
 
     with pytest.raises(ValueError):
         next(output)
+
+
+def test_infer_vector_column_raises_clear_error(tmp_path):
+    """Regression: querying a table with no inferable vector column should raise
+    a clear ValueError, not a cryptic TypeError (issue #1653).
+
+    Previously, inf_vector_column_query silently returned None which then caused
+    a confusing TypeError deep in schema lookup. The fix adds a ValueError guard
+    so the user gets a direct, actionable error message.
+    """
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "no_vec",
+        data=[{"id": 1, "text": "hello"}, {"id": 2, "text": "world"}],
+    )
+
+    with pytest.raises(ValueError, match="vector"):
+        # Plain vector search on a table with no vector column should raise
+        # a clear ValueError, not a cryptic TypeError.
+        table.search([1.0, 2.0]).to_list()
