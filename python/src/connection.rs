@@ -656,7 +656,7 @@ fn build_namespace_natively(
     namespace_client_impl: Option<&str>,
     namespace_client_properties: &HashMap<String, String>,
 ) -> bool {
-    namespace_client_impl.is_some() && !namespace_client_properties.is_empty()
+    matches!(namespace_client_impl, Some("rest")) && !namespace_client_properties.is_empty()
 }
 
 #[derive(FromPyObject)]
@@ -770,13 +770,15 @@ mod tests {
     }
 
     #[test]
-    fn native_build_requires_impl_and_properties() {
+    fn native_build_only_for_rest_with_properties() {
         let rest = props(&[("uri", "http://localhost:10024")]);
 
-        // impl + non-empty properties -> build natively (installs the
-        // read-freshness provider so checkout_latest() busts server caches).
+        // rest + non-empty properties -> build natively (installs the
+        // read-freshness provider so checkout_latest() busts the server cache).
         assert!(build_namespace_natively(Some("rest"), &rest));
-        assert!(build_namespace_natively(
+
+        // dir is local (no server cache) -> wrap the pre-built client unchanged.
+        assert!(!build_namespace_natively(
             Some("dir"),
             &props(&[("root", "/tmp")])
         ));
@@ -784,7 +786,7 @@ mod tests {
         // No impl: only a pre-built client was handed in -> wrap it as-is.
         assert!(!build_namespace_natively(None, &rest));
 
-        // Impl but no properties: nothing to build a connection from -> wrap.
+        // rest but no properties: nothing to build a connection from -> wrap.
         assert!(!build_namespace_natively(Some("rest"), &HashMap::new()));
     }
 }
