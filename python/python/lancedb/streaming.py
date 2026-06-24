@@ -439,6 +439,37 @@ class StreamingDataset(IterableDataset):
             return 0
         return sum(self._local_consumed_ref)
 
+    def __getstate__(self):
+        """Support pickling for multi-worker DataLoader (forkserver / spawn).
+
+        The live LanceDB table object contains non-picklable connection state
+        (sockets, Rust-backed PyO3 objects).  We serialise just the URI and
+        table name so the worker process can reconnect independently.
+        """
+        state = self.__dict__.copy()
+        # Replace the live table with a (uri, name) tuple for reconnection.
+        state["_table"] = (self._table._conn.uri, self._table.name)
+        # Drop all live pipeline references — they are always None outside
+        # of an active __iter__ call and must not be shared across processes.
+        for key in (
+            "_raw_batches_ref",
+            "_cooked_ref",
+            "_fetch_head_ref",
+            "_split_sizes_ref",
+            "_local_consumed_ref",
+        ):
+            state[key] = None
+        return state
+
+    def __setstate__(self, state):
+        """Reconnect to LanceDB after unpickling in a worker process."""
+        import lancedb as _lancedb
+
+        db_uri, table_name = state.pop("_table")
+        self.__dict__.update(state)
+        db = _lancedb.connect(db_uri)
+        self._table = db.open_table(table_name)
+
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
 
