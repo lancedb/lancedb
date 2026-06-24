@@ -576,6 +576,9 @@ impl Connection {
     /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
+    ///
+    /// Remote connections using dynamic headers forward them through the
+    /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
     }
@@ -584,6 +587,9 @@ impl Connection {
     /// Returns (impl_type, properties) where:
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
+    ///
+    /// Remote connections using dynamic headers cannot be exported because the
+    /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
     ) -> Result<(String, std::collections::HashMap<String, String>)> {
