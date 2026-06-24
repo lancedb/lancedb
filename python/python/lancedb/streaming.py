@@ -382,7 +382,7 @@ class StreamingDataset(IterableDataset):
 
     @property
     def raw_queue_depth(self) -> int:
-        """Number of raw ``RecordBatch`` objects waiting for a transform thread.
+        """Number of raw rows waiting for a transform thread across all splits.
 
         A persistently non-zero value means Stage 2 (transform) is the
         bottleneck: I/O is completing faster than transforms can consume
@@ -390,7 +390,7 @@ class StreamingDataset(IterableDataset):
         """
         if self._raw_batches_ref is None:
             return 0
-        return sum(len(q) for q in self._raw_batches_ref)
+        return sum(batch.num_rows for q in self._raw_batches_ref for batch in q)
 
     @property
     def prefetch_queue_depth(self) -> int:
