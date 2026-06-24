@@ -50,7 +50,7 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
-tokio = { version = "1.23", features = ["rt-multi-thread"] }
+tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 log.workspace = true
 async-trait = "0"
 bytes = "1"
@@ -75,6 +75,7 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "stream",
 ], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
+urlencoding = { version = "2", optional = true }
 uuid = { version = "1.7.0", features = ["v4", "v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
@@ -93,6 +94,7 @@ semver = { workspace = true }
 anyhow = "1"
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
+tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.55.0" }
@@ -129,7 +131,13 @@ huggingface = [
     "lance-namespace-impls/dir-huggingface",
 ]
 dynamodb = ["lance/dynamodb", "aws"]
-remote = ["dep:reqwest", "dep:http", "lance-namespace-impls/rest", "lance-namespace-impls/rest-adapter"]
+remote = [
+    "dep:reqwest",
+    "dep:http",
+    "dep:urlencoding",
+    "lance-namespace-impls/rest",
+    "lance-namespace-impls/rest-adapter",
+]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]
