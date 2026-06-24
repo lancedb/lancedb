@@ -955,6 +955,43 @@ def test_local_namespace_operations(tmp_path):
     assert db.list_namespaces().namespaces == []
 
 
+def test_local_namespace_operations_without_pylance(tmp_path, monkeypatch):
+    """Sync namespace operations must not require the optional ``pylance`` package.
+
+    Regression test for OSS-1275: the sync ``list_namespaces``/``create_namespace``/
+    ``drop_namespace``/``describe_namespace``/``list_tables`` paths used to route
+    through the Python ``lance_namespace`` client, whose directory namespace impl
+    imports ``lance.namespace``. That made these operations fail with
+    ``No module named 'lance'`` on installs without the ``pylance`` extra, even
+    though the async equivalents (backed by the native Rust connection) worked.
+    """
+    import importlib.abc
+
+    # Drop any already-imported ``lance`` modules and block re-importing them so we
+    # faithfully simulate an install that lacks the optional ``pylance`` package.
+    for name in list(sys.modules):
+        if name == "lance" or name.startswith("lance."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    class BlockLance(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            if name == "lance" or name.startswith("lance."):
+                raise ModuleNotFoundError(f"No module named '{name}'")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [BlockLance(), *sys.meta_path])
+
+    db = lancedb.connect(tmp_path)
+
+    assert db.list_namespaces().namespaces == []
+    db.create_namespace(["child"])
+    assert "child" in db.list_namespaces().namespaces
+    db.describe_namespace(["child"])  # must not raise
+    assert db.list_tables().tables == []
+    db.drop_namespace(["child"])
+    assert db.list_namespaces().namespaces == []
+
+
 def test_create_namespace_invalid_mode_raises(tmp_path):
     """Unrecognized create namespace modes raise a clear error."""
     db = lancedb.connect(tmp_path)

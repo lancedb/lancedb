@@ -746,10 +746,12 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        return self._namespace_conn().list_namespaces(
-            namespace_path=namespace_path,
-            page_token=page_token,
-            limit=limit,
+        return LOOP.run(
+            self._conn.list_namespaces(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                limit=limit,
+            )
         )
 
     @override
@@ -759,10 +761,12 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
-        return self._namespace_conn().create_namespace(
-            namespace_path=namespace_path,
-            mode=mode,
-            properties=properties,
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace_path,
+                mode=mode,
+                properties=properties,
+            )
         )
 
     @override
@@ -772,19 +776,19 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
-        return self._namespace_conn().drop_namespace(
-            namespace_path=namespace_path,
-            mode=mode,
-            behavior=behavior,
+        return LOOP.run(
+            self._conn.drop_namespace(
+                namespace_path,
+                mode=mode,
+                behavior=behavior,
+            )
         )
 
     @override
     def describe_namespace(
         self, namespace_path: List[str]
     ) -> DescribeNamespaceResponse:
-        return self._namespace_conn().describe_namespace(
-            namespace_path=namespace_path,
-        )
+        return LOOP.run(self._conn.describe_namespace(namespace_path))
 
     @override
     def list_tables(
@@ -813,12 +817,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if namespace_path:
-            return self._namespace_conn().list_tables(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
-            )
         return LOOP.run(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
