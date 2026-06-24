@@ -23,7 +23,13 @@ from typing import Any, Callable, Iterator, Optional
 
 from torch.utils.data import IterableDataset, get_worker_info
 
-from .permutation import Permutation, Transforms, permutation_builder
+from .permutation import (
+    Permutation,
+    Transforms,
+    permutation_builder,
+    _table_from_pickle_state,
+    _table_to_pickle_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +115,7 @@ class StreamingDataset(IterableDataset):
         read_batch_size: int = DEFAULT_READ_BATCH_SIZE,
         prefetch_batches: int = DEFAULT_PREFETCH_BATCHES,
         transform: Optional[Callable] = None,
+        connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
     ):
         super().__init__()
@@ -127,6 +134,7 @@ class StreamingDataset(IterableDataset):
         self._read_batch_size = read_batch_size
         self._prefetch_batches = prefetch_batches
         self._transform = transform
+        self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
 
         # Live references to pipeline state, set only while __iter__ is running.
@@ -443,14 +451,18 @@ class StreamingDataset(IterableDataset):
         """Support pickling for multi-worker DataLoader (forkserver / spawn).
 
         The live LanceDB table object contains non-picklable connection state
-        (sockets, Rust-backed PyO3 objects).  We serialise just the URI and
-        table name so the worker process can reconnect independently.
+        (sockets, Rust-backed PyO3 objects).  If a ``connection_factory`` was
+        supplied only the table name is serialised; the factory is called in
+        the worker to reopen the connection without embedding any credentials.
+        Without a factory the table's own picklable reopen state is captured
+        via ``_table_to_pickle_state`` (mirrors the ``Permutation`` approach).
         """
         state = self.__dict__.copy()
-        # Replace the live table with a (uri, name) tuple for reconnection.
-        state["_table"] = (self._table._conn.uri, self._table.name)
-        # Drop all live pipeline references — they are always None outside
-        # of an active __iter__ call and must not be shared across processes.
+        state["_table_name"] = self._table.name
+        if self._connection_factory is not None:
+            state["_table"] = None
+        else:
+            state["_table"] = _table_to_pickle_state(self._table)
         for key in (
             "_raw_batches_ref",
             "_cooked_ref",
@@ -463,12 +475,13 @@ class StreamingDataset(IterableDataset):
 
     def __setstate__(self, state):
         """Reconnect to LanceDB after unpickling in a worker process."""
-        import lancedb as _lancedb
-
-        db_uri, table_name = state.pop("_table")
+        table_name = state.pop("_table_name")
+        table_state = state.pop("_table")
         self.__dict__.update(state)
-        db = _lancedb.connect(db_uri)
-        self._table = db.open_table(table_name)
+        if self._connection_factory is not None:
+            self._table = self._connection_factory(table_name)
+        else:
+            self._table = _table_from_pickle_state(table_state)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
