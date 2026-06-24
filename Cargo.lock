@@ -5313,6 +5313,7 @@ dependencies = [
  "anyhow",
  "arrow",
  "arrow-array",
+ "arrow-buffer",
  "arrow-cast",
  "arrow-data",
  "arrow-ipc",

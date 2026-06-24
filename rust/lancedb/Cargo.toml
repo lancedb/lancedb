@@ -14,6 +14,7 @@ rust-version.workspace = true
 ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-select = { workspace = true }
