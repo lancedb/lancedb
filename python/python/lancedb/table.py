@@ -3357,6 +3357,7 @@ class LanceTable(Table):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """
         Create a new table.
@@ -3419,6 +3420,7 @@ class LanceTable(Table):
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
         if data_storage_version is not None:
             warnings.warn(
