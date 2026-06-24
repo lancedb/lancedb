@@ -13,12 +13,14 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
   distributed topology changes between runs.
 """
 
+import ctypes
 import logging
 import os
 import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import RawArray
 from typing import Any, Callable, Iterator, Optional
 
 from torch.utils.data import IterableDataset, get_worker_info
@@ -137,13 +139,21 @@ class StreamingDataset(IterableDataset):
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
 
-        # Live references to pipeline state, set only while __iter__ is running.
-        # Used by the queue-depth and progress observability properties.
+        # Live references to pipeline state, set only while __iter__ is running
+        # in the same process.  Used by the observability properties when the
+        # DataLoader runs with num_workers=0.
         self._raw_batches_ref: Optional[list[deque]] = None
         self._cooked_ref: Optional[list[deque]] = None
         self._fetch_head_ref: Optional[list[int]] = None
         self._split_sizes_ref: Optional[list[int]] = None
         self._local_consumed_ref: Optional[list[int]] = None
+
+        # Shared-memory counters written by __iter__ (which may run in a
+        # DataLoader worker process) and read by the observability properties
+        # in the main process.  RawArray is picklable via the forkserver
+        # reduction protocol so it survives the dataset pickle round-trip.
+        # Layout: [unscanned_rows, raw_rows, cooked_rows, consumed_rows]
+        self._worker_stats: RawArray = RawArray(ctypes.c_int64, 4)
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -351,11 +361,23 @@ class StreamingDataset(IterableDataset):
                             local_consumed[i] += 1
                             _advance(i)
 
-                            # Update the global offset after the last split in
-                            # each cycle so state_dict() returns the correct
-                            # completed-cycle count.
+                            # After the last split in each cycle: update the
+                            # global offset and refresh the shared-memory stats
+                            # so the main process can observe pipeline depth
+                            # even when __iter__ runs in a worker process.
                             if i == n - 1:
                                 self._resume_offset = initial_offset + local_consumed[i]
+                                ws = self._worker_stats
+                                ws[0] = sum(
+                                    split_sizes[j] - fetch_head[j] for j in range(n)
+                                )
+                                ws[1] = sum(
+                                    batch.num_rows
+                                    for q in raw_batches
+                                    for batch in q
+                                )
+                                ws[2] = sum(len(q) for q in cooked)
+                                ws[3] = sum(local_consumed)
 
                             yield row
                 finally:
@@ -405,9 +427,9 @@ class StreamingDataset(IterableDataset):
         bottleneck: I/O is completing faster than transforms can consume
         batches.  Returns 0 when not iterating.
         """
-        if self._raw_batches_ref is None:
-            return 0
-        return sum(batch.num_rows for q in self._raw_batches_ref for batch in q)
+        if self._raw_batches_ref is not None:
+            return sum(batch.num_rows for q in self._raw_batches_ref for batch in q)
+        return int(self._worker_stats[1])
 
     @property
     def prefetch_queue_depth(self) -> int:
@@ -417,9 +439,9 @@ class StreamingDataset(IterableDataset):
         waiting for the main thread — rows that can be handed off with no
         I/O or CPU wait.  Returns 0 when not iterating.
         """
-        if self._cooked_ref is None:
-            return 0
-        return sum(len(q) for q in self._cooked_ref)
+        if self._cooked_ref is not None:
+            return sum(len(q) for q in self._cooked_ref)
+        return int(self._worker_stats[2])
 
     @property
     def unscanned_rows(self) -> int:
@@ -429,12 +451,12 @@ class StreamingDataset(IterableDataset):
         zero all data has been requested from storage (though it may not have
         arrived yet).  Returns 0 when not iterating.
         """
-        if self._fetch_head_ref is None:
-            return 0
-        return sum(
-            size - head
-            for size, head in zip(self._split_sizes_ref, self._fetch_head_ref)
-        )
+        if self._fetch_head_ref is not None:
+            return sum(
+                size - head
+                for size, head in zip(self._split_sizes_ref, self._fetch_head_ref)
+            )
+        return int(self._worker_stats[0])
 
     @property
     def consumed_rows(self) -> int:
@@ -443,9 +465,9 @@ class StreamingDataset(IterableDataset):
         Monotonically increases throughout iteration.  Returns 0 when not
         iterating.
         """
-        if self._local_consumed_ref is None:
-            return 0
-        return sum(self._local_consumed_ref)
+        if self._local_consumed_ref is not None:
+            return sum(self._local_consumed_ref)
+        return int(self._worker_stats[3])
 
     def __getstate__(self):
         """Support pickling for multi-worker DataLoader (forkserver / spawn).
