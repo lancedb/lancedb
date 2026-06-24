@@ -65,6 +65,9 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     table._namespace_path = ["geneva"]
     table._namespace_client = namespace_client
     table._pushdown_operations = {"QueryTable"}
+    # This test exercises the Python-side pushdown path (non-native client), so
+    # pushdown is not routed to Rust.
+    table._route_pushdown_to_rust = False
     return table
 
 

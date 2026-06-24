@@ -2022,6 +2022,7 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
         _async: AsyncTable = None,
     ):
         if namespace_path is None:
@@ -2031,6 +2032,14 @@ class LanceTable(Table):
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # When the connection built the namespace client natively (e.g. an
+        # enterprise "rest" connection), the underlying Rust table already
+        # executes QueryTable pushdown itself -- and, unlike this Python urllib3
+        # path, it routes through the read-freshness context provider that emits
+        # the ``x-lancedb-min-timestamp`` header. So we must defer pushdown to
+        # Rust instead of calling the Python ``namespace_client.query_table``
+        # directly, or reads silently bypass read-freshness (stale results).
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         if _async is not None:
             self._table = _async
         else:
@@ -2241,6 +2250,7 @@ class LanceTable(Table):
             namespace_path=self._namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
@@ -2391,8 +2401,11 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return self._execute_query(Query()).read_all()
 
@@ -3519,6 +3532,7 @@ class LanceTable(Table):
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
+            and not self._route_pushdown_to_rust
             and self.current_branch() is None
         ):
             from lancedb.namespace import _execute_server_side_query
@@ -4260,6 +4274,7 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """Create a new AsyncTable object.
 
@@ -4272,6 +4287,9 @@ class AsyncTable:
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # See LanceTable.__init__: defer QueryTable pushdown to Rust (which emits
+        # the read-freshness header) for natively-built namespace clients.
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
     def _set_namespace_context(
         self,
@@ -4279,10 +4297,12 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ) -> "AsyncTable":
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         return self
 
     def __repr__(self):
@@ -4492,8 +4512,11 @@ class AsyncTable:
         -------
         pa.Table
         """
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return (await self._execute_query(Query())).read_all()
 
@@ -5177,8 +5200,11 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             from lancedb.namespace import _execute_server_side_query
 

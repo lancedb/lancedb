@@ -579,24 +579,45 @@ fn array_to_f32_vec(arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<f32>> {
     })
 }
 
+/// Magic bytes that prefix (and suffix) the Arrow IPC *file* format.
+const ARROW_IPC_FILE_MAGIC: &[u8] = b"ARROW1";
+
 /// Parse Arrow IPC response from the namespace server.
+///
+/// The server may return either the Arrow IPC *file* format or the *stream*
+/// format. REST/phalanx returns the file format (it begins with the `ARROW1`
+/// magic); reading that with a `StreamReader` fails with "failed to fill whole
+/// buffer". Detect the magic and pick the matching reader so both are handled.
 async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBatchStream> {
-    use arrow_ipc::reader::StreamReader;
+    use arrow_ipc::reader::{FileReader, StreamReader};
     use std::io::Cursor;
 
-    let cursor = Cursor::new(bytes);
-    let reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Runtime {
-        message: format!("Failed to parse Arrow IPC response: {}", e),
-    })?;
-
-    // Collect all record batches
-    let schema = reader.schema();
-    let batches: Vec<_> = reader
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Runtime {
-            message: format!("Failed to read Arrow IPC batches: {}", e),
+    let (schema, batches) = if bytes.starts_with(ARROW_IPC_FILE_MAGIC) {
+        let reader = FileReader::try_new(Cursor::new(bytes), None).map_err(|e| Error::Runtime {
+            message: format!("Failed to parse Arrow IPC file response: {}", e),
         })?;
+        let schema = reader.schema();
+        let batches = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC file batches: {}", e),
+            })?;
+        (schema, batches)
+    } else {
+        let reader =
+            StreamReader::try_new(Cursor::new(bytes), None).map_err(|e| Error::Runtime {
+                message: format!("Failed to parse Arrow IPC response: {}", e),
+            })?;
+        let schema = reader.schema();
+        let batches = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC batches: {}", e),
+            })?;
+        (schema, batches)
+    };
 
     // Create a stream from the batches
     let stream = futures::stream::iter(batches.into_iter().map(Ok));
@@ -622,6 +643,59 @@ mod tests {
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_parse_arrow_ipc_response_handles_file_and_stream() {
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_ipc::writer::{FileWriter, StreamWriter};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+        )
+        .unwrap();
+
+        // Arrow IPC *file* format -- what REST/phalanx returns. Previously this
+        // failed with "failed to fill whole buffer" because we used a StreamReader.
+        let mut file_buf = Vec::new();
+        {
+            let mut writer = FileWriter::try_new(&mut file_buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(file_buf.starts_with(ARROW_IPC_FILE_MAGIC));
+        let rows: usize = parse_arrow_ipc_response(bytes::Bytes::from(file_buf))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 3);
+
+        // Arrow IPC *stream* format must still parse.
+        let mut stream_buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut stream_buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(!stream_buf.starts_with(ARROW_IPC_FILE_MAGIC));
+        let rows: usize = parse_arrow_ipc_response(bytes::Bytes::from(stream_buf))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 3);
     }
 
     #[test]
