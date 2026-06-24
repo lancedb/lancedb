@@ -1007,9 +1007,6 @@ def test_branch_name_validation(tmp_path):
 
 
 def test_branches_preserve_namespace(tmp_path):
-    pytest.importorskip(
-        "lance"
-    )  # namespace_path routes through lance's DirectoryNamespace
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
     assert table.namespace == ["ns1"]
@@ -1021,6 +1018,41 @@ def test_branches_preserve_namespace(tmp_path):
     # opening the branch directly also preserves namespace identity
     opened = db.open_table("t", namespace_path=["ns1"], branch="exp")
     assert opened.namespace == ["ns1"]
+
+
+def test_local_namespace_lifecycle_without_pylance(tmp_path):
+    """Native (non-namespace-client) connections must support the full
+    namespace + table lifecycle without the optional ``pylance`` package.
+
+    Regression test for OSS-1275. The sync namespace and namespaced-table
+    operations used to route through the Python ``lance_namespace`` client,
+    whose directory impl imports ``lance.namespace`` (from ``pylance``), so
+    they failed with ``No module named 'lance'`` on installs without the
+    ``pylance`` extra. This test runs in the "without pylance" CI job, so it
+    fails loudly if any of these paths regress to requiring ``pylance``.
+    """
+    db = lancedb.connect(tmp_path)
+
+    # Namespace metadata operations.
+    assert db.list_namespaces().namespaces == []
+    db.create_namespace(["child"])
+    assert "child" in db.list_namespaces().namespaces
+    db.describe_namespace(["child"])  # must not raise
+
+    # Table operations scoped to a child namespace.
+    table = db.create_table("t", [{"i": 1}, {"i": 2}], namespace_path=["child"])
+    assert table.namespace == ["child"]
+    table.add([{"i": 3}])
+    assert db.list_tables(namespace_path=["child"]).tables == ["t"]
+
+    reopened = db.open_table("t", namespace_path=["child"])
+    assert reopened.count_rows() == 3
+    assert reopened.to_arrow().num_rows == 3
+
+    db.drop_table("t", namespace_path=["child"])
+    assert db.list_tables(namespace_path=["child"]).tables == []
+    db.drop_namespace(["child"])
+    assert db.list_namespaces().namespaces == []
 
 
 def test_open_table_with_branch(tmp_path):

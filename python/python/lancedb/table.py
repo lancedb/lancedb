@@ -2119,6 +2119,10 @@ class LanceTable(Table):
         # use that location directly instead of constructing from base URI
         if self._location is not None:
             return self._location
+        # Tables in a child namespace don't live at "{base_uri}/{name}.lance";
+        # ask the native table for its resolved location instead.
+        if self._namespace_path:
+            return self.uri
         return _table_path(self._conn.uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:

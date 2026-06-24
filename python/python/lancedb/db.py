@@ -914,23 +914,7 @@ class LanceDBConnection(DBConnection):
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
-        if namespace_path:
-            return self._namespace_conn().create_table(
-                name,
-                data=data,
-                schema=schema,
-                mode=mode,
-                exist_ok=exist_ok,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                embedding_functions=embedding_functions,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
-            )
-
-        tbl = LanceTable.create(
+        return LanceTable.create(
             self,
             name,
             data,
@@ -942,20 +926,8 @@ class LanceDBConnection(DBConnection):
             embedding_functions=embedding_functions,
             namespace_path=namespace_path,
             storage_options=storage_options,
-        )
-        return tbl
-
-    def _namespace_conn(self) -> DBConnection:
-        """Return a LanceNamespaceDBConnection backed by this connection's
-        directory namespace.  Used to delegate child-namespace operations."""
-        from lancedb.namespace import LanceNamespaceDBConnection
-
-        return LanceNamespaceDBConnection(
-            self.namespace_client(),
-            read_consistency_interval=self.read_consistency_interval,
-            storage_options=self.storage_options,
-            namespace_client_impl=None,
-            namespace_client_properties=None,
+            data_storage_version=data_storage_version,
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
         )
 
     @override
@@ -976,8 +948,7 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
         namespace_path: List[str], optional
-            The namespace to open the table from.  When non-empty, the
-            table is resolved through the directory namespace client.
+            The namespace to open the table from.
         branch: str, optional
             If provided, open a handle scoped to this branch instead of the
             default branch. Reads and writes operate in the branch's context.
@@ -1004,21 +975,13 @@ class LanceDBConnection(DBConnection):
                 stacklevel=2,
             )
 
-        if namespace_path:
-            tbl = self._namespace_conn().open_table(
-                name,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
-            )
-        else:
-            tbl = LanceTable.open(
-                self,
-                name,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
-            )
+        tbl = LanceTable.open(
+            self,
+            name,
+            namespace_path=namespace_path,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
+        )
 
         if branch is not None:
             tbl = tbl.branches.checkout(branch, version)
@@ -1102,9 +1065,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if namespace_path:
-            self._namespace_conn().drop_table(name, namespace_path=namespace_path)
-            return
         LOOP.run(
             self._conn.drop_table(
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
