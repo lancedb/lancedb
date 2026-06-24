@@ -15,10 +15,12 @@ from typing import (
     List,
     Literal,
     Optional,
+    Protocol,
     Tuple,
     Type,
     TypeVar,
     Union,
+    runtime_checkable,
 )
 
 import deprecation
@@ -43,14 +45,17 @@ from .schema import is_blob_like_field, schema_has_blob_field
 from .util import flatten_columns
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
-    BlobMode,
+    FetchBlobsAsync,
+    FetchBlobsSync,
+    blob_auto_row_id_for_scan,
     blob_v2_projection_sources,
+    finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
     supports_blob_auto_row_id,
     validate_blob_mode,
-    v2_projection_needs_row_id,
 )
+from .types import BlobMode, QueryProjection
 
 if TYPE_CHECKING:
     import sys
@@ -74,6 +79,20 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+
+
+@runtime_checkable
+class _LanceScanner(Protocol):
+    projected_schema: pa.Schema | None
+    schema: pa.Schema | None
+
+    def to_pandas(self, blob_mode: BlobMode | None = ..., **kwargs) -> pd.DataFrame: ...
+
+    def to_pyarrow(self): ...
+
+    def to_table(self) -> pa.Table: ...
+
+    def to_reader(self): ...
 
 
 def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
@@ -105,13 +124,7 @@ def _filter_to_sql(filter: Optional[Union[str, Expr]]) -> Optional[str]:
     return filter
 
 
-def _projection_to_scanner_kwargs(
-    columns: Optional[
-        Union[
-            List[str], List[Tuple[str, Union[str, Expr]]], Dict[str, Union[str, Expr]]
-        ]
-    ],
-) -> Dict[str, Any]:
+def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
     if columns is None:
         return {}
     if isinstance(columns, list):
@@ -198,7 +211,7 @@ def _ensure_lazy_blob_frame(
     return df
 
 
-def _scanner_to_table(scanner: Any) -> pa.Table:
+def _scanner_to_table(scanner: _LanceScanner) -> pa.Table:
     if hasattr(scanner, "to_pyarrow"):
         reader = scanner.to_pyarrow()
         return reader.read_all()
@@ -208,7 +221,9 @@ def _scanner_to_table(scanner: Any) -> pa.Table:
     return reader.read_all()
 
 
-def _scanner_to_pandas(scanner: Any, blob_mode: BlobMode, **kwargs) -> "pd.DataFrame":
+def _scanner_to_pandas(
+    scanner: _LanceScanner, blob_mode: BlobMode, **kwargs
+) -> pd.DataFrame:
     schema = getattr(scanner, "projected_schema", None)
     if schema is None:
         schema = getattr(scanner, "schema", None)
@@ -237,14 +252,15 @@ def _scanner_to_pandas(scanner: Any, blob_mode: BlobMode, **kwargs) -> "pd.DataF
 
 
 def _finish_plain_scan_pandas(
-    scanner: Any,
+    scanner: _LanceScanner,
     *,
     blob_mode: BlobMode,
     blob_sources: dict[str, str],
-    fetch_blobs,
+    fetch_blobs: FetchBlobsSync,
+    strip_auto_row_id: bool,
     flatten: Optional[Union[int, bool]],
     **kwargs,
-) -> "pd.DataFrame":
+) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
         tbl = replace_v2_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
@@ -255,19 +271,25 @@ def _finish_plain_scan_pandas(
         return tbl.to_pandas(**kwargs)
     if flatten is not None:
         tbl = flatten_columns(_scanner_to_table(scanner), flatten)
+        if strip_auto_row_id and "_rowid" in tbl.column_names:
+            tbl = tbl.drop_columns(["_rowid"])
         return tbl.to_pandas(**kwargs)
-    return _scanner_to_pandas(scanner, blob_mode, **kwargs)
+    df = _scanner_to_pandas(scanner, blob_mode, **kwargs)
+    if strip_auto_row_id and "_rowid" in df.columns:
+        return df.drop(columns=["_rowid"])
+    return df
 
 
 async def _finish_plain_scan_pandas_async(
-    scanner: Any,
+    scanner: _LanceScanner,
     *,
     blob_mode: BlobMode,
     blob_sources: dict[str, str],
-    fetch_blobs,
+    fetch_blobs: FetchBlobsAsync,
+    strip_auto_row_id: bool,
     flatten: Optional[Union[int, bool]],
     **kwargs,
-) -> "pd.DataFrame":
+) -> pd.DataFrame:
     if blob_sources:
         tbl = _scanner_to_table(scanner)
         tbl = await replace_v2_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
@@ -278,8 +300,13 @@ async def _finish_plain_scan_pandas_async(
         return tbl.to_pandas(**kwargs)
     if flatten is not None:
         tbl = flatten_columns(_scanner_to_table(scanner), flatten)
+        if strip_auto_row_id and "_rowid" in tbl.column_names:
+            tbl = tbl.drop_columns(["_rowid"])
         return tbl.to_pandas(**kwargs)
-    return _scanner_to_pandas(scanner, blob_mode, **kwargs)
+    df = _scanner_to_pandas(scanner, blob_mode, **kwargs)
+    if strip_auto_row_id and "_rowid" in df.columns:
+        return df.drop(columns=["_rowid"])
+    return df
 
 
 # Pydantic validation function for vector queries
@@ -689,7 +716,7 @@ class Query(pydantic.BaseModel):
     distance_type: Optional[str] = None
 
     # which columns to return in the results (dict values may be str or Expr)
-    columns: Optional[Union[List[str], Dict[str, Union[str, Expr]]]] = None
+    columns: QueryProjection = None
 
     # minimum number of IVF partitions to search
     #
@@ -1205,17 +1232,32 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = with_row_id
         return self
 
-    def _effective_with_row_id(self) -> Optional[bool]:
-        if self._with_row_id is not None:
-            return self._with_row_id
-        # Async query path sets row id at execute time (_maybe_add_blob_row_id).
-        if supports_blob_auto_row_id(self._table) and v2_projection_needs_row_id(
+    def _user_requested_row_id(self) -> bool:
+        return self._with_row_id is True
+
+    def _blob_auto_row_id_enabled(self) -> bool:
+        return blob_auto_row_id_for_scan(
+            self._table,
             self._table.schema,
             self._columns,
-            with_row_id=False,
-        ):
-            return True
-        return None
+            with_row_id=self._with_row_id,
+        )
+
+    def _scan_needs_row_id(self) -> bool:
+        return self._user_requested_row_id() or self._blob_auto_row_id_enabled()
+
+    def _query_for_scan(self) -> Query:
+        query = self.to_query_object()
+        if self._scan_needs_row_id():
+            query.with_row_id = True
+        return query
+
+    def _finalize_blob_query_table(self, tbl: pa.Table) -> pa.Table:
+        return finalize_blob_query_table(
+            tbl,
+            user_requested_row_id=self._user_requested_row_id(),
+            blob_auto_row_id=self._blob_auto_row_id_enabled(),
+        )
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
         """Set whether to return row addresses.
@@ -1393,6 +1435,7 @@ class LanceQueryBuilder(ABC):
             return None
 
         dataset = self._table.to_lance()
+        blob_auto_row_id = self._blob_auto_row_id_enabled()
         blob_sources = (
             blob_v2_projection_sources(self._table.schema, query.columns)
             if blob_mode == "bytes"
@@ -1403,7 +1446,7 @@ class LanceQueryBuilder(ABC):
                 query,
                 "descriptions" if blob_sources else blob_mode,
                 dataset,
-                with_row_id=query.with_row_id or bool(blob_sources),
+                with_row_id=query.with_row_id or blob_auto_row_id or bool(blob_sources),
             )
         )
         return _finish_plain_scan_pandas(
@@ -1411,6 +1454,7 @@ class LanceQueryBuilder(ABC):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
+            strip_auto_row_id=blob_auto_row_id,
             flatten=flatten,
             **kwargs,
         )
@@ -1661,7 +1705,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
         """
-        return self.to_batches(timeout=timeout).read_all()
+        return self._finalize_blob_query_table(
+            self.to_batches(timeout=timeout).read_all()
+        )
 
     def to_query_object(self) -> Query:
         """
@@ -1685,7 +1731,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
-            with_row_id=self._effective_with_row_id(),
+            with_row_id=self._with_row_id,
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -1721,7 +1767,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
-        query = self.to_query_object()
+        query = self._query_for_scan()
         result_set = self._table._execute_query(
             query, batch_size=batch_size, timeout=timeout
         )
@@ -1890,7 +1936,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
             postfilter=self._postfilter,
-            with_row_id=self._effective_with_row_id(),
+            with_row_id=self._with_row_id,
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -1922,13 +1968,13 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 query, PhraseQuery
             ):
                 raise TypeError("Please use PhraseQuery for phrase queries.")
-        query = self.to_query_object()
+        query = self._query_for_scan()
         results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
         if self._reranker is not None:
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
-        return results
+        return self._finalize_blob_query_table(results)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -1956,14 +2002,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        return self.to_batches(timeout=timeout).read_all()
+        return self._finalize_blob_query_table(
+            self.to_batches(timeout=timeout).read_all()
+        )
 
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
             filter=self._where,
             limit=self._limit,
-            with_row_id=self._effective_with_row_id(),
+            with_row_id=self._with_row_id,
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
@@ -1978,7 +2026,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
     ) -> pa.RecordBatchReader:
-        query = self.to_query_object()
+        query = self._query_for_scan()
         return self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
@@ -2561,6 +2609,8 @@ class AsyncQueryBase(object):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
+        self._with_row_id = None
+        self._blob_auto_row_id = False
 
     def to_query_object(self) -> Query:
         """
@@ -2570,22 +2620,39 @@ class AsyncQueryBase(object):
         python and more easily serializable.
         """
         query = Query.from_inner(self._inner.to_query_request())
+        query.with_row_id = self._user_requested_row_id()
         query.with_row_address = self._with_row_address
         query.fragments = self._fragments
         query.fragment_ids = self._fragment_ids
         return query
 
+    def _user_requested_row_id(self) -> bool:
+        return self._with_row_id is True
+
+    def _blob_auto_row_id_enabled(self) -> bool:
+        return self._blob_auto_row_id
+
+    def _finalize_blob_query_table(self, tbl: pa.Table) -> pa.Table:
+        return finalize_blob_query_table(
+            tbl,
+            user_requested_row_id=self._user_requested_row_id(),
+            blob_auto_row_id=self._blob_auto_row_id_enabled(),
+        )
+
     async def _maybe_add_blob_row_id(self) -> None:
         if self._table is None or not supports_blob_auto_row_id(self._table):
+            self._blob_auto_row_id = False
             return
 
-        # Sync sets row id here when building the query; async does it in
-        # _maybe_add_blob_row_id right before execute.
         req = self._inner.to_query_request()
         schema = await self._table.schema()
-        if not v2_projection_needs_row_id(
-            schema, req.select, with_row_id=req.with_row_id
-        ):
+        self._blob_auto_row_id = blob_auto_row_id_for_scan(
+            self._table,
+            schema,
+            req.select,
+            with_row_id=self._with_row_id,
+        )
+        if not self._blob_auto_row_id:
             return
         self._inner.with_row_id()
 
@@ -2641,6 +2708,7 @@ class AsyncQueryBase(object):
         """
         Include the _rowid column in the results.
         """
+        self._with_row_id = True
         self._inner.with_row_id()
         return self
 
@@ -2718,8 +2786,8 @@ class AsyncQueryBase(object):
             complete within the specified time, an error will be raised.
         """
         batch_iter = await self.to_batches(timeout=timeout)
-        return pa.Table.from_batches(
-            await batch_iter.read_all(), schema=batch_iter.schema
+        return self._finalize_blob_query_table(
+            pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
         )
 
     async def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
@@ -2828,6 +2896,12 @@ class AsyncQueryBase(object):
             return None
 
         schema = await self._table.schema()
+        blob_auto_row_id = blob_auto_row_id_for_scan(
+            self._table,
+            schema,
+            query.columns,
+            with_row_id=self._with_row_id,
+        )
         blob_sources = (
             blob_v2_projection_sources(schema, query.columns)
             if blob_mode == "bytes"
@@ -2839,7 +2913,7 @@ class AsyncQueryBase(object):
                 query,
                 "descriptions" if blob_sources else blob_mode,
                 dataset,
-                with_row_id=query.with_row_id or bool(blob_sources),
+                with_row_id=query.with_row_id or blob_auto_row_id or bool(blob_sources),
             )
         )
         return await _finish_plain_scan_pandas_async(
@@ -2847,6 +2921,7 @@ class AsyncQueryBase(object):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
+            strip_auto_row_id=blob_auto_row_id,
             flatten=flatten,
             **kwargs,
         )

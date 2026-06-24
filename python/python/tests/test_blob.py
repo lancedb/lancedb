@@ -5,6 +5,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
 
 
@@ -32,7 +33,7 @@ def _blobArray(name, values):
 
 
 def _rowIdsById(table):
-    hits = table.search().limit(1000).to_arrow()
+    hits = table.search().with_row_id(True).limit(1000).to_arrow()
     assert "_rowid" in hits.column_names
     return dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
 
@@ -114,9 +115,29 @@ def testBlobV2PathsMatchBlobColumns():
     assert blob_v2_column_paths(nested.schema) == nested.blob_columns()
 
 
-def testBlobQueryProjectionIncludesRowId():
+def testAutoRowIdStashRoundTrip():
+    tbl = pa.table(
+        {
+            "id": pa.array([1, 2], type=pa.int64()),
+            "_rowid": pa.array([10, 20], type=pa.uint64()),
+        }
+    )
+
+    stashed = stash_auto_row_ids(tbl)
+
+    assert stashed.column_names == ["id"]
+    assert read_row_ids_from_hits(stashed) == [10, 20]
+
+
+def testBlobQueryOmitsAutoRowId():
     table = _blobTable("rowid", [{"id": 1, "image": b"x"}])
     hits = table.search().limit(10).to_arrow()
+    assert "_rowid" not in hits.column_names
+
+
+def testBlobQueryExplicitRowIdOptIn():
+    table = _blobTable("explicit_rowid", [{"id": 1, "image": b"x"}])
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
     assert "_rowid" in hits.column_names
 
 
@@ -133,6 +154,7 @@ def testFetchBlobsRoundTrip():
 def testFetchBlobsAcceptsQueryResult():
     table = _blobTable("from_result", [{"id": 1, "image": b"gamma"}])
     hits = table.search().limit(10).to_arrow()
+    assert "_rowid" not in hits.column_names
     blobs = table.fetch_blobs("image", hits)
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
@@ -220,9 +242,8 @@ async def testAsyncFetchBlobFilesLazyRead():
     hits = (
         await table.query().select({"image_alias": "image"}).limit(10).to_arrow()
     ).combine_chunks()
-    assert "_rowid" in hits.column_names
-    row_id = hits["_rowid"][0].as_py()
-    handles = await table.fetch_blob_files("image", [row_id])
+    assert "_rowid" not in hits.column_names
+    handles = await table.fetch_blob_files("image", hits)
     assert len(handles) == 1
     assert await handles[0].aread() == payload
 

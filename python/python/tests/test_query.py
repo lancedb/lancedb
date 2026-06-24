@@ -575,6 +575,18 @@ def test_with_row_id(table: lancedb.table.Table):
     assert rs["_rowid"].to_pylist() == [0, 1]
 
 
+def test_blob_v2_query_omits_auto_row_id(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_omits_auto_rowid")
+
+    query_obj = table.search().select(["id", "blob"]).limit(2).to_query_object()
+    assert query_obj.with_row_id is None
+
+    rs = table.search().select(["id", "blob"]).limit(2).to_arrow()
+
+    assert "_rowid" not in rs.column_names
+    assert rs["id"].to_pylist() == [1, 2]
+
+
 def test_distance_range(table: lancedb.table.Table):
     q = [0, 0]
     rs = table.search(q).to_arrow()

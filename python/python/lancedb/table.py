@@ -31,11 +31,11 @@ from lancedb.scannable import _register_optional_converters, to_scannable
 from . import __version__
 from ._blob import (
     BlobFile,
-    BlobMode,
     _normalize_blob_row_ids,
     _wrap_blob_files,
     validate_blob_mode,
 )
+from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
@@ -1510,8 +1510,8 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Read blob bytes for ``column`` at the given rows.
 
-        ``row_ids`` is a ``list[int]`` or a query ``pyarrow.Table`` (uses
-        ``_rowid``). Output matches input length and order.
+        ``row_ids`` is a ``list[int]`` or a query ``pyarrow.Table`` with
+        ``_rowid`` or in-memory row-id metadata from a v2 blob projection.
         """
 
     @abstractmethod
