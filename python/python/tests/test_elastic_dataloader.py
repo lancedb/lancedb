@@ -374,12 +374,8 @@ def test_elastic_det_different_epochs_differ(lance_table, epoch_a, epoch_b):
     """Different epochs use different shuffles and therefore produce different
     step sequences.  (Both cover all samples; they just appear in different order.)
     """
-    batches_a = _collect_global_batches(
-        lance_table, world_size=1, epoch=epoch_a
-    )
-    batches_b = _collect_global_batches(
-        lance_table, world_size=1, epoch=epoch_b
-    )
+    batches_a = _collect_global_batches(lance_table, world_size=1, epoch=epoch_a)
+    batches_b = _collect_global_batches(lance_table, world_size=1, epoch=epoch_b)
     # Same set of samples overall...
     assert sorted(sid for b in batches_a for sid in b) == list(range(NUM_ROWS))
     assert sorted(sid for b in batches_b for sid in b) == list(range(NUM_ROWS))
@@ -603,7 +599,12 @@ def test_resumability_state_dict_contains_required_keys(lance_table):
       - samples_consumed_per_split  (per-split counter, topology-independent)
     """
     _, checkpoint = _advance_and_checkpoint(lance_table, world_size=1, steps=3)
-    required_keys = {"shuffle_seed", "num_splits", "epoch", "samples_consumed_per_split"}
+    required_keys = {
+        "shuffle_seed",
+        "num_splits",
+        "epoch",
+        "samples_consumed_per_split",
+    }
     missing = required_keys - checkpoint.keys()
     assert not missing, (
         f"state_dict() is missing required keys: {missing}\n"
@@ -832,7 +833,9 @@ def _collect_global_batches_multi_worker(
                 num_splits=num_splits,
                 shuffle_seed=shuffle_seed,
                 epoch=epoch,
-                worker_info_override=FakeWorkerInfo(id=worker_id, num_workers=num_workers),
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
             )
             worker_samples[(rank, worker_id)] = [item["id"] for item in ds]
 
@@ -883,7 +886,9 @@ def _advance_and_checkpoint_multi_worker(
                 num_splits=num_splits,
                 shuffle_seed=shuffle_seed,
                 epoch=epoch,
-                worker_info_override=FakeWorkerInfo(id=worker_id, num_workers=num_workers),
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
             )
             datasets[(rank, worker_id)] = ds
             iters[(rank, worker_id)] = iter(ds)
@@ -935,7 +940,9 @@ def test_multi_worker_no_cross_worker_overlap(lance_table, world_size, num_worke
                 lance_table,
                 rank,
                 world_size,
-                worker_info_override=FakeWorkerInfo(id=worker_id, num_workers=num_workers),
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
             )
             per_worker.append({item["id"] for item in ds})
 
@@ -951,7 +958,9 @@ def test_multi_worker_no_cross_worker_overlap(lance_table, world_size, num_worke
 
 
 @pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
-def test_multi_worker_same_global_batches_as_single_worker(lance_table, world_size, num_workers):
+def test_multi_worker_same_global_batches_as_single_worker(
+    lance_table, world_size, num_workers
+):
     """Global batches produced with num_workers > 1 match those from num_workers=1.
 
     PyTorch DataLoader collects a complete batch from each worker before moving
@@ -977,7 +986,9 @@ def test_multi_worker_elastic_det_across_worker_counts(lance_table):
     """Global batches are the same for every compatible (world_size, num_workers) pair."""
     reference = _collect_global_batches(lance_table, world_size=1)
     for world_size, num_workers in MULTI_WORKER_TOPOLOGIES:
-        batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
+        batches = _collect_global_batches_multi_worker(
+            lance_table, world_size, num_workers
+        )
         assert batches == reference, (
             f"Mismatch for world_size={world_size}, num_workers={num_workers}"
         )
@@ -992,7 +1003,9 @@ def test_multi_worker_resumability_same_topology(lance_table):
     num_workers = 2
     checkpoint_at_step = 4
 
-    reference = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
+    reference = _collect_global_batches_multi_worker(
+        lance_table, world_size, num_workers
+    )
     seen_before, checkpoint = _advance_and_checkpoint_multi_worker(
         lance_table, world_size, num_workers, checkpoint_at_step
     )
@@ -1008,7 +1021,9 @@ def test_multi_worker_resumability_same_topology(lance_table):
                 lance_table,
                 rank,
                 world_size,
-                worker_info_override=FakeWorkerInfo(id=worker_id, num_workers=num_workers),
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
             )
             ds.load_state_dict(checkpoint)
             datasets[(rank, worker_id)] = ds
@@ -1083,9 +1098,7 @@ def test_multi_worker_resumability_worker_count_change(lance_table):
         assert exhausted == 0
         remaining.append(frozenset(batch))
 
-    for offset, (ref, got) in enumerate(
-        zip(reference[checkpoint_at_step:], remaining)
-    ):
+    for offset, (ref, got) in enumerate(zip(reference[checkpoint_at_step:], remaining)):
         step = checkpoint_at_step + offset
         assert ref == got, (
             f"Post-resume step {step} doesn't match reference when switching "
@@ -1122,7 +1135,9 @@ def test_worker_info_override_logs_warning_when_torch_worker_active(
         with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
             list(ds)
 
-    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    warning_messages = [
+        r.message for r in caplog.records if r.levelno >= logging.WARNING
+    ]
     assert warning_messages, (
         "Expected at least one WARNING when worker_info_override is active inside "
         "a real DataLoader worker, but no warnings were logged."
@@ -1144,7 +1159,9 @@ def test_worker_info_override_no_warning_in_main_process(lance_table, caplog):
         with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
             list(ds)
 
-    warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    warning_messages = [
+        r.message for r in caplog.records if r.levelno >= logging.WARNING
+    ]
     assert not warning_messages, (
         f"Unexpected warnings when override used in main process: {warning_messages}"
     )
@@ -1157,9 +1174,7 @@ def test_worker_info_override_no_warning_in_main_process(lance_table, caplog):
 
 def test_concurrent_iteration_raises(lance_table):
     """Starting a second iterator while one is already active must raise."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     it1 = iter(ds)
     next(it1)  # advance it1 so the pipeline is live
 
@@ -1168,11 +1183,19 @@ def test_concurrent_iteration_raises(lance_table):
         next(it2)
 
 
+def test_raw_queue_depth_zero_when_not_iterating(lance_table):
+    """raw_queue_depth is 0 before iteration starts and after it ends."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert ds.raw_queue_depth == 0
+
+    list(ds)  # drain the whole epoch
+
+    assert ds.raw_queue_depth == 0
+
+
 def test_prefetch_queue_depth_zero_when_not_iterating(lance_table):
     """prefetch_queue_depth is 0 before iteration starts and after it ends."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     assert ds.prefetch_queue_depth == 0
 
     list(ds)  # drain the whole epoch
@@ -1182,9 +1205,7 @@ def test_prefetch_queue_depth_zero_when_not_iterating(lance_table):
 
 def test_prefetch_queue_depth_positive_during_iteration(lance_table):
     """prefetch_queue_depth is > 0 while rows are being yielded."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     it = iter(ds)
     next(it)  # advance past the first yield; pipeline is now primed
     # The other splits still have their initial futures in flight.
@@ -1202,18 +1223,14 @@ def test_prefetch_queue_depth_positive_during_iteration(lance_table):
 
 def test_fetch_and_transform_time_zero_before_iteration(lance_table):
     """fetch_time and transform_time start at 0."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     assert ds.fetch_time == 0.0
     assert ds.transform_time == 0.0
 
 
 def test_fetch_and_transform_time_positive_after_iteration(lance_table):
     """Both timers are positive after a full epoch."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     list(ds)
     assert ds.fetch_time > 0.0
     assert ds.transform_time > 0.0
@@ -1243,9 +1260,7 @@ def test_fetch_time_excludes_transform(lance_table):
 
 def test_bytes_loaded_increases_after_iteration(lance_table):
     """bytes_loaded is 0 before iteration and positive after."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     assert ds.bytes_loaded == 0
 
     list(ds)
