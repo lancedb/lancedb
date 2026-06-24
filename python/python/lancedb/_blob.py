@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import pyarrow as pa
 
+from .expr import Expr
 from .schema import blob_v2_column_paths
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
 from .util import get_uri_scheme
@@ -75,6 +76,8 @@ def _iter_projection_pairs(
         for name, expr in projection.items():
             if isinstance(expr, str):
                 yield name, expr
+            elif isinstance(expr, Expr):
+                yield name, expr.to_sql()
         return
     for column in projection:
         if isinstance(column, str):
@@ -83,6 +86,8 @@ def _iter_projection_pairs(
             name, expr = column
             if isinstance(expr, str):
                 yield name, expr
+            elif isinstance(expr, Expr):
+                yield name, expr.to_sql()
 
 
 def projection_includes_blob_column(

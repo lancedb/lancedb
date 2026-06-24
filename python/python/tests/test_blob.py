@@ -6,6 +6,7 @@ import pytest
 
 import lancedb
 from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
+from lancedb.index import FTS
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
 
 
@@ -254,3 +255,68 @@ def testFetchBlobsFromQueryResultWithoutRowIdRaises():
     assert "_rowid" not in hits.column_names
     with pytest.raises(ValueError, match="_rowid"):
         table.fetch_blobs("image", hits)
+
+
+_HYBRID_BLOB_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        pa.field("text", pa.utf8()),
+        pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+        lancedb.blob("image"),
+    ]
+)
+_HYBRID_BLOB_ROWS = [
+    {"id": 1, "text": "hello alpha", "vector": [1.0, 0.0], "image": b"alpha"},
+    {"id": 2, "text": "hello beta", "vector": [0.9, 0.1], "image": b"beta"},
+    {"id": 3, "text": "other", "vector": [0.0, 1.0], "image": b"other"},
+]
+
+
+def _hybridBlobTable(db):
+    table = db.create_table("hybrid_blob_fetch", schema=_HYBRID_BLOB_SCHEMA)
+    table.add(_HYBRID_BLOB_ROWS)
+    table.create_index("text", config=FTS(with_position=False))
+    return table
+
+
+async def _hybridBlobTableAsync(db):
+    table = await db.create_table("hybrid_blob_fetch_async", schema=_HYBRID_BLOB_SCHEMA)
+    await table.add(_HYBRID_BLOB_ROWS)
+    await table.create_index("text", config=FTS(with_position=False))
+    return table
+
+
+def testBlobV2HybridFetchBlobs():
+    table = _hybridBlobTable(lancedb.connect("memory:///"))
+    hits = (
+        table.search(query_type="hybrid")
+        .vector([1.0, 0.0])
+        .text("hello")
+        .select(["id", "image"])
+        .limit(2)
+        .to_arrow()
+    )
+
+    assert "_rowid" not in hits.column_names
+    assert b"lancedb._rowid" in (hits.schema.metadata or {})
+    blobs = table.fetch_blobs("image", hits)
+    assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
+@pytest.mark.asyncio
+async def testBlobV2HybridFetchBlobsAsync():
+    db = await lancedb.connect_async("memory:///hybrid_blob_fetch_async")
+    table = await _hybridBlobTableAsync(db)
+    hits = await (
+        table.query()
+        .nearest_to([1.0, 0.0])
+        .nearest_to_text("hello")
+        .select(["id", "image"])
+        .limit(2)
+        .to_arrow()
+    )
+
+    assert "_rowid" not in hits.column_names
+    assert b"lancedb._rowid" in (hits.schema.metadata or {})
+    blobs = await table.fetch_blobs("image", hits)
+    assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}

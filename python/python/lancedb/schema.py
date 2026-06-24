@@ -47,7 +47,7 @@ class BlobType(pa.ExtensionType):
 
 
 try:
-    pa.register_extension_type(BlobType())
+    pa.register_extension_type(BlobType())  # type: ignore[arg-type]
 except pa.ArrowKeyError:
     pass
 

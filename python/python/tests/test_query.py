@@ -11,6 +11,7 @@ import lancedb
 from lancedb.db import AsyncConnection
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
+from lancedb.expr import col
 from lancedb.index import FTS, IvfPq
 import lancedb.pydantic
 import numpy as np
@@ -1976,3 +1977,39 @@ def test_fast_search(tmp_path):
     # 2. Fast Search -> Should NOT include "LanceScan" (Uses Index)
     plan = table.search(q).fast_search().explain_plan(True)
     assert "LanceScan" not in plan
+
+
+def test_blob_v2_with_row_id_bytes_pandas(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_rowid_bytes_pandas")
+
+    df = (
+        table.search()
+        .with_row_id(True)
+        .select(["id", "blob"])
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert "_rowid" in df.columns
+    assert df["id"].tolist() == [1, 2, 3, 4]
+    assert df["blob"].tolist() == [b"one", b"two", b"three", b"four"]
+
+
+def test_blob_v2_expr_projection_stash(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_expr_projection_stash")
+
+    hits = table.search().select({"blob_alias": col("blob")}).limit(2).to_arrow()
+
+    assert "_rowid" not in hits.column_names
+    assert b"lancedb._rowid" in (hits.schema.metadata or {})
+    blobs = table.fetch_blobs("blob", hits)
+    assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
+
+
+def test_blob_v2_to_batches_row_id(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_to_batches_rowid")
+
+    hits = table.search().select(["id", "blob"]).limit(2).to_batches().read_all()
+
+    assert "_rowid" in hits.column_names
+    blobs = table.fetch_blobs("blob", hits)
+    assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]

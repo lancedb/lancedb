@@ -161,7 +161,6 @@ class Connection(object):
 
 class BlobFile:
     async def read(self) -> bytes: ...
-
     def read_bytes(self) -> bytes: ...
 
 class Table:

@@ -264,7 +264,7 @@ def _finish_plain_scan_pandas(
     if blob_sources:
         tbl = _scanner_to_table(scanner)
         tbl = replace_v2_blob_columns_with_bytes_sync(tbl, blob_sources, fetch_blobs)
-        if "_rowid" in tbl.column_names:
+        if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
         if flatten is not None:
             tbl = flatten_columns(tbl, flatten)
@@ -293,7 +293,7 @@ async def _finish_plain_scan_pandas_async(
     if blob_sources:
         tbl = _scanner_to_table(scanner)
         tbl = await replace_v2_blob_columns_with_bytes(tbl, blob_sources, fetch_blobs)
-        if "_rowid" in tbl.column_names:
+        if strip_auto_row_id and "_rowid" in tbl.column_names:
             tbl = tbl.drop_columns(["_rowid"])
         if flatten is not None:
             tbl = flatten_columns(tbl, flatten)
@@ -1059,6 +1059,11 @@ class LanceQueryBuilder(ABC):
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
 
+        For v2 blob projections, ``to_batches`` keeps the auto ``_rowid``
+        column visible so batch consumers can call ``fetch_blobs``. Use
+        ``to_arrow``, ``to_list``, or ``to_pandas`` if you want LanceDB to hide
+        auto row ids in the final collected result.
+
         Parameters
         ----------
         batch_size: int
@@ -1236,6 +1241,8 @@ class LanceQueryBuilder(ABC):
         return self._with_row_id is True
 
     def _blob_auto_row_id_enabled(self) -> bool:
+        if not supports_blob_auto_row_id(self._table):
+            return False
         return blob_auto_row_id_for_scan(
             self._table,
             self._table.schema,
@@ -2130,15 +2137,25 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_future.result()
             vector_results = vector_future.result()
 
-        return self._combine_hybrid_results(
+        results = self._combine_hybrid_results(
             fts_results=fts_results,
             vector_results=vector_results,
             norm=self._norm,
             fts_query=self._fts_query._query,
             reranker=self._reranker,
             limit=self._limit,
-            with_row_ids=self._with_row_id,
+            with_row_ids=True,
         )
+        return self._finish_hybrid_results(results)
+
+    def _finish_hybrid_results(self, results: pa.Table) -> pa.Table:
+        if self._user_requested_row_id():
+            return results
+        if self._blob_auto_row_id_enabled():
+            return self._finalize_blob_query_table(results)
+        if "_rowid" in results.column_names:
+            return results.drop(["_rowid"])
+        return results
 
     @staticmethod
     def _combine_hybrid_results(
@@ -3706,9 +3723,18 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
 
-        # save the row ID choice that was made on the query builder and force it
-        # to actually fetch the row ids because we need this for reranking
-        with_row_ids = self._inner.get_with_row_id()
+        req = fts_query._inner.to_query_request()
+        blob_auto_row_id = False
+        if self._table is not None and supports_blob_auto_row_id(self._table):
+            schema = await self._table.schema()
+            blob_auto_row_id = blob_auto_row_id_for_scan(
+                self._table,
+                schema,
+                req.select,
+                with_row_id=self._with_row_id,
+            )
+        self._blob_auto_row_id = blob_auto_row_id
+
         fts_query.with_row_id()
         vec_query.with_row_id()
 
@@ -3724,8 +3750,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             fts_query=fts_query.get_query(),
             reranker=self._reranker,
             limit=self._inner.get_limit(),
-            with_row_ids=with_row_ids,
+            with_row_ids=True,
         )
+        if (
+            not self._user_requested_row_id()
+            and not blob_auto_row_id
+            and "_rowid" in result.column_names
+        ):
+            result = result.drop(["_rowid"])
 
         return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
