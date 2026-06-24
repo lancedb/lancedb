@@ -458,11 +458,18 @@ class StreamingDataset(IterableDataset):
         via ``_table_to_pickle_state`` (mirrors the ``Permutation`` approach).
         """
         state = self.__dict__.copy()
+        # _table: replace with reconnect info (credentials must not be embedded).
         state["_table_name"] = self._table.name
         if self._connection_factory is not None:
             state["_table"] = None
         else:
             state["_table"] = _table_to_pickle_state(self._table)
+        # _perm_table: always in-memory; serialise as Arrow data (mirrors
+        # how Permutation.__getstate__ handles its permutation_table).
+        state["_perm_table"] = (
+            self._perm_table.name,
+            self._perm_table.to_arrow(),
+        )
         for key in (
             "_raw_batches_ref",
             "_cooked_ref",
@@ -475,13 +482,17 @@ class StreamingDataset(IterableDataset):
 
     def __setstate__(self, state):
         """Reconnect to LanceDB after unpickling in a worker process."""
+        from . import connect as _connect
+
         table_name = state.pop("_table_name")
         table_state = state.pop("_table")
+        perm_name, perm_data = state.pop("_perm_table")
         self.__dict__.update(state)
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:
             self._table = _table_from_pickle_state(table_state)
+        self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
