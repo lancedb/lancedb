@@ -152,8 +152,9 @@ class StreamingDataset(IterableDataset):
         # DataLoader worker process) and read by the observability properties
         # in the main process.  RawArray is picklable via the forkserver
         # reduction protocol so it survives the dataset pickle round-trip.
-        # Layout: [unscanned_rows, raw_rows, cooked_rows, consumed_rows]
-        self._worker_stats: RawArray = RawArray(ctypes.c_int64, 4)
+        # Layout: [unscanned_rows, raw_rows, cooked_rows, consumed_rows,
+        #          bytes_loaded, fetch_time_us, transform_time_us]
+        self._worker_stats: RawArray = RawArray(ctypes.c_int64, 7)
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -378,6 +379,9 @@ class StreamingDataset(IterableDataset):
                                 )
                                 ws[2] = sum(len(q) for q in cooked)
                                 ws[3] = sum(local_consumed)
+                                ws[4] = self._bytes_loaded
+                                ws[5] = int(self._fetch_time * 1_000_000)
+                                ws[6] = int(self._transform_time * 1_000_000)
 
                             yield row
                 finally:
@@ -396,7 +400,9 @@ class StreamingDataset(IterableDataset):
         output.  Accumulates across multiple iterations of the same dataset
         instance and is never reset automatically.
         """
-        return self._bytes_loaded
+        if self._raw_batches_ref is not None:
+            return self._bytes_loaded
+        return int(self._worker_stats[4])
 
     @property
     def fetch_time(self) -> float:
@@ -406,7 +412,9 @@ class StreamingDataset(IterableDataset):
         time of the ``take_offsets`` call.  Accumulates across all splits and
         all iterations.
         """
-        return self._fetch_time
+        if self._raw_batches_ref is not None:
+            return self._fetch_time
+        return self._worker_stats[5] / 1_000_000
 
     @property
     def transform_time(self) -> float:
@@ -417,7 +425,9 @@ class StreamingDataset(IterableDataset):
         conversion when no transform is set).  Accumulates across all splits
         and all iterations.
         """
-        return self._transform_time
+        if self._raw_batches_ref is not None:
+            return self._transform_time
+        return self._worker_stats[6] / 1_000_000
 
     @property
     def raw_queue_depth(self) -> int:
