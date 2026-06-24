@@ -14,6 +14,7 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
 """
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -22,13 +23,9 @@ from typing import Any, Callable, Iterator, Optional
 
 from torch.utils.data import IterableDataset, get_worker_info
 
-from .permutation import Permutation, permutation_builder
+from .permutation import Permutation, Transforms, permutation_builder
 
 logger = logging.getLogger(__name__)
-
-# Thread-local used to pass the fetch-start timestamp from the executor wrapper
-# into the counting transform, which runs in the same background thread.
-_tls = threading.local()
 
 # Multiplier used to combine shuffle_seed and epoch into a single permutation
 # seed.  Chosen to be a large prime so different (seed, epoch) pairs produce
@@ -47,6 +44,18 @@ class StreamingDataset(IterableDataset):
     Each rank is assigned a contiguous block of splits, and within a rank each
     DataLoader worker is assigned a contiguous sub-block.  Samples are yielded
     by round-robining over the assigned splits, one sample per split per cycle.
+
+    Internally ``__iter__`` runs a two-stage pipeline:
+
+    - **Stage 1 (I/O)**: one thread pool with ``num_splits * prefetch_batches``
+      workers fetches raw ``RecordBatch`` objects from LanceDB in parallel
+      across all splits and places them in a per-split raw-batch queue.
+    - **Stage 2 (transform)**: a second thread pool with ``os.cpu_count()``
+      workers picks up raw batches, applies the transform, and places the
+      results in a per-split cooked-row queue.
+
+    The main thread round-robins over the cooked queues, yielding one row per
+    split per cycle.
 
     Parameters
     ----------
@@ -71,10 +80,10 @@ class StreamingDataset(IterableDataset):
         storage) at the cost of higher memory usage per split buffer.  Defaults
         to ``DEFAULT_READ_BATCH_SIZE`` (64).
     prefetch_batches:
-        Number of batches to prefetch in parallel per split using background
-        threads.  Each batch is ``read_batch_size`` rows.  Higher values
-        overlap I/O with training compute at the cost of more memory and
-        threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES`` (4).
+        Number of I/O batches to keep in flight per split.  Higher values
+        overlap storage latency with transform and training compute at the cost
+        of more memory and threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
+        (4).
     transform:
         Optional callable applied to each ``pyarrow.RecordBatch`` before rows
         are yielded.  Receives one batch at a time and must return an iterable
@@ -120,10 +129,10 @@ class StreamingDataset(IterableDataset):
         self._transform = transform
         self._worker_info_override = worker_info_override
 
-        # References to the live per-split deques while __iter__ is running.
-        # None when not iterating.  Used by prefetch_queue_depth.
-        self._pending_ref: Optional[list[deque]] = None
-        self._ready_ref: Optional[list[deque]] = None
+        # Live references to the two pipeline queues, set only while __iter__
+        # is running.  Used by raw_queue_depth and prefetch_queue_depth.
+        self._raw_batches_ref: Optional[list[deque]] = None
+        self._cooked_ref: Optional[list[deque]] = None
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -182,7 +191,7 @@ class StreamingDataset(IterableDataset):
         return self._rank_splits[start : start + splits_per_worker]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
-        if self._pending_ref is not None:
+        if self._raw_batches_ref is not None:
             raise RuntimeError(
                 "StreamingDataset does not support concurrent iteration. "
                 "Only one active iterator per dataset instance is allowed."
@@ -191,35 +200,16 @@ class StreamingDataset(IterableDataset):
         if not my_splits:
             return
 
-        # Build one Permutation per assigned split, starting at the resume
-        # offset so that already-consumed rows are skipped automatically.
+        # Set identity transform on each Permutation so __getitems__ returns
+        # the raw RecordBatch.  Stage 2 applies the real transform.
         permutations: list[Permutation] = []
         for split_idx in my_splits:
             perm = Permutation.from_tables(
                 self._table, self._perm_table, split=split_idx
             )
-            if self._transform is not None:
-                perm = perm.with_transform(self._transform)
+            perm = perm.with_transform(lambda batch: batch)
             if self._resume_offset > 0:
                 perm = perm.with_skip(self._resume_offset)
-
-            # Wrap the final transform (default or user-supplied) to measure
-            # bytes and timing before conversion.  The default argument _fn
-            # captures perm.transform_fn at loop time.
-            #
-            # fetch_time = elapsed from when __getitems__ started (stamped on
-            # _tls.fetch_start by _submit_one) until this function is entered.
-            # transform_time = elapsed inside _fn(batch).
-            def _counting_transform(batch, _fn=perm.transform_fn):
-                t_entered = time.perf_counter()
-                self._bytes_loaded += batch.nbytes
-                self._fetch_time += t_entered - getattr(_tls, "fetch_start", t_entered)
-                t0 = time.perf_counter()
-                result = _fn(batch)
-                self._transform_time += time.perf_counter() - t0
-                return result
-
-            perm = perm.with_transform(_counting_transform)
             permutations.append(perm)
 
         n = len(permutations)
@@ -229,71 +219,134 @@ class StreamingDataset(IterableDataset):
 
         batch_size = self._read_batch_size
         max_prefetch = self._prefetch_batches
+        cpu_workers = os.cpu_count() or 1
+        final_transform = (
+            self._transform if self._transform is not None else Transforms.arrow2python
+        )
 
-        # Per-split: how many rows have been submitted to the executor so far.
+        # Per-split pipeline state.
         fetch_head = [0] * n
-        # Per-split queues of in-flight Future objects (each resolves to a list of
-        # rows).
-        pending: list[deque] = [deque() for _ in range(n)]
-        # Per-split deques of rows already fetched and ready to yield.
-        ready: list[deque] = [deque() for _ in range(n)]
+        io_pending = [deque() for _ in range(n)]  # Future[RecordBatch]
+        raw_batches = [deque() for _ in range(n)]  # RecordBatch — fetched, awaiting tx
+        tx_pending = [deque() for _ in range(n)]  # Future[list[Any]]
+        cooked = [deque() for _ in range(n)]  # rows ready to yield
 
-        def _submit_one(i: int) -> None:
+        # Limit simultaneous transforms to cpu_workers across all splits.
+        tx_semaphore = threading.Semaphore(cpu_workers)
+
+        # ── Stage 1 helpers ───────────────────────────────────────────────────
+
+        def _io_call(perm, indices):
+            t0 = time.perf_counter()
+            batch = perm.__getitems__(indices)
+            self._bytes_loaded += batch.nbytes
+            self._fetch_time += time.perf_counter() - t0
+            return batch
+
+        def _submit_io(i: int) -> None:
             remaining = split_sizes[i] - fetch_head[i]
             if remaining <= 0:
                 return
             fetch = min(batch_size, remaining)
             start = fetch_head[i]
             fetch_head[i] += fetch
-            perm = permutations[i]
+            perm_i = permutations[i]
             indices = list(range(start, start + fetch))
+            io_pending[i].append(io_pool.submit(_io_call, perm_i, indices))
 
-            def _call(_p=perm, _idx=indices):
-                _tls.fetch_start = time.perf_counter()
-                return _p.__getitems__(_idx)
+        def _fill_io(i: int) -> None:
+            while len(io_pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
+                _submit_io(i)
 
-            pending[i].append(executor.submit(_call))
+        def _drain_io(i: int) -> None:
+            """Move completed I/O futures into raw_batches non-blockingly."""
+            while io_pending[i] and io_pending[i][0].done():
+                raw_batches[i].append(io_pending[i].popleft().result())
 
-        def _fill_pipeline(i: int) -> None:
-            while len(pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
-                _submit_one(i)
+        # ── Stage 2 helpers ───────────────────────────────────────────────────
 
-        def _ensure_ready(i: int) -> None:
-            if not ready[i] and pending[i]:
-                ready[i].extend(pending[i].popleft().result())
-
-        with ThreadPoolExecutor(max_workers=n * max_prefetch) as executor:
-            self._pending_ref = pending
-            self._ready_ref = ready
+        def _tx_call_guarded(batch):
             try:
-                # Prime the pipeline: submit up to max_prefetch batches per split.
-                for i in range(n):
-                    _fill_pipeline(i)
-
-                while True:
-                    # Stop when any split is exhausted (all exhaust simultaneously
-                    # because splits have equal size and num_rows % num_splits == 0).
-                    if any(local_consumed[i] >= split_sizes[i] for i in range(n)):
-                        break
-
-                    # Round-robin: one sample from each split per cycle.
-                    for i in range(n):
-                        # Block until the oldest in-flight batch lands, then keep
-                        # the pipeline full for this split.
-                        _ensure_ready(i)
-                        row = ready[i].popleft()
-                        local_consumed[i] += 1
-                        _fill_pipeline(i)
-
-                        # Update the global offset after the last split in each
-                        # cycle so state_dict() returns the completed-cycle count.
-                        if i == n - 1:
-                            self._resume_offset = initial_offset + local_consumed[i]
-
-                        yield row
+                t0 = time.perf_counter()
+                result = final_transform(batch)
+                self._transform_time += time.perf_counter() - t0
+                return result
             finally:
-                self._pending_ref = None
-                self._ready_ref = None
+                tx_semaphore.release()
+
+        def _try_submit_tx(i: int) -> None:
+            """Submit transforms for raw_batches[i] up to available capacity."""
+            while raw_batches[i] and tx_semaphore.acquire(blocking=False):
+                batch = raw_batches[i].popleft()
+                tx_pending[i].append(tx_pool.submit(_tx_call_guarded, batch))
+
+        def _drain_tx(i: int) -> None:
+            """Move completed transform futures into cooked non-blockingly."""
+            while tx_pending[i] and tx_pending[i][0].done():
+                cooked[i].extend(tx_pending[i].popleft().result())
+
+        # ── Combined advance ──────────────────────────────────────────────────
+
+        def _advance(i: int) -> None:
+            """Non-blocking pipeline pump for split i."""
+            _drain_io(i)
+            _drain_tx(i)
+            _try_submit_tx(i)
+            _fill_io(i)
+
+        def _ensure_cooked(i: int) -> None:
+            """Ensure cooked[i] has at least one row, blocking if necessary."""
+            _advance(i)
+            while not cooked[i]:
+                if tx_pending[i]:
+                    # Wait for the oldest in-flight transform.
+                    cooked[i].extend(tx_pending[i].popleft().result())
+                    _advance(i)
+                elif raw_batches[i]:
+                    # Acquire a transform slot (may block briefly if all
+                    # cpu_workers are busy with other splits).
+                    tx_semaphore.acquire()
+                    batch = raw_batches[i].popleft()
+                    tx_pending[i].append(tx_pool.submit(_tx_call_guarded, batch))
+                elif io_pending[i]:
+                    # Block on the oldest in-flight I/O fetch.
+                    raw_batches[i].append(io_pending[i].popleft().result())
+                    _advance(i)
+                else:
+                    break  # split exhausted
+
+        # ── Main loop ─────────────────────────────────────────────────────────
+
+        with ThreadPoolExecutor(max_workers=n * max_prefetch) as io_pool:
+            with ThreadPoolExecutor(max_workers=cpu_workers) as tx_pool:
+                self._raw_batches_ref = raw_batches
+                self._cooked_ref = cooked
+                try:
+                    for i in range(n):
+                        _fill_io(i)
+
+                    while True:
+                        # Stop when any split is exhausted (all exhaust
+                        # simultaneously: equal split sizes + round-robin).
+                        if any(local_consumed[i] >= split_sizes[i] for i in range(n)):
+                            break
+
+                        for i in range(n):
+                            _ensure_cooked(i)
+                            row = cooked[i].popleft()
+                            local_consumed[i] += 1
+                            _advance(i)
+
+                            # Update the global offset after the last split in
+                            # each cycle so state_dict() returns the correct
+                            # completed-cycle count.
+                            if i == n - 1:
+                                self._resume_offset = initial_offset + local_consumed[i]
+
+                            yield row
+                finally:
+                    self._raw_batches_ref = None
+                    self._cooked_ref = None
 
     @property
     def bytes_loaded(self) -> int:
@@ -310,9 +363,9 @@ class StreamingDataset(IterableDataset):
     def fetch_time(self) -> float:
         """Cumulative seconds spent waiting for data from LanceDB.
 
-        Measured per batch as the elapsed time from when the background thread
-        starts the ``take_offsets`` call until the ``RecordBatch`` is ready for
-        transformation.  Accumulates across all splits and all iterations.
+        Measured per batch in the Stage 1 I/O threads as the total elapsed
+        time of the ``take_offsets`` call.  Accumulates across all splits and
+        all iterations.
         """
         return self._fetch_time
 
@@ -320,24 +373,36 @@ class StreamingDataset(IterableDataset):
     def transform_time(self) -> float:
         """Cumulative seconds spent applying the transform.
 
-        Measured per batch as the elapsed time inside the transform callable
-        (or the default ``arrow2python`` conversion when no transform is set).
-        Accumulates across all splits and all iterations.
+        Measured per batch in the Stage 2 transform threads as the elapsed
+        time inside the transform callable (or the default ``arrow2python``
+        conversion when no transform is set).  Accumulates across all splits
+        and all iterations.
         """
         return self._transform_time
 
     @property
-    def prefetch_queue_depth(self) -> int:
-        """Number of rows fetched and ready to yield across all splits.
+    def raw_queue_depth(self) -> int:
+        """Number of raw ``RecordBatch`` objects waiting for a transform thread.
 
-        Counts only rows whose ``take_offsets`` future has already completed
-        and whose data is sitting in memory waiting for the main thread —
-        i.e. rows that can be handed off with no storage wait.  Does not
-        count futures that are still in-flight.  Returns 0 when not iterating.
+        A persistently non-zero value means Stage 2 (transform) is the
+        bottleneck: I/O is completing faster than transforms can consume
+        batches.  Returns 0 when not iterating.
         """
-        if self._ready_ref is None:
+        if self._raw_batches_ref is None:
             return 0
-        return sum(len(q) for q in self._ready_ref)
+        return sum(len(q) for q in self._raw_batches_ref)
+
+    @property
+    def prefetch_queue_depth(self) -> int:
+        """Number of rows transformed and ready to yield across all splits.
+
+        Counts rows whose transform has completed and are sitting in memory
+        waiting for the main thread — rows that can be handed off with no
+        I/O or CPU wait.  Returns 0 when not iterating.
+        """
+        if self._cooked_ref is None:
+            return 0
+        return sum(len(q) for q in self._cooked_ref)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
