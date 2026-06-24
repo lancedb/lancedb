@@ -129,10 +129,13 @@ class StreamingDataset(IterableDataset):
         self._transform = transform
         self._worker_info_override = worker_info_override
 
-        # Live references to the two pipeline queues, set only while __iter__
-        # is running.  Used by raw_queue_depth and prefetch_queue_depth.
+        # Live references to pipeline state, set only while __iter__ is running.
+        # Used by the queue-depth and progress observability properties.
         self._raw_batches_ref: Optional[list[deque]] = None
         self._cooked_ref: Optional[list[deque]] = None
+        self._fetch_head_ref: Optional[list[int]] = None
+        self._split_sizes_ref: Optional[list[int]] = None
+        self._local_consumed_ref: Optional[list[int]] = None
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -321,6 +324,9 @@ class StreamingDataset(IterableDataset):
             with ThreadPoolExecutor(max_workers=cpu_workers) as tx_pool:
                 self._raw_batches_ref = raw_batches
                 self._cooked_ref = cooked
+                self._fetch_head_ref = fetch_head
+                self._split_sizes_ref = split_sizes
+                self._local_consumed_ref = local_consumed
                 try:
                     for i in range(n):
                         _fill_io(i)
@@ -347,6 +353,9 @@ class StreamingDataset(IterableDataset):
                 finally:
                     self._raw_batches_ref = None
                     self._cooked_ref = None
+                    self._fetch_head_ref = None
+                    self._split_sizes_ref = None
+                    self._local_consumed_ref = None
 
     @property
     def bytes_loaded(self) -> int:
@@ -403,6 +412,32 @@ class StreamingDataset(IterableDataset):
         if self._cooked_ref is None:
             return 0
         return sum(len(q) for q in self._cooked_ref)
+
+    @property
+    def unscanned_rows(self) -> int:
+        """Number of rows not yet submitted to the I/O stage across all splits.
+
+        Decreases as the I/O stage submits fetch requests.  When this reaches
+        zero all data has been requested from storage (though it may not have
+        arrived yet).  Returns 0 when not iterating.
+        """
+        if self._fetch_head_ref is None:
+            return 0
+        return sum(
+            size - head
+            for size, head in zip(self._split_sizes_ref, self._fetch_head_ref)
+        )
+
+    @property
+    def consumed_rows(self) -> int:
+        """Number of rows already yielded to the caller across all splits.
+
+        Monotonically increases throughout iteration.  Returns 0 when not
+        iterating.
+        """
+        if self._local_consumed_ref is None:
+            return 0
+        return sum(self._local_consumed_ref)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
