@@ -185,6 +185,43 @@ impl Scannable for SendableRecordBatchStream {
     }
 }
 
+#[cfg(feature = "polars")]
+impl Scannable for polars::frame::DataFrame {
+    fn schema(&self) -> SchemaRef {
+        crate::polars_arrow_convertors::convert_polars_df_schema_to_arrow_rb_schema(
+            self.schema().clone(),
+        )
+        .expect("failed to convert Polars DataFrame schema to Arrow schema")
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = Scannable::schema(self);
+        let batches: crate::Result<Vec<RecordBatch>> =
+            match crate::arrow::PolarsDataFrameRecordBatchReader::new(self.clone()) {
+                Err(e) => Err(e),
+                Ok(reader) => reader.map(|b| b.map_err(Into::into)).collect(),
+            };
+        match batches {
+            Err(e) => Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: once(async move { Err(e) }),
+            }),
+            Ok(batches) => {
+                let stream = futures::stream::iter(batches.into_iter().map(Ok));
+                Box::pin(SimpleRecordBatchStream { schema, stream })
+            }
+        }
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        Some(self.height())
+    }
+
+    fn rescannable(&self) -> bool {
+        true
+    }
+}
+
 #[async_trait]
 impl StreamingWriteSource for Box<dyn Scannable> {
     fn arrow_schema(&self) -> SchemaRef {
@@ -1087,6 +1124,66 @@ mod tests {
                 matches!(&err, Error::InvalidInput { message } if message.contains("score")),
                 "expected InvalidInput about missing 'score' column, got: {err:?}"
             );
+        }
+    }
+
+    #[cfg(feature = "polars")]
+    mod polars_tests {
+        use super::*;
+        use crate::arrow::IntoPolars;
+        use crate::query::ExecutableQuery;
+        use polars::prelude::{DataFrame, NamedFrom, Series};
+
+        fn make_df() -> DataFrame {
+            DataFrame::new(vec![
+                Series::new("id", &[1i32, 2, 3]),
+                Series::new("val", &[1.1f64, 2.2, 3.3]),
+            ])
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn test_dataframe_scannable_round_trip() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = crate::connect(tmp.path().to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+
+            let df = make_df();
+            let table = db
+                .create_table("t", df.clone())
+                .execute()
+                .await
+                .unwrap();
+
+            // Append the same rows again.
+            table.add(df.clone()).execute().await.unwrap();
+
+            let result = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .into_polars()
+                .await
+                .unwrap();
+
+            assert_eq!(result.height(), df.height() * 2);
+            assert_eq!(result.schema(), df.schema());
+        }
+
+        #[tokio::test]
+        async fn test_dataframe_scannable_rescannable() {
+            let mut df = make_df();
+            assert!(df.rescannable());
+
+            let batches1: Vec<RecordBatch> = df.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(batches1.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+
+            // Can be scanned again.
+            let batches2: Vec<RecordBatch> = df.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(batches2.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
         }
     }
 }

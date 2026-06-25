@@ -112,33 +112,7 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> RecordBatchStream
 
 /// A trait for converting incoming data to Arrow
 ///
-/// Integrations should implement this trait to allow data to be
-/// imported directly from the integration.  For example, implementing
-/// this trait for `Vec<Vec<...>>` would allow the `Vec` to be directly
-/// used in methods like [`crate::connection::Connection::create_table`]
-/// or [`crate::table::Table::add`]
-pub trait IntoArrow {
-    /// Convert the data into an iterator of Arrow batches
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
-}
-
 pub type BoxedRecordBatchReader = Box<dyn arrow_array::RecordBatchReader + Send>;
-
-impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        Ok(Box::new(self))
-    }
-}
-
-/// A trait for converting incoming data to Arrow asynchronously
-///
-/// Serves the same purpose as [`IntoArrow`], but for asynchronous data.
-///
-/// Note: Arrow has no async equivalent to RecordBatchReader and so
-pub trait IntoArrowStream {
-    /// Convert the data into a stream of Arrow batches
-    fn into_arrow(self) -> Result<SendableRecordBatchStream>;
-}
 
 impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream<S> {
     pub fn new(stream: S, schema: Arc<arrow_schema::Schema>) -> Self {
@@ -146,19 +120,6 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream
     }
 }
 
-impl IntoArrowStream for SendableRecordBatchStream {
-    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
-        Ok(self)
-    }
-}
-
-impl IntoArrowStream for datafusion_physical_plan::SendableRecordBatchStream {
-    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
-        let schema = self.schema();
-        let stream = self.map_err(|df_err| df_err.into());
-        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
-    }
-}
 
 pub trait LanceDbDatagenExt {
     fn into_ldb_stream(
@@ -264,9 +225,7 @@ impl IntoPolars for SendableRecordBatchStream {
 #[cfg(all(test, feature = "polars"))]
 mod tests {
     use super::SendableRecordBatchStream;
-    use crate::arrow::{
-        IntoArrow, IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream,
-    };
+    use crate::arrow::{IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream};
     use polars::prelude::{DataFrame, NamedFrom, Series};
 
     fn get_record_batch_reader_from_polars() -> Box<dyn arrow_array::RecordBatchReader + Send> {
@@ -280,10 +239,7 @@ mod tests {
         float_series = Series::new("float", &[2.0]);
         let df2 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
 
-        PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap())
-            .unwrap()
-            .into_arrow()
-            .unwrap()
+        Box::new(PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap()).unwrap())
     }
 
     #[test]
