@@ -14,8 +14,8 @@ _ARROW_EXT_NAME_KEY = "ARROW:extension:name"
 class BlobType(pa.ExtensionType):
     """PyArrow extension type for a Lance blob v2 column.
 
-    Queries return descriptors; call :meth:`~lancedb.table.Table.fetch_blobs`
-    for bytes.
+    Queries return descriptors; call :meth:`~lancedb.table.Table.fetch_blob_files`
+    for lazy reads or :meth:`~lancedb.table.Table.fetch_blobs` for eager bytes.
     """
 
     def __init__(self) -> None:

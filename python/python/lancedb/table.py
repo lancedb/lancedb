@@ -1508,17 +1508,22 @@ class Table(ABC):
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
-        """Read blob bytes for ``column`` at the given rows.
+        """Materialize full blob bytes for ``column`` at the given rows.
 
-        ``row_ids`` is a ``list[int]`` or a query ``pyarrow.Table`` with
-        ``_rowid`` or in-memory row-id metadata from a v2 blob projection.
+        Convenience for small payloads. For large values use
+        :meth:`fetch_blob_files`.
         """
 
     @abstractmethod
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
-        """Open lazy handles for ``column`` at the given rows."""
+        """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
+
+        Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
+        a ``list[int]`` or query ``pyarrow.Table`` with ``_rowid`` (or stashed
+        row-id metadata). Null rows are ``None``. Local tables only.
+        """
 
     @abstractmethod
     def _execute_query(

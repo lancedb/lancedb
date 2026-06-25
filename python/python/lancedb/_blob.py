@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import io
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -16,6 +17,8 @@ from .types import BlobMode, QueryProjection, QueryProjectionSpec
 from .util import get_uri_scheme
 
 if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
+
     from .remote.table import RemoteTable
     from .table import AsyncTable, Table
 
@@ -37,10 +40,11 @@ def validate_blob_mode(blob_mode: BlobMode) -> None:
         raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
 
 
-class BlobFile:
-    """Lazy handle from :meth:`lancedb.table.Table.fetch_blob_files`.
+class BlobFile(io.RawIOBase):
+    """Seekable lazy handle from :meth:`~lancedb.table.Table.fetch_blob_files`.
 
-    Call ``read`` from sync code, ``aread`` from async code.
+    Bytes load on ``read`` or ``read_range``, not when the handle is opened.
+    Use :meth:`aread` from async code.
     """
 
     def __init__(self, inner) -> None:
@@ -49,8 +53,55 @@ class BlobFile:
     async def aread(self) -> bytes:
         return await self._inner.read()
 
-    def read(self) -> bytes:
+    def close(self) -> None:
+        self._inner.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._inner.is_closed()
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_SET:
+            self._inner.seek(offset)
+        elif whence == io.SEEK_CUR:
+            self._inner.seek(self._inner.tell() + offset)
+        elif whence == io.SEEK_END:
+            self._inner.seek(self._inner.size() + offset)
+        else:
+            raise ValueError(f"invalid whence: {whence}")
+        return self._inner.tell()
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def size(self) -> int:
+        return self._inner.size()
+
+    def readall(self) -> bytes:
         return self._inner.read_bytes()
+
+    def read(self, size: int = -1) -> bytes:
+        if size == -1:
+            return self._inner.read_bytes()
+        return super().read(size)
+
+    def read_range(self, offset: int, length: int) -> bytes:
+        return self._inner.read_range(offset, length)
+
+    def readinto(self, b: WriteableBuffer) -> int:
+        view = memoryview(b).cast("B")
+        chunk = self._inner.read_up_to(len(view))
+        view[: len(chunk)] = chunk
+        return len(chunk)
+
+    def __repr__(self) -> str:
+        return f"<BlobFile size={self.size()}>"
 
 
 def supports_blob_auto_row_id(table: Table | AsyncTable | RemoteTable) -> bool:

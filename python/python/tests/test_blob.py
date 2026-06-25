@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import io
+
 import pyarrow as pa
 import pytest
 
@@ -320,3 +322,67 @@ async def testBlobV2HybridFetchBlobsAsync():
     assert b"lancedb._rowid" in (hits.schema.metadata or {})
     blobs = await table.fetch_blobs("image", hits)
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
+def testBlobFileSeekReadAndReadRange():
+    payload = _identifiablePayload(1024)
+    table = _blobTable("seek_read", [{"id": 1, "image": payload}])
+    by_id = _rowIdsById(table)
+    handle = table.fetch_blob_files("image", [by_id[1]])[0]
+
+    assert handle.seek(100) == 100
+    assert handle.read(16) == payload[100:116]
+    handle.seek(100)
+    assert handle.read_range(500, 8) == payload[500:508]
+    assert handle.tell() == 100
+
+    with pytest.raises(ValueError, match="whence"):
+        handle.seek(0, 99)
+
+
+def testFetchBlobFilesFromQueryPartialRead():
+    payload = _identifiablePayload(65536)
+    table = _blobTable("query_partial", [{"id": 1, "image": payload}])
+    hits = table.search().select(["id", "image"]).limit(1).to_arrow()
+    assert "_rowid" not in hits.column_names
+
+    handle = table.fetch_blob_files("image", hits)[0]
+    assert handle.size() == 65536
+    assert handle.read_range(0, 128) == payload[:128]
+    assert handle.tell() == 0
+    assert handle.seek(40000) == 40000
+    assert handle.read(16) == payload[40000:40016]
+
+
+def testBlobFileBufferedReader():
+    payload = _identifiablePayload(4096)
+    table = _blobTable("buffered_reader", [{"id": 1, "image": payload}])
+    hits = table.search().select(["id", "image"]).limit(1).to_arrow()
+    handle = table.fetch_blob_files("image", hits)[0]
+    reader = io.BufferedReader(handle)
+    assert reader.read(8) == payload[:8]
+    assert reader.read(8) == payload[8:16]
+    assert reader.read() == payload[16:]
+
+
+def testFetchBlobFilesCrossFragmentNullsAndDups():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("cross_fragment", schema=schema)
+    table.add([{"id": 1, "image": b"alpha"}])
+    table.add([{"id": 2, "image": None}, {"id": 3, "image": b"beta"}])
+
+    by_id = _rowIdsById(table)
+    request = [by_id[3], by_id[2], by_id[1], by_id[3]]
+    handles = table.fetch_blob_files("image", request)
+    assert len(handles) == 4
+    assert handles[1] is None
+    assert handles[0].read() == b"beta"
+    assert handles[2].read() == b"alpha"
+    assert handles[3].seek(1) == 1
+    assert handles[3].read() == b"eta"
+
+
+def _identifiablePayload(size: int) -> bytes:
+    block = 256
+    return b"".join(bytes([i % 256]) * block for i in range(size // block))
