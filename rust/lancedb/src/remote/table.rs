@@ -597,6 +597,7 @@ impl<S: HttpSend> RemoteTable<S> {
         body: &mut serde_json::Value,
         params: &QueryRequest,
     ) -> Result<()> {
+        params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));

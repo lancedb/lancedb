@@ -35,6 +35,15 @@ pub enum AnyQuery {
     VectorQuery(VectorQueryRequest),
 }
 
+impl AnyQuery {
+    pub(crate) fn base(&self) -> &QueryRequest {
+        match self {
+            Self::Query(query) => query,
+            Self::VectorQuery(query) => &query.base,
+        }
+    }
+}
+
 //Decide between namespace or local
 pub async fn execute_query(
     table: &NativeTable,
@@ -108,6 +117,7 @@ pub async fn create_plan(
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
+    query.base.check_filter()?;
 
     let ds_ref = table.dataset.get().await?;
     let schema = ds_ref.schema();
@@ -357,6 +367,7 @@ async fn execute_namespace_query(
 
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
+    query.base().check_filter()?;
     match query {
         AnyQuery::VectorQuery(vq) => {
             // Extract the query vector(s)
