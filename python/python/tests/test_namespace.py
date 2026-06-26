@@ -65,6 +65,9 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     table._namespace_path = ["geneva"]
     table._namespace_client = namespace_client
     table._pushdown_operations = {"QueryTable"}
+    # This test exercises the Python-side pushdown path (non-native client), so
+    # pushdown is not routed to Rust.
+    table._route_pushdown_to_rust = False
     return table
 
 
@@ -804,6 +807,37 @@ class TestPushdownOperations:
         """Test that pushdown operations default to empty."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
+
+    def test_route_pushdown_to_rust_for_native_rest(self):
+        """A natively-built rest connection must defer QueryTable pushdown to
+        Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
+        db = lancedb.connect_namespace(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_route_pushdown_to_rust_false_for_dir(self):
+        """A non-native (dir) connection keeps the Python pushdown path."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is False
+
+    def test_async_route_pushdown_to_rust_for_native_rest(self):
+        """The async connection must not silently bypass the read-freshness fix:
+        a natively-built rest connection defers pushdown to Rust (regression test
+        for the async path omitting the freshness header)."""
+        db = lancedb.connect_namespace_async(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_async_route_pushdown_to_rust_false_for_dir(self):
+        """The async non-native (dir) connection keeps the Python pushdown path."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is False
 
     def test_lance_table_to_arrow_uses_query_pushdown(self):
         namespace_client = _NamespaceClient()

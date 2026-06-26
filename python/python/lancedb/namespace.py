@@ -373,6 +373,19 @@ def _convert_pyarrow_schema_to_json(schema: pa.Schema) -> JsonArrowSchema:
     return JsonArrowSchema(fields=fields, metadata=meta)
 
 
+def _builds_namespace_natively(
+    namespace_client_impl: Optional[str],
+    namespace_client_properties: Optional[Dict[str, str]],
+) -> bool:
+    """Whether ``connect_namespace_client`` builds the namespace client natively
+    in Rust (installing the read-freshness context provider) rather than wrapping
+    the pre-built Python client.
+
+    Must mirror Rust ``build_namespace_natively`` in ``python/src/connection.rs``.
+    """
+    return namespace_client_impl == "rest" and bool(namespace_client_properties)
+
+
 class LanceNamespaceDBConnection(DBConnection):
     """
     A LanceDB connection that uses a namespace for table management.
@@ -432,6 +445,13 @@ class LanceNamespaceDBConnection(DBConnection):
         )
         self._namespace_client_impl = namespace_client_impl
         self._namespace_client_properties = namespace_client_properties
+        # When the namespace client is built natively (see Rust
+        # ``build_namespace_natively``), the underlying Rust table performs
+        # QueryTable pushdown through the read-freshness context provider, which
+        # the pure-Python ``query_table`` path bypasses.
+        self._route_pushdown_to_rust = _builds_namespace_natively(
+            namespace_client_impl, namespace_client_properties
+        )
         self._inner = AsyncConnection(
             _connect_namespace_client(
                 namespace_client,
@@ -543,6 +563,7 @@ class LanceNamespaceDBConnection(DBConnection):
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             _async=async_table,
         )
 
@@ -580,6 +601,7 @@ class LanceNamespaceDBConnection(DBConnection):
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             _async=async_table,
         )
         if branch is not None:
@@ -875,6 +897,8 @@ class AsyncLanceNamespaceDBConnection:
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
         namespace_client_pushdown_operations: Optional[List[str]] = None,
+        namespace_client_impl: Optional[str] = None,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize an async namespace-based LanceDB connection.
@@ -900,6 +924,12 @@ class AsyncLanceNamespaceDBConnection:
               namespace.create_table() instead of using declare_table + local write.
 
             Default is None (no pushdown, all operations run locally).
+        namespace_client_impl : Optional[str]
+            The namespace implementation name used to create this connection.
+            Required (with ``namespace_client_properties``) for the Rust client to
+            be built natively and install the read-freshness provider.
+        namespace_client_properties : Optional[Dict[str, str]]
+            The namespace properties used to create this connection.
         """
         self._namespace_client = namespace_client
         self.read_consistency_interval = read_consistency_interval
@@ -907,6 +937,14 @@ class AsyncLanceNamespaceDBConnection:
         self.session = session
         self._namespace_client_pushdown_operations = set(
             namespace_client_pushdown_operations or []
+        )
+        self._namespace_client_impl = namespace_client_impl
+        self._namespace_client_properties = namespace_client_properties
+        # See LanceNamespaceDBConnection: when built natively the Rust table runs
+        # QueryTable pushdown through the read-freshness provider, so defer to it
+        # rather than the urllib3 client (which omits x-lancedb-min-timestamp).
+        self._route_pushdown_to_rust = _builds_namespace_natively(
+            namespace_client_impl, namespace_client_properties
         )
         self._inner = AsyncConnection(
             _connect_namespace_client(
@@ -921,8 +959,8 @@ class AsyncLanceNamespaceDBConnection:
                 namespace_client_pushdown_operations=(
                     list(self._namespace_client_pushdown_operations)
                 ),
-                namespace_client_impl=None,
-                namespace_client_properties=None,
+                namespace_client_impl=namespace_client_impl,
+                namespace_client_properties=namespace_client_properties,
             )
         )
 
@@ -992,6 +1030,7 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
         )
 
     async def open_table(
@@ -1029,6 +1068,7 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path=namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
         )
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -1387,4 +1427,6 @@ def connect_namespace_async(
         storage_options=storage_options,
         session=session,
         namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        namespace_client_impl=namespace_client_impl,
+        namespace_client_properties=namespace_client_properties,
     )
