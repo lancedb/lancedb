@@ -9,6 +9,7 @@ from typing import List, Optional
 from lancedb import __version__
 
 from .header import HeaderProvider
+from .oauth import OAuthConfig, OAuthFlowType
 
 __all__ = [
     "TimeoutConfig",
@@ -16,6 +17,8 @@ __all__ = [
     "TlsConfig",
     "ClientConfig",
     "HeaderProvider",
+    "OAuthConfig",
+    "OAuthFlowType",
 ]
 
 
