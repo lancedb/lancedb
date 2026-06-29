@@ -64,6 +64,19 @@ client used by manifest-enabled native connections.
 
 ***
 
+### oauthConfig?
+
+```ts
+optional oauthConfig: NativeOAuthConfig;
+```
+
+(For LanceDB cloud only): OAuth configuration for IdP-based
+authentication (e.g., Azure Entra ID). When set, token acquisition
+and refresh are handled entirely in Rust. TypeScript users should pass
+the public `OAuthConfig` type exported from `@lancedb/lancedb`.
+
+***
+
 ### readConsistencyInterval?
 
 ```ts
