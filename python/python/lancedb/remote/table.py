@@ -47,7 +47,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.remote.db import LOOP
-from lancedb.table import IndexConfigType, KNOWN_METRICS
+from lancedb.table import IndexConfigType, KNOWN_METRICS, _DeprecatedCallableInt
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -164,7 +164,7 @@ class RemoteTable(Table):
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return LOOP.run(self._table.version())
+        return _DeprecatedCallableInt(LOOP.run(self._table.version()))
 
     @property
     def tags(self) -> Tags:

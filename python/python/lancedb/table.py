@@ -702,6 +702,25 @@ def _normalize_progress(progress):
     return progress, False
 
 
+class _DeprecatedCallableInt(int):
+    """An int subclass that supports callable syntax for backward compatibility.
+
+    Previously ``table.version`` was a method; it is now a property.
+    Calling ``table.version()`` still works but emits a DeprecationWarning.
+    """
+
+    def __call__(self) -> int:
+        warnings.warn(
+            "table.version is a property, not a method. "
+            "Use 'table.version' without parentheses. "
+            "Calling it as a method is deprecated and will be "
+            "removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return int(self)
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -2179,7 +2198,7 @@ class LanceTable(Table):
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return LOOP.run(self._table.version())
+        return _DeprecatedCallableInt(LOOP.run(self._table.version()))
 
     def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
