@@ -48,6 +48,14 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
         """
+        if not hasattr(table, "_inner"):
+            raise TypeError(
+                f"PermutationBuilder requires a local LanceTable, "
+                f"got {type(table).__name__}. "
+                "The permutation API is not supported on remote tables. "
+                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
+                "direct access to the underlying Lance dataset needed for permutations."
+            )
         self._async = async_permutation_builder(table)
 
     def split_random(
