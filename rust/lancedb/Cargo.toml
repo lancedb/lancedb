@@ -167,6 +167,10 @@ required-features = ["bedrock"]
 name = "simple"
 
 [[example]]
+name = "polars"
+required-features = ["polars"]
+
+[[example]]
 name = "full_text_search"
 
 [[example]]
