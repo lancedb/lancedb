@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from functools import cached_property
 from typing import TYPE_CHECKING, List, Optional, Sequence, Union
 
 import numpy as np
@@ -56,7 +55,7 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         embeddings = self._compute_embedding(texts)
         return list(embeddings)
 
-    @cached_property
+    @property
     def _ollama_client(self) -> "ollama.Client":
         ollama = attempt_import_or_raise("ollama")
         # ToDo explore ollama.AsyncClient
