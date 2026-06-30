@@ -1298,6 +1298,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "bitpacking"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96a7139abd3d9cebf8cd6f920a389cf3dc9576172e32f4563f188cae3c3eb019"
+dependencies = [
+ "crunchy",
+]
+
+[[package]]
 name = "bitvec"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3423,8 +3432,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "rand 0.9.4",
@@ -4726,8 +4735,8 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
 name = "lance"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4745,6 +4754,7 @@ dependencies = [
  "async_cell",
  "aws-credential-types",
  "aws-sdk-dynamodb",
+ "bitpacking",
  "byteorder",
  "bytes",
  "chrono",
@@ -4761,9 +4771,8 @@ dependencies = [
  "futures",
  "half",
  "humantime",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "lance-arrow",
- "lance-bitpacking",
  "lance-core",
  "lance-datafusion",
  "lance-encoding",
@@ -4801,8 +4810,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4823,7 +4832,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-scalar"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4837,7 +4846,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-stats"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4846,19 +4855,18 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrayref",
- "crunchy",
  "paste",
  "seq-macro",
 ]
 
 [[package]]
 name = "lance-core"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4870,7 +4878,7 @@ dependencies = [
  "datafusion-common",
  "datafusion-sql",
  "futures",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "lance-arrow",
  "lance-derive",
  "libc",
@@ -4896,8 +4904,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4927,8 +4935,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4945,8 +4953,8 @@ dependencies = [
 
 [[package]]
 name = "lance-derive"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4955,8 +4963,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4972,7 +4980,7 @@ dependencies = [
  "futures",
  "hex",
  "hyperloglogplus",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "lance-arrow",
  "lance-bitpacking",
  "lance-core",
@@ -4991,8 +4999,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5022,8 +5030,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5035,6 +5043,7 @@ dependencies = [
  "async-channel",
  "async-recursion",
  "async-trait",
+ "bitpacking",
  "bitvec",
  "bytes",
  "chrono",
@@ -5047,12 +5056,11 @@ dependencies = [
  "fst",
  "futures",
  "half",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "jieba-rs",
  "jsonb",
  "lance-arrow",
  "lance-arrow-stats",
- "lance-bitpacking",
  "lance-core",
  "lance-datafusion",
  "lance-datagen",
@@ -5088,8 +5096,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -5130,8 +5138,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5142,13 +5150,12 @@ dependencies = [
  "lance-core",
  "num-traits",
  "rand 0.9.4",
- "rayon",
 ]
 
 [[package]]
 name = "lance-namespace"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5160,8 +5167,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5215,15 +5222,15 @@ dependencies = [
 
 [[package]]
 name = "lance-select"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-schema",
  "byteorder",
  "bytes",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "lance-core",
  "roaring",
  "tracing",
@@ -5231,8 +5238,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5271,8 +5278,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5285,8 +5292,8 @@ dependencies = [
 
 [[package]]
 name = "lance-tokenizer"
-version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+version = "8.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v8.0.0-rc.3#2b4775ff3973c7f945f5bc104f2cbba5825f1beb"
 dependencies = [
  "icu_segmenter",
  "jieba-rs",
