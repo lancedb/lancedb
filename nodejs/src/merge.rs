@@ -66,10 +66,9 @@ impl NativeMergeInsertBuilder {
 
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
-        let data = ipc_file_to_batches(buf.to_vec())
-            .map_err(|e| {
-                napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
-            })?;
+        let data = ipc_file_to_batches(buf.to_vec()).map_err(|e| {
+            napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
+        })?;
 
         let this = self.clone();
 

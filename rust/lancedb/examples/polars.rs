@@ -37,13 +37,11 @@ async fn main() -> Result<()> {
     table.add(more).execute().await?;
 
     // Read back as a Polars DataFrame.
-    let result_df = table
-        .query()
-        .execute()
-        .await?
-        .into_polars()
-        .await?;
+    let result_df = table.query().execute().await?.into_polars().await?;
 
-    println!("\nRound-tripped DataFrame ({} rows):\n{result_df}", result_df.height());
+    println!(
+        "\nRound-tripped DataFrame ({} rows):\n{result_df}",
+        result_df.height()
+    );
     Ok(())
 }

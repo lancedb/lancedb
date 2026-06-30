@@ -120,7 +120,6 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream
     }
 }
 
-
 pub trait LanceDbDatagenExt {
     fn into_ldb_stream(
         self,

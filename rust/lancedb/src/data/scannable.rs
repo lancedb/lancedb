@@ -1151,11 +1151,7 @@ mod tests {
                 .unwrap();
 
             let df = make_df();
-            let table = db
-                .create_table("t", df.clone())
-                .execute()
-                .await
-                .unwrap();
+            let table = db.create_table("t", df.clone()).execute().await.unwrap();
 
             // Append the same rows again.
             table.add(df.clone()).execute().await.unwrap();
