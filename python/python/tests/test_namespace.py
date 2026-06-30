@@ -5,6 +5,7 @@
 
 import tempfile
 import shutil
+import importlib
 import pytest
 import pyarrow as pa
 import lancedb
@@ -102,6 +103,40 @@ class TestNamespaceConnection:
 
         assert isinstance(db, lancedb.LanceNamespaceDBConnection)
         assert len(list(db.table_names())) == 0
+
+    def test_sync_builtin_namespace_uses_rust_without_python_client(self, monkeypatch):
+        """Built-in sync namespace connections should not construct or call the
+        Python namespace client for normal namespace/table management."""
+        namespace_module = importlib.import_module("lancedb.namespace")
+
+        def fail_namespace_connect(*args, **kwargs):
+            raise AssertionError("Python namespace client should not be constructed")
+
+        monkeypatch.setattr(
+            namespace_module, "namespace_connect", fail_namespace_connect
+        )
+
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert isinstance(db, lancedb.LanceNamespaceDBConnection)
+        assert db._namespace_client is None
+        assert db._route_pushdown_to_rust is True
+
+        db.create_namespace(["test_ns"])
+        assert "test_ns" in db.list_namespaces().namespaces
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
+        assert table.namespace == ["test_ns"]
+        assert "test_table" in db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
+
+        opened = db.open_table("test_table", namespace_path=["test_ns"])
+        assert opened.namespace == ["test_ns"]
+
+        db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_namespace(["test_ns"])
+        assert "test_ns" not in db.list_namespaces().namespaces
 
     def test_create_table_through_namespace(self):
         """Test creating a table through namespace."""
@@ -818,10 +853,11 @@ class TestPushdownOperations:
         )
         assert db._route_pushdown_to_rust is True
 
-    def test_route_pushdown_to_rust_false_for_dir(self):
-        """A non-native (dir) connection keeps the Python pushdown path."""
+    def test_route_pushdown_to_rust_for_native_dir(self):
+        """The sync dir connection is natively built and defers QueryTable
+        pushdown to Rust."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-        assert db._route_pushdown_to_rust is False
+        assert db._route_pushdown_to_rust is True
 
     def test_async_route_pushdown_to_rust_for_native_rest(self):
         """The async connection must not silently bypass the read-freshness fix:

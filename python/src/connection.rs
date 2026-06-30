@@ -655,6 +655,46 @@ pub fn connect_namespace_client(
     )))
 }
 
+#[pyfunction]
+#[pyo3(signature = (
+    namespace_client_impl,
+    namespace_client_properties,
+    read_consistency_interval=None,
+    storage_options=None,
+    session=None,
+    namespace_client_pushdown_operations=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_namespace(
+    namespace_client_impl: String,
+    namespace_client_properties: HashMap<String, String>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    namespace_client_pushdown_operations: Option<Vec<String>>,
+) -> PyResult<Connection> {
+    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
+
+    let mut builder =
+        lancedb::connect_namespace(&namespace_client_impl, namespace_client_properties)
+            .pushdown_operations(namespace_client_pushdown_operations);
+    if let Some(storage_options) = storage_options {
+        builder = builder.storage_options(storage_options);
+    }
+    if let Some(read_consistency_interval) = read_consistency_interval {
+        builder = builder.read_consistency_interval(read_consistency_interval);
+    }
+    if let Some(session) = session {
+        builder = builder.session(session.inner.clone());
+    }
+
+    Ok(Connection::new(
+        crate::runtime::block_on(builder.execute()).infer_error()?,
+    ))
+}
+
 /// Whether to build the namespace natively (from impl + properties) instead of
 /// wrapping a pre-built client. Native construction is required for the
 /// read-freshness provider to be installed

@@ -2142,12 +2142,19 @@ class LanceTable(Table):
 
         branch = self.current_branch()
         version = None if branch is not None else self.version
-        if self._namespace_client is not None:
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            conn_uri = getattr(self._conn, "uri", "")
+            if get_uri_scheme(conn_uri) == "namespace":
+                namespace_client = self._conn.namespace_client()
+                self._namespace_client = namespace_client
+
+        if namespace_client is not None:
             table_id = self._namespace_path + [self.name]
             ds = lance.dataset(
                 version=version,
                 storage_options=self._conn.storage_options,
-                namespace_client=self._namespace_client,
+                namespace_client=namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
