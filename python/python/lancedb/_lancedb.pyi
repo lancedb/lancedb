@@ -282,6 +282,23 @@ async def connect(
     namespace_client_properties: Optional[Dict[str, str]] = None,
     oauth_config: Optional[Any] = None,
 ) -> Connection: ...
+def connect_namespace(
+    namespace_client_impl: str,
+    namespace_client_properties: Dict[str, str],
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+) -> Connection: ...
+def connect_namespace_client(
+    namespace_client: Any,
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+    namespace_client_impl: Optional[str] = None,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+) -> Connection: ...
 
 class RecordBatchStream:
     @property
