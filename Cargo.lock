@@ -1750,7 +1750,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3014,7 +3014,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3231,7 +3231,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3424,7 +3424,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 [[package]]
 name = "fsst"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "rand 0.9.4",
@@ -4466,7 +4466,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4560,7 +4560,7 @@ dependencies = [
  "portable-atomic-util",
  "serde_core",
  "wasm-bindgen",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4727,7 +4727,7 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 [[package]]
 name = "lance"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4802,7 +4802,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4823,7 +4823,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-scalar"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4837,7 +4837,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-stats"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4847,7 +4847,7 @@ dependencies = [
 [[package]]
 name = "lance-bitpacking"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrayref",
  "crunchy",
@@ -4858,7 +4858,7 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4897,7 +4897,7 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4928,7 +4928,7 @@ dependencies = [
 [[package]]
 name = "lance-datagen"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4946,7 +4946,7 @@ dependencies = [
 [[package]]
 name = "lance-derive"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4956,7 +4956,7 @@ dependencies = [
 [[package]]
 name = "lance-encoding"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4992,7 +4992,7 @@ dependencies = [
 [[package]]
 name = "lance-file"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5023,7 +5023,7 @@ dependencies = [
 [[package]]
 name = "lance-index"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5089,7 +5089,7 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -5131,7 +5131,7 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5148,7 +5148,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5161,7 +5161,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace-impls"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5216,7 +5216,7 @@ dependencies = [
 [[package]]
 name = "lance-select"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5232,7 +5232,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5272,7 +5272,7 @@ dependencies = [
 [[package]]
 name = "lance-testing"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5286,7 +5286,7 @@ dependencies = [
 [[package]]
 name = "lance-tokenizer"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/jackye1995/lance.git?branch=jack%2Fsophon-pr-6325#1c5b5061c60934b4c18dbe86c5e91b4961105989"
 dependencies = [
  "icu_segmenter",
  "jieba-rs",
@@ -6085,7 +6085,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7400,8 +7400,8 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.5.0",
- "itertools 0.14.0",
+ "heck 0.4.1",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "petgraph",
@@ -7420,7 +7420,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7654,7 +7654,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8394,7 +8394,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8465,7 +8465,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9027,7 +9027,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9039,7 +9039,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -9472,7 +9472,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10407,7 +10407,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
