@@ -1,0 +1,63 @@
+name: Security audit (SCA)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - rust/**/Cargo.toml
+      - rust/**/Cargo.lock
+      - Cargo.toml
+      - Cargo.lock
+      - python/pyproject.toml
+      - python/uv.lock
+      - nodejs/package.json
+      - nodejs/package-lock.json
+      - .github/workflows/security-audit.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (warn-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  pip-audit:
+    name: pip-audit (blocking)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run pip-audit against pyproject.toml
+        run: uv tool run --python 3.12 --from pip-audit pip-audit .
+
+  npm-audit:
+    name: npm audit (warn-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
