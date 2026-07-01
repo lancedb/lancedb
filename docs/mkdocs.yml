@@ -131,6 +131,8 @@ nav:
       - Javascript/TypeScript: js/globals.md
       - Java: java/java.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
+  - Integrations:
+      - Agno: integrations/agno.md
 
 extra_css:
   - styles/global.css
