@@ -148,15 +148,47 @@ def test_permutation_dataloader(mem_db):
     for batch in dataloader:
         assert batch["a"].size(0) == 10
 
-    permutation = permutation.with_format("torch")
-    dataloader = torch.utils.data.DataLoader(permutation, batch_size=10, shuffle=True)
+    # "torch" produces a list of per-row dicts per batch. The default
+    # DataLoader collate stacks the per-row dicts back into a batched dict.
+    torch_perm = permutation.with_format("torch")
+    batch = next(torch_perm.iter(10, skip_last_batch=False))
+    assert isinstance(batch, list)
+    assert len(batch) == 10
+    assert isinstance(batch[0], dict)
+    assert isinstance(batch[0]["a"], torch.Tensor)
+    rows = torch_perm.__getitems__([0, 1, 2])
+    assert isinstance(rows, list)
+    assert len(rows) == 3
+    assert isinstance(rows[0], dict)
+    assert isinstance(rows[0]["a"], torch.Tensor)
+    dataloader = torch.utils.data.DataLoader(torch_perm, batch_size=10, shuffle=True)
+    for batch in dataloader:
+        assert isinstance(batch, dict)
+        assert batch["a"].shape == (10,)
+    # Spawn-based workers exercise the pickle round-trip path: the new
+    # transform-as-list shape must survive pickling so workers produce the
+    # same per-row dicts the parent does.
+    spawn_loader = torch.utils.data.DataLoader(
+        torch_perm,
+        batch_size=10,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    for batch in spawn_loader:
+        assert isinstance(batch, dict)
+        assert batch["a"].shape == (10,)
+
+    # "torch_row" returns a list of row tensors. Works with the default
+    # DataLoader collate (stacks rows into 2D).
+    row_perm = permutation.with_format("torch_row")
+    dataloader = torch.utils.data.DataLoader(row_perm, batch_size=10, shuffle=True)
     for batch in dataloader:
         assert batch.size(0) == 10
         assert batch.size(1) == 1
 
-    permutation = permutation.with_format("torch_col")
+    col_perm = permutation.with_format("torch_col")
     dataloader = torch.utils.data.DataLoader(
-        permutation, collate_fn=lambda x: x, batch_size=10, shuffle=True
+        col_perm, collate_fn=lambda x: x, batch_size=10, shuffle=True
     )
     for batch in dataloader:
         assert batch.size(0) == 1
