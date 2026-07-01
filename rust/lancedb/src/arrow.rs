@@ -3,7 +3,19 @@
 
 use std::{pin::Pin, sync::Arc};
 
+// Re-export the arrow crates we depend on so downstream consumers can build
+// `RecordBatch`/arrays/builders against the exact same arrow line lancedb was
+// compiled against, instead of declaring their own (potentially mismatched)
+// direct arrow dependencies. See https://github.com/lancedb/lancedb/issues/3575.
+pub use arrow;
+pub use arrow_array;
+pub use arrow_buffer;
+pub use arrow_cast;
+pub use arrow_data;
+pub use arrow_ipc;
+pub use arrow_ord;
 pub use arrow_schema;
+pub use arrow_select;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt, TryStreamExt};
