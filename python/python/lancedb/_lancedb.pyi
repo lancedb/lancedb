@@ -29,6 +29,25 @@ IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 
+class MetricPoint:
+    name: str
+    kind: str
+    attributes: Dict[str, str]
+    value: Optional[float]
+    buckets: Optional[List[Tuple[str, int]]]
+    count: Optional[int]
+    sum: Optional[float]
+
+class MetricDescription:
+    name: str
+    kind: str
+    unit: Optional[str]
+    description: str
+
+def register_lancedb_metrics_recorder() -> bool: ...
+def lancedb_metrics_catalog() -> List[MetricDescription]: ...
+def snapshot_lancedb_metrics() -> List[MetricPoint]: ...
+
 class PyExpr:
     """A type-safe DataFusion expression node (Rust-side handle)."""
 

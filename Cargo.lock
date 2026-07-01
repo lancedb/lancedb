@@ -3152,6 +3152,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "endian-type"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
+
+[[package]]
 name = "enum-as-inner"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3424,7 +3430,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 [[package]]
 name = "fsst"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "rand 0.9.4",
@@ -4673,7 +4679,7 @@ dependencies = [
  "jiff",
  "nom 8.0.0",
  "num-traits",
- "ordered-float",
+ "ordered-float 5.3.0",
  "rand 0.9.4",
  "serde",
  "serde_json",
@@ -4727,7 +4733,7 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 [[package]]
 name = "lance"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4802,7 +4808,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4823,7 +4829,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-scalar"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4837,7 +4843,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-stats"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4847,7 +4853,7 @@ dependencies = [
 [[package]]
 name = "lance-bitpacking"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrayref",
  "crunchy",
@@ -4858,7 +4864,7 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4897,7 +4903,7 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4928,7 +4934,7 @@ dependencies = [
 [[package]]
 name = "lance-datagen"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4946,7 +4952,7 @@ dependencies = [
 [[package]]
 name = "lance-derive"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4956,7 +4962,7 @@ dependencies = [
 [[package]]
 name = "lance-encoding"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4992,7 +4998,7 @@ dependencies = [
 [[package]]
 name = "lance-file"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5023,7 +5029,7 @@ dependencies = [
 [[package]]
 name = "lance-index"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5089,7 +5095,7 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -5113,6 +5119,7 @@ dependencies = [
  "lance-core",
  "lance-namespace",
  "log",
+ "metrics",
  "moka",
  "object_store",
  "object_store_opendal",
@@ -5131,7 +5138,7 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5148,7 +5155,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5161,7 +5168,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace-impls"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5216,7 +5223,7 @@ dependencies = [
 [[package]]
 name = "lance-select"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5232,7 +5239,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5272,7 +5279,7 @@ dependencies = [
 [[package]]
 name = "lance-testing"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5286,7 +5293,7 @@ dependencies = [
 [[package]]
 name = "lance-tokenizer"
 version = "9.0.0-beta.10"
-source = "git+https://github.com/lance-format/lance.git?tag=v9.0.0-beta.10#e25b71e74b89d10c57b412d111bde087117383f3"
+source = "git+https://github.com/lance-format/lance.git?branch=feat%2Flance-metrics-python#afbf82d1fc04307e54c3231e2511ad0caa22799e"
 dependencies = [
  "icu_segmenter",
  "jieba-rs",
@@ -5355,6 +5362,8 @@ dependencies = [
  "lance-testing",
  "lazy_static",
  "log",
+ "metrics",
+ "metrics-util",
  "moka",
  "num-traits",
  "object_store",
@@ -5812,6 +5821,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics"
+version = "0.24.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
+dependencies = [
+ "portable-atomic",
+ "rapidhash",
+]
+
+[[package]]
+name = "metrics-util"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8496cc523d1f94c1385dd8f0f0c2c480b2b8aeccb5b7e4485ad6365523ae376"
+dependencies = [
+ "aho-corasick",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "hashbrown 0.15.5",
+ "indexmap 2.14.0",
+ "metrics",
+ "ordered-float 4.6.0",
+ "quanta",
+ "radix_trie",
+ "rand 0.9.4",
+ "rand_xoshiro",
+ "sketches-ddsketch",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6024,6 +6063,15 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+]
+
+[[package]]
+name = "nibble_vec"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
+dependencies = [
+ "smallvec",
 ]
 
 [[package]]
@@ -6556,6 +6604,15 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "ordered-float"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "ordered-float"
@@ -7575,6 +7632,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "quanta"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
+dependencies = [
+ "crossbeam-utils",
+ "libc",
+ "once_cell",
+ "raw-cpuid",
+ "wasi 0.11.1+wasi-snapshot-preview1",
+ "web-sys",
+ "winapi",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7684,6 +7756,16 @@ name = "radium"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
+
+[[package]]
+name = "radix_trie"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c069c179fcdc6a2fe24d8d18305cf085fdbd4f922c041943e203685d6a1c58fd"
+dependencies = [
+ "endian-type",
+ "nibble_vec",
+]
 
 [[package]]
 name = "rancor"
@@ -7818,6 +7900,15 @@ name = "rangemap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
+
+[[package]]
+name = "rapidhash"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b266a82f4aa99bb5c25e28d11cc44ace63d91adbcbcee4d323e2ae3d49ef37"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "raw-cpuid"
@@ -8980,6 +9071,12 @@ name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
+
+[[package]]
+name = "sketches-ddsketch"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
 
 [[package]]
 name = "slab"
