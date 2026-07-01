@@ -20,6 +20,17 @@ import { HeaderProvider } from "./header";
 // Re-export native header provider for use with connectWithHeaderProvider
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
+// OpenTelemetry metrics bridge
+export { instrumentLanceDbMetrics } from "./otel";
+export {
+  MetricPoint,
+  MetricBucket,
+  MetricDescription,
+  lancedbMetricsCatalog,
+  registerLancedbMetricsRecorder,
+  snapshotLancedbMetrics,
+} from "./native.js";
+
 export {
   AddColumnsSql,
   ConnectionOptions,

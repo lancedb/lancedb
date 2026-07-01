@@ -49,6 +49,8 @@ lance-encoding = { workspace = true }
 lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
+metrics = { workspace = true, optional = true }
+metrics-util = { workspace = true, optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -139,6 +141,15 @@ remote = [
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
 ]
+# Publish LanceDB's internal metrics (currently object store request counts,
+# bytes, latency, errors, and throttles) through the `metrics` crate facade,
+# and re-export the `metrics` crate as `lancedb::metrics`. Install any
+# `metrics`-compatible recorder to collect them.
+metrics = ["dep:metrics", "lance/metrics", "lance-io/metrics"]
+# Additional adapter on top of `metrics` that installs a process-global recorder
+# and exposes a pull-based snapshot/catalog API (see `lancedb::metrics_otel`)
+# for bridging metrics into OpenTelemetry or other pull-based exporters.
+metrics-otel = ["metrics", "dep:metrics-util"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]

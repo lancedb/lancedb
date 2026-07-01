@@ -47,6 +47,7 @@ repository = "https://github.com/lancedb/lancedb"
 pylance = [
     "pylance>=5.0.0b5",
 ]
+otel = ["opentelemetry-api", "opentelemetry-sdk"]
 tests = [
     "aiohttp>=3.9.0",
     "boto3>=1.28.57",
@@ -61,6 +62,7 @@ tests = [
     "pylance>=5.0.0b5",
     "requests>=2.31.0",
     "datafusion>=52,<53",
+    "opentelemetry-sdk>=1.30.0",
 ]
 dev = [
     "ruff>=0.3.0",
