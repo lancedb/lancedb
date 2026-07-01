@@ -684,6 +684,18 @@ def test_select_columns(some_permutation: Permutation):
         some_permutation.select_columns([])
 
 
+def test_select_columns_rowid(some_permutation: Permutation):
+    # _rowid is a virtual column produced by the Rust reader; it is not part of
+    # the Arrow schema, so it was previously rejected by select_columns().
+    result = some_permutation.select_columns(["_rowid", "id"])
+    assert "_rowid" in result.schema.names
+    assert "id" in result.schema.names
+
+    # Selecting _rowid alone should also work
+    result_rowid_only = some_permutation.select_columns(["_rowid"])
+    assert result_rowid_only.schema.names == ["_rowid"]
+
+
 def test_iter_basic(some_permutation: Permutation):
     """Test basic iteration with custom batch size."""
     batch_size = 100
