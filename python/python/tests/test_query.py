@@ -502,6 +502,61 @@ def test_with_row_id(table: lancedb.table.Table):
     assert rs["_rowid"].to_pylist() == [0, 1]
 
 
+def test_where_repeated_combines_with_and(table: lancedb.table.Table):
+    # Calling where() more than once should AND the filters together instead of
+    # silently replacing the previous one (regression test for #2649).
+    builder = table.search().where("id >= 1").where("id < 2")
+    assert builder._where == "(id >= 1) AND (id < 2)"
+
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+def test_where_repeated_combines_expr(table: lancedb.table.Table):
+    from lancedb.expr import col, lit
+
+    builder = table.search().where(col("id") >= lit(1)).where(col("id") < lit(2))
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+def test_where_mixed_filter_kinds_combines(table: lancedb.table.Table):
+    # Mixing a SQL string filter with an expression filter lowers the
+    # expression to SQL and combines them as SQL strings.
+    from lancedb.expr import col, lit
+
+    builder = table.search().where("id >= 1").where(col("id") < lit(2))
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_where_repeated_combines_with_and_async(table_async: AsyncTable):
+    ids = [
+        row["id"]
+        for row in (
+            await table_async.query().where("id >= 1").where("id < 2").to_list()
+        )
+    ]
+    assert ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_where_mixed_filter_kinds_combines_async(table_async: AsyncTable):
+    from lancedb.expr import col, lit
+
+    ids = [
+        row["id"]
+        for row in (
+            await table_async.query()
+            .where("id >= 1")
+            .where(col("id") < lit(2))
+            .to_list()
+        )
+    ]
+    assert ids == [1]
+
+
 def test_distance_range(table: lancedb.table.Table):
     q = [0, 0]
     rs = table.search(q).to_arrow()

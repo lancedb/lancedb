@@ -119,6 +119,27 @@ def _filter_to_sql(filter: Optional[Union[str, Expr]]) -> Optional[str]:
     return filter
 
 
+def _combine_where(
+    existing: Optional[Union[str, Expr]], new: Union[str, Expr]
+) -> Union[str, Expr]:
+    """Combine a new filter with an existing one using a logical AND.
+
+    Calling ``where`` more than once composes the filters with AND instead of
+    replacing the previous filter. Two :class:`~lancedb.expr.Expr` filters are
+    combined as an expression; otherwise both filters are lowered to SQL strings
+    and combined as SQL.
+    """
+    if existing is None:
+        return new
+    existing_is_expr = isinstance(existing, Expr)
+    new_is_expr = isinstance(new, Expr)
+    if existing_is_expr and new_is_expr:
+        return existing & new
+    existing_sql = existing.to_sql() if existing_is_expr else existing
+    new_sql = new.to_sql() if new_is_expr else new
+    return f"({existing_sql}) AND ({new_sql})"
+
+
 def _projection_to_scanner_kwargs(
     columns: Optional[
         Union[
@@ -1148,8 +1169,13 @@ class LanceQueryBuilder(ABC):
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
+
+        Notes
+        -----
+        Calling this multiple times combines the filters with a logical AND
+        rather than replacing the previous filter.
         """
-        self._where = where
+        self._where = _combine_where(self._where, where)
         self._postfilter = not prefilter
         return self
 
@@ -1693,8 +1719,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
+
+        Notes
+        -----
+        Calling this multiple times combines the filters with a logical AND
+        rather than replacing the previous filter.
         """
-        self._where = where
+        self._where = _combine_where(self._where, where)
         if prefilter is not None:
             self._postfilter = not prefilter
         return self
@@ -2894,6 +2925,9 @@ class AsyncStandardQuery(AsyncQueryBase):
 
         Filtering performance can often be improved by creating a scalar index
         on the filter column(s).
+
+        Calling this multiple times combines the filters with a logical AND
+        rather than replacing the previous filter.
         """
         if isinstance(predicate, Expr):
             self._inner.where_expr(predicate._inner)
