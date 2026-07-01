@@ -589,6 +589,7 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -646,6 +647,7 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -690,6 +692,10 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::IvfHnswFlat);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
+        let stats = table.index_stats(&index.name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -747,6 +753,15 @@ mod tests {
         let stats = table.index_stats(index_name).await.unwrap().unwrap();
         assert_eq!(stats.num_indexed_rows, 1);
         assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::BTree);
+        assert_eq!(stats.distance_type, None);
+
+        // Rows added after the index was built appear as unindexed.
+        let new_batch = record_batch!(("i", Int32, [2])).unwrap();
+        table.add(new_batch).execute().await.unwrap();
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 1);
+        assert_eq!(stats.num_unindexed_rows, 1);
     }
 
     #[tokio::test]
@@ -795,6 +810,12 @@ mod tests {
             .map(|b| b.num_rows())
             .sum::<usize>();
         assert_eq!(count, 1);
+
+        let stats = table.index_stats("text_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 1);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::Fm);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]
@@ -1188,6 +1209,12 @@ mod tests {
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["large_data".to_string()]);
+
+        let stats = table.index_stats("category_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 100);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]
@@ -1256,6 +1283,12 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+
+        let stats = table.index_stats("tags_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 40);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]
