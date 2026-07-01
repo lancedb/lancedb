@@ -4800,6 +4800,10 @@ class AsyncTable:
         if fill_value is None:
             fill_value = 0.0
 
+        has_embedding_functions = (
+            schema.metadata is not None and b"embedding_functions" in schema.metadata
+        )
+
         # _santitize_data is an old code path, but we will use it until the
         # new code path is ready.
         if mode == "overwrite":
@@ -4808,17 +4812,34 @@ class AsyncTable:
             data, _ = sanitize_create_table(
                 data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
-        elif on_bad_vectors != "error" or (
-            schema.metadata is not None and b"embedding_functions" in schema.metadata
-        ):
-            data = _sanitize_data(
-                data,
-                schema,
-                metadata=schema.metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                allow_subschema=True,
-            )
+        elif on_bad_vectors != "error" or has_embedding_functions:
+            if has_embedding_functions:
+                # Embedding computation can block (network/CPU). Materialize in a
+                # worker thread so AsyncTable.add() does not block the event loop.
+                try:
+                    data = await asyncio.to_thread(
+                        lambda: _sanitize_data(
+                            data,
+                            schema,
+                            metadata=schema.metadata,
+                            on_bad_vectors=on_bad_vectors,
+                            fill_value=fill_value,
+                            allow_subschema=True,
+                        ).read_all()
+                    )
+                except ValueError as e:
+                    if "Vector column" in str(e):
+                        raise RuntimeError(str(e))
+                    raise
+            else:
+                data = _sanitize_data(
+                    data,
+                    schema,
+                    metadata=schema.metadata,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    allow_subschema=True,
+                )
         _register_optional_converters()
         data = to_scannable(data)
         progress, owns = _normalize_progress(progress)
