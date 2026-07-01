@@ -1,10 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from typing import Literal
+from __future__ import annotations
+
+from typing import Dict, List, Literal, Optional, Tuple, Union
+
+from .expr import Expr
 
 # Query type literals
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
+
+BlobMode = Literal["lazy", "bytes", "descriptions"]
+
+QueryProjectionSpec = Union[
+    List[str],
+    List[Tuple[str, Union[str, Expr]]],
+    Dict[str, Union[str, Expr]],
+]
+QueryProjection = Optional[QueryProjectionSpec]
 
 # Distance type literals
 DistanceType = Literal["l2", "cosine", "dot"]

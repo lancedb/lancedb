@@ -17,7 +17,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import vector
+from .schema import blob, vector, BlobType
 from .table import AsyncTable, Table
 from ._lancedb import Session
 from .namespace import (
@@ -461,6 +461,8 @@ __all__ = [
     "lit",
     "URI",
     "sanitize_uri",
+    "blob",
+    "BlobType",
     "vector",
     "DBConnection",
     "LanceDBConnection",

@@ -11,6 +11,7 @@ import lancedb
 from lancedb.db import AsyncConnection
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
+from lancedb.expr import col
 from lancedb.index import FTS, IvfPq
 import lancedb.pydantic
 import numpy as np
@@ -63,9 +64,69 @@ def _blob_query_data():
     )
 
 
+def _create_blob_v2_query_table(db, name):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("tag", pa.utf8()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = db.create_table(name, schema=schema)
+    table.add(
+        [
+            {"id": 1, "tag": "drop", "vector": [1.0, 0.0], "blob": b"one"},
+            {"id": 2, "tag": "keep", "vector": [2.0, 0.0], "blob": b"two"},
+            {"id": 3, "tag": "keep", "vector": [3.0, 0.0], "blob": b"three"},
+            {"id": 4, "tag": "keep", "vector": [4.0, 0.0], "blob": b"four"},
+        ]
+    )
+    return table
+
+
+async def _create_blob_v2_query_table_async(db, name):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("tag", pa.utf8()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = await db.create_table(name, schema=schema)
+    await table.add(
+        [
+            {"id": 1, "tag": "drop", "vector": [1.0, 0.0], "blob": b"one"},
+            {"id": 2, "tag": "keep", "vector": [2.0, 0.0], "blob": b"two"},
+            {"id": 3, "tag": "keep", "vector": [3.0, 0.0], "blob": b"three"},
+            {"id": 4, "tag": "keep", "vector": [4.0, 0.0], "blob": b"four"},
+        ]
+    )
+    return table
+
+
 def _assert_lazy_blob(value, expected: bytes):
     assert hasattr(value, "readall")
     assert value.readall() == expected
+
+
+def _assert_blob_bytes_projection(df):
+    assert df["id_alias"].tolist() == [3, 4]
+    assert df["payload"].tolist() == [b"three", b"four"]
+    assert df["double_id"].tolist() == [6, 8]
+
+
+def _blob_query_table(db, name, blob_schema):
+    if blob_schema == "v1":
+        return db.create_table(name, _blob_query_data())
+    return _create_blob_v2_query_table(db, name)
+
+
+async def _blob_query_table_async(db, name, blob_schema):
+    if blob_schema == "v1":
+        return await db.create_table(name, _blob_query_data())
+    return await _create_blob_v2_query_table_async(db, name)
 
 
 @pytest.fixture(scope="module")
@@ -235,10 +296,11 @@ def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
         assert not hasattr(first, "readall")
 
 
-def test_plain_scan_query_to_pandas_blob_projection(tmp_db):
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+def test_plain_scan_query_to_pandas_blob_bytes_projection(tmp_db, blob_schema):
     pytest.importorskip("lance")
-    table = tmp_db.create_table(
-        "test_query_to_pandas_blob_projection", _blob_query_data()
+    table = _blob_query_table(
+        tmp_db, f"test_query_to_pandas_blob_{blob_schema}_bytes", blob_schema
     )
 
     df = (
@@ -250,9 +312,8 @@ def test_plain_scan_query_to_pandas_blob_projection(tmp_db):
         .to_pandas(blob_mode="bytes")
     )
 
-    assert df["id_alias"].tolist() == [3, 4]
-    assert df["payload"].tolist() == [b"three", b"four"]
-    assert df["double_id"].tolist() == [6, 8]
+    _assert_blob_bytes_projection(df)
+    assert "_rowid" not in df.columns
 
 
 @pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
@@ -348,18 +409,6 @@ async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
     assert lazy_df["id"].tolist() == [1]
     _assert_lazy_blob(lazy_df["blob"].iloc[0], b"one")
 
-    bytes_df = await (
-        table.query()
-        .where("id >= 2")
-        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
-        .limit(2)
-        .offset(1)
-        .to_pandas(blob_mode="bytes")
-    )
-    assert bytes_df["id_alias"].tolist() == [3, 4]
-    assert bytes_df["payload"].tolist() == [b"three", b"four"]
-    assert bytes_df["double_id"].tolist() == [6, 8]
-
     desc_df = await (
         table.query()
         .where("id = 1")
@@ -369,6 +418,31 @@ async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
     first = desc_df["blob"].iloc[0]
     assert first != b"one"
     assert not hasattr(first, "readall")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+async def test_async_plain_scan_query_to_pandas_blob_bytes_projection(
+    tmp_db_async, blob_schema
+):
+    pytest.importorskip("lance")
+    table = await _blob_query_table_async(
+        tmp_db_async,
+        f"test_async_query_to_pandas_blob_{blob_schema}_bytes",
+        blob_schema,
+    )
+
+    df = await (
+        table.query()
+        .where("id >= 2")
+        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
+        .limit(2)
+        .offset(1)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    _assert_blob_bytes_projection(df)
+    assert "_rowid" not in df.columns
 
 
 @pytest.mark.asyncio
@@ -500,6 +574,18 @@ def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names
     assert rs["_rowid"].to_pylist() == [0, 1]
+
+
+def test_blob_v2_query_omits_auto_row_id(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_omits_auto_rowid")
+
+    query_obj = table.search().select(["id", "blob"]).limit(2).to_query_object()
+    assert query_obj.with_row_id is None
+
+    rs = table.search().select(["id", "blob"]).limit(2).to_arrow()
+
+    assert "_rowid" not in rs.column_names
+    assert rs["id"].to_pylist() == [1, 2]
 
 
 def test_distance_range(table: lancedb.table.Table):
@@ -1891,3 +1977,39 @@ def test_fast_search(tmp_path):
     # 2. Fast Search -> Should NOT include "LanceScan" (Uses Index)
     plan = table.search(q).fast_search().explain_plan(True)
     assert "LanceScan" not in plan
+
+
+def test_blob_v2_with_row_id_bytes_pandas(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_rowid_bytes_pandas")
+
+    df = (
+        table.search()
+        .with_row_id(True)
+        .select(["id", "blob"])
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert "_rowid" in df.columns
+    assert df["id"].tolist() == [1, 2, 3, 4]
+    assert df["blob"].tolist() == [b"one", b"two", b"three", b"four"]
+
+
+def test_blob_v2_expr_projection_stash(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_expr_projection_stash")
+
+    hits = table.search().select({"blob_alias": col("blob")}).limit(2).to_arrow()
+
+    assert "_rowid" not in hits.column_names
+    assert b"lancedb._rowid" in (hits.schema.metadata or {})
+    blobs = table.fetch_blobs("blob", hits)
+    assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
+
+
+def test_blob_v2_to_batches_row_id(tmp_db):
+    table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_to_batches_rowid")
+
+    hits = table.search().select(["id", "blob"]).limit(2).to_batches().read_all()
+
+    assert "_rowid" in hits.column_names
+    blobs = table.fetch_blobs("blob", hits)
+    assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]

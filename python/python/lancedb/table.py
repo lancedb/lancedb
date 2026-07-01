@@ -29,6 +29,13 @@ from urllib.parse import urlparse
 from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
+from ._blob import (
+    BlobFile,
+    _normalize_blob_row_ids,
+    _wrap_blob_files,
+    validate_blob_mode,
+)
+from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
@@ -88,33 +95,13 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-
-BlobMode = Literal["lazy", "bytes", "descriptions"]
-
-_VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
+from .schema import blob_v2_column_paths, schema_has_blob_field
 
 
 def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
-
-
-def _validate_blob_mode(blob_mode: BlobMode) -> None:
-    if blob_mode not in _VALID_BLOB_MODES:
-        modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
-        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
-
-
-def _field_is_blob(field: pa.Field) -> bool:
-    metadata = field.metadata or {}
-    return metadata.get(b"lance-encoding:blob") == b"true" or (
-        metadata.get("lance-encoding:blob") == "true"
-    )
-
-
-def _schema_has_blob_field(schema: pa.Schema) -> bool:
-    return any(_field_is_blob(field) for field in schema)
 
 
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
@@ -1514,6 +1501,26 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def blob_columns(self) -> list[str]:
+        """Names of the blob v2 columns declared on this table."""
+
+    @abstractmethod
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        """Read blob bytes for ``column`` at the given rows.
+
+        ``row_ids`` is a ``list[int]`` or a query ``pyarrow.Table`` with
+        ``_rowid`` or in-memory row-id metadata from a v2 blob projection.
+        """
+
+    @abstractmethod
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        """Open lazy handles for ``column`` at the given rows."""
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -2194,6 +2201,23 @@ class LanceTable(Table):
     def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
+    def blob_columns(self) -> list[str]:
+        return LOOP.run(self._table.blob_columns())
+
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(
+            self._table.fetch_blobs(column, _normalize_blob_row_ids(row_ids))
+        )
+
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        return LOOP.run(
+            self._table.fetch_blob_files(column, _normalize_blob_row_ids(row_ids))
+        )
+
     @property
     def tags(self) -> Tags:
         """Tag management for the table.
@@ -2389,8 +2413,8 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
+        validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
             return self.to_arrow().to_pandas(**kwargs)
 
         if (
@@ -2399,6 +2423,9 @@ class LanceTable(Table):
             and get_uri_scheme(self._dataset_path) == "memory"
         ):
             return self.to_arrow().to_pandas(**kwargs)
+
+        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+            return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -4504,14 +4531,16 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(
+        validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not schema_has_blob_field(
             await self.schema()
         ):
             return (await self.to_arrow()).to_pandas(**kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
+        if blob_mode == "bytes" and blob_v2_column_paths(await self.schema()):
+            return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
@@ -5611,6 +5640,22 @@ class AsyncTable:
             A query object that can be executed to get the rows.
         """
         return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+
+    async def blob_columns(self) -> list[str]:
+        return await self._inner.blob_columns()
+
+    async def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return await self._inner.fetch_blobs(column, _normalize_blob_row_ids(row_ids))
+
+    async def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        handles = await self._inner.fetch_blob_files(
+            column, _normalize_blob_row_ids(row_ids)
+        )
+        return _wrap_blob_files(handles)
 
     @property
     def tags(self) -> AsyncTags:
