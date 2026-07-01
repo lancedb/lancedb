@@ -583,9 +583,9 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .drop_table(drop_request)
             .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop table: {}", e),
-            })?;
+            // Preserve TableNotFound (e.g. dropping a non-existent table) rather than
+            // flattening every failure to a generic Runtime error.
+            .map_err(|e| map_namespace_lance_error(e, name))?;
 
         Ok(())
     }
