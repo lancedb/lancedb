@@ -40,7 +40,7 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -65,7 +65,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
@@ -78,7 +78,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Building without a lock file often requires the latest Rust version since downstream
       # dependencies may have updated their minimum Rust version.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -113,7 +113,7 @@ jobs:
       CXX: clang++-18
       GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -152,7 +152,7 @@ jobs:
         shell: bash
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -181,7 +181,7 @@ jobs:
       run:
         working-directory: rust/lancedb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -210,7 +210,7 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - name: Install dependencies

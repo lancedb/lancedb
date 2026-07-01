@@ -30,13 +30,13 @@ jobs:
           echo "tag = ${{ inputs.tag || 'latest' }}"
 
       - name: Checkout Repo LanceDB
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
