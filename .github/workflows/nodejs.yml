@@ -38,14 +38,14 @@ jobs:
       CC: gcc-12
       CXX: g++-12
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       with:
         # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
         # in October. The library itself still supports Node >= 18
@@ -86,14 +86,14 @@ jobs:
         shell: bash
         working-directory: nodejs
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       name: Setup Node.js 24 for build
       with:
         # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
@@ -130,7 +130,7 @@ jobs:
           echo "Run 'pnpm run docs', fix any warnings, and commit the changes."
           exit 1
         fi
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       name: Setup Node.js ${{ matrix.node-version }} for test
       with:
         node-version: ${{ matrix.node-version }}
@@ -166,14 +166,14 @@ jobs:
         shell: bash
         working-directory: nodejs
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6
       with:
         version: 11.1.1
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       with:
         # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
         # in October.
