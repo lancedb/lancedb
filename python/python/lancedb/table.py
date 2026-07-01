@@ -2145,7 +2145,7 @@ class LanceTable(Table):
         namespace_client = self._namespace_client
         if namespace_client is None:
             conn_uri = getattr(self._conn, "uri", "")
-            if get_uri_scheme(conn_uri) == "namespace":
+            if get_uri_scheme(conn_uri) == "namespace" or self._namespace_path:
                 namespace_client = self._conn.namespace_client()
                 self._namespace_client = namespace_client
 
