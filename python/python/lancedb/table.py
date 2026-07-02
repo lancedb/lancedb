@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import deprecation
+import math
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -4113,15 +4114,33 @@ def _handle_bad_vector_column(
                 raise ValueError(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
-            vec_arr = pc.if_else(
-                is_bad,
-                pa.scalar([fill_value] * dim, type=vec_arr.type),
-                vec_arr,
-            )
+            vec_arr = _fill_bad_vector_values(vec_arr, is_bad, dim, fill_value)
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
     return data.set_column(position, vector_column_name, vec_arr)
+
+
+def _fill_bad_vector_values(
+    arr: Union[pa.ListArray, pa.FixedSizeListArray],
+    is_bad: pa.BooleanArray,
+    dim: int,
+    fill_value: float,
+) -> Union[pa.ListArray, pa.FixedSizeListArray]:
+    values = arr.to_pylist()
+    for idx, bad in enumerate(is_bad.to_pylist()):
+        if not bad:
+            continue
+
+        vector = [] if values[idx] is None else values[idx]
+        filled = [
+            fill_value if isinstance(value, float) and math.isnan(value) else value
+            for value in vector[:dim]
+        ]
+        filled.extend([fill_value] * (dim - len(filled)))
+        values[idx] = filled
+
+    return pa.array(values, type=arr.type)
 
 
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:

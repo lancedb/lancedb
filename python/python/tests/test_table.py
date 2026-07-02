@@ -1611,16 +1611,23 @@ def test_create_with_nans(mem_db: DBConnection):
         "fill_test",
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [2.1, 4.1], "item": "foo", "price": 9.0},
             {"vector": [np.nan], "item": "bar", "price": 20.0},
-            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, 5.0], "item": "bar", "price": 21.0},
+            {"vector": [5], "item": "bar", "price": 22.0},
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
     )
-    assert len(table) == 3
+    assert len(table) == 5
     arrow_tbl = table.search().where("item == 'bar'").to_arrow()
-    v = arrow_tbl["vector"].to_pylist()[0]
-    assert np.allclose(v, np.array([0.0, 0.0]))
+    filled_vectors = {
+        row["price"]: row["vector"]
+        for row in arrow_tbl.select(["price", "vector"]).to_pylist()
+    }
+    assert np.allclose(filled_vectors[20.0], np.array([0.0, 0.0]))
+    assert np.allclose(filled_vectors[21.0], np.array([0.0, 5.0]))
+    assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
 def test_add_with_nans(mem_db: DBConnection):
@@ -1663,15 +1670,21 @@ def test_add_with_nans(mem_db: DBConnection):
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
             {"vector": [np.nan], "item": "bar", "price": 20.0},
-            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, 5.0], "item": "bar", "price": 21.0},
+            {"vector": [5], "item": "bar", "price": 22.0},
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
     )
-    assert len(table) == 3
+    assert len(table) == 4
     arrow_tbl = table.search().where("item == 'bar'").to_arrow()
-    v = arrow_tbl["vector"].to_pylist()[0]
-    assert np.allclose(v, np.array([0.0, 0.0]))
+    filled_vectors = {
+        row["price"]: row["vector"]
+        for row in arrow_tbl.select(["price", "vector"]).to_pylist()
+    }
+    assert np.allclose(filled_vectors[20.0], np.array([0.0, 0.0]))
+    assert np.allclose(filled_vectors[21.0], np.array([0.0, 5.0]))
+    assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):

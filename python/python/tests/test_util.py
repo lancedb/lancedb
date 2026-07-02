@@ -315,7 +315,7 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
     if on_bad_vectors == "drop":
         expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[1.0, 2.0], [42.0, 42.0], [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], [3.0, 42.0], [4.0, 5.0]])
     elif on_bad_vectors == "null":
         expected = pa.array([[1.0, 2.0], None, [4.0, 5.0]])
 
@@ -351,7 +351,7 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
     if on_bad_vectors == "drop":
         expected = pa.array([[3.0, 4.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[42.0, 42.0], [3.0, 4.0]])
+        expected = pa.array([[1.0, 42.0], [3.0, 4.0]])
     elif on_bad_vectors == "null":
         expected = pa.array([None, [3.0, 4.0]])
 
