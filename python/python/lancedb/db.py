@@ -41,6 +41,7 @@ from lance_namespace import (
     ListTablesResponse,
     connect as namespace_connect,
 )
+from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
@@ -746,10 +747,12 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        return self._namespace_conn().list_namespaces(
-            namespace_path=namespace_path,
-            page_token=page_token,
-            limit=limit,
+        return LOOP.run(
+            self._conn.list_namespaces(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                limit=limit,
+            )
         )
 
     @override
@@ -759,10 +762,12 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
-        return self._namespace_conn().create_namespace(
-            namespace_path=namespace_path,
-            mode=mode,
-            properties=properties,
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace_path=namespace_path,
+                mode=mode,
+                properties=properties,
+            )
         )
 
     @override
@@ -772,19 +777,24 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
-        return self._namespace_conn().drop_namespace(
-            namespace_path=namespace_path,
-            mode=mode,
-            behavior=behavior,
-        )
+        try:
+            return LOOP.run(
+                self._conn.drop_namespace(
+                    namespace_path=namespace_path,
+                    mode=mode,
+                    behavior=behavior,
+                )
+            )
+        except RuntimeError as e:
+            if "Namespace not empty" in str(e):
+                raise NamespaceNotEmptyError(str(e)) from e
+            raise
 
     @override
     def describe_namespace(
         self, namespace_path: List[str]
     ) -> DescribeNamespaceResponse:
-        return self._namespace_conn().describe_namespace(
-            namespace_path=namespace_path,
-        )
+        return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
     def list_tables(
@@ -813,12 +823,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if namespace_path:
-            return self._namespace_conn().list_tables(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
-            )
         return LOOP.run(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
@@ -916,22 +920,6 @@ class LanceDBConnection(DBConnection):
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
-        if namespace_path:
-            return self._namespace_conn().create_table(
-                name,
-                data=data,
-                schema=schema,
-                mode=mode,
-                exist_ok=exist_ok,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                embedding_functions=embedding_functions,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
-            )
-
         tbl = LanceTable.create(
             self,
             name,
@@ -944,21 +932,10 @@ class LanceDBConnection(DBConnection):
             embedding_functions=embedding_functions,
             namespace_path=namespace_path,
             storage_options=storage_options,
+            data_storage_version=data_storage_version,
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
         )
         return tbl
-
-    def _namespace_conn(self) -> DBConnection:
-        """Return a LanceNamespaceDBConnection backed by this connection's
-        directory namespace.  Used to delegate child-namespace operations."""
-        from lancedb.namespace import LanceNamespaceDBConnection
-
-        return LanceNamespaceDBConnection(
-            self.namespace_client(),
-            read_consistency_interval=self.read_consistency_interval,
-            storage_options=self.storage_options,
-            namespace_client_impl=None,
-            namespace_client_properties=None,
-        )
 
     @override
     def open_table(
@@ -1006,14 +983,7 @@ class LanceDBConnection(DBConnection):
                 stacklevel=2,
             )
 
-        if namespace_path:
-            tbl = self._namespace_conn().open_table(
-                name,
-                namespace_path=namespace_path,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
-            )
-        else:
+        try:
             tbl = LanceTable.open(
                 self,
                 name,
@@ -1021,6 +991,15 @@ class LanceDBConnection(DBConnection):
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
             )
+        except (RuntimeError, ValueError) as e:
+            if namespace_path and (
+                "Table not found" in str(e) or "was not found" in str(e)
+            ):
+                table_id = namespace_path + [name]
+                raise TableNotFoundError(
+                    f"Table not found: {'$'.join(table_id)}"
+                ) from e
+            raise
 
         if branch is not None:
             tbl = tbl.branches.checkout(branch, version)
@@ -1104,9 +1083,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if namespace_path:
-            self._namespace_conn().drop_table(name, namespace_path=namespace_path)
-            return
         LOOP.run(
             self._conn.drop_table(
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
