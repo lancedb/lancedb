@@ -667,8 +667,7 @@ def test_resumability_mismatched_shuffle_seed_raises(lance_table):
 
 @pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
 def test_large_batch_elastic_det_full_coverage(lance_table_large, world_size):
-    """Every sample is seen exactly once per epoch when global_batch_size > num_splits.
-    """
+    """Every sample appears exactly once per epoch regardless of global_batch_size."""
     batches = _collect_global_batches(
         lance_table_large,
         world_size,
@@ -929,8 +928,7 @@ def test_multi_worker_full_coverage(lance_table, world_size, num_workers):
 
 @pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
 def test_multi_worker_correct_step_count(lance_table, world_size, num_workers):
-    """Number of global steps is NUM_ROWS // GLOBAL_BATCH_SIZE regardless of topology.
-    """
+    """Step count equals NUM_ROWS // GLOBAL_BATCH_SIZE regardless of topology."""
     batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
     assert len(batches) == STEPS_PER_EPOCH, (
         f"world_size={world_size} num_workers={num_workers}: "
@@ -991,8 +989,7 @@ def test_multi_worker_same_global_batches_as_single_worker(
 
 
 def test_multi_worker_elastic_det_across_worker_counts(lance_table):
-    """Global batches are the same for every compatible (world_size, num_workers) pair.
-    """
+    """Global batches match for every compatible world_size / num_workers pair."""
     reference = _collect_global_batches(lance_table, world_size=1)
     for world_size, num_workers in MULTI_WORKER_TOPOLOGIES:
         batches = _collect_global_batches_multi_worker(
@@ -1280,8 +1277,7 @@ def test_bytes_loaded_increases_after_iteration(lance_table):
 
 
 def test_bytes_loaded_measured_before_transform(lance_table):
-    """bytes_loaded reflects raw Arrow size even when the transform discards all data.
-    """
+    """bytes_loaded measures raw Arrow size even when transform discards everything."""
     import pyarrow as pa
 
     # This transform throws away every value.  If bytes_loaded were measured
@@ -1662,8 +1658,7 @@ def test_doc_example_elastic_ddp(lance_table):
 
 
 def test_doc_example_checkpoint(lance_table):
-    """doc: Checkpointing — state_dict/load_state_dict resumes without gaps or repeats.
-    """
+    """doc: state_dict/load_state_dict checkpointing resumes without gaps or repeats."""
     STEPS_BEFORE_CHECKPOINT = 4  # consume 4 full cycles then checkpoint
 
     ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)

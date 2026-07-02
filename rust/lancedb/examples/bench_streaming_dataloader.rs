@@ -219,27 +219,35 @@ async fn main() -> Result<()> {
     };
 
     if do_profile {
-        let chunk = chunk_sizes[0];
-        println!("Profiling chunk={chunk} for {steps} steps...");
-        // Warm-up outside the profiler window
-        let _ = run_hot_loop(&readers, chunk, 1).await?;
+        #[cfg(unix)]
+        {
+            let chunk = chunk_sizes[0];
+            println!("Profiling chunk={chunk} for {steps} steps...");
+            // Warm-up outside the profiler window
+            let _ = run_hot_loop(&readers, chunk, 1).await?;
 
-        let guard = pprof::ProfilerGuardBuilder::default()
-            .frequency(1000)
-            .build()
-            .unwrap();
+            let guard = pprof::ProfilerGuardBuilder::default()
+                .frequency(1000)
+                .build()
+                .unwrap();
 
-        let (rows, elapsed) = run_hot_loop(&readers, chunk, steps).await?;
+            let (rows, elapsed) = run_hot_loop(&readers, chunk, steps).await?;
 
-        if let Ok(report) = guard.report().build() {
-            let svg_path = "flamegraph.svg";
-            let file = std::fs::File::create(svg_path).unwrap();
-            report.flamegraph(file).unwrap();
-            println!("Flamegraph written to {svg_path}");
+            if let Ok(report) = guard.report().build() {
+                let svg_path = "flamegraph.svg";
+                let file = std::fs::File::create(svg_path).unwrap();
+                report.flamegraph(file).unwrap();
+                println!("Flamegraph written to {svg_path}");
+            }
+
+            let rows_per_sec = rows as f64 / elapsed;
+            println!("chunk={chunk}  {rows} rows  {elapsed:.3}s  {rows_per_sec:.0} rows/s");
         }
-
-        let rows_per_sec = rows as f64 / elapsed;
-        println!("chunk={chunk}  {rows} rows  {elapsed:.3}s  {rows_per_sec:.0} rows/s");
+        #[cfg(not(unix))]
+        {
+            println!("Flamegraph profiling (BENCH_PROFILE=1) is not supported on this platform.");
+            println!("Run without BENCH_PROFILE to get throughput numbers.");
+        }
     } else {
         println!(
             "{:>6}  {:>7}  {:>8}  {:>11}  {:>10}",
