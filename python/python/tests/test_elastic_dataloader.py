@@ -1537,9 +1537,7 @@ def test_doc_example_transform(tmp_path):
 
 def test_doc_example_observability(lance_table):
     """doc: Observability — counters are zero before and positive after iteration."""
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
 
     assert ds.unscanned_rows == 0
     assert ds.raw_queue_depth == 0
@@ -1586,12 +1584,18 @@ def test_doc_example_columns_and_filter(tmp_path):
 
 def test_doc_example_epoch_shuffle(lance_table):
     """doc: Shuffling rows — different epochs produce different orderings."""
-    ids_e0 = [s["id"] for s in StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=0
-    )]
-    ids_e1 = [s["id"] for s in StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=1
-    )]
+    ids_e0 = [
+        s["id"]
+        for s in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=0
+        )
+    ]
+    ids_e1 = [
+        s["id"]
+        for s in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=1
+        )
+    ]
 
     assert sorted(ids_e0) == list(range(NUM_ROWS))
     assert sorted(ids_e1) == list(range(NUM_ROWS))
@@ -1600,12 +1604,14 @@ def test_doc_example_epoch_shuffle(lance_table):
 
 def test_doc_example_shuffle_false_eval(lance_table):
     """doc: Shuffling rows — shuffle=False gives deterministic sequential order."""
-    ids_a = [s["id"] for s in StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle=False
-    )]
-    ids_b = [s["id"] for s in StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle=False
-    )]
+    ids_a = [
+        s["id"]
+        for s in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
+    ids_b = [
+        s["id"]
+        for s in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
 
     assert ids_a == ids_b, "shuffle=False must produce identical orderings"
     assert sorted(ids_a) == list(range(NUM_ROWS))
@@ -1645,9 +1651,7 @@ def test_doc_example_checkpoint(lance_table):
     """doc: Checkpointing — state_dict/load_state_dict resumes without gaps or repeats."""
     STEPS_BEFORE_CHECKPOINT = 4  # consume 4 full cycles then checkpoint
 
-    ds = StreamingDataset(
-        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
-    )
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     it = iter(ds)
     consumed = [next(it)["id"] for _ in range(STEPS_BEFORE_CHECKPOINT * NUM_SPLITS)]
     checkpoint = ds.state_dict()
