@@ -65,6 +65,7 @@ class PermutationBuilder:
         counts: Optional[list[int]] = None,
         fixed: Optional[int] = None,
         seed: Optional[int] = None,
+        clump_size: Optional[int] = None,
         split_names: Optional[list[str]] = None,
     ) -> "PermutationBuilder":
         """
@@ -87,6 +88,9 @@ class PermutationBuilder:
         Rows will be randomly assigned to splits.  The optional seed can be provided to
         make the assignment deterministic.
 
+        If clump_size is provided, rows are shuffled as contiguous groups of that size,
+        preserving I/O locality while still randomising the split assignment.
+
         The optional split_names can be provided to name the splits.  If not provided,
         the splits can only be referenced by their index.
         """
@@ -95,6 +99,7 @@ class PermutationBuilder:
             counts=counts,
             fixed=fixed,
             seed=seed,
+            clump_size=clump_size,
             split_names=split_names,
         )
         return self

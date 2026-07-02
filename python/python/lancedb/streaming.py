@@ -16,6 +16,7 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
 import ctypes
 import logging
 import os
+import random
 import threading
 import time
 from collections import deque
@@ -72,9 +73,16 @@ class StreamingDataset(IterableDataset):
     num_splits:
         Number of fixed splits to partition the table into.  Must be divisible
         by ``world_size``.  When used with DataLoader workers it must also be
-        divisible by ``world_size * num_workers``.
+        divisible by ``world_size * num_workers``.  Defaults to ``world_size``.
+    shuffle:
+        Whether to randomly assign rows to splits.  When ``True`` (the
+        default) rows are shuffled using ``shuffle_seed`` and ``epoch``.
+        When ``False`` rows are divided into splits sequentially in storage
+        order, which can be useful for deterministic debugging or evaluation.
     shuffle_seed:
-        Base seed for the random permutation.
+        Base seed for the random permutation.  Combined with ``epoch`` so
+        each epoch produces a different ordering.  Pass ``None`` to generate
+        a random seed at construction time.
     epoch:
         Current training epoch.  Combined with ``shuffle_seed`` so that each
         epoch produces a different sample ordering.
@@ -92,6 +100,20 @@ class StreamingDataset(IterableDataset):
         overlap storage latency with transform and training compute at the cost
         of more memory and threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
         (4).
+    columns:
+        Optional list of column names to read.  When set, only those columns
+        are fetched from storage; all others are omitted.  ``None`` (the
+        default) reads every column.
+    shuffle_clump_size:
+        When set, rows are shuffled in contiguous groups of this size rather
+        than individually.  Larger clumps improve I/O locality (important on
+        object storage) at the cost of reduced randomness.  ``None`` (the
+        default) shuffles rows individually.
+    filter:
+        Optional SQL filter expression (e.g. ``"label = 'dog'"``).  Only rows
+        that satisfy the predicate are included in the permutation.  The filter
+        is applied during permutation construction so split sizes reflect the
+        filtered row count.
     transform:
         Optional callable applied to each ``pyarrow.RecordBatch`` before rows
         are yielded.  Receives one batch at a time and must return an iterable
@@ -109,18 +131,26 @@ class StreamingDataset(IterableDataset):
         self,
         table,
         *,
-        num_splits: int,
-        shuffle_seed: int = 0,
+        num_splits: Optional[int] = None,
+        shuffle: bool = True,
+        shuffle_seed: Optional[int] = 0,
         epoch: int = 0,
         rank: int = 0,
         world_size: int = 1,
         read_batch_size: int = DEFAULT_READ_BATCH_SIZE,
         prefetch_batches: int = DEFAULT_PREFETCH_BATCHES,
+        columns: Optional[list[str]] = None,
+        shuffle_clump_size: Optional[int] = None,
+        filter: Optional[str] = None,
         transform: Optional[Callable] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
     ):
         super().__init__()
+        if num_splits is None:
+            num_splits = world_size
+        if shuffle_seed is None:
+            shuffle_seed = random.randrange(2**32)
         if num_splits % world_size != 0:
             raise ValueError(
                 f"num_splits ({num_splits}) must be divisible by "
@@ -129,12 +159,16 @@ class StreamingDataset(IterableDataset):
 
         self._table = table
         self._num_splits = num_splits
+        self._shuffle = shuffle
         self._shuffle_seed = shuffle_seed
         self._epoch = epoch
         self._rank = rank
         self._world_size = world_size
         self._read_batch_size = read_batch_size
         self._prefetch_batches = prefetch_batches
+        self._columns = columns
+        self._shuffle_clump_size = shuffle_clump_size
+        self._filter = filter
         self._transform = transform
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
@@ -168,12 +202,16 @@ class StreamingDataset(IterableDataset):
         self._resume_offset: int = 0
 
         # Build the permutation table once, deterministically.
-        perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
-        self._perm_table = (
-            permutation_builder(table)
-            .split_random(fixed=num_splits, seed=perm_seed)
-            .execute()
-        )
+        builder = permutation_builder(table)
+        if filter is not None:
+            builder = builder.filter(filter)
+        if shuffle:
+            perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
+            self._perm_table = builder.split_random(
+                fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
+            ).execute()
+        else:
+            self._perm_table = builder.split_sequential(fixed=num_splits).execute()
 
         # Contiguous block of global split indices assigned to this rank.
         splits_per_rank = num_splits // world_size
@@ -229,6 +267,8 @@ class StreamingDataset(IterableDataset):
             perm = Permutation.from_tables(
                 self._table, self._perm_table, split=split_idx
             )
+            if self._columns is not None:
+                perm = perm.select_columns(self._columns)
             perm = perm.with_transform(lambda batch: batch)
             if self._resume_offset > 0:
                 perm = perm.with_skip(self._resume_offset)
@@ -373,9 +413,7 @@ class StreamingDataset(IterableDataset):
                                     split_sizes[j] - fetch_head[j] for j in range(n)
                                 )
                                 ws[1] = sum(
-                                    batch.num_rows
-                                    for q in raw_batches
-                                    for batch in q
+                                    batch.num_rows for q in raw_batches for batch in q
                                 )
                                 ws[2] = sum(len(q) for q in cooked)
                                 ws[3] = sum(local_consumed)

@@ -1323,3 +1323,156 @@ def test_transform_none_yields_dicts(lance_table):
     assert len(items) == NUM_ROWS
     assert all(isinstance(item, dict) for item in items)
     assert all("id" in item for item in items)
+
+
+def test_filter_limits_rows(tmp_path):
+    """A filter expression is applied to the permutation so only matching rows
+    are yielded.  IDs 0..59 pass ``id < 60``; the other 60 are excluded."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        filter="id < 60",
+    )
+    items = list(ds)
+
+    ids = [item["id"] for item in items]
+    assert sorted(ids) == list(range(60)), f"Expected ids 0-59, got {sorted(ids)}"
+
+
+def test_filter_too_few_rows_raises(tmp_path):
+    """A filter that leaves fewer rows than num_splits raises ValueError at
+    construction time because each split must have at least one row."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    with pytest.raises(ValueError, match="at least 1 row per split"):
+        StreamingDataset(
+            table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id < 0",
+        )
+
+
+def test_columns_limits_output_columns(tmp_path):
+    """Only the requested columns are present in each yielded row."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "data",
+        pa.table({"id": list(range(NUM_ROWS)), "val": list(range(NUM_ROWS))}),
+    )
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id"],
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(list(item.keys()) == ["id"] for item in items), (
+        "Expected only 'id' column in each row"
+    )
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS))
+
+
+def test_columns_invalid_column_raises(tmp_path):
+    """Requesting a column that does not exist raises an error at iteration time."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["nonexistent"],
+    )
+    with pytest.raises(ValueError):
+        list(ds)
+
+
+def test_shuffle_clump_size_yields_all_rows(lance_table):
+    """shuffle_clump_size still produces a complete epoch with no duplicates or
+    omissions — clumping affects I/O locality, not correctness."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        shuffle_clump_size=4,
+    )
+    items = list(ds)
+
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS)), (
+        "Expected every row exactly once with shuffle_clump_size set"
+    )
+
+
+def test_num_splits_defaults_to_world_size(lance_table):
+    """Omitting num_splits gives world_size splits (one per rank)."""
+    ds = StreamingDataset(
+        lance_table,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    assert ds._num_splits == 1  # world_size defaults to 1
+
+    ds_ws2 = StreamingDataset(
+        lance_table,
+        world_size=2,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    assert ds_ws2._num_splits == 2
+
+
+def test_shuffle_false_sequential_and_deterministic(lance_table):
+    """shuffle=False produces identical ordering across two fresh instances."""
+    ds1 = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ds2 = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    first = [item["id"] for item in ds1]
+    second = [item["id"] for item in ds2]
+    assert first == second, "shuffle=False must be deterministic"
+    assert sorted(first) == list(range(NUM_ROWS)), "All rows must be present"
+
+
+def test_shuffle_false_vs_true_differ(lance_table):
+    """shuffle=True and shuffle=False produce different orderings."""
+    ds_shuf = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=True,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds_seq = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+    )
+    shuffled = [item["id"] for item in ds_shuf]
+    sequential = [item["id"] for item in ds_seq]
+    assert shuffled != sequential, "Shuffled and sequential orderings should differ"
+
+
+def test_shuffle_seed_none_generates_stable_seed(lance_table):
+    """shuffle_seed=None resolves to a concrete integer at construction time.
+    A second dataset built with the same resolved seed must produce the same ordering."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=None,
+    )
+    assert isinstance(ds._shuffle_seed, int), (
+        "shuffle_seed=None must resolve to an integer"
+    )
+    first = [item["id"] for item in ds]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=ds._shuffle_seed,
+    )
+    second = [item["id"] for item in ds2]
+    assert first == second, "Same resolved seed must produce the same ordering"

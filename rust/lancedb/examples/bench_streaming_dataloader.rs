@@ -70,6 +70,7 @@ async fn make_permutation_table(base: &Table, num_splits: usize) -> Result<Table
             SplitStrategy::Random {
                 seed: Some(42),
                 sizes: SplitSizes::Fixed(num_splits as u64),
+                clump_size: None,
             },
             None,
         )
