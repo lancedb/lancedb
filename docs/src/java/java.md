@@ -249,6 +249,57 @@ try (BufferAllocator allocator = new RootAllocator();
 }
 ```
 
+### Creating an Empty Table
+
+To create an empty table, send an Arrow IPC stream that contains the table schema and no record batches.
+The schema in the IPC stream becomes the table schema, and rows can be inserted later.
+
+```java
+import org.lance.namespace.model.CreateTableRequest;
+import org.lance.namespace.model.CreateTableResponse;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.channels.Channels;
+import java.util.Arrays;
+
+Schema schema = new Schema(Arrays.asList(
+    new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+    new Field("name", FieldType.nullable(new ArrowType.Utf8()), null),
+    new Field("embedding",
+        FieldType.nullable(new ArrowType.FixedSizeList(128)),
+        Arrays.asList(new Field("item",
+            FieldType.nullable(new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE)),
+            null)))
+));
+
+byte[] emptyTableData;
+try (BufferAllocator allocator = new RootAllocator();
+     VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+    root.setRowCount(0);
+
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    try (ArrowStreamWriter writer = new ArrowStreamWriter(root, null, Channels.newChannel(out))) {
+        writer.start();
+        writer.end();
+    }
+    emptyTableData = out.toByteArray();
+}
+
+CreateTableRequest request = new CreateTableRequest();
+request.setId(Arrays.asList("my_namespace", "empty_table"));
+
+CreateTableResponse response = namespaceClient.createTable(request, emptyTableData);
+```
+
 ### Insert
 
 ```java
@@ -431,9 +482,88 @@ query.setVector(vector);
 byte[] result = namespaceClient.queryTable(query);
 ```
 
-### Reading Query Results
+## Indexing
 
-Query results are returned in Apache Arrow IPC file format. Here's how to read them:
+The Java SDK exposes the REST namespace index operations through the same `LanceNamespace` client.
+Index creation runs asynchronously, so use `listTableIndices` or `describeTableIndexStats` to check progress.
+
+### Creating a Vector Index
+
+```java
+import org.lance.namespace.model.CreateTableIndexRequest;
+import org.lance.namespace.model.CreateTableIndexResponse;
+
+CreateTableIndexRequest request = new CreateTableIndexRequest();
+request.setId(Arrays.asList("my_namespace", "my_table"));
+request.setColumn("embedding");
+request.setIndexType("IVF_PQ");
+request.setDistanceType("cosine");
+request.setName("embedding_idx");
+
+CreateTableIndexResponse response = namespaceClient.createTableIndex(request);
+System.out.println("Index transaction: " + response.getTransactionId());
+```
+
+### Creating a Scalar Index
+
+```java
+import org.lance.namespace.model.CreateTableIndexRequest;
+import org.lance.namespace.model.CreateTableScalarIndexResponse;
+
+CreateTableIndexRequest request = new CreateTableIndexRequest();
+request.setId(Arrays.asList("my_namespace", "my_table"));
+request.setColumn("category");
+request.setIndexType("BTREE");
+request.setName("category_idx");
+
+CreateTableScalarIndexResponse response = namespaceClient.createTableScalarIndex(request);
+System.out.println("Index transaction: " + response.getTransactionId());
+```
+
+### Creating a Full Text Search Index
+
+```java
+import org.lance.namespace.model.CreateTableIndexRequest;
+import org.lance.namespace.model.CreateTableScalarIndexResponse;
+
+CreateTableIndexRequest request = new CreateTableIndexRequest();
+request.setId(Arrays.asList("my_namespace", "my_table"));
+request.setColumn("text_column");
+request.setIndexType("FTS");
+request.setName("text_idx");
+request.setBaseTokenizer("simple");
+request.setLowerCase(true);
+request.setWithPosition(true);
+
+CreateTableScalarIndexResponse response = namespaceClient.createTableScalarIndex(request);
+System.out.println("Index transaction: " + response.getTransactionId());
+```
+
+### Listing Indexes
+
+```java
+import org.lance.namespace.model.IndexContent;
+import org.lance.namespace.model.ListTableIndicesRequest;
+import org.lance.namespace.model.ListTableIndicesResponse;
+
+ListTableIndicesRequest request = new ListTableIndicesRequest();
+request.setId(Arrays.asList("my_namespace", "my_table"));
+
+ListTableIndicesResponse response = namespaceClient.listTableIndices(request);
+for (IndexContent index : response.getIndexes()) {
+    System.out.println(index.getIndexName() + ": " + index.getStatus());
+}
+```
+
+!!! note
+    The current Java namespace API exposes index type, index name, distance type, and full text search tokenizer options.
+    IVF training parameters such as `num_partitions` are not exposed by `CreateTableIndexRequest` yet.
+    To make those configurable from Java, the namespace API must add those fields first.
+
+## Reading Query Results
+
+Query results are returned as bytes in Apache Arrow IPC file format. Put the byte-channel
+adapter behind a small helper so query code can work with `ArrowFileReader` directly:
 
 ```java
 import org.apache.arrow.vector.ipc.ArrowFileReader;
@@ -441,45 +571,50 @@ import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 
-// Helper class to read Arrow data from byte array
-class ByteArraySeekableByteChannel implements SeekableByteChannel {
-    private final byte[] data;
-    private long position = 0;
-    private boolean isOpen = true;
-
-    public ByteArraySeekableByteChannel(byte[] data) {
-        this.data = data;
+final class ArrowIpc {
+    static ArrowFileReader openFileReader(byte[] data, BufferAllocator allocator) throws IOException {
+        return new ArrowFileReader(new ByteArraySeekableByteChannel(data), allocator);
     }
 
-    @Override
-    public int read(ByteBuffer dst) {
-        int remaining = dst.remaining();
-        int available = (int) (data.length - position);
-        if (available <= 0) return -1;
-        int toRead = Math.min(remaining, available);
-        dst.put(data, (int) position, toRead);
-        position += toRead;
-        return toRead;
-    }
+    private static final class ByteArraySeekableByteChannel implements SeekableByteChannel {
+        private final byte[] data;
+        private long position = 0;
+        private boolean isOpen = true;
 
-    @Override public long position() { return position; }
-    @Override public SeekableByteChannel position(long newPosition) { position = newPosition; return this; }
-    @Override public long size() { return data.length; }
-    @Override public boolean isOpen() { return isOpen; }
-    @Override public void close() { isOpen = false; }
-    @Override public int write(ByteBuffer src) { throw new UnsupportedOperationException(); }
-    @Override public SeekableByteChannel truncate(long size) { throw new UnsupportedOperationException(); }
+        private ByteArraySeekableByteChannel(byte[] data) {
+            this.data = data;
+        }
+
+        @Override
+        public int read(ByteBuffer dst) {
+            int remaining = dst.remaining();
+            int available = (int) (data.length - position);
+            if (available <= 0) return -1;
+            int toRead = Math.min(remaining, available);
+            dst.put(data, (int) position, toRead);
+            position += toRead;
+            return toRead;
+        }
+
+        @Override public long position() { return position; }
+        @Override public SeekableByteChannel position(long newPosition) { position = newPosition; return this; }
+        @Override public long size() { return data.length; }
+        @Override public boolean isOpen() { return isOpen; }
+        @Override public void close() { isOpen = false; }
+        @Override public int write(ByteBuffer src) { throw new UnsupportedOperationException(); }
+        @Override public SeekableByteChannel truncate(long size) { throw new UnsupportedOperationException(); }
+    }
 }
 
 // Read query results
 byte[] queryResult = namespaceClient.queryTable(query);
 
 try (BufferAllocator allocator = new RootAllocator();
-     ArrowFileReader reader = new ArrowFileReader(
-         new ByteArraySeekableByteChannel(queryResult), allocator)) {
+     ArrowFileReader reader = ArrowIpc.openFileReader(queryResult, allocator)) {
 
     for (int i = 0; i < reader.getRecordBlocks().size(); i++) {
         reader.loadRecordBatch(reader.getRecordBlocks().get(i));
