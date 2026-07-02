@@ -1476,3 +1476,193 @@ def test_shuffle_seed_none_generates_stable_seed(lance_table):
     )
     second = [item["id"] for item in ds2]
     assert first == second, "Same resolved seed must produce the same ordering"
+
+
+# ---------------------------------------------------------------------------
+# Doc examples — each test mirrors the code snippet in index.mdx so that
+# broken doc examples are caught before they ship.
+# ---------------------------------------------------------------------------
+
+
+def test_doc_example_basic(tmp_path):
+    """doc: Basic Data loading — StreamingDataset with default params."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "some_table",
+        pa.table({"feature": [float(i) for i in range(24)], "label": ["cat"] * 24}),
+    )
+
+    ds = StreamingDataset(table, shuffle_seed=42)
+    samples = list(ds)
+
+    assert len(samples) == 24
+    assert all(isinstance(s, dict) for s in samples)
+    assert all("feature" in s and "label" in s for s in samples)
+
+
+def test_doc_example_prefetch_params(tmp_path):
+    """doc: Prefetching — read_batch_size and prefetch_batches still cover all rows."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        read_batch_size=8,
+        prefetch_batches=2,
+    )
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
+def test_doc_example_transform(tmp_path):
+    """doc: Transformation — normalize scales values into [0, 1]."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"value": list(range(NUM_ROWS))}))
+
+    def normalize(batch: pa.RecordBatch) -> list[dict]:
+        rows = batch.to_pylist()
+        for row in rows:
+            row["value"] = row["value"] / 255.0
+        return rows
+
+    ds = StreamingDataset(
+        table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, transform=normalize
+    )
+    samples = list(ds)
+
+    assert len(samples) == NUM_ROWS
+    assert all(0.0 <= s["value"] <= 1.0 for s in samples)
+
+
+def test_doc_example_observability(lance_table):
+    """doc: Observability — counters are zero before and positive after iteration."""
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+
+    assert ds.unscanned_rows == 0
+    assert ds.raw_queue_depth == 0
+    assert ds.prefetch_queue_depth == 0
+    assert ds.consumed_rows == 0
+    assert ds.bytes_loaded == 0
+    assert ds.fetch_time == 0.0
+    assert ds.transform_time == 0.0
+
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+    assert ds.fetch_time >= 0.0
+    assert ds.transform_time >= 0.0
+
+
+def test_doc_example_columns_and_filter(tmp_path):
+    """doc: Filtering data — columns + filter reduce both dimensions independently."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "id": list(range(NUM_ROWS)),
+                "value": list(range(NUM_ROWS)),
+                "category": ["train"] * 60 + ["val"] * 60,
+            }
+        ),
+    )
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id"],
+        filter="category = 'train'",
+    )
+    samples = list(ds)
+
+    assert all(list(s.keys()) == ["id"] for s in samples), "Only 'id' column expected"
+    assert len(samples) == 60, "Only train rows expected"
+    assert all(s["id"] < 60 for s in samples)
+
+
+def test_doc_example_epoch_shuffle(lance_table):
+    """doc: Shuffling rows — different epochs produce different orderings."""
+    ids_e0 = [s["id"] for s in StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=0
+    )]
+    ids_e1 = [s["id"] for s in StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=1
+    )]
+
+    assert sorted(ids_e0) == list(range(NUM_ROWS))
+    assert sorted(ids_e1) == list(range(NUM_ROWS))
+    assert ids_e0 != ids_e1, "Different epochs must produce different orderings"
+
+
+def test_doc_example_shuffle_false_eval(lance_table):
+    """doc: Shuffling rows — shuffle=False gives deterministic sequential order."""
+    ids_a = [s["id"] for s in StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle=False
+    )]
+    ids_b = [s["id"] for s in StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle=False
+    )]
+
+    assert ids_a == ids_b, "shuffle=False must produce identical orderings"
+    assert sorted(ids_a) == list(range(NUM_ROWS))
+
+
+def test_doc_example_shuffle_clump_size(lance_table):
+    """doc: Shuffling rows (Note) — shuffle_clump_size still covers every row."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        shuffle_clump_size=16,
+    )
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
+def test_doc_example_elastic_ddp(lance_table):
+    """doc: Data splits and elasticity — rank/world_size/num_splits covers all rows."""
+    # Use a highly composite num_splits that works across many world sizes
+    ELASTIC_SPLITS = 12  # works with world_size 1, 2, 3, 4, 6, 12
+
+    all_ids: set[int] = set()
+    for rank in range(4):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=ELASTIC_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            rank=rank,
+            world_size=4,
+        )
+        all_ids.update(s["id"] for s in ds)
+
+    assert all_ids == set(range(NUM_ROWS)), "All ranks together must cover every row"
+
+
+def test_doc_example_checkpoint(lance_table):
+    """doc: Checkpointing — state_dict/load_state_dict resumes without gaps or repeats."""
+    STEPS_BEFORE_CHECKPOINT = 4  # consume 4 full cycles then checkpoint
+
+    ds = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(STEPS_BEFORE_CHECKPOINT * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    remaining_original = [s["id"] for s in it]  # drain the rest
+
+    # Resume from checkpoint on a fresh dataset
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)
+    remaining_resumed = [s["id"] for s in ds_resumed]
+
+    assert remaining_original == remaining_resumed, (
+        "Resumed dataset must continue from exactly the same position"
+    )
+    assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
+        "Consumed + remaining must cover every row exactly once"
+    )
