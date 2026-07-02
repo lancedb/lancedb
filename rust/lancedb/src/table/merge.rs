@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
+use arrow_schema::Schema as ArrowSchema;
 use futures::future::Either;
 use futures::{FutureExt, TryFutureExt};
 use lance::dataset::{
@@ -250,6 +251,10 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
+    let target_schema = ArrowSchema::from(dataset.schema());
+    // The indexed merge path classifies matches from the leading target fields.
+    // Fall back to a full scan when the merge keys are not those fields.
+    let use_index = params.use_index && merge_keys_are_leading_fields(&target_schema, &params.on);
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -281,7 +286,7 @@ pub(crate) async fn execute_merge_insert(
     } else {
         builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
     }
-    builder.use_index(params.use_index);
+    builder.use_index(use_index);
 
     let future = if let Some(timeout) = params.timeout {
         let future = builder
@@ -309,6 +314,15 @@ pub(crate) async fn execute_merge_insert(
         num_deleted_rows: stats.num_deleted_rows,
         num_attempts: stats.num_attempts,
         num_rows: stats.num_inserted_rows + stats.num_updated_rows,
+    })
+}
+
+fn merge_keys_are_leading_fields(schema: &ArrowSchema, keys: &[String]) -> bool {
+    keys.iter().enumerate().all(|(idx, key)| {
+        schema
+            .fields()
+            .get(idx)
+            .is_some_and(|field| field.name() == key)
     })
 }
 
