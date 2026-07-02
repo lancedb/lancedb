@@ -74,6 +74,9 @@ class StreamingDataset(IterableDataset):
         Number of fixed splits to partition the table into.  Must be divisible
         by ``world_size``.  When used with DataLoader workers it must also be
         divisible by ``world_size * num_workers``.  Defaults to ``world_size``.
+        If the row count (after any ``filter``) is not evenly divisible by
+        ``num_splits``, the surplus rows — at most ``num_splits - 1`` per epoch
+        — are silently dropped to keep all splits the same length.
     shuffle:
         Whether to randomly assign rows to splits.  When ``True`` (the
         default) rows are shuffled using ``shuffle_seed`` and ``epoch``.
