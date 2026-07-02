@@ -22,6 +22,7 @@ use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
 use futures::future::try_join_all;
+use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
@@ -90,14 +91,17 @@ pub async fn create_plan(
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
 
-    // LSM read routing: when opted in, read through the MemWAL LSM scanner so
-    // in-flight `merge_insert` data (active/frozen memtables + flushed
-    // generations) is visible. Validation and dispatch live in `lsm`.
-    if query.base.use_lsm_read {
-        return lsm::create_lsm_plan(table, query).await;
+    let ds_ref = table.dataset.get().await?;
+
+    // MemWAL read routing: unless the caller disabled it, a table that carries a
+    // MemWAL write spec reads through the LSM scanner so in-flight `merge_insert`
+    // data (active/frozen memtables + flushed generations) is visible. Tables
+    // without a spec always read the base table. Validation and dispatch live in
+    // `lsm`.
+    if !query.base.disable_lsm && ds_ref.mem_wal_index_details().await?.is_some() {
+        return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
-    let ds_ref = table.dataset.get().await?;
     let schema = ds_ref.schema();
     let mut column = query.column.clone();
 

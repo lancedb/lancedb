@@ -30,6 +30,24 @@ Construct a MergeInsertBuilder. __Internal use only.__
 
 ## Methods
 
+### disableLsm()
+
+```ts
+disableLsm(): MergeInsertBuilder
+```
+
+Disable MemWAL routing for this merge, using the standard write path.
+
+By default, a `mergeInsert` on a table with an LSM write spec is routed
+through Lance's MemWAL shard writer, and a table without one uses the
+standard path. Call this to force the standard path even when a spec is set.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
+
+***
+
 ### execute()
 
 ```ts
@@ -69,31 +87,6 @@ the query optimizer chooses a suboptimal path.
 
 * **useIndex**: `boolean`
     Whether to use indices for the merge operation. Defaults to `true`.
-
-#### Returns
-
-[`MergeInsertBuilder`](MergeInsertBuilder.md)
-
-***
-
-### useLsmWrite()
-
-```ts
-useLsmWrite(useLsmWrite): MergeInsertBuilder
-```
-
-Controls whether the merge uses the MemWAL LSM write path.
-
-By default (unset), a `mergeInsert` on a table with an LSM write spec is
-routed through Lance's MemWAL shard writer, and a table without one uses
-the standard path. Pass `false` to force the standard path even when a
-spec is set. Pass `true` to require a spec — `mergeInsert` rejects if none
-is installed.
-
-#### Parameters
-
-* **useLsmWrite**: `boolean`
-    Whether to use the LSM write path.
 
 #### Returns
 

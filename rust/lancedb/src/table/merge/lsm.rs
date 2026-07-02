@@ -376,21 +376,14 @@ pub(crate) async fn lsm_dispatch_decision(
     table: &NativeTable,
     params: &MergeInsertBuilder,
 ) -> Result<LsmDispatch> {
-    // `Some(false)` is an explicit opt-out: use the standard path.
-    if params.use_lsm_write == Some(false) {
+    // Explicit opt-out: use the standard path regardless of any installed spec.
+    if params.disable_lsm {
         return Ok(LsmDispatch::Standard);
     }
 
     let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
-        // No LSM write spec installed. `Some(true)` explicitly asked for the
-        // LSM path, which is meaningless without a spec; `None` (the default)
-        // just falls back to the standard path.
-        if params.use_lsm_write == Some(true) {
-            return Err(Error::InvalidInput {
-                message: "merge_insert: use_lsm_write(true) requires an LSM write spec on the table; call set_lsm_write_spec first".to_string(),
-            });
-        }
+        // No LSM write spec installed: use the standard path.
         return Ok(LsmDispatch::Standard);
     };
 
@@ -417,7 +410,7 @@ pub(crate) async fn lsm_dispatch_decision(
 
     if !is_upsert_only(params) {
         return Err(Error::InvalidInput {
-            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_lsm_write(false) to use the standard merge_insert path".to_string(),
+            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call disable_lsm() to use the standard merge_insert path".to_string(),
         });
     }
 

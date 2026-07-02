@@ -146,8 +146,8 @@ impl Query {
     }
 
     #[napi]
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     #[napi]
@@ -353,8 +353,8 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     #[napi]
@@ -459,8 +459,8 @@ impl TakeQuery {
     }
 
     #[napi]
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     #[napi(catch_unwind)]

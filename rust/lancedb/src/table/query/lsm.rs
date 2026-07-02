@@ -3,18 +3,19 @@
 
 //! MemWAL LSM read path.
 //!
-//! When a query sets [`use_lsm_read`](crate::query::QueryBase::use_lsm_read) and
-//! the table has an LSM write spec installed (see [`set_lsm_write_spec`]), reads
-//! are routed through Lance's [`LsmScanner`] / LSM planners instead of the plain
-//! base-table scan. This makes data written via the LSM `merge_insert` path —
-//! which lives in the active/frozen in-memory memtables and the flushed (L0)
-//! generations until an external compaction merges it into the base table —
-//! visible to queries, deduplicated by primary key (newest generation wins).
+//! When a table has an LSM write spec installed (see [`set_lsm_write_spec`]),
+//! reads are routed through Lance's [`LsmScanner`] / LSM planners instead of the
+//! plain base-table scan unless the query sets
+//! [`disable_lsm`](crate::query::QueryBase::disable_lsm). This makes data written
+//! via the LSM `merge_insert` path — which lives in the active/frozen in-memory
+//! memtables and the flushed (L0) generations until an external compaction merges
+//! it into the base table — visible to queries, deduplicated by primary key
+//! (newest generation wins).
 //!
 //! Three query shapes are supported, mirroring the standard scan: a plain scan
 //! (filter / projection / limit), full-text search, and vector (ANN) search.
-//! Shapes the LSM path cannot honor are rejected with [`Error::NotSupported`]
-//! since the caller opted in explicitly.
+//! Shapes the LSM path cannot honor are rejected with [`Error::NotSupported`];
+//! the caller must set `disable_lsm` to run those against the base table.
 //!
 //! [`set_lsm_write_spec`]: crate::Table::set_lsm_write_spec
 
@@ -43,21 +44,17 @@ use crate::error::{Error, Result};
 use crate::query::{DEFAULT_TOP_K, QueryFilter, Select, VectorQueryRequest};
 use crate::utils::default_vector_column;
 
-/// Build the LSM read plan for a query that requested `use_lsm_read`.
+/// Build the LSM read plan for a MemWAL-routed query.
 ///
-/// Errors with [`Error::InvalidInput`] if the table has no LSM write spec, and
-/// with [`Error::NotSupported`] for query shapes the LSM scanner cannot honor.
+/// The caller guarantees `ds_ref` carries a MemWAL write spec (routing is decided
+/// in [`create_plan`](super::create_plan)). Errors with [`Error::NotSupported`]
+/// for query shapes the LSM scanner cannot honor — the caller must set
+/// `disable_lsm` to run those against the base table.
 pub(super) async fn create_lsm_plan(
     table: &NativeTable,
+    ds_ref: Arc<Dataset>,
     query: VectorQueryRequest,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let ds_ref = table.dataset.get().await?;
-    if ds_ref.mem_wal_index_details().await?.is_none() {
-        return Err(Error::InvalidInput {
-            message: "use_lsm_read requires an LSM write spec on the table; call set_lsm_write_spec first, or unset use_lsm_read".to_string(),
-        });
-    }
-
     reject_unsupported(&query)?;
 
     let pk_columns = pk_columns(&ds_ref)?;
@@ -93,14 +90,17 @@ pub(super) async fn create_lsm_plan(
     .await
 }
 
-/// Reject query shapes the LSM read path does not implement. Because the caller
-/// explicitly opted into `use_lsm_read`, an unsupported shape is a hard error
-/// rather than a silent fallback to the (stale) base-only scan.
+/// Reject query shapes the LSM read path does not implement. On a MemWAL table
+/// reads route through the LSM scanner by default, so an unsupported shape is a
+/// hard error rather than a silent fallback to the base-only scan — which would
+/// exclude un-compacted MemWAL data. The caller must set `disable_lsm` to run
+/// these against the base table, accepting that the results omit un-compacted
+/// MemWAL data.
 fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     let unsupported = |what: &str| {
         Err(Error::NotSupported {
             message: format!(
-                "use_lsm_read does not support {what}; unset use_lsm_read to use the base-only scan"
+                "the MemWAL LSM scanner does not support {what}; set disable_lsm to read the base table only (results will exclude un-compacted MemWAL data)"
             ),
         })
     };
@@ -139,8 +139,9 @@ fn pk_columns(dataset: &Dataset) -> Result<Vec<String>> {
         .collect();
     if pk.is_empty() {
         return Err(Error::Runtime {
-            message: "use_lsm_read: table has a MemWAL index but no unenforced primary key"
-                .to_string(),
+            message:
+                "the MemWAL LSM scanner requires an unenforced primary key, but the table has none"
+                    .to_string(),
         });
     }
     Ok(pk)
@@ -248,7 +249,7 @@ fn base_scanner(
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),
             QueryFilter::Substrait(_) => {
                 return Err(Error::NotSupported {
-                    message: "use_lsm_read does not support Substrait filters".to_string(),
+                    message: "the MemWAL LSM scanner does not support Substrait filters; set disable_lsm to read the base table only".to_string(),
                 });
             }
         };
@@ -294,14 +295,15 @@ async fn fts_plan(
     let columns: Vec<String> = fts.columns().into_iter().collect();
     if columns.len() > 1 {
         return Err(Error::NotSupported {
-            message: "use_lsm_read full-text search supports a single column".to_string(),
+            message: "the MemWAL LSM scanner full-text search supports a single column".to_string(),
         });
     }
     let column = columns
         .into_iter()
         .next()
         .ok_or_else(|| Error::NotSupported {
-            message: "use_lsm_read full-text search requires an explicit FTS column".to_string(),
+            message: "the MemWAL LSM scanner full-text search requires an explicit FTS column"
+                .to_string(),
         })?;
     let scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?;
     let k = limit.unwrap_or(DEFAULT_TOP_K) + offset.unwrap_or(0);
@@ -421,7 +423,7 @@ fn to_fixed_size_list(
     let dim = query_vector.len() as i32;
     if is_binary {
         return Err(Error::NotSupported {
-            message: "use_lsm_read binary (uint8) vector search is not supported".to_string(),
+            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set disable_lsm to read the base table only".to_string(),
         });
     }
     let values = query_vector

@@ -102,13 +102,13 @@ def test_lsm_merge_insert_identity(tmp_path):
     assert result.num_rows == 2
 
 
-def test_lsm_merge_insert_use_lsm_write_false(tmp_path):
+def test_lsm_merge_insert_disable_lsm(tmp_path):
     table = _bucket_table(tmp_path)  # rows id = 1, 2, 3
-    # use_lsm_write(False) opts out: the standard path runs and commits.
+    # disable_lsm() opts out: the standard path runs and commits even with a spec.
     result = (
         table.merge_insert("id")
         .when_not_matched_insert_all()
-        .use_lsm_write(False)
+        .disable_lsm()
         .execute(_reader([3, 4, 5]))
     )
     assert result.num_inserted_rows == 2
@@ -127,19 +127,20 @@ def test_lsm_merge_insert_validate_single_shard_off(tmp_path):
     assert result.num_rows == 3
 
 
-def test_lsm_merge_insert_use_lsm_write_true_requires_spec(tmp_path):
+def test_lsm_merge_insert_no_spec_uses_standard_path(tmp_path):
     # A table with a primary key but no LSM write spec installed.
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    with pytest.raises(Exception, match="use_lsm_write"):
-        (
-            table.merge_insert("id")
-            .when_matched_update_all()
-            .when_not_matched_insert_all()
-            .use_lsm_write(True)
-            .execute(_reader([4]))
-        )
+    # With no spec, a default merge_insert uses the standard path and commits.
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(_reader([3, 4, 5]))
+    )
+    assert result.num_inserted_rows == 2
+    assert table.count_rows() == 5
 
 
 def test_lsm_merge_insert_rejects_on_not_primary_key(tmp_path):
@@ -214,13 +215,13 @@ def test_lsm_read_sees_active_memtable(tmp_path):
 
     _lsm_upsert(table, [4, 5])  # active memtable only, not committed to base
 
-    # Base-only read does not see the in-flight rows.
-    base_only = table.search().to_arrow()
-    assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
-
-    # use_lsm_read sees base ∪ active memtable.
-    lsm = table.search().use_lsm_read().to_arrow()
+    # Default read auto-routes through the LSM scanner: base ∪ active memtable.
+    lsm = table.search().to_arrow()
     assert sorted(lsm["id"].to_pylist()) == [1, 2, 3, 4, 5]
+
+    # disable_lsm() bypasses the MemWAL and reads the base table only.
+    base_only = table.search().disable_lsm().to_arrow()
+    assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
 
 
 def test_lsm_read_dedup_newest_wins(tmp_path):
@@ -231,19 +232,41 @@ def test_lsm_read_dedup_newest_wins(tmp_path):
 
     _lsm_upsert(table, [2, 3, 4])  # ids 2,3,4 -> values 0,1,2
 
-    lsm = table.search().use_lsm_read().to_arrow().sort_by("id")
+    lsm = table.search().to_arrow().sort_by("id")
     assert lsm["id"].to_pylist() == [1, 2, 3, 4]
     # id 1 from base (value 0); 2,3,4 from memtable (values 0,1,2).
     assert lsm["value"].to_pylist() == [0, 0, 1, 2]
 
 
-def test_lsm_read_without_spec_errors(tmp_path):
+def test_lsm_read_without_spec_reads_base(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")  # no LSM write spec
 
+    # No spec: default read and disable_lsm both read the base table, no error.
+    assert sorted(table.search().to_arrow()["id"].to_pylist()) == [1, 2, 3]
+    assert sorted(table.search().disable_lsm().to_arrow()["id"].to_pylist()) == [
+        1,
+        2,
+        3,
+    ]
+
+
+def test_lsm_read_unsupported_shape_errors_without_disable_lsm(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table = db.create_table("t", _reader([1, 2, 3]))
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    _lsm_upsert(table, [4])
+
+    # with_row_id is unsupported by the LSM scanner; on a MemWAL table the default
+    # (auto-routed) read hard-errors instead of silently reading a stale base.
     with pytest.raises(Exception):
-        table.search().use_lsm_read().to_arrow()
+        table.search().with_row_id(True).to_arrow()
+
+    # disable_lsm() is the escape hatch: it reads the base table only.
+    base = table.search().with_row_id(True).disable_lsm().to_arrow()
+    assert sorted(base["id"].to_pylist()) == [1, 2, 3]
 
 
 @pytest.mark.asyncio
@@ -260,5 +283,5 @@ async def test_async_lsm_read(tmp_path):
     )
     await builder.execute(_reader([4, 5]))
 
-    arrow = await table.query().use_lsm_read().to_arrow()
+    arrow = await table.query().to_arrow()
     assert sorted(arrow["id"].to_pylist()) == [1, 2, 3, 4, 5]

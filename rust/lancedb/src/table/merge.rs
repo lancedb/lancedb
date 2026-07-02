@@ -67,7 +67,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
-    pub(crate) use_lsm_write: Option<bool>,
+    pub(crate) disable_lsm: bool,
     pub(crate) validate_single_shard: bool,
 }
 
@@ -83,7 +83,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
-            use_lsm_write: None,
+            disable_lsm: false,
             validate_single_shard: true,
         }
     }
@@ -164,16 +164,15 @@ impl MergeInsertBuilder {
         self
     }
 
-    /// Controls whether `merge_insert` uses the MemWAL LSM write path.
+    /// Disable MemWAL routing for this `merge_insert`, using the standard write
+    /// path.
     ///
-    /// By default (unset), a `merge_insert` on a table with an
-    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through
-    /// Lance's MemWAL shard writer, and a table without one uses the standard
-    /// path. Calling this with `false` forces the standard path even when a
-    /// spec is set. Calling it with `true` requires a spec — `merge_insert`
-    /// errors if none is installed.
-    pub fn use_lsm_write(&mut self, use_lsm_write: bool) -> &mut Self {
-        self.use_lsm_write = Some(use_lsm_write);
+    /// By default, a `merge_insert` on a table with an
+    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through Lance's
+    /// MemWAL shard writer; a table without one uses the standard path. Call this
+    /// to force the standard path even when a spec is set.
+    pub fn disable_lsm(&mut self) -> &mut Self {
+        self.disable_lsm = true;
         self
     }
 
@@ -557,7 +556,7 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_write_false_falls_back() {
+    async fn lsm_merge_insert_disable_lsm_falls_back() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
@@ -565,9 +564,10 @@ mod lsm_tests {
             .await
             .unwrap();
 
-        // use_lsm_write(false) opts out: the standard path runs and commits.
+        // disable_lsm() opts out: the standard path runs and commits even though
+        // a spec is installed.
         let mut builder = table.merge_insert(&["id"]);
-        builder.when_not_matched_insert_all().use_lsm_write(false);
+        builder.when_not_matched_insert_all().disable_lsm();
         let result = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -685,18 +685,23 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_write_true_requires_spec() {
+    async fn lsm_merge_insert_no_spec_uses_standard_path() {
         let dir = tempdir().unwrap();
         // id_value_table sets a primary key but no LSM write spec.
         let table = id_value_table(&dir).await;
 
+        // Without a spec, a default merge_insert (disable_lsm unset) simply uses
+        // the standard path and commits — no opt-out required, no error.
         let mut builder = table.merge_insert(&["id"]);
         builder
             .when_matched_update_all(None)
-            .when_not_matched_insert_all()
-            .use_lsm_write(true);
-        let err = builder.execute(id_value_reader(vec![4])).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap();
+        assert_eq!(result.num_inserted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
     }
 
     #[tokio::test]
@@ -802,20 +807,20 @@ mod lsm_tests {
         // Insert ids 4,5 into the active memtable (not committed to base).
         lsm_upsert(&table, vec![4, 5]).await;
 
-        // Base-only read does not see the in-flight rows.
-        let base_only = table.query().execute().await.unwrap();
-        let rows = collect_id_value(base_only).await;
-        assert_eq!(
-            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
-
-        // LSM read sees base ∪ active memtable.
-        let lsm = table.query().use_lsm_read().execute().await.unwrap();
+        // Default read auto-routes through the LSM scanner: base ∪ active memtable.
+        let lsm = table.query().execute().await.unwrap();
         let rows = collect_id_value(lsm).await;
         assert_eq!(
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 5]
+        );
+
+        // disable_lsm() bypasses the MemWAL and reads the base table only.
+        let base_only = table.query().disable_lsm().execute().await.unwrap();
+        let rows = collect_id_value(base_only).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
         );
     }
 
@@ -831,7 +836,7 @@ mod lsm_tests {
         // Upsert ids 2,3,4 with values 0,1,2. id 2 and 3 shadow the base rows.
         lsm_upsert(&table, vec![2, 3, 4]).await;
 
-        let lsm = table.query().use_lsm_read().execute().await.unwrap();
+        let lsm = table.query().execute().await.unwrap();
         let rows = collect_id_value(lsm).await;
         // id 1 from base (value 0); ids 2,3,4 from memtable (values 0,1,2).
         assert_eq!(rows, vec![(1, 0), (2, 0), (3, 1), (4, 2)]);
@@ -847,13 +852,7 @@ mod lsm_tests {
             .unwrap();
         lsm_upsert(&table, vec![2, 3, 4]).await; // id 2 -> value 0 (shadows base)
 
-        let lsm = table
-            .query()
-            .use_lsm_read()
-            .only_if("id = 2")
-            .execute()
-            .await
-            .unwrap();
+        let lsm = table.query().only_if("id = 2").execute().await.unwrap();
         let rows = collect_id_value(lsm).await;
         assert_eq!(rows, vec![(2, 0)]);
     }
@@ -873,7 +872,7 @@ mod lsm_tests {
         table.close_lsm_writers().await.unwrap();
         lsm_upsert(&table, vec![11]).await;
 
-        let lsm = table.query().use_lsm_read().execute().await.unwrap();
+        let lsm = table.query().execute().await.unwrap();
         let rows = collect_id_value(lsm).await;
         let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
         // Base 1,2,3 + flushed/active shards for 10 and 11.
@@ -894,7 +893,7 @@ mod lsm_tests {
         // manifest snapshot.
         table.close_lsm_writers().await.unwrap();
 
-        let lsm = table.query().use_lsm_read().execute().await.unwrap();
+        let lsm = table.query().execute().await.unwrap();
         let ids: Vec<i64> = collect_id_value(lsm)
             .await
             .iter()
@@ -904,18 +903,58 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_read_without_spec_errors() {
+    async fn lsm_read_without_spec_reads_base() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // no LSM write spec
 
+        // With no spec installed there is nothing to route: the default read and
+        // an explicit disable_lsm() both read the base table without error.
+        for query in [table.query(), table.query().disable_lsm()] {
+            let rows = collect_id_value(query.execute().await.unwrap()).await;
+            assert_eq!(
+                rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lsm_read_unsupported_shape_errors_without_disable_lsm() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        // `with_row_id` is a shape the LSM scanner cannot honor. On a MemWAL
+        // table the default (auto-routed) read hard-errors rather than silently
+        // reading a stale base-only result that would exclude un-compacted row 4.
         let err = table
             .query()
-            .use_lsm_read()
+            .with_row_id()
             .execute()
             .await
             .err()
-            .expect("use_lsm_read without a spec must error");
-        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            .expect("unsupported shape on a MemWAL table must error");
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+
+        // disable_lsm() is the escape hatch: it reads the base table only.
+        let rows = collect_id_value(
+            table
+                .query()
+                .with_row_id()
+                .disable_lsm()
+                .execute()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     /// A reader of `[id: Int64, text: Utf8]` rows.
@@ -981,7 +1020,7 @@ mod lsm_tests {
             let q = FullTextSearchQuery::new(term.to_string())
                 .with_column("text".to_string())
                 .unwrap();
-            table.query().use_lsm_read().full_text_search(q)
+            table.query().full_text_search(q)
         };
 
         // "zebra" lives only in the active memtable; LSM read finds it.
@@ -1071,12 +1110,12 @@ mod lsm_tests {
         ));
         builder.execute(insert_reader).await.unwrap();
 
-        // KNN near [1000; DIM] with use_lsm_read must surface the memtable row.
+        // KNN near [1000; DIM]: the default (auto-routed) read surfaces the
+        // memtable row.
         let stream = table
             .query()
             .nearest_to(&[1000.0_f32; 8])
             .unwrap()
-            .use_lsm_read()
             .limit(1)
             .execute()
             .await

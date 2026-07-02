@@ -274,7 +274,7 @@ pub struct PyQueryRequest {
     pub select: PySelect,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
-    pub use_lsm_read: Option<bool>,
+    pub disable_lsm: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub minimum_nprobes: Option<usize>,
@@ -305,7 +305,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
-                use_lsm_read: Some(query_request.use_lsm_read),
+                disable_lsm: Some(query_request.disable_lsm),
                 column: None,
                 query_vector: None,
                 minimum_nprobes: None,
@@ -330,7 +330,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
-                use_lsm_read: Some(vector_query.base.use_lsm_read),
+                disable_lsm: Some(vector_query.base.disable_lsm),
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
                 minimum_nprobes: Some(vector_query.minimum_nprobes),
@@ -457,8 +457,8 @@ impl Query {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     pub fn with_row_id(&mut self) {
@@ -722,8 +722,8 @@ impl FTSQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     pub fn with_row_id(&mut self) {
@@ -868,8 +868,8 @@ impl VectorQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm_read(&mut self) {
-        self.inner = self.inner.clone().use_lsm_read();
+    pub fn disable_lsm(&mut self) {
+        self.inner = self.inner.clone().disable_lsm();
     }
 
     pub fn with_row_id(&mut self) {
@@ -1059,6 +1059,11 @@ impl HybridQuery {
     pub fn postfilter(&mut self) {
         self.inner_vec.postfilter();
         self.inner_fts.postfilter();
+    }
+
+    pub fn disable_lsm(&mut self) {
+        self.inner_vec.disable_lsm();
+        self.inner_fts.disable_lsm();
     }
 
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {

@@ -2677,14 +2677,14 @@ describe("LSM merge insert", () => {
     await table.closeLsmWriters();
   });
 
-  it("falls back to the standard path with useLsmWrite(false)", async () => {
+  it("falls back to the standard path with disableLsm()", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
     const res = await table
       .mergeInsert("id")
       .whenNotMatchedInsertAll()
-      .useLsmWrite(false)
+      .disableLsm()
       .execute([
         { id: "b", value: 9 },
         { id: "e", value: 5 },
@@ -2719,7 +2719,7 @@ describe("LSM merge insert", () => {
     ).rejects.toThrow();
   });
 
-  it("useLsmRead surfaces in-flight memtable rows", async () => {
+  it("auto-routes reads through the MemWAL scanner", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn); // base ids "a", "b"
 
@@ -2729,21 +2729,23 @@ describe("LSM merge insert", () => {
       .whenNotMatchedInsertAll()
       .execute([{ id: "c", value: 3 }]);
 
-    // Base-only read does not see the uncommitted row.
-    const baseOnly = await table.query().toArray();
-    expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
-
-    // useLsmRead includes the active memtable row.
-    const lsm = await table.query().useLsmRead().toArray();
+    // Default read auto-routes and includes the active memtable row.
+    const lsm = await table.query().toArray();
     expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
+
+    // disableLsm() bypasses the MemWAL and reads the base table only.
+    const baseOnly = await table.query().disableLsm().toArray();
+    expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
   });
 
-  it("useLsmRead errors without an LSM spec", async () => {
+  it("reads the base table when no LSM spec is installed", async () => {
     const conn = await connect(tmpDir.name);
     const table = await conn.createEmptyTable(
       "plain",
       new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
     );
-    await expect(table.query().useLsmRead().toArray()).rejects.toThrow();
+    // No spec: default read and disableLsm both succeed against the base table.
+    await expect(table.query().toArray()).resolves.toBeDefined();
+    await expect(table.query().disableLsm().toArray()).resolves.toBeDefined();
   });
 });
