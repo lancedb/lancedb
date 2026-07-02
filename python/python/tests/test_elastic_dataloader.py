@@ -101,7 +101,10 @@ def lance_table(tmp_path):
 
 @pytest.fixture
 def lance_table_large(tmp_path):
-    """A larger table (LARGE_NUM_ROWS rows) for tests with global_batch_size > num_splits."""
+    """A larger table for tests where global_batch_size > num_splits.
+
+    Uses LARGE_NUM_ROWS rows.
+    """
     db = lancedb.connect(tmp_path)
     return db.create_table("data", pa.table({"id": list(range(LARGE_NUM_ROWS))}))
 
@@ -165,7 +168,8 @@ def _collect_global_batches(
         f"world_size={world_size} does not divide num_splits={num_splits}"
     )
     assert global_batch_size % num_splits == 0, (
-        f"global_batch_size={global_batch_size} is not a multiple of num_splits={num_splits}"
+        f"global_batch_size={global_batch_size} is not a multiple of "
+        f"num_splits={num_splits}"
     )
     micro = global_batch_size // world_size  # samples per rank per global step
 
@@ -182,17 +186,18 @@ def _collect_global_batches(
     ]
     iters = [iter(ds) for ds in datasets]
 
+    _STOP = object()
     global_batches: list[frozenset[int]] = []
     while True:
         step_samples: set[int] = set()
         exhausted = 0
         for it in iters:
             for _ in range(micro):
-                try:
-                    step_samples.add(next(it)["id"])
-                except StopIteration:
+                val = next(it, _STOP)
+                if val is _STOP:
                     exhausted += 1
                     break
+                step_samples.add(val["id"])
         if exhausted == len(iters):
             # All iterators exhausted at the same step — end of epoch.
             break
@@ -284,17 +289,18 @@ def _resume_and_collect(
         ds.load_state_dict(checkpoint)
 
     iters = [iter(ds) for ds in datasets]
+    _STOP2 = object()
     remaining: list[frozenset[int]] = []
     while True:
         step_samples: set[int] = set()
         exhausted = 0
         for it in iters:
             for _ in range(micro):
-                try:
-                    step_samples.add(next(it)["id"])
-                except StopIteration:
+                val = next(it, _STOP2)
+                if val is _STOP2:
                     exhausted += 1
                     break
+                step_samples.add(val["id"])
         if exhausted == len(iters):
             break
         assert exhausted == 0
@@ -661,7 +667,8 @@ def test_resumability_mismatched_shuffle_seed_raises(lance_table):
 
 @pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
 def test_large_batch_elastic_det_full_coverage(lance_table_large, world_size):
-    """Every sample is seen exactly once per epoch when global_batch_size > num_splits."""
+    """Every sample is seen exactly once per epoch when global_batch_size > num_splits.
+    """
     batches = _collect_global_batches(
         lance_table_large,
         world_size,
@@ -922,7 +929,8 @@ def test_multi_worker_full_coverage(lance_table, world_size, num_workers):
 
 @pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
 def test_multi_worker_correct_step_count(lance_table, world_size, num_workers):
-    """Number of global steps is NUM_ROWS // GLOBAL_BATCH_SIZE regardless of topology."""
+    """Number of global steps is NUM_ROWS // GLOBAL_BATCH_SIZE regardless of topology.
+    """
     batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
     assert len(batches) == STEPS_PER_EPOCH, (
         f"world_size={world_size} num_workers={num_workers}: "
@@ -983,7 +991,8 @@ def test_multi_worker_same_global_batches_as_single_worker(
 
 
 def test_multi_worker_elastic_det_across_worker_counts(lance_table):
-    """Global batches are the same for every compatible (world_size, num_workers) pair."""
+    """Global batches are the same for every compatible (world_size, num_workers) pair.
+    """
     reference = _collect_global_batches(lance_table, world_size=1)
     for world_size, num_workers in MULTI_WORKER_TOPOLOGIES:
         batches = _collect_global_batches_multi_worker(
@@ -1029,16 +1038,17 @@ def test_multi_worker_resumability_same_topology(lance_table):
             datasets[(rank, worker_id)] = ds
             iters[(rank, worker_id)] = iter(ds)
 
+    _STOP3 = object()
     while True:
         batch: set[int] = set()
         exhausted = 0
         for it in iters.values():
             for _ in range(samples_per_worker_per_step):
-                try:
-                    batch.add(next(it)["id"])
-                except StopIteration:
+                val = next(it, _STOP3)
+                if val is _STOP3:
                     exhausted += 1
                     break
+                batch.add(val["id"])
         if exhausted == len(iters):
             break
         assert exhausted == 0
@@ -1082,17 +1092,18 @@ def test_multi_worker_resumability_worker_count_change(lance_table):
         ds.load_state_dict(checkpoint)
         iters[worker_id] = iter(ds)
 
+    _STOP4 = object()
     remaining: list[frozenset[int]] = []
     while True:
         batch: set[int] = set()
         exhausted = 0
         for it in iters.values():
             for _ in range(samples_per_worker_per_step):
-                try:
-                    batch.add(next(it)["id"])
-                except StopIteration:
+                val = next(it, _STOP4)
+                if val is _STOP4:
                     exhausted += 1
                     break
+                batch.add(val["id"])
         if exhausted == len(iters):
             break
         assert exhausted == 0
@@ -1269,7 +1280,8 @@ def test_bytes_loaded_increases_after_iteration(lance_table):
 
 
 def test_bytes_loaded_measured_before_transform(lance_table):
-    """bytes_loaded reflects raw Arrow size even when the transform discards all data."""
+    """bytes_loaded reflects raw Arrow size even when the transform discards all data.
+    """
     import pyarrow as pa
 
     # This transform throws away every value.  If bytes_loaded were measured
@@ -1458,7 +1470,9 @@ def test_shuffle_false_vs_true_differ(lance_table):
 
 def test_shuffle_seed_none_generates_stable_seed(lance_table):
     """shuffle_seed=None resolves to a concrete integer at construction time.
-    A second dataset built with the same resolved seed must produce the same ordering."""
+
+    A second dataset built with the same resolved seed must produce the same ordering.
+    """
     ds = StreamingDataset(
         lance_table,
         num_splits=NUM_SPLITS,
@@ -1648,7 +1662,8 @@ def test_doc_example_elastic_ddp(lance_table):
 
 
 def test_doc_example_checkpoint(lance_table):
-    """doc: Checkpointing — state_dict/load_state_dict resumes without gaps or repeats."""
+    """doc: Checkpointing — state_dict/load_state_dict resumes without gaps or repeats.
+    """
     STEPS_BEFORE_CHECKPOINT = 4  # consume 4 full cycles then checkpoint
 
     ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
