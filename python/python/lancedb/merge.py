@@ -34,7 +34,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_condition = None
         self._timeout = None
         self._use_index = True
-        self._disable_lsm = False
+        self._use_lsm = None
         self._validate_single_shard = None
 
     def when_matched_update_all(
@@ -98,16 +98,22 @@ class LanceMergeInsertBuilder(object):
         self._use_index = use_index
         return self
 
-    def disable_lsm(self) -> LanceMergeInsertBuilder:
+    def use_lsm(self, enable: bool) -> LanceMergeInsertBuilder:
         """
-        Disable MemWAL routing for this merge, using the standard write path.
+        Control MemWAL routing for this merge.
 
-        By default, a `merge_insert` on a table with an LSM write spec is routed
-        through Lance's MemWAL shard writer, and a table without one uses the
-        standard path. Call this to force the standard path even when a spec is
-        set.
+        By default (unset), a `merge_insert` on a table with an LSM write spec is
+        routed through Lance's MemWAL shard writer, and a table without one uses
+        the standard path.
+
+        Parameters
+        ----------
+        enable: bool
+            ``True`` forces MemWAL routing and errors if the table has no LSM
+            write spec. ``False`` forces the standard write path even when a spec
+            is set.
         """
-        self._disable_lsm = True
+        self._use_lsm = enable
         return self
 
     def validate_single_shard(

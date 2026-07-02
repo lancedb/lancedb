@@ -143,36 +143,6 @@ whose data type is a fixed-size-list of floats.
 
 ***
 
-### disableLsm()
-
-```ts
-disableLsm(): this
-```
-
-Disable MemWAL routing for this query, reading only the base table.
-
-By default, when the table carries a MemWAL write spec (see
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
-they also return data written via the `mergeInsert` LSM path that has not yet
-been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key. Call this to read the
-base table only. Tables without a spec always read the base table regardless.
-
-Note: the LSM scanner does not support every query shape (e.g. reranking,
-hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-`disableLsm` is set, because a base-only read would silently exclude
-un-compacted MemWAL data.
-
-#### Returns
-
-`this`
-
-#### Inherited from
-
-`StandardQueryBase.disableLsm`
-
-***
-
 ### distanceRange()
 
 ```ts
@@ -767,6 +737,42 @@ ArrowTable.
 #### Inherited from
 
 `StandardQueryBase.toArrow`
+
+***
+
+### useLsm()
+
+```ts
+useLsm(enable): this
+```
+
+Control MemWAL read routing for this query.
+
+By default (unset), when the table carries a MemWAL write spec (see
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+they also return data written via the `mergeInsert` LSM path that has not yet
+been compacted into the base table (the active/frozen in-memory memtables and
+the flushed generations), deduplicated by primary key; a table without a spec
+reads the base table.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `true` forces the LSM scanner and errors if the table has no
+    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    even when a spec is present.
+    Note: the LSM scanner does not support every query shape (e.g. reranking,
+    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
+    `useLsm(false)` is set, because a base-only read would silently exclude
+    un-compacted MemWAL data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.useLsm`
 
 ***
 

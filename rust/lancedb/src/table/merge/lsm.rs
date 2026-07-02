@@ -377,13 +377,21 @@ pub(crate) async fn lsm_dispatch_decision(
     params: &MergeInsertBuilder,
 ) -> Result<LsmDispatch> {
     // Explicit opt-out: use the standard path regardless of any installed spec.
-    if params.disable_lsm {
+    if params.use_lsm == Some(false) {
         return Ok(LsmDispatch::Standard);
     }
 
     let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
-        // No LSM write spec installed: use the standard path.
+        // No write spec installed. `use_lsm(true)` demanded MemWAL routing, so
+        // that is an error; otherwise fall back to the standard path.
+        if params.use_lsm == Some(true) {
+            return Err(Error::InvalidInput {
+                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
+                    install one with set_lsm_write_spec or leave use_lsm unset"
+                    .to_string(),
+            });
+        }
         return Ok(LsmDispatch::Standard);
     };
 
@@ -410,7 +418,7 @@ pub(crate) async fn lsm_dispatch_decision(
 
     if !is_upsert_only(params) {
         return Err(Error::InvalidInput {
-            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call disable_lsm() to use the standard merge_insert path".to_string(),
+            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_lsm(false) to use the standard merge_insert path".to_string(),
         });
     }
 

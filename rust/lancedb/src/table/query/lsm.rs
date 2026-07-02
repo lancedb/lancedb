@@ -6,16 +6,16 @@
 //! When a table has an LSM write spec installed (see [`set_lsm_write_spec`]),
 //! reads are routed through Lance's [`LsmScanner`] / LSM planners instead of the
 //! plain base-table scan unless the query sets
-//! [`disable_lsm`](crate::query::QueryBase::disable_lsm). This makes data written
-//! via the LSM `merge_insert` path — which lives in the active/frozen in-memory
-//! memtables and the flushed (L0) generations until an external compaction merges
-//! it into the base table — visible to queries, deduplicated by primary key
-//! (newest generation wins).
+//! [`use_lsm(false)`](crate::query::QueryBase::use_lsm). This makes data
+//! written via the LSM `merge_insert` path — which lives in the active/frozen
+//! in-memory memtables and the flushed (L0) generations until an external
+//! compaction merges it into the base table — visible to queries, deduplicated by
+//! primary key (newest generation wins).
 //!
 //! Three query shapes are supported, mirroring the standard scan: a plain scan
 //! (filter / projection / limit), full-text search, and vector (ANN) search.
 //! Shapes the LSM path cannot honor are rejected with [`Error::NotSupported`];
-//! the caller must set `disable_lsm` to run those against the base table.
+//! the caller must set `use_lsm(false)` to run those against the base table.
 //!
 //! [`set_lsm_write_spec`]: crate::Table::set_lsm_write_spec
 
@@ -49,7 +49,7 @@ use crate::utils::default_vector_column;
 /// The caller guarantees `ds_ref` carries a MemWAL write spec (routing is decided
 /// in [`create_plan`](super::create_plan)). Errors with [`Error::NotSupported`]
 /// for query shapes the LSM scanner cannot honor — the caller must set
-/// `disable_lsm` to run those against the base table.
+/// `use_lsm(false)` to run those against the base table.
 pub(super) async fn create_lsm_plan(
     table: &NativeTable,
     ds_ref: Arc<Dataset>,
@@ -93,14 +93,14 @@ pub(super) async fn create_lsm_plan(
 /// Reject query shapes the LSM read path does not implement. On a MemWAL table
 /// reads route through the LSM scanner by default, so an unsupported shape is a
 /// hard error rather than a silent fallback to the base-only scan — which would
-/// exclude un-compacted MemWAL data. The caller must set `disable_lsm` to run
-/// these against the base table, accepting that the results omit un-compacted
+/// exclude un-compacted MemWAL data. The caller must set `use_lsm(false)` to
+/// run these against the base table, accepting that the results omit un-compacted
 /// MemWAL data.
 fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     let unsupported = |what: &str| {
         Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner does not support {what}; set disable_lsm to read the base table only (results will exclude un-compacted MemWAL data)"
+                "the MemWAL LSM scanner does not support {what}; set use_lsm(false) to read the base table only (results will exclude un-compacted MemWAL data)"
             ),
         })
     };
@@ -249,7 +249,7 @@ fn base_scanner(
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),
             QueryFilter::Substrait(_) => {
                 return Err(Error::NotSupported {
-                    message: "the MemWAL LSM scanner does not support Substrait filters; set disable_lsm to read the base table only".to_string(),
+                    message: "the MemWAL LSM scanner does not support Substrait filters; set use_lsm(false) to read the base table only".to_string(),
                 });
             }
         };
@@ -423,7 +423,7 @@ fn to_fixed_size_list(
     let dim = query_vector.len() as i32;
     if is_binary {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set disable_lsm to read the base table only".to_string(),
+            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set use_lsm(false) to read the base table only".to_string(),
         });
     }
     let values = query_vector

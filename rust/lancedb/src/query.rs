@@ -518,21 +518,25 @@ pub trait QueryBase {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
 
-    /// Disable MemWAL routing for this query, reading only the base table.
+    /// Control MemWAL read routing for this query.
     ///
-    /// By default, when the table carries a MemWAL write spec (see
+    /// By default (unset), when the table carries a MemWAL write spec (see
     /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
-    /// memtables and flushed generations). Call this to bypass the MemWAL and
-    /// read the base table only. Tables without a spec always read the base
-    /// table regardless.
+    /// memtables and flushed generations); a table without a spec reads the base
+    /// table.
+    ///
+    /// - `use_lsm(true)` forces LSM routing and errors if the table has no
+    ///   MemWAL write spec.
+    /// - `use_lsm(false)` bypasses the MemWAL and reads the base table only,
+    ///   even when a spec is present.
     ///
     /// Note: the LSM scanner does not support every query shape (e.g. reranking,
     /// hybrid search, `order_by`). On a MemWAL table those shapes error unless
-    /// `disable_lsm` is set, because a base-only read would silently exclude
-    /// un-compacted MemWAL data.
-    fn disable_lsm(self) -> Self;
+    /// `use_lsm(false)` is set, because a base-only read would silently
+    /// exclude un-compacted MemWAL data.
+    fn use_lsm(self, enable: bool) -> Self;
 }
 
 pub trait HasQuery {
@@ -603,8 +607,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn disable_lsm(mut self) -> Self {
-        self.mut_query().disable_lsm = true;
+    fn use_lsm(mut self, enable: bool) -> Self {
+        self.mut_query().use_lsm = Some(enable);
         self
     }
 }
@@ -789,17 +793,19 @@ pub struct QueryRequest {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
 
-    /// Controls MemWAL read routing. When false (the default), a query against a
+    /// Controls MemWAL read routing. When unset (the default), a query against a
     /// table that carries a MemWAL write spec (see
     /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
     /// memtables and the flushed (L0) generations, deduplicated by primary key
-    /// against the base table (newest generation wins).
+    /// against the base table (newest generation wins); a table without a spec
+    /// reads the base table.
     ///
-    /// When true, the query reads only the base table, bypassing the MemWAL.
-    /// Tables without a MemWAL write spec always read the base table regardless.
-    pub disable_lsm: bool,
+    /// - `Some(true)` forces LSM routing and errors if the table has no MemWAL
+    ///   write spec.
+    /// - `Some(false)` reads only the base table, bypassing the MemWAL.
+    pub use_lsm: Option<bool>,
 }
 
 impl Default for QueryRequest {
@@ -817,7 +823,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
-            disable_lsm: false,
+            use_lsm: None,
         }
     }
 }

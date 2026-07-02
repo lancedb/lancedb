@@ -51,9 +51,9 @@ impl NativeMergeInsertBuilder {
     }
 
     #[napi]
-    pub fn disable_lsm(&self) -> Self {
+    pub fn use_lsm(&self, enable: bool) -> Self {
         let mut this = self.clone();
-        this.inner.disable_lsm();
+        this.inner.use_lsm(enable);
         this
     }
 

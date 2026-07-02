@@ -512,10 +512,10 @@ impl<S: HttpSend> RemoteTable<S> {
         params: &QueryRequest,
     ) -> Result<()> {
         body["prefilter"] = params.prefilter.into();
-        // Only forward disable_lsm when set; a server that predates it ignores
-        // the field and routes as it would by default.
-        if params.disable_lsm {
-            body["disable_lsm"] = serde_json::Value::Bool(true);
+        // Only forward use_lsm when explicitly set; a server that predates it
+        // ignores the field and routes as it would by default.
+        if let Some(use_lsm) = params.use_lsm {
+            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
         }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -2221,18 +2221,14 @@ struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
-    // Only serialize disable_lsm when it's true (the default is false); a server
-    // that predates it ignores the field and routes as it would by default.
-    #[serde(skip_serializing_if = "is_false")]
-    disable_lsm: bool,
+    // Only serialize use_lsm when explicitly set (Some); a server that predates
+    // it ignores the field and routes as it would by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_lsm: Option<bool>,
 }
 
 fn is_true(b: &bool) -> bool {
     *b
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
@@ -2259,7 +2255,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt: value.when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
-            disable_lsm: value.disable_lsm,
+            use_lsm: value.use_lsm,
         })
     }
 }

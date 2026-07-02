@@ -67,7 +67,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
-    pub(crate) disable_lsm: bool,
+    pub(crate) use_lsm: Option<bool>,
     pub(crate) validate_single_shard: bool,
 }
 
@@ -83,7 +83,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
-            disable_lsm: false,
+            use_lsm: None,
             validate_single_shard: true,
         }
     }
@@ -164,15 +164,17 @@ impl MergeInsertBuilder {
         self
     }
 
-    /// Disable MemWAL routing for this `merge_insert`, using the standard write
-    /// path.
+    /// Control MemWAL routing for this `merge_insert`.
     ///
-    /// By default, a `merge_insert` on a table with an
+    /// By default (unset), a `merge_insert` on a table with an
     /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through Lance's
-    /// MemWAL shard writer; a table without one uses the standard path. Call this
-    /// to force the standard path even when a spec is set.
-    pub fn disable_lsm(&mut self) -> &mut Self {
-        self.disable_lsm = true;
+    /// MemWAL shard writer; a table without one uses the standard path.
+    ///
+    /// - `use_lsm(true)` forces MemWAL routing and errors if the table has no
+    ///   LSM write spec.
+    /// - `use_lsm(false)` forces the standard write path even when a spec is set.
+    pub fn use_lsm(&mut self, enable: bool) -> &mut Self {
+        self.use_lsm = Some(enable);
         self
     }
 
@@ -556,7 +558,7 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_disable_lsm_falls_back() {
+    async fn lsm_merge_insert_use_lsm_false_falls_back() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
@@ -564,10 +566,10 @@ mod lsm_tests {
             .await
             .unwrap();
 
-        // disable_lsm() opts out: the standard path runs and commits even though
+        // use_lsm(false) opts out: the standard path runs and commits even though
         // a spec is installed.
         let mut builder = table.merge_insert(&["id"]);
-        builder.when_not_matched_insert_all().disable_lsm();
+        builder.when_not_matched_insert_all().use_lsm(false);
         let result = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -575,6 +577,25 @@ mod lsm_tests {
 
         assert_eq!(result.num_inserted_rows, 2);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_use_lsm_true_without_spec_errors() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+
+        // use_lsm(true) demands MemWAL routing; without a write spec it errors
+        // rather than silently falling back to the standard path.
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .use_lsm(true);
+        let err = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
     }
 
     #[tokio::test]
@@ -690,7 +711,7 @@ mod lsm_tests {
         // id_value_table sets a primary key but no LSM write spec.
         let table = id_value_table(&dir).await;
 
-        // Without a spec, a default merge_insert (disable_lsm unset) simply uses
+        // Without a spec, a default merge_insert (use_lsm unset) simply uses
         // the standard path and commits — no opt-out required, no error.
         let mut builder = table.merge_insert(&["id"]);
         builder
@@ -815,8 +836,8 @@ mod lsm_tests {
             vec![1, 2, 3, 4, 5]
         );
 
-        // disable_lsm() bypasses the MemWAL and reads the base table only.
-        let base_only = table.query().disable_lsm().execute().await.unwrap();
+        // use_lsm(false) bypasses the MemWAL and reads the base table only.
+        let base_only = table.query().use_lsm(false).execute().await.unwrap();
         let rows = collect_id_value(base_only).await;
         assert_eq!(
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -908,8 +929,8 @@ mod lsm_tests {
         let table = id_value_table(&dir).await; // no LSM write spec
 
         // With no spec installed there is nothing to route: the default read and
-        // an explicit disable_lsm() both read the base table without error.
-        for query in [table.query(), table.query().disable_lsm()] {
+        // an explicit use_lsm(false) both read the base table without error.
+        for query in [table.query(), table.query().use_lsm(false)] {
             let rows = collect_id_value(query.execute().await.unwrap()).await;
             assert_eq!(
                 rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -919,7 +940,7 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_read_unsupported_shape_errors_without_disable_lsm() {
+    async fn lsm_read_unsupported_shape_errors_without_use_lsm_false() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
@@ -940,12 +961,12 @@ mod lsm_tests {
             .expect("unsupported shape on a MemWAL table must error");
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
 
-        // disable_lsm() is the escape hatch: it reads the base table only.
+        // use_lsm(false) is the escape hatch: it reads the base table only.
         let rows = collect_id_value(
             table
                 .query()
                 .with_row_id()
-                .disable_lsm()
+                .use_lsm(false)
                 .execute()
                 .await
                 .unwrap(),

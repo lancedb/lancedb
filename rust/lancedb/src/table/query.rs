@@ -93,12 +93,25 @@ pub async fn create_plan(
 
     let ds_ref = table.dataset.get().await?;
 
-    // MemWAL read routing: unless the caller disabled it, a table that carries a
-    // MemWAL write spec reads through the LSM scanner so in-flight `merge_insert`
-    // data (active/frozen memtables + flushed generations) is visible. Tables
-    // without a spec always read the base table. Validation and dispatch live in
-    // `lsm`.
-    if !query.base.disable_lsm && ds_ref.mem_wal_index_details().await?.is_some() {
+    // MemWAL read routing driven by `use_lsm`:
+    //   * unset  — route through the LSM scanner iff the table carries a write spec
+    //   * Some(true)  — force LSM routing; error if the table has no write spec
+    //   * Some(false) — read the base table only, bypassing the MemWAL
+    // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
+    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
+    let use_lsm = match query.base.use_lsm {
+        Some(true) if !has_spec => {
+            return Err(Error::InvalidInput {
+                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
+                    install one with set_lsm_write_spec or leave use_lsm unset"
+                    .to_string(),
+            });
+        }
+        Some(enable) => enable,
+        None => has_spec,
+    };
+    if use_lsm {
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
