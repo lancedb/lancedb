@@ -1,0 +1,297 @@
+name: Codex Autofix CI
+
+on:
+  check_suite:
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: codex-autofix-${{ github.event.check_suite.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR and failing required checks
+        id: ctx
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.check_suite.head_sha }}
+          HEAD_BRANCH: ${{ github.event.check_suite.head_branch }}
+          MAX_ATTEMPTS: "3"
+        run: |
+          set -euo pipefail
+
+          echo "Repository: $REPO"
+          echo "head_branch: $HEAD_BRANCH"
+          echo "head_sha: $SHA"
+
+          if [[ "$HEAD_BRANCH" != codex/update-lance-* ]]; then
+            echo "Skip: branch '$HEAD_BRANCH' does not match codex/update-lance-*"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prs_json="$(gh api -H "Accept: application/vnd.github+json" "repos/$REPO/commits/$SHA/pulls")"
+          pr_json="$(echo "$prs_json" | jq -c '[.[] | select(.state=="open")] | .[0]')"
+          if [[ -z "$pr_json" || "$pr_json" == "null" ]]; then
+            echo "Skip: no open PR found for sha $SHA"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr_number="$(echo "$pr_json" | jq -r '.number')"
+          head_ref="$(echo "$pr_json" | jq -r '.head.ref')"
+          head_repo="$(echo "$pr_json" | jq -r '.head.repo.full_name')"
+          pr_head_sha="$(echo "$pr_json" | jq -r '.head.sha')"
+
+          if [[ "$head_repo" != "$REPO" ]]; then
+            echo "Skip: cross-repo PR ($head_repo != $REPO)"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$pr_head_sha" != "$SHA" ]]; then
+            echo "Skip: stale check_suite event (pr head sha $pr_head_sha != event sha $SHA)"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          checks_json="$(gh pr checks "$pr_number" --required --repo "$REPO" --json name,state,bucket,link,workflow)"
+          checks_rc=$?
+          set -e
+
+          if [[ "$checks_rc" -eq 8 ]]; then
+            echo "Skip: required checks still pending"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$checks_rc" -ne 0 ]]; then
+            echo "Skip: failed to query required checks (exit=$checks_rc)"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          fail_count="$(echo "$checks_json" | jq '[.[] | select(.bucket=="fail")] | length')"
+          if [[ "$fail_count" -eq 0 ]]; then
+            echo "Skip: no failing required checks"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          comments_json="$(gh api "repos/$REPO/issues/$pr_number/comments" --paginate)"
+          stopped_count="$(echo "$comments_json" | jq '[.[].body | select(test("<!-- codex-autofix stopped -->"))] | length')"
+          if [[ "$stopped_count" -gt 0 ]]; then
+            echo "Skip: codex-autofix already stopped for this PR"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_attempts="$(echo "$comments_json" | jq '[.[].body | select(test("<!-- codex-autofix attempt:"))] | length')"
+          attempt="$((prior_attempts + 1))"
+
+          if [[ "$attempt" -gt "$MAX_ATTEMPTS" ]]; then
+            run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+            comment_file="$(mktemp /tmp/codex-autofix-comment.XXXXXX.md)"
+            {
+              printf '%s\n' '<!-- codex-autofix stopped -->'
+              printf '<!-- codex-autofix attempt: %s -->\n' "$attempt"
+              printf 'Codex autofix stopped: reached max attempts (%s).\n\n' "$MAX_ATTEMPTS"
+              printf -- '- Run: %s\n' "$run_url"
+              printf -- '- head_sha: `%s`\n' "$SHA"
+              printf -- '- head_ref: `%s`\n' "$head_ref"
+            } >"$comment_file"
+            gh pr comment "$pr_number" --repo "$REPO" --body-file "$comment_file"
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          evidence_file="$(mktemp /tmp/codex-autofix-evidence.XXXXXX.txt)"
+          run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          {
+            echo "PR: #$pr_number"
+            echo "head_ref: $head_ref"
+            echo "head_sha: $SHA"
+            echo "Run: $run_url"
+            echo ""
+            echo "Failing required checks:"
+            echo "$checks_json" | jq -r '.[] | select(.bucket=="fail") | "- \(.name) (\(.workflow // "unknown")): \(.link // "n/a")"'
+            echo ""
+          } > "$evidence_file"
+
+          while IFS= read -r row; do
+            name="$(echo "$row" | jq -r '.name')"
+            link="$(echo "$row" | jq -r '.link // empty')"
+            workflow="$(echo "$row" | jq -r '.workflow // "unknown"')"
+
+            {
+              echo "================================================================================"
+              echo "CHECK: $name"
+              echo "WORKFLOW: $workflow"
+              echo "LINK: ${link:-n/a}"
+            } >> "$evidence_file"
+
+            run_id=""
+            if [[ -n "$link" ]]; then
+              run_id="$(echo "$link" | sed -n 's#.*actions/runs/\\([0-9][0-9]*\\).*#\\1#p' | head -n 1 || true)"
+            fi
+
+            if [[ -z "$run_id" ]]; then
+              echo "LOGS: unavailable (no run id found in link)" >> "$evidence_file"
+              echo "" >> "$evidence_file"
+              continue
+            fi
+
+            echo "LOGS: gh run view $run_id --log-failed (tail -c 20000)" >> "$evidence_file"
+            set +e
+            gh run view "$run_id" --repo "$REPO" --log-failed 2>/dev/null | tail -c 20000 >> "$evidence_file"
+            echo "" >> "$evidence_file"
+            set -e
+          done < <(echo "$checks_json" | jq -c '.[] | select(.bucket=="fail")')
+
+          comment_file="$(mktemp /tmp/codex-autofix-comment.XXXXXX.md)"
+          {
+            printf '<!-- codex-autofix attempt: %s -->\n' "$attempt"
+            printf 'Starting Codex autofix attempt %s.\n\n' "$attempt"
+            printf -- '- Run: %s\n' "$run_url"
+            printf -- '- head_sha: `%s`\n' "$SHA"
+            printf -- '- head_ref: `%s`\n' "$head_ref"
+            printf -- '- Failing required checks: %s\n' "$fail_count"
+          } >"$comment_file"
+          gh pr comment "$pr_number" --repo "$REPO" --body-file "$comment_file"
+
+          {
+            echo "needs_fix=true"
+            echo "pr_number=$pr_number"
+            echo "head_ref=$head_ref"
+            echo "attempt=$attempt"
+            echo "evidence_file=$evidence_file"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR branch
+        if: steps.ctx.outputs.needs_fix == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.ctx.outputs.head_ref }}
+          token: ${{ secrets.ROBOT_TOKEN }}
+          persist-credentials: true
+
+      - name: Configure git
+        if: steps.ctx.outputs.needs_fix == 'true'
+        run: |
+          git config user.name "lancedb automation"
+          git config user.email "robot@lancedb.com"
+
+      - name: Set up Node.js
+        if: steps.ctx.outputs.needs_fix == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Codex CLI
+        if: steps.ctx.outputs.needs_fix == 'true'
+        run: npm install -g @openai/codex
+
+      - name: Install Rust toolchain
+        if: steps.ctx.outputs.needs_fix == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        if: steps.ctx.outputs.needs_fix == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev
+
+      - name: Run Codex to fix failing CI
+        if: steps.ctx.outputs.needs_fix == 'true'
+        env:
+          PR_NUMBER: ${{ steps.ctx.outputs.pr_number }}
+          HEAD_REF: ${{ steps.ctx.outputs.head_ref }}
+          ATTEMPT: ${{ steps.ctx.outputs.attempt }}
+          EVIDENCE_FILE: ${{ steps.ctx.outputs.evidence_file }}
+          GITHUB_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.CODEX_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          prompt_file="/tmp/codex-prompt.txt"
+          {
+            printf 'You are running inside the lancedb repository on a GitHub Actions runner.\n'
+            printf 'Your task is to fix failing required CI checks for pull request #%s on branch %s.\n\n' "$PR_NUMBER" "$HEAD_REF"
+            printf 'Goal:\n'
+            printf -- '- Make the smallest change necessary so that all required checks pass.\n\n'
+            printf 'Evidence (generated from GitHub checks and logs):\n'
+            printf '---\n'
+            cat "${EVIDENCE_FILE}"
+            printf '\n---\n\n'
+            printf 'Follow these steps exactly:\n'
+            printf '1. Identify the root cause from the evidence and repository state.\n'
+            printf '2. Make changes to fix the failures.\n'
+            printf '3. Run the relevant local commands that correspond to the failing checks until they succeed.\n'
+            printf '   If unsure, start with:\n'
+            printf '   - cargo fmt --all -- --check\n'
+            printf '   - cargo clippy --profile ci --workspace --tests --all-features -- -D warnings\n'
+            printf '4. Ensure the repository is clean except for intentional changes (git status --short, git diff).\n'
+            printf '5. Create a commit with message "fix: codex autofix (attempt %s)".\n' "$ATTEMPT"
+            printf '6. Push to origin branch "%s" (use --force-with-lease only if required).\n' "$HEAD_REF"
+            printf '7. Print the commands you ran and their results, plus git status --short and git log -1 --oneline.\n\n'
+            printf 'Constraints:\n'
+            printf -- '- Do not create a new pull request.\n'
+            printf -- '- Do not merge.\n'
+            printf -- '- Avoid modifying GitHub workflow files unless strictly required to fix CI for this PR.\n'
+          } >"$prompt_file"
+
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat "$prompt_file")"
+
+      - name: Ensure branch is pushed
+        if: steps.ctx.outputs.needs_fix == 'true'
+        env:
+          HEAD_REF: ${{ steps.ctx.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "Working tree clean."
+          else
+            git add -A
+            git commit -m "fix: codex autofix (post-run)" || true
+          fi
+          git push origin "HEAD:${HEAD_REF}" --force-with-lease
+
+      - name: Comment result
+        if: steps.ctx.outputs.needs_fix == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.ctx.outputs.pr_number }}
+          ATTEMPT: ${{ steps.ctx.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          sha="$(git rev-parse HEAD)"
+          summary="$(git log -1 --oneline || true)"
+          status="$(git status --short || true)"
+          comment_file="$(mktemp /tmp/codex-autofix-comment.XXXXXX.md)"
+          {
+            printf 'Codex autofix attempt %s finished.\n\n' "$ATTEMPT"
+            printf -- '- Run: %s\n' "$run_url"
+            printf -- '- head_sha: `%s`\n' "$sha"
+            printf -- '- Last commit: %s\n\n' "$summary"
+            printf '```\n%s\n```\n' "$status"
+          } >"$comment_file"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$comment_file"
