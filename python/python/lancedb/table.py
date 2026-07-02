@@ -651,6 +651,16 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
+                    # Replace vectors with wrong length (including empty lists
+                    # returned for inputs like empty strings) with None so that
+                    # _handle_bad_vectors can process them according to the
+                    # on_bad_vectors policy instead of crashing when PyArrow
+                    # tries to cast them into a fixed-size list array.
+                    expected_ndims = conf.function.ndims()
+                    col_data = [
+                        v if v is not None and len(v) == expected_ndims else None
+                        for v in col_data
+                    ]
                     if no_vector_column:
                         batch = batch.append_column(
                             schema.field(vector_column),
@@ -4020,7 +4030,16 @@ def _handle_bad_vector_column(
         dim = _infer_vector_dim(vec_arr)
         if dim is None:
             return data
-    has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
+
+    is_null = pc.is_null(vec_arr)
+    # pc.list_value_length returns null for null list entries, so
+    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
+    # True OR null = True (Kleene three-valued logic), ensuring null vectors
+    # are counted as wrong-dim.
+    has_wrong_dim = pc.or_kleene(
+        is_null,
+        pc.not_equal(pc.list_value_length(vec_arr), dim),
+    )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
 
