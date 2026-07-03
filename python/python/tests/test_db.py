@@ -61,6 +61,19 @@ def test_basic(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
+def test_sync_connect_does_not_use_background_loop(tmp_path, monkeypatch):
+    from lancedb import db as db_module
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("sync connect should not use the Python background loop")
+
+    monkeypatch.setattr(db_module.LOOP, "run", fail_run)
+
+    db = lancedb.connect(tmp_path)
+
+    assert db.uri == str(tmp_path)
+
+
 def test_ingest_pd(tmp_path):
     db = lancedb.connect(tmp_path)
 

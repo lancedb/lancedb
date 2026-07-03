@@ -596,6 +596,42 @@ pub fn connect(
 }
 
 #[pyfunction]
+#[pyo3(signature = (uri, read_consistency_interval=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_blocking(
+    py: Python<'_>,
+    uri: String,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    manifest_enabled: bool,
+    namespace_client_properties: Option<HashMap<String, String>>,
+) -> PyResult<Connection> {
+    let mut builder = lancedb::connect(&uri);
+    if let Some(read_consistency_interval) = read_consistency_interval {
+        let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
+        builder = builder.read_consistency_interval(read_consistency_interval);
+    }
+    if let Some(storage_options) = storage_options {
+        builder = builder.storage_options(storage_options);
+    }
+    if manifest_enabled {
+        builder = builder.manifest_enabled(true);
+    }
+    if let Some(namespace_client_properties) = namespace_client_properties {
+        builder = builder.namespace_client_properties(namespace_client_properties);
+    }
+    if let Some(session) = session {
+        builder = builder.session(session.inner.clone());
+    }
+
+    let conn = py
+        .detach(move || crate::runtime::block_on(builder.execute()))
+        .infer_error()?;
+    Ok(Connection::new(conn))
+}
+
+#[pyfunction]
 #[pyo3(signature = (
     namespace_client,
     read_consistency_interval=None,
