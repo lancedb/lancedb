@@ -16,7 +16,7 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Configuration for TLS/mTLS settings.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TlsConfig {
     /// Path to the client certificate file (PEM format)
     pub cert_file: Option<String>,
@@ -24,8 +24,20 @@ pub struct TlsConfig {
     pub key_file: Option<String>,
     /// Path to the CA certificate file for server verification (PEM format)
     pub ssl_ca_cert: Option<String>,
-    /// Whether to verify the hostname in the server's certificate
+    /// Whether to verify the hostname in the server's certificate.
+    /// Defaults to `true`.
     pub assert_hostname: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            cert_file: None,
+            key_file: None,
+            ssl_ca_cert: None,
+            assert_hostname: true,
+        }
+    }
 }
 
 /// Trait for providing custom headers for each request
@@ -233,6 +245,9 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) sender: S,
     pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Connection-level read consistency interval. Drives the
+    /// `x-lancedb-min-timestamp` freshness header sent on read requests.
+    pub(crate) read_consistency_interval: Option<Duration>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -326,6 +341,7 @@ impl RestfulLanceDbClient<Sender> {
         host_override: Option<String>,
         default_headers: HeaderMap,
         client_config: ClientConfig,
+        read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
         // Get the timeouts
         let timeout =
@@ -423,6 +439,7 @@ impl RestfulLanceDbClient<Sender> {
                 .clone()
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
+            read_consistency_interval,
         })
     }
 }
@@ -442,12 +459,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         config: &ClientConfig,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-api-key"),
-            HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
-                message: "non-ascii api key provided".to_string(),
-            })?,
-        );
+        if !api_key.is_empty() {
+            headers.insert(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+                    message: "non-ascii api key provided".to_string(),
+                })?,
+            );
+        }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
@@ -831,6 +850,16 @@ pub mod test_utils {
     where
         T: Into<reqwest::Body>,
     {
+        client_with_handler_and_interval(handler, None)
+    }
+
+    pub fn client_with_handler_and_interval<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        read_consistency_interval: Option<Duration>,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
         let wrapper = move |req: reqwest::Request| {
             let response = handler(req);
             response.into()
@@ -845,6 +874,7 @@ pub mod test_utils {
             },
             id_delimiter: "$".to_string(),
             header_provider: None,
+            read_consistency_interval,
         }
     }
 
@@ -869,6 +899,7 @@ pub mod test_utils {
             },
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
+            read_consistency_interval: None,
         }
     }
 }
@@ -876,7 +907,17 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::time::Duration;
+
+    // Serializes the env-var-mutating tests below: cargo test runs tests in
+    // parallel, but several of these tests read and write the same process-
+    // global env vars (`LANCEDB_USER_ID*`), so they would race without this.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn test_timeout_config_default() {
@@ -926,7 +967,7 @@ mod tests {
         assert!(config.cert_file.is_none());
         assert!(config.key_file.is_none());
         assert!(config.ssl_ca_cert.is_none());
-        assert!(!config.assert_hostname);
+        assert!(config.assert_hostname);
     }
 
     #[test]
@@ -964,6 +1005,33 @@ mod tests {
         assert_eq!(config_tls.key_file, Some("/path/to/key.pem".to_string()));
         assert!(config_tls.ssl_ca_cert.is_none());
         assert!(!config_tls.assert_hostname);
+    }
+
+    #[test]
+    fn test_default_headers_skip_empty_api_key() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        assert!(!headers.contains_key("x-api-key"));
+
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "api-key",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
     }
 
     // Test implementation of HeaderProvider
@@ -1034,6 +1102,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1069,6 +1138,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Apply dynamic headers
@@ -1106,6 +1176,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
         };
 
         // Header provider errors should fail the request
@@ -1131,7 +1202,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_none() {
+        let _guard = lock_env();
         let config = ClientConfig::default();
         // Clear env vars that might be set from other tests
         // SAFETY: This is only called in tests
@@ -1143,7 +1216,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1157,7 +1232,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_from_env_key() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::remove_var("LANCEDB_USER_ID");
@@ -1177,7 +1254,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_direct_takes_precedence() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1194,7 +1273,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(user_id_env)]
     fn test_resolve_user_id_empty_env_ignored() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "");

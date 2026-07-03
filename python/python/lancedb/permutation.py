@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from deprecation import deprecated
-from lancedb import AsyncConnection, DBConnection
-import pyarrow as pa
+import copy
 import json
+import os
+
+from deprecation import deprecated
+import pyarrow as pa
 
 from ._lancedb import async_permutation_builder, PermutationReader
-from .table import LanceTable
+from .table import LanceTable, Table
 from .background_loop import LOOP
 from .util import batch_to_tensor, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
@@ -36,10 +38,7 @@ class PermutationBuilder:
     be referenced by name in the future.  If names are not provided then they can only
     be referenced by their ordinal index.  There is no requirement to name every split.
 
-    By default, the permutation will be stored in memory and will be lost when the
-    program exits.  To persist the permutation (for very large datasets or to share
-    the permutation across multiple workers) use the [persist](#persist) method to
-    create a permanent table.
+    The permutation is stored in memory and will be lost when the program exits.
     """
 
     def __init__(self, table: LanceTable):
@@ -49,16 +48,15 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
         """
+        if not hasattr(table, "_inner"):
+            raise TypeError(
+                f"PermutationBuilder requires a local LanceTable, "
+                f"got {type(table).__name__}. "
+                "The permutation API is not supported on remote tables. "
+                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
+                "direct access to the underlying Lance dataset needed for permutations."
+            )
         self._async = async_permutation_builder(table)
-
-    def persist(
-        self, database: Union[DBConnection, AsyncConnection], table_name: str
-    ) -> "PermutationBuilder":
-        """
-        Persist the permutation to the given database.
-        """
-        self._async.persist(database, table_name)
-        return self
 
     def split_random(
         self,
@@ -365,6 +363,49 @@ class Transforms:
 DEFAULT_BATCH_SIZE = 100
 
 
+def _table_to_pickle_state(table: Table) -> dict[str, Any]:
+    from .remote.table import RemoteTable
+
+    if isinstance(table, RemoteTable):
+        return {
+            "kind": "remote",
+            "table": table,
+        }
+
+    if not isinstance(table, LanceTable):
+        raise ValueError(f"Cannot pickle table of type {type(table)!r}")
+
+    base_uri = table._conn.uri
+    if base_uri.startswith("memory://"):
+        return {
+            "kind": "memory",
+            "name": table.name,
+            "data": table.to_arrow(),
+        }
+
+    return {
+        "kind": "local",
+        "name": table.name,
+        "uri": base_uri,
+        "namespace": table._namespace_path,
+        "storage_options": table._conn.storage_options,
+    }
+
+
+def _table_from_pickle_state(state: dict[str, Any]) -> Table:
+    from . import connect
+
+    kind = state["kind"]
+    if kind == "remote":
+        return state["table"]
+    if kind == "memory":
+        return connect("memory://").create_table(state["name"], state["data"])
+    if kind == "local":
+        db = connect(state["uri"], storage_options=state["storage_options"])
+        return db.open_table(state["name"], namespace_path=state["namespace"] or None)
+    raise ValueError(f"Unknown table pickle state kind: {kind}")
+
+
 class Permutation:
     """
     A Permutation is a view of a dataset that can be used as input to model training
@@ -380,20 +421,45 @@ class Permutation:
 
     def __init__(
         self,
-        reader: PermutationReader,
+        base_table: Table,
+        permutation_table: Optional[Table],
+        split: int,
         selection: dict[str, str],
         batch_size: int,
         transform_fn: Callable[pa.RecordBatch, Any],
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        connection_factory: Optional[Callable[[str], Table]] = None,
+        _reader: Optional[PermutationReader] = None,
     ):
         """
         Internal constructor.  Use [from_tables](#from_tables) instead.
         """
-        assert reader is not None, "reader is required"
+        assert base_table is not None, "base_table is required"
         assert selection is not None, "selection is required"
-        self.reader = reader
+        self.base_table = base_table
+        self.permutation_table = permutation_table
+        self.split = split
         self.selection = selection
         self.transform_fn = transform_fn
         self.batch_size = batch_size
+        self.offset = offset
+        self.limit = limit
+        self.connection_factory = connection_factory
+        if _reader is None:
+            _reader = LOOP.run(self._build_reader())
+        self.reader: PermutationReader = _reader
+        self._pid = os.getpid()
+
+    async def _build_reader(self) -> PermutationReader:
+        reader = await PermutationReader.from_tables(
+            self.base_table, self.permutation_table, self.split
+        )
+        if self.offset is not None:
+            reader = await reader.with_offset(self.offset)
+        if self.limit is not None:
+            reader = await reader.with_limit(self.limit)
+        return reader
 
     def _with_selection(self, selection: dict[str, str]) -> "Permutation":
         """
@@ -402,24 +468,96 @@ class Permutation:
         Does not validation of the selection and it replaces it entirely.  This is not
         intended for public use.
         """
-        return Permutation(self.reader, selection, self.batch_size, self.transform_fn)
-
-    def _with_reader(self, reader: PermutationReader) -> "Permutation":
-        """
-        Creates a new permutation with the given reader
-
-        This is an internal method and should not be used directly.
-        """
-        return Permutation(reader, self.selection, self.batch_size, self.transform_fn)
+        new = copy.copy(self)
+        new.selection = selection
+        return new
 
     def with_batch_size(self, batch_size: int) -> "Permutation":
         """
         Creates a new permutation with the given batch size
         """
-        return Permutation(self.reader, self.selection, batch_size, self.transform_fn)
+        new = copy.copy(self)
+        new.batch_size = batch_size
+        return new
+
+    def with_connection_factory(
+        self, connection_factory: Callable[[str], Table]
+    ) -> "Permutation":
+        """
+        Creates a new permutation that will use ``connection_factory`` to reopen
+        the base table when this permutation is unpickled in a worker process.
+
+        The factory is a callable that takes a single argument, the base table
+        name, and returns a LanceDB table. It must be picklable; the worker
+        will pickle it via standard ``pickle`` and call it to recover the base
+        table. Picklable callables in practice means top-level (module-level)
+        functions, ``functools.partial`` of such functions, or instances of
+        picklable classes implementing ``__call__``. Lambdas and closures over
+        local variables don't pickle with the default protocol.
+
+        A factory is optional for normal local and remote LanceDB connections:
+        if not set, ``__getstate__`` captures the table's own picklable reopen
+        state. Use a factory when that default state is not enough, for example
+        when credentials should be loaded from the worker environment instead
+        of being embedded in the pickle.
+
+        Examples
+        --------
+        Basic native (file-system path), parameterized via ``functools.partial``::
+
+            import functools, lancedb
+            from lancedb.permutation import Permutation
+
+            def open_native_table(uri: str, table_name: str):
+                return lancedb.connect(uri).open_table(table_name)
+
+            factory = functools.partial(open_native_table, "/data/lance_db")
+            permutation = Permutation.identity(
+                factory("training")
+            ).with_connection_factory(factory)
+
+        Native via :func:`lancedb.connect_namespace` (e.g. a directory- or
+        REST-backed namespace client). The factory takes the
+        implementation name and properties dict as partial-bound args so
+        the worker can rebuild the same namespace connection::
+
+            def open_via_namespace(
+                impl: str, properties: dict[str, str], table_name: str,
+            ):
+                return lancedb.connect_namespace(impl, properties).open_table(
+                    table_name,
+                )
+
+            factory = functools.partial(
+                open_via_namespace,
+                "dir",
+                {"root": "/data/lance_db"},
+            )
+
+        LanceDB Cloud, reading credentials from env vars at worker startup
+        so secrets aren't pickled into the dataset::
+
+            import os, lancedb
+
+            def open_remote_table(table_name: str):
+                db = lancedb.connect(
+                    "db://my-database",
+                    api_key=os.environ["LANCEDB_API_KEY"],
+                    region=os.environ.get("LANCEDB_REGION", "us-east-1"),
+                )
+                return db.open_table(table_name)
+
+            permutation = Permutation.identity(
+                open_remote_table("training")
+            ).with_connection_factory(open_remote_table)
+        """
+        assert connection_factory is not None, "connection_factory is required"
+        new = copy.copy(self)
+        new.connection_factory = connection_factory
+        return new
 
     @classmethod
-    def identity(cls, table: LanceTable) -> "Permutation":
+    def identity(cls, table: Table) -> "Permutation":
         """
         Creates an identity permutation for the given table.
         """
@@ -428,8 +566,8 @@ class Permutation:
     @classmethod
     def from_tables(
         cls,
-        base_table: LanceTable,
-        permutation_table: Optional[LanceTable] = None,
+        base_table: Table,
+        permutation_table: Optional[Table] = None,
         split: Optional[Union[str, int]] = None,
     ) -> "Permutation":
         """
@@ -489,13 +627,117 @@ class Permutation:
             schema = await reader.output_schema(None)
             initial_selection = {name: name for name in schema.names}
             return cls(
-                reader, initial_selection, DEFAULT_BATCH_SIZE, Transforms.arrow2python
+                base_table,
+                permutation_table,
+                split,
+                initial_selection,
+                DEFAULT_BATCH_SIZE,
+                Transforms.arrow2python,
+                _reader=reader,
             )
 
         return LOOP.run(do_from_tables())
 
+    def __getstate__(self) -> dict[str, Any]:
+        """Build a picklable state dict for this permutation.
+
+        The base table is captured either via a user-supplied
+        ``connection_factory`` (see [with_connection_factory]) or, as a
+        fallback, by the table's own picklable reopen state. The permutation
+        table is captured as a pyarrow Table (which pickles via Arrow IPC
+        natively). The reader is dropped from the wire format and rebuilt
+        lazily on first use.
+        """
+        permutation_data: Optional[pa.Table] = None
+        if self.permutation_table is not None:
+            permutation_data = self.permutation_table.to_arrow()
+
+        common = {
+            "base_table_name": self.base_table.name,
+            "permutation_data": permutation_data,
+            "split": self.split,
+            "selection": self.selection,
+            "batch_size": self.batch_size,
+            "transform_fn": self.transform_fn,
+            "offset": self.offset,
+            "limit": self.limit,
+            "connection_factory": self.connection_factory,
+        }
+
+        if self.connection_factory is not None:
+            # The factory carries enough state to recover the base table on
+            # its own; we don't need to capture the URI / storage options /
+            # namespace from the existing connection.
+            return common
+
+        return {
+            **common,
+            "base_table_state": _table_to_pickle_state(self.base_table),
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        from . import connect
+
+        connection_factory = state["connection_factory"]
+        if connection_factory is not None:
+            base_table = connection_factory(state["base_table_name"])
+        elif "base_table_state" in state:
+            base_table = _table_from_pickle_state(state["base_table_state"])
+        elif "base_table_data" in state:
+            # In-memory base table inlined into the pickle; rebuild the same
+            # way we rebuild the in-memory permutation table.
+            mem_db = connect("memory://")
+            base_table = mem_db.create_table(
+                state["base_table_name"], state["base_table_data"]
+            )
+        else:
+            base_db = connect(
+                state["base_table_uri"],
+                storage_options=state["base_table_storage_options"],
+            )
+            base_table = base_db.open_table(
+                state["base_table_name"],
+                namespace_path=state["base_table_namespace"] or None,
+            )
+
+        permutation_table: Optional[Table] = None
+        if state["permutation_data"] is not None:
+            mem_db = connect("memory://")
+            permutation_table = mem_db.create_table(
+                "permutation", state["permutation_data"]
+            )
+
+        self.base_table = base_table
+        self.permutation_table = permutation_table
+        self.split = state["split"]
+        self.selection = state["selection"]
+        self.batch_size = state["batch_size"]
+        self.transform_fn = state["transform_fn"]
+        self.offset = state["offset"]
+        self.limit = state["limit"]
+        self.connection_factory = connection_factory
+        self.reader = None
+        self._pid = None
+
+    def _ensure_open(self) -> None:
+        pid = os.getpid()
+        if self.reader is not None and getattr(self, "_pid", None) == pid:
+            return
+        # The reader owns Rust-side table handles. Rebuild it after unpickle or
+        # fork even though the Python table wrappers reopen themselves.
+        if hasattr(self.base_table, "_ensure_open"):
+            self.base_table._ensure_open()
+        if self.permutation_table is not None and hasattr(
+            self.permutation_table, "_ensure_open"
+        ):
+            self.permutation_table._ensure_open()
+        self.reader = LOOP.run(self._build_reader())
+        self._pid = pid
+
     @property
     def schema(self) -> pa.Schema:
+        self._ensure_open()
+
         async def do_output_schema():
             return await self.reader.output_schema(self.selection)
 
@@ -513,6 +755,7 @@ class Permutation:
         """
         The number of rows in the permutation
         """
+        self._ensure_open()
         return self.reader.count_rows()
 
     @property
@@ -671,6 +914,7 @@ class Permutation:
         If skip_last_batch is True, the last batch will be skipped if it is not a
         multiple of batch_size.
         """
+        self._ensure_open()
 
         async def get_iter():
             return await self.reader.read(self.selection, batch_size=batch_size)
@@ -760,24 +1004,37 @@ class Permutation:
         for expensive operations such as image decoding.
         """
         assert transform is not None, "transform is required"
-        return Permutation(self.reader, self.selection, self.batch_size, transform)
+        new = copy.copy(self)
+        new.transform_fn = transform
+        return new
+
+    def take_offsets(self, offsets: list[int]) -> Any:
+        """
+        Take rows from the permutation by offset
+
+        The returned value is passed through the permutation's current transform,
+        so `with_format` and `with_transform` affect this method in the same way
+        they affect iteration.
+        """
+        self._ensure_open()
+
+        async def do_take_offsets():
+            return await self.reader.take_offsets(offsets, selection=self.selection)
+
+        batch = LOOP.run(do_take_offsets())
+        return self.transform_fn(batch)
 
     def __getitem__(self, index: int) -> Any:
         """
         Returns a single row from the permutation by offset
         """
-        return self.__getitems__([index])
+        return self.take_offsets([index])
 
     def __getitems__(self, indices: list[int]) -> Any:
         """
         Returns rows from the permutation by offset
         """
-
-        async def do_getitems():
-            return await self.reader.take_offsets(indices, selection=self.selection)
-
-        batch = LOOP.run(do_getitems())
-        return self.transform_fn(batch)
+        return self.take_offsets(indices)
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
@@ -795,12 +1052,12 @@ class Permutation:
         """
         Skip the first `skip` rows of the permutation
         """
-
-        async def do_with_skip():
-            reader = await self.reader.with_offset(skip)
-            return self._with_reader(reader)
-
-        return LOOP.run(do_with_skip())
+        self._ensure_open()
+        new = copy.copy(self)
+        new.offset = skip
+        new.reader = LOOP.run(new._build_reader())
+        new._pid = os.getpid()
+        return new
 
     @deprecated(details="Use with_take instead")
     def take(self, limit: int) -> "Permutation":
@@ -818,12 +1075,12 @@ class Permutation:
         """
         Limit the permutation to `limit` rows (following any `skip`)
         """
-
-        async def do_with_take():
-            reader = await self.reader.with_limit(limit)
-            return self._with_reader(reader)
-
-        return LOOP.run(do_with_take())
+        self._ensure_open()
+        new = copy.copy(self)
+        new.limit = limit
+        new.reader = LOOP.run(new._build_reader())
+        new._pid = os.getpid()
+        return new
 
     @deprecated(details="Use with_repeat instead")
     def repeat(self, times: int) -> "Permutation":

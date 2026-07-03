@@ -57,6 +57,24 @@ block size may be added in the future.
 
 ***
 
+### fm()
+
+```ts
+static fm(): Index
+```
+
+Create an FM-Index.
+
+An FM-Index is a scalar index on string or binary columns that accelerates
+substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+full-text-search index, it matches arbitrary substrings of the raw bytes.
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
 ### fts()
 
 ```ts

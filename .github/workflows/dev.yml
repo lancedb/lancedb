@@ -8,6 +8,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   labeler:
     permissions:
@@ -24,7 +27,7 @@ jobs:
     name: Verify PR title / description conforms to semantic-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "18"
       # These rules are disabled because Github will always ensure there

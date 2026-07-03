@@ -86,7 +86,10 @@ def _from_list(data: list) -> Scannable:
 
 @to_scannable.register(dict)
 def _from_dict(data: dict) -> Scannable:
-    raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+    raise ValueError(
+        "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
+    )
 
 
 @to_scannable.register(LanceModel)

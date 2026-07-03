@@ -3,12 +3,16 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
+    FieldMetadataUpdate as LanceFieldMetadataUpdate, NewColumnTransform, OptimizeAction,
+    OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
@@ -67,8 +71,16 @@ impl Table {
         schema_to_buffer(&schema)
     }
 
-    #[napi(catch_unwind)]
-    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
+    #[napi(
+        catch_unwind,
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void"
+    )]
+    pub async fn add(
+        &self,
+        buf: Buffer,
+        mode: String,
+        progress_callback: Option<ProgressFn>,
+    ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let batches = batches
@@ -91,6 +103,19 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        if let Some(tsfn) = progress_callback {
+            op = op.progress(move |p| {
+                // NonBlocking: dispatch onto the JS event loop without
+                // blocking the writer thread.  With napi-rs's default
+                // unbounded queue, events are not dropped — a slow JS
+                // callback will just queue them.
+                tsfn.call(
+                    WriteProgressInfo::from(p),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+            });
+        }
 
         let res = op.execute().await.default_error()?;
         Ok(res.into())
@@ -155,6 +180,14 @@ impl Table {
     pub async fn prewarm_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .prewarm_index(&index_name)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> napi::Result<()> {
+        self.inner_ref()?
+            .prewarm_data(columns)
             .await
             .default_error()
     }
@@ -326,6 +359,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn update_field_metadata(
+        &self,
+        updates: Vec<FieldMetadataUpdate>,
+    ) -> napi::Result<UpdateFieldMetadataResult> {
+        let updates = updates
+            .into_iter()
+            .map(LanceFieldMetadataUpdate::from)
+            .collect::<Vec<_>>();
+        let res = self
+            .inner_ref()?
+            .update_field_metadata(&updates)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
         let res = self
@@ -334,6 +384,36 @@ impl Table {
             .await
             .default_error()?;
         Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn set_unenforced_primary_key(&self, columns: Vec<String>) -> napi::Result<()> {
+        self.inner_ref()?
+            .set_unenforced_primary_key(columns)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::LsmWriteSpec::try_from(spec)?;
+        self.inner_ref()?
+            .set_lsm_write_spec(native_spec)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn unset_lsm_write_spec(&self) -> napi::Result<()> {
+        self.inner_ref()?
+            .unset_lsm_write_spec()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn close_lsm_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_lsm_writers().await.default_error()
     }
 
     #[napi(catch_unwind)]
@@ -398,6 +478,19 @@ impl Table {
         Ok(Tags {
             inner: self.inner_ref()?.clone(),
         })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn branches(&self) -> napi::Result<Branches> {
+        Ok(Branches {
+            inner: self.inner_ref()?.clone(),
+        })
+    }
+
+    /// The branch this handle is scoped to, or `null` for the main branch.
+    #[napi]
+    pub fn current_branch(&self) -> napi::Result<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
     }
 
     #[napi(catch_unwind)]
@@ -517,6 +610,43 @@ pub struct IndexConfig {
     /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// `undefined` for remote tables, which do not yet surface this.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `undefined` for remote tables.
+    pub type_url: Option<String>,
+    /// When the index was created.
+    ///
+    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// `undefined` for remote tables.
+    pub num_indexed_rows: Option<i64>,
+    /// The number of rows not yet covered by this index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_unindexed_rows: Option<i64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `undefined` for remote tables or indices without size tracking.
+    pub size_bytes: Option<i64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_segments: Option<i32>,
+    /// The on-disk index format version.
+    ///
+    /// `undefined` for remote tables.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details parsed as a JavaScript object.
+    ///
+    /// Falls back to a raw string if JSON parsing fails. `undefined` for
+    /// remote tables or when details are unavailable.
+    pub index_details: Option<serde_json::Value>,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -526,7 +656,75 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at,
+            num_indexed_rows: value.num_indexed_rows.map(|n| n as i64),
+            num_unindexed_rows: value.num_unindexed_rows.map(|n| n as i64),
+            size_bytes: value.size_bytes.map(|n| n as i64),
+            num_segments: value.num_segments.map(|n| n as i32),
+            index_version: value.index_version,
+            index_details: value
+                .index_details
+                .and_then(|s| serde_json::from_str(&s).ok()),
         }
+    }
+}
+
+/// Specification selecting Lance's MemWAL LSM-style write path for
+/// `mergeInsert`.
+///
+/// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
+/// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
+/// `column` is required.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct LsmWriteSpec {
+    /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
+    pub spec_type: String,
+    /// Bucket and identity variants: the sharding column.
+    pub column: Option<String>,
+    /// Bucket variant: the number of buckets, in `[1, 1024]`.
+    pub num_buckets: Option<u32>,
+    /// Names of indexes the MemWAL should keep up to date during writes.
+    pub maintained_indexes: Option<Vec<String>>,
+    /// Default `ShardWriter` configuration recorded in the MemWAL index.
+    pub writer_config_defaults: Option<HashMap<String, String>>,
+}
+
+impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+    type Error = napi::Error;
+
+    fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
+        let maintained = value.maintained_indexes.unwrap_or_default();
+        let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
+        let spec = match value.spec_type.as_str() {
+            "bucket" => {
+                let column = value.column.ok_or_else(|| {
+                    napi::Error::from_reason("LsmWriteSpec bucket requires `column`")
+                })?;
+                let num_buckets = value.num_buckets.ok_or_else(|| {
+                    napi::Error::from_reason("LsmWriteSpec bucket requires `numBuckets`")
+                })?;
+                Self::bucket(column, num_buckets)
+            }
+            "identity" => {
+                let column = value.column.ok_or_else(|| {
+                    napi::Error::from_reason("LsmWriteSpec identity requires `column`")
+                })?;
+                Self::identity(column)
+            }
+            "unsharded" => Self::unsharded(),
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "LsmWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    other
+                )));
+            }
+        };
+        Ok(spec
+            .with_maintained_indexes(maintained)
+            .with_writer_config_defaults(writer_config_defaults))
     }
 }
 
@@ -564,6 +762,44 @@ pub struct OptimizeStats {
     pub prune: RemovalStats,
 }
 
+/// Progress snapshot for a write operation, delivered to the JS callback
+/// passed to `Table.add`.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct WriteProgressInfo {
+    /// Number of rows written so far.
+    pub output_rows: i64,
+    /// Number of bytes written so far.
+    pub output_bytes: i64,
+    /// Total rows expected, if the input source reports it.
+    /// Always set on the final callback (where `done` is `true`).
+    pub total_rows: Option<i64>,
+    /// Wall-clock seconds since monitoring started.
+    pub elapsed_seconds: f64,
+    /// Number of parallel write tasks currently in flight.
+    pub active_tasks: i64,
+    /// Total number of parallel write tasks (the write parallelism).
+    pub total_tasks: i64,
+    /// `true` for the final callback; `false` otherwise.
+    pub done: bool,
+}
+
+impl From<&lancedb::table::write_progress::WriteProgress> for WriteProgressInfo {
+    fn from(p: &lancedb::table::write_progress::WriteProgress) -> Self {
+        Self {
+            output_rows: p.output_rows() as i64,
+            output_bytes: p.output_bytes() as i64,
+            total_rows: p.total_rows().map(|n| n as i64),
+            elapsed_seconds: p.elapsed().as_secs_f64(),
+            active_tasks: p.active_tasks() as i64,
+            total_tasks: p.total_tasks() as i64,
+            done: p.done(),
+        }
+    }
+}
+
+type ProgressFn = ThreadsafeFunction<WriteProgressInfo, (), WriteProgressInfo, Status, false>;
+
 ///  A definition of a column alteration. The alteration changes the column at
 /// `path` to have the new name `name`, to be nullable if `nullable` is true,
 /// and to have the data type `data_type`. At least one of `rename` or `nullable`
@@ -590,6 +826,29 @@ pub struct ColumnAlteration {
     pub data_type: Option<String>,
     /// Set the new nullability. Note that a nullable column cannot be made non-nullable.
     pub nullable: Option<bool>,
+}
+
+/// A per-field metadata update, addressed by dot-path. Merges into the field's
+/// existing metadata by default; a `null` value deletes a key, and `replace`
+/// swaps the field's entire metadata map.
+#[napi(object)]
+pub struct FieldMetadataUpdate {
+    /// Dot-separated path to the field (e.g. "embedding" or "a.b.c").
+    pub path: String,
+    /// Metadata keys to set; a `null` value deletes that key.
+    pub metadata: HashMap<String, Option<String>>,
+    /// If true, replace the field's entire metadata map instead of merging.
+    pub replace: Option<bool>,
+}
+
+impl From<FieldMetadataUpdate> for LanceFieldMetadataUpdate {
+    fn from(js: FieldMetadataUpdate) -> Self {
+        Self {
+            path: js.path,
+            metadata: js.metadata,
+            replace: js.replace.unwrap_or(false),
+        }
+    }
 }
 
 impl TryFrom<ColumnAlteration> for LanceColumnAlteration {
@@ -642,9 +901,6 @@ pub struct IndexStatistics {
     pub distance_type: Option<String>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
-    /// The KMeans loss value of the index,
-    /// it is only present for vector indices.
-    pub loss: Option<f64>,
 }
 impl From<lancedb::index::IndexStatistics> for IndexStatistics {
     fn from(value: lancedb::index::IndexStatistics) -> Self {
@@ -654,7 +910,6 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             index_type: value.index_type.to_string(),
             distance_type: value.distance_type.map(|d| d.to_string()),
             num_indices: value.num_indices,
-            loss: value.loss,
         }
     }
 }
@@ -790,6 +1045,7 @@ pub struct MergeResult {
     pub num_updated_rows: i64,
     pub num_deleted_rows: i64,
     pub num_attempts: i64,
+    pub num_rows: i64,
 }
 
 impl From<lancedb::table::MergeResult> for MergeResult {
@@ -800,6 +1056,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_updated_rows: value.num_updated_rows as i64,
             num_deleted_rows: value.num_deleted_rows as i64,
             num_attempts: value.num_attempts as i64,
+            num_rows: value.num_rows as i64,
         }
     }
 }
@@ -831,6 +1088,19 @@ impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
 }
 
 #[napi(object)]
+pub struct UpdateFieldMetadataResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(value: lancedb::table::UpdateFieldMetadataResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
 pub struct DropColumnsResult {
     pub version: i64,
 }
@@ -846,6 +1116,13 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
 #[napi]
 pub struct TagContents {
     pub version: i64,
+    pub manifest_size: i64,
+}
+
+#[napi]
+pub struct BranchContents {
+    pub parent_branch: Option<String>,
+    pub parent_version: i64,
     pub manifest_size: i64,
 }
 
@@ -915,5 +1192,77 @@ impl Tags {
             .update(tag.as_str(), version as u64)
             .await
             .default_error()
+    }
+}
+
+#[napi]
+pub struct Branches {
+    inner: LanceDbTable,
+}
+
+#[napi]
+impl Branches {
+    #[napi]
+    pub async fn list(&self) -> napi::Result<HashMap<String, BranchContents>> {
+        let branches = self.inner.list_branches().await.default_error()?;
+        let result = branches
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    BranchContents {
+                        parent_branch: v.parent_branch,
+                        parent_version: v.parent_version as i64,
+                        manifest_size: v.manifest_size as i64,
+                    },
+                )
+            })
+            .collect();
+        Ok(result)
+    }
+
+    #[napi]
+    pub async fn create(
+        &self,
+        name: String,
+        from_ref: Option<String>,
+        from_version: Option<i64>,
+    ) -> napi::Result<Table> {
+        let from_ref = from_ref.filter(|b| b != "main");
+        let from_version = from_version
+            .map(|v| {
+                u64::try_from(v).map_err(|_| {
+                    napi::Error::from_reason("from_version must be a non-negative integer")
+                })
+            })
+            .transpose()?;
+        let from = Ref::Version(from_ref, from_version);
+        let table = self
+            .inner
+            .create_branch(&name, from)
+            .await
+            .default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn checkout(&self, name: String, version: Option<i64>) -> napi::Result<Table> {
+        let version = version
+            .map(|v| {
+                u64::try_from(v)
+                    .map_err(|_| napi::Error::from_reason("version must be a non-negative integer"))
+            })
+            .transpose()?;
+        let table = self
+            .inner
+            .checkout_branch(&name, version)
+            .await
+            .default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn delete(&self, name: String) -> napi::Result<()> {
+        self.inner.delete_branch(&name).await.default_error()
     }
 }

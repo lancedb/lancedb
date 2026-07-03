@@ -37,6 +37,14 @@ class TestExprConstruction:
         e = lit(True)
         assert isinstance(e, Expr)
 
+    def test_lit_bytes(self):
+        e = lit(b"\xde\xad\xbe\xef")
+        assert isinstance(e, Expr)
+
+    def test_lit_bytes_empty(self):
+        e = lit(b"")
+        assert isinstance(e, Expr)
+
     def test_lit_unsupported_type_raises(self):
         with pytest.raises(Exception):
             lit([1, 2, 3])
@@ -173,6 +181,43 @@ class TestExprOperators:
         # True & Expr calls Expr.__rand__(True)
         assert (True & (col("age") > 18)).to_sql() == "(true AND (age > 18))"
         assert (False | (col("age") > 18)).to_sql() == "(false OR (age > 18))"
+
+
+class TestExprBytesLiteral:
+    def test_bytes_to_sql(self):
+        e = lit(b"\xde\xad\xbe\xef")
+        assert e.to_sql() == "X'DEADBEEF'"
+
+    def test_empty_bytes_to_sql(self):
+        e = lit(b"")
+        assert e.to_sql() == "X''"
+
+    def test_bytes_repr(self):
+        e = lit(b"\x01\x02")
+        assert repr(e) == "Expr(X'0102')"
+
+    def test_bytes_equality_expr_sql(self):
+        e = col("data") == lit(b"\xca\xfe")
+        assert e.to_sql() == "(data = X'CAFE')"
+
+    def test_bytes_ne_expr_sql(self):
+        e = col("data") != lit(b"\xff")
+        assert e.to_sql() == "(data <> X'FF')"
+
+    def test_bytes_compound_expr_sql(self):
+        e = (col("data") == lit(b"\x01")) & (col("id") > lit(5))
+        assert e.to_sql() == "((data = X'01') AND (id > 5))"
+
+    def test_bytes_in_function_call(self):
+        # Regression test: binary literals inside scalar function calls
+        # used to fail because DataFusion's unparser does not support Binary
+        # scalars.  Now handled via a placeholder-substitution rewrite.
+        e = func("contains", col("data"), lit(b"\xff"))
+        assert e.to_sql() == "contains(data, X'FF')"
+
+    def test_bytes_in_not(self):
+        e = ~(col("data") == lit(b"\xff"))
+        assert e.to_sql() == "NOT (data = X'FF')"
 
 
 class TestExprStringMethods:
@@ -524,3 +569,65 @@ class TestExtendedTypeIntegration:
         )
         assert result.num_rows == 1
         assert result["binary"][0].as_py() == b"\x01"
+
+
+# ── bytes / binary column integration tests ───────────────────────────────────
+
+
+@pytest.fixture
+def binary_table(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    data = pa.table(
+        {
+            "id": [1, 2, 3],
+            "payload": pa.array(
+                [b"\x01\x02", b"\xca\xfe", b"\xff\x00"],
+                type=pa.binary(),
+            ),
+        }
+    )
+    return db.create_table("binary_test", data)
+
+
+class TestExprIsin:
+    def test_isin_ints(self):
+        assert col("id").isin([1, 2, 3]).to_sql() == "id IN (1, 2, 3)"
+
+    def test_isin_strs(self):
+        assert (
+            col("status").isin(["active", "pending"]).to_sql()
+            == "status IN ('active', 'pending')"
+        )
+
+    def test_isin_coerces_and_mixes(self):
+        assert col("id").isin([lit(1), 2]).to_sql() == "id IN (1, 2)"
+
+    def test_isin_empty(self):
+        assert col("id").isin([]).to_sql() == "id IN ()"
+
+    def test_isin_filter(self, simple_table):
+        result = simple_table.search().where(col("id").isin([1, 3, 5])).to_arrow()
+        assert result.num_rows == 3
+
+
+class TestExprBytesIntegration:
+    def test_binary_equality_filter(self, binary_table):
+        result = (
+            binary_table.search().where(col("payload") == lit(b"\xca\xfe")).to_arrow()
+        )
+        assert result.num_rows == 1
+        assert result["id"][0].as_py() == 2
+
+    def test_binary_ne_filter(self, binary_table):
+        result = (
+            binary_table.search().where(col("payload") != lit(b"\x01\x02")).to_arrow()
+        )
+        assert result.num_rows == 2
+
+    def test_binary_compound_filter(self, binary_table):
+        result = (
+            binary_table.search()
+            .where((col("payload") == lit(b"\x01\x02")) | (col("id") == lit(3)))
+            .to_arrow()
+        )
+        assert result.num_rows == 2

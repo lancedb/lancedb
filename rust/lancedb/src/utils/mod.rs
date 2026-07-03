@@ -6,7 +6,7 @@ pub(crate) mod background_cache;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::RecordBatchStream;
 use futures::{FutureExt, Stream};
@@ -152,14 +152,10 @@ pub fn validate_namespace(namespace: &[String]) -> Result<()> {
 /// Find one default column to create index or perform vector query.
 pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result<String> {
     // Try to find a vector column.
-    let candidates = schema
-        .fields()
-        .iter()
-        .filter_map(|field| match infer_vector_dim(field.data_type()) {
-            Ok(d) if dim.is_none() || dim == Some(d as i32) => Some(field.name()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for field in schema.fields() {
+        collect_vector_columns(field, &mut Vec::new(), dim, &mut candidates);
+    }
     if candidates.is_empty() {
         Err(Error::InvalidInput {
             message: format!(
@@ -178,6 +174,57 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
     } else {
         Ok(candidates[0].clone())
     }
+}
+
+fn collect_vector_columns(
+    field: &Field,
+    path: &mut Vec<String>,
+    dim: Option<i32>,
+    candidates: &mut Vec<String>,
+) {
+    path.push(field.name().clone());
+    match infer_vector_dim(field.data_type()) {
+        Ok(d) if dim.is_none() || dim == Some(d as i32) => {
+            let path_segments = path.iter().map(String::as_str).collect::<Vec<_>>();
+            candidates.push(lance_core::datatypes::format_field_path(&path_segments));
+        }
+        _ => {
+            if let DataType::Struct(fields) = field.data_type() {
+                for child in fields {
+                    collect_vector_columns(child, path, dim, candidates);
+                }
+            }
+        }
+    }
+    path.pop();
+}
+
+pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<(String, Field)> {
+    lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+        message: format!("Invalid field path `{}`: {}", column, e),
+    })?;
+
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+    let field_path = lance_schema
+        .resolve_case_insensitive(column)
+        .ok_or_else(|| Error::Schema {
+            message: format!(
+                "Field path `{}` not found in schema. Available field paths: {}",
+                column,
+                lance_schema.field_paths().join(", ")
+            ),
+        })?;
+    let field = field_path.last().expect("field path should be non-empty");
+    let path_segments = field_path
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
+    let canonical_path = lance_core::datatypes::format_field_path(&path_segments);
+
+    Ok((canonical_path, Field::from(*field)))
 }
 
 pub fn supported_btree_data_type(dtype: &DataType) -> bool {
@@ -210,7 +257,9 @@ pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::List(field) => supported_bitmap_data_type(field.data_type()),
+        DataType::List(field) | DataType::LargeList(field) => {
+            supported_bitmap_data_type(field.data_type())
+        }
         DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
         _ => false,
     }
@@ -228,6 +277,15 @@ fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// FM-Index accelerates substring (`contains`) search over raw bytes, so it
+/// applies to string and binary columns.
+pub fn supported_fm_data_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+    )
 }
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
@@ -450,6 +508,49 @@ mod tests {
             "vec"
         );
 
+        let schema_with_nested_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "image",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            10,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_vector_column(&schema_with_nested_vec_col, None).unwrap(),
+            "image.embedding"
+        );
+
+        let schema_with_escaped_nested_vec_col = Schema::new(vec![Field::new(
+            "image-meta",
+            DataType::Struct(
+                vec![Field::new(
+                    "embedding.v1",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, false)),
+                        10,
+                    ),
+                    false,
+                )]
+                .into(),
+            ),
+            false,
+        )]);
+        assert_eq!(
+            default_vector_column(&schema_with_escaped_nested_vec_col, None).unwrap(),
+            "`image-meta`.`embedding.v1`"
+        );
+
         let multi_vec_col = Schema::new(vec![
             Field::new("id", DataType::Int16, true),
             Field::new(
@@ -469,6 +570,48 @@ mod tests {
                 .to_string()
                 .contains("More than one")
         );
+
+        let multi_nested_vec_col = Schema::new(vec![
+            Field::new(
+                "image",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            10,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+            Field::new(
+                "text",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            50,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_vector_column(&multi_nested_vec_col, Some(50)).unwrap(),
+            "text.embedding"
+        );
+        let err = default_vector_column(&multi_nested_vec_col, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("image.embedding"));
+        assert!(err.contains("text.embedding"));
     }
 
     #[test]

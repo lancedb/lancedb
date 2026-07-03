@@ -185,6 +185,43 @@ impl Scannable for SendableRecordBatchStream {
     }
 }
 
+#[cfg(feature = "polars")]
+impl Scannable for polars::frame::DataFrame {
+    fn schema(&self) -> SchemaRef {
+        crate::polars_arrow_convertors::convert_polars_df_schema_to_arrow_rb_schema(
+            self.schema().clone(),
+        )
+        .expect("failed to convert Polars DataFrame schema to Arrow schema")
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = Scannable::schema(self);
+        let batches: crate::Result<Vec<RecordBatch>> =
+            match crate::arrow::PolarsDataFrameRecordBatchReader::new(self.clone()) {
+                Err(e) => Err(e),
+                Ok(reader) => reader.map(|b| b.map_err(Into::into)).collect(),
+            };
+        match batches {
+            Err(e) => Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: once(async move { Err(e) }),
+            }),
+            Ok(batches) => {
+                let stream = futures::stream::iter(batches.into_iter().map(Ok));
+                Box::pin(SimpleRecordBatchStream { schema, stream })
+            }
+        }
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        Some(self.height())
+    }
+
+    fn rescannable(&self) -> bool {
+        true
+    }
+}
+
 #[async_trait]
 impl StreamingWriteSource for Box<dyn Scannable> {
     fn arrow_schema(&self) -> SchemaRef {
@@ -271,15 +308,26 @@ impl Scannable for WithEmbeddingsScannable {
                 .map_err(|e| Error::Runtime {
                     message: format!("Task panicked during embedding computation: {}", e),
                 })??;
-                // Cast columns to match the declared output schema. The data is
-                // identical but field metadata (e.g. nested nullability) may
-                // differ between the embedding function output and the table.
-                let columns: Vec<ArrayRef> = result
-                    .columns()
+                // Look up columns by name (not position) so the result matches
+                // the output schema even when columns appear in a different
+                // order — e.g. `add_columns` placed a new column after the
+                // embedding column, but the computed batch appends embeddings
+                // at the end. Cast per-column because field metadata (e.g.
+                // nested nullability) may also differ between the embedding
+                // function output and the table.
+                let columns: Vec<ArrayRef> = output_schema
+                    .fields()
                     .iter()
-                    .enumerate()
-                    .map(|(i, col)| {
-                        let target_type = output_schema.field(i).data_type();
+                    .map(|field| {
+                        let col = result.column_by_name(field.name()).ok_or_else(|| {
+                            Error::InvalidInput {
+                                message: format!(
+                                    "Column '{}' required by the table schema was not present in the input batch",
+                                    field.name()
+                                ),
+                            }
+                        })?;
+                        let target_type = field.data_type();
                         if col.data_type() == target_type {
                             Ok(col.clone())
                         } else {
@@ -963,6 +1011,175 @@ mod tests {
                 matches!(err, Error::EmbeddingFunctionNotFound { .. }),
                 "Expected EmbeddingFunctionNotFound"
             );
+        }
+
+        /// Regression test for https://github.com/lancedb/lancedb/issues/3136.
+        ///
+        /// When a column is added to the table after the embedding column via
+        /// schema evolution, the table schema becomes
+        /// `[..., embedding, extra]`. The input batch (without the embedding)
+        /// is `[..., extra]`, and `compute_embeddings_for_batch` appends the
+        /// embedding at the end giving `[..., extra, embedding]`. A positional
+        /// cast to the output schema would map `extra` onto `embedding` and
+        /// fail with a CastError. Columns must be matched by name.
+        #[tokio::test]
+        async fn test_with_embeddings_scannable_column_added_after_embedding() {
+            let input_schema = Arc::new(Schema::new(vec![
+                Field::new("text", DataType::Utf8, false),
+                Field::new("score", DataType::Float64, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                input_schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["hello", "world"])) as ArrayRef,
+                    Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0])) as ArrayRef,
+                ],
+            )
+            .unwrap();
+
+            let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+            let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+
+            // Table schema: embedding column is BEFORE `score`, as would
+            // happen if `score` was added via `add_columns` after creating
+            // the table with an embedding on `text`.
+            let output_schema = Arc::new(Schema::new(vec![
+                Field::new("text", DataType::Utf8, false),
+                Field::new(
+                    "text_vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                    ),
+                    false,
+                ),
+                Field::new("score", DataType::Float64, true),
+            ]));
+
+            let mut scannable = WithEmbeddingsScannable::with_schema(
+                Box::new(batch),
+                vec![(embedding_def, mock_embedding)],
+                output_schema.clone(),
+            )
+            .unwrap();
+
+            let stream = scannable.scan_as_stream();
+            let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+            assert_eq!(results.len(), 1);
+
+            let result_batch = &results[0];
+            assert_eq!(result_batch.schema(), output_schema);
+            assert_eq!(result_batch.num_rows(), 2);
+            // Position 1 must actually hold the FixedSizeList embedding —
+            // not the score column reinterpreted by a permissive cast.
+            let embedding = result_batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow_array::FixedSizeListArray>()
+                .expect("position 1 should be a FixedSizeList embedding");
+            assert_eq!(embedding.value_length(), 4);
+            assert_eq!(embedding.null_count(), 0);
+        }
+
+        /// If the input batch is missing a non-embedding column required by
+        /// the table schema, we should return a clear error rather than
+        /// silently producing a malformed batch.
+        #[tokio::test]
+        async fn test_with_embeddings_scannable_missing_required_column() {
+            let input_schema =
+                Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+            let batch = RecordBatch::try_new(
+                input_schema,
+                vec![Arc::new(StringArray::from(vec!["hello", "world"])) as ArrayRef],
+            )
+            .unwrap();
+
+            let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+            let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+
+            let output_schema = Arc::new(Schema::new(vec![
+                Field::new("text", DataType::Utf8, false),
+                Field::new(
+                    "text_vec",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                    ),
+                    false,
+                ),
+                Field::new("score", DataType::Float64, true),
+            ]));
+
+            let mut scannable = WithEmbeddingsScannable::with_schema(
+                Box::new(batch),
+                vec![(embedding_def, mock_embedding)],
+                output_schema,
+            )
+            .unwrap();
+
+            let stream = scannable.scan_as_stream();
+            let results: Result<Vec<RecordBatch>> = stream.try_collect().await;
+            let err = results.expect_err("expected an error");
+            assert!(
+                matches!(&err, Error::InvalidInput { message } if message.contains("score")),
+                "expected InvalidInput about missing 'score' column, got: {err:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "polars")]
+    mod polars_tests {
+        use super::*;
+        use crate::arrow::IntoPolars;
+        use crate::query::ExecutableQuery;
+        use polars::prelude::{DataFrame, NamedFrom, Series};
+
+        fn make_df() -> DataFrame {
+            DataFrame::new(vec![
+                Series::new("id", &[1i32, 2, 3]),
+                Series::new("val", &[1.1f64, 2.2, 3.3]),
+            ])
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn test_dataframe_scannable_round_trip() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = crate::connect(tmp.path().to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+
+            let df = make_df();
+            let table = db.create_table("t", df.clone()).execute().await.unwrap();
+
+            // Append the same rows again.
+            table.add(df.clone()).execute().await.unwrap();
+
+            let result = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .into_polars()
+                .await
+                .unwrap();
+
+            assert_eq!(result.height(), df.height() * 2);
+            assert_eq!(result.schema(), df.schema());
+        }
+
+        #[tokio::test]
+        async fn test_dataframe_scannable_rescannable() {
+            let mut df = make_df();
+            assert!(df.rescannable());
+
+            let batches1: Vec<RecordBatch> = df.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(batches1.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+
+            // Can be scanned again.
+            let batches2: Vec<RecordBatch> = df.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(batches2.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
         }
     }
 }

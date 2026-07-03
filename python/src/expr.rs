@@ -11,8 +11,11 @@ use std::ops::{Add, Div, Mul, Not, Sub};
 
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
 use datafusion_common::ScalarValue;
-use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
-use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction, types::{PyDate, PyDateTime}};
+use lancedb::expr::{
+    DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
+};
+use pyo3::types::{PyBytes, PyDate, PyDateTime};
+use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
 /// A type-safe DataFusion expression.
 ///
@@ -20,7 +23,7 @@ use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunct
 /// [`expr_lit`] and combined with the methods on this struct.  On the Python
 /// side a thin wrapper class (`lancedb.expr.Expr`) delegates to these methods
 /// and adds Python operator overloads.
-#[pyclass(name = "PyExpr")]
+#[pyclass(name = "PyExpr", from_py_object)]
 #[derive(Clone)]
 pub struct PyExpr(pub DfExpr);
 
@@ -106,6 +109,14 @@ impl PyExpr {
         Self(contains(self.0.clone(), substr.0.clone()))
     }
 
+    // ── membership ───────────────────────────────────────────────────────────
+
+    /// Return true where the value is one of the given expressions (SQL ``IN``).
+    fn isin(&self, list: Vec<Self>) -> Self {
+        let items: Vec<DfExpr> = list.into_iter().map(|e| e.0).collect();
+        Self(is_in(self.0.clone(), items))
+    }
+
     // ── type cast ────────────────────────────────────────────────────────────
 
     /// Cast the expression to `data_type`.
@@ -144,7 +155,8 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `Decimal`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `date`,
+/// `datetime`, `Decimal`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -160,10 +172,12 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(PyExpr(df_lit(s)));
     }
-    if let Ok(b) = value.extract::<Vec<u8>>() {
-        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(b)))));
+    if value.is_instance_of::<PyBytes>() {
+        let bytes = value.extract::<Vec<u8>>()?;
+        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(bytes)))));
     }
 
+    // datetime.datetime is a subclass of datetime.date, so it must be checked first.
     if let Ok(dt) = value.downcast::<PyDateTime>() {
         let ts: f64 = dt.call_method0("timestamp")?.extract()?;
         let micros = (ts * 1_000_000.0).round() as i64;

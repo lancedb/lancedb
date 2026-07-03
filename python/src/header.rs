@@ -33,7 +33,7 @@ impl PyHeaderProvider {
                 Ok(headers_py) => {
                     // Convert Python dict to Rust HashMap
                     let bound_headers = headers_py.bind(py);
-                    let dict: &Bound<PyDict> = bound_headers.downcast().map_err(|e| {
+                    let dict: &Bound<PyDict> = bound_headers.cast().map_err(|e| {
                         format!("HeaderProvider.get_headers must return a dict: {}", e)
                     })?;
 

@@ -11,6 +11,8 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
+/// Re-export Lance ColumnOrdering type for use in query ordering
+pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
@@ -18,12 +20,12 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 
-use crate::DistanceType;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
 use crate::utils::{MaxBatchLengthStream, TimeoutStream};
+use crate::{ApproxMode, DistanceType};
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     table::AnyQuery,
@@ -399,6 +401,9 @@ pub trait QueryBase {
     ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
+    ///
+    /// Calling this multiple times combines the filters with a logical AND
+    /// (i.e. `(previous) AND (new)`) rather than replacing the previous filter.
     fn only_if(self, filter: impl AsRef<str>) -> Self;
 
     /// Only return rows which match the filter, using an expression builder.
@@ -421,6 +426,9 @@ pub trait QueryBase {
     ///
     /// Note: Expression filters are not supported for remote/server-side queries.
     /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    ///
+    /// Calling this multiple times combines the expressions with a logical AND
+    /// rather than replacing the previous filter.
     fn only_if_expr(self, filter: datafusion_expr::Expr) -> Self;
 
     /// Perform a full text search on the table.
@@ -510,6 +518,11 @@ pub trait QueryBase {
     /// the scores are converted to ranks and then normalized. If "Score", the
     /// scores are normalized directly.
     fn norm(self, norm: NormalizeMethod) -> Self;
+
+    /// Sort the results by the specified column(s).
+    ///
+    /// This allows ordering query results by one or more columns in either ascending or descending order.
+    fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
 }
 
 pub trait HasQuery {
@@ -528,12 +541,13 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
-        self.mut_query().filter = Some(QueryFilter::Sql(filter.as_ref().to_string()));
+        self.mut_query()
+            .add_filter(QueryFilter::Sql(filter.as_ref().to_string()));
         self
     }
 
     fn only_if_expr(mut self, filter: datafusion_expr::Expr) -> Self {
-        self.mut_query().filter = Some(QueryFilter::Datafusion(filter));
+        self.mut_query().add_filter(QueryFilter::Datafusion(filter));
         self
     }
 
@@ -572,6 +586,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn norm(mut self, norm: NormalizeMethod) -> Self {
         self.mut_query().norm = Some(norm);
+        self
+    }
+
+    fn order_by(mut self, ordering: Option<Vec<ColumnOrdering>>) -> Self {
+        self.mut_query().order_by = ordering;
         self
     }
 }
@@ -704,6 +723,39 @@ pub enum QueryFilter {
     Datafusion(Expr),
 }
 
+/// Combine two filters with a logical AND.
+///
+/// This is used when a query receives more than one filter (for example when
+/// `where`/`only_if` is called multiple times) so the filters are composed
+/// with AND rather than the later filter silently replacing the earlier one.
+///
+/// SQL string and expression filters are combined within their own
+/// representation. When the two representations are mixed, the expression is
+/// lowered to SQL (via [`crate::expr::expr_to_sql_string`]) and the filters are
+/// combined as SQL strings. Substrait filters cannot be combined and return an
+/// error.
+fn and_filters(existing: QueryFilter, new: QueryFilter) -> Result<QueryFilter> {
+    match (existing, new) {
+        (QueryFilter::Sql(lhs), QueryFilter::Sql(rhs)) => {
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        (QueryFilter::Datafusion(lhs), QueryFilter::Datafusion(rhs)) => {
+            Ok(QueryFilter::Datafusion(lhs.and(rhs)))
+        }
+        (QueryFilter::Sql(lhs), QueryFilter::Datafusion(rhs)) => {
+            let rhs = crate::expr::expr_to_sql_string(&rhs)?;
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        (QueryFilter::Datafusion(lhs), QueryFilter::Sql(rhs)) => {
+            let lhs = crate::expr::expr_to_sql_string(&lhs)?;
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        _ => Err(Error::InvalidInput {
+            message: "cannot combine a Substrait filter with another filter".to_string(),
+        }),
+    }
+}
+
 /// A basic query into a table without any kind of search
 ///
 /// This will result in a (potentially filtered) scan if executed
@@ -717,6 +769,13 @@ pub struct QueryRequest {
 
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
+
+    /// An error recorded while combining repeated filters that could not be
+    /// composed (see [`QueryRequest::add_filter`]). It is surfaced when the
+    /// query is executed via [`QueryRequest::check_filter`]. We defer the error
+    /// because the builder methods that set filters return `Self` rather than a
+    /// `Result`.
+    pub(crate) filter_error: Option<String>,
 
     /// Perform a full text search on the table.
     pub full_text_search: Option<FullTextSearchQuery>,
@@ -750,6 +809,11 @@ pub struct QueryRequest {
     ///
     /// By default, this is false (scoring columns are auto-projected for backward compatibility).
     pub disable_scoring_autoprojection: bool,
+
+    /// Sort the results by the specified column(s).
+    ///
+    /// This allows ordering query results by one or more columns in either ascending or descending order.
+    pub order_by: Option<Vec<ColumnOrdering>>,
 }
 
 impl Default for QueryRequest {
@@ -758,6 +822,7 @@ impl Default for QueryRequest {
             limit: None,
             offset: None,
             filter: None,
+            filter_error: None,
             full_text_search: None,
             select: Select::All,
             fast_search: false,
@@ -766,7 +831,43 @@ impl Default for QueryRequest {
             reranker: None,
             norm: None,
             disable_scoring_autoprojection: false,
+            order_by: None,
         }
+    }
+}
+
+impl QueryRequest {
+    /// Add a filter, combining it with any existing filter using a logical AND.
+    ///
+    /// If the new filter cannot be combined with the existing one (because they
+    /// use different representations) the error is recorded and surfaced later
+    /// by [`Self::check_filter`].
+    pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        self.filter = Some(match self.filter.take() {
+            None => new,
+            Some(existing) => match and_filters(existing, new) {
+                Ok(combined) => combined,
+                Err(err) => {
+                    // The filters were consumed while attempting to combine
+                    // them; the recorded error is surfaced by `check_filter`
+                    // before the query executes.
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+        });
+    }
+
+    /// Return an error if combining filters failed (see [`Self::add_filter`]).
+    ///
+    /// This must be called by every backend before executing a query.
+    pub(crate) fn check_filter(&self) -> Result<()> {
+        if let Some(message) = &self.filter_error {
+            return Err(Error::InvalidInput {
+                message: message.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -917,6 +1018,8 @@ pub struct VectorQueryRequest {
     pub refine_factor: Option<u32>,
     /// The distance type to use for the search
     pub distance_type: Option<DistanceType>,
+    /// The speed / accuracy tradeoff to use for approximate vector search
+    pub approx_mode: Option<ApproxMode>,
     /// Default is true. Set to false to enforce a brute force search.
     pub use_index: bool,
 }
@@ -934,6 +1037,7 @@ impl Default for VectorQueryRequest {
             ef: None,
             refine_factor: None,
             distance_type: None,
+            approx_mode: None,
             use_index: true,
         }
     }
@@ -1171,6 +1275,15 @@ impl VectorQuery {
     /// By default [`DistanceType::L2`] is used.
     pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
         self.request.distance_type = Some(distance_type);
+        self
+    }
+
+    /// Set the speed / accuracy tradeoff for approximate vector search.
+    ///
+    /// This setting is currently only used by RQ-quantized indexes, such as
+    /// IVF_RQ. Other index types ignore this setting.
+    pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
+        self.request.approx_mode = Some(approx_mode);
         self
     }
 
@@ -1528,6 +1641,7 @@ mod tests {
             .nprobes(1000)
             .postfilter()
             .distance_type(DistanceType::Cosine)
+            .approx_mode(ApproxMode::Accurate)
             .refine_factor(999);
 
         assert_eq!(
@@ -1546,7 +1660,47 @@ mod tests {
         assert_eq!(query.request.maximum_nprobes, Some(1000));
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
+        assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[test]
+    fn test_approx_mode_serde_parse_default_and_display() {
+        assert_eq!(ApproxMode::default(), ApproxMode::Normal);
+        assert_eq!(
+            serde_json::to_string(&ApproxMode::Fast).unwrap(),
+            "\"fast\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ApproxMode>("\"accurate\"").unwrap(),
+            ApproxMode::Accurate
+        );
+        assert_eq!("normal".parse::<ApproxMode>().unwrap(), ApproxMode::Normal);
+        assert_eq!(ApproxMode::try_from("FAST").unwrap(), ApproxMode::Fast);
+        assert_eq!(ApproxMode::Accurate.to_string(), "accurate");
+        assert!(ApproxMode::try_from("invalid").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_vector_query_approx_mode_builder() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .approx_mode(ApproxMode::Fast);
+
+        assert_eq!(query.request.approx_mode, Some(ApproxMode::Fast));
     }
 
     #[tokio::test]
@@ -1609,6 +1763,70 @@ mod tests {
             // pre filter should return 10 rows
             assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_repeated_only_if_combines_with_and() {
+        use crate::expr::{col, lit};
+
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table.query().only_if("id > 0").only_if("id < 100");
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => assert_eq!(sql, "(id > 0) AND (id < 100)"),
+            other => panic!("expected combined SQL filter, got {other:?}"),
+        }
+
+        // A single filter is left untouched.
+        let query = table.query().only_if("id > 0");
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => assert_eq!(sql, "id > 0"),
+            other => panic!("expected single SQL filter, got {other:?}"),
+        }
+
+        // Expression filters are combined with a logical AND as well.
+        let query = table
+            .query()
+            .only_if_expr(col("id").gt(lit(0i32)))
+            .only_if_expr(col("id").lt(lit(100i32)));
+        match &query.request.filter {
+            Some(QueryFilter::Datafusion(expr)) => {
+                assert_eq!(
+                    expr,
+                    &col("id").gt(lit(0i32)).and(col("id").lt(lit(100i32)))
+                );
+            }
+            other => panic!("expected combined Datafusion filter, got {other:?}"),
+        }
+
+        // Mixing an SQL string filter with an expression filter lowers the
+        // expression to SQL and combines them as SQL strings.
+        let query = table
+            .query()
+            .only_if("id > 0")
+            .only_if_expr(col("id").lt(lit(100i32)));
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => {
+                let expected = format!(
+                    "(id > 0) AND ({})",
+                    crate::expr::expr_to_sql_string(&col("id").lt(lit(100i32))).unwrap()
+                );
+                assert_eq!(sql, &expected);
+            }
+            other => panic!("expected combined SQL filter, got {other:?}"),
+        }
+        assert!(query.request.check_filter().is_ok());
+        // The combined filter executes without error.
+        query.execute().await.unwrap();
     }
 
     #[tokio::test]

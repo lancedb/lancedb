@@ -110,6 +110,23 @@ containing the new version number of the table after altering the columns.
 
 ***
 
+### branches()
+
+```ts
+abstract branches(): Promise<Branches>
+```
+
+Get the branch manager for this table.
+
+Branches are isolated, writable lines of history forked from another
+branch (or version). Writes on a branch do not affect `main`.
+
+#### Returns
+
+`Promise`&lt;[`Branches`](Branches.md)&gt;
+
+***
+
 ### checkout()
 
 ```ts
@@ -187,6 +204,25 @@ Any attempt to use the table after it is closed will result in an error.
 
 ***
 
+### closeLsmWriters()
+
+```ts
+abstract closeLsmWriters(): Promise<void>
+```
+
+Drain and close any cached MemWAL shard writers held for this table.
+
+When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert` opens MemWAL
+shard writers and caches them for reuse across calls. This closes them,
+flushing pending data; writers reopen lazily on the next `mergeInsert`.
+It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### countRows()
 
 ```ts
@@ -256,6 +292,23 @@ await table.createIndex("vector", {
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
+
+***
+
+### currentBranch()
+
+```ts
+abstract currentBranch(): null | string
+```
+
+The branch this table handle is scoped to, or `null` for the main branch.
+
+A handle returned by [Branches.create](Branches.md#create) or [Branches.checkout](Branches.md#checkout)
+reports the branch it targets; a handle opened normally reports `null`.
+
+#### Returns
+
+`null` \| `string`
 
 ***
 
@@ -501,6 +554,34 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ***
 
+### prewarmData()
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Prewarm one or more columns of data in the table.
+
+#### Parameters
+
+* **columns?**: `string`[]
+    The columns to prewarm. If undefined, all columns are prewarmed.
+    This will load the column data into the page cache so that future queries that
+    read those columns avoid the initial cold-start latency.  This call initiates
+    prewarming and returns once the request is accepted; the warming itself may
+    continue in the background.  Calling it on already-prewarmed columns is a
+    no-op on the server.
+    Prewarming is generally useful for columns used in filters or projections.
+    Large columns (e.g. high-dimensional vectors or binary data) may not be
+    practical to prewarm.
+    This feature is currently only supported on remote tables.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### prewarmIndex()
 
 ```ts
@@ -662,6 +743,74 @@ of the given query
 
 ***
 
+### setLsmWriteSpec()
+
+```ts
+abstract setLsmWriteSpec(spec): Promise<void>
+```
+
+Install an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) on this table, selecting Lance's MemWAL
+LSM-style write path for future `mergeInsert` calls.
+
+`LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+
+- `"bucket"` — hash-bucket writes by the single-column unenforced primary
+  key (`column` and `numBuckets` required).
+- `"identity"` — shard by the raw value of a scalar `column`.
+- `"unsharded"` — route every write to a single shard.
+
+All variants require the table to have an unenforced primary key
+([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
+requires it to be the single column being bucketed.
+
+#### Parameters
+
+* **spec**: [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)
+    The sharding spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+await table.setUnenforcedPrimaryKey("id");
+await table.setLsmWriteSpec({
+  specType: "bucket",
+  column: "id",
+  numBuckets: 16,
+  maintainedIndexes: ["id_idx"],
+});
+```
+
+***
+
+### setUnenforcedPrimaryKey()
+
+```ts
+abstract setUnenforcedPrimaryKey(columns): Promise<void>
+```
+
+Set the unenforced primary key for this table to a single column.
+
+"Unenforced" means LanceDB does not check uniqueness on writes; the
+column is recorded in the schema as the primary key for use by features
+such as `merge_insert`. Only single-column primary keys are supported,
+and the key cannot be changed once set.
+
+#### Parameters
+
+* **columns**: `string` \| `string`[]
+    The primary key column. A one-element
+    array is also accepted; passing more than one column is rejected.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### stats()
 
 ```ts
@@ -765,6 +914,23 @@ Return the table as an arrow table
 
 ***
 
+### unsetLsmWriteSpec()
+
+```ts
+abstract unsetLsmWriteSpec(): Promise<void>
+```
+
+Remove the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) from this table, reverting to the standard
+`mergeInsert` write path.
+
+Errors if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### update()
 
 #### update(opts)
@@ -859,6 +1025,29 @@ Keys in the map should specify the name of the column to update.
 Values in the map provide the new value of the column.  These can
 be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
 based on the row being updated (e.g. "my_col + 1")
+
+***
+
+### updateFieldMetadata()
+
+```ts
+abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
+```
+
+Update per-field (column) metadata.
+
+#### Parameters
+
+* **updates**: [`FieldMetadataUpdate`](../interfaces/FieldMetadataUpdate.md)[]
+    One or more per-field updates. Each
+    update's metadata is merged into the field's existing metadata by default;
+    a value of `null` deletes that key, and `replace: true` swaps the whole map.
+
+#### Returns
+
+`Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
+
+resolves to the new table version.
 
 ***
 

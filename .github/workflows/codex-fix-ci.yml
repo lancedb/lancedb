@@ -36,16 +36,18 @@ jobs:
           echo "guidelines = ${{ inputs.guidelines }}"
 
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
           fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          # pnpm 11 (used by the nodejs install step below) requires
+          # Node >= 22.13; use 24 since 22 hits EOL in October.
+          node-version: 24
 
       - name: Install Codex CLI
         run: npm install -g @openai/codex
@@ -79,10 +81,14 @@ jobs:
           java-version: '11'
           cache: maven
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.1.1
       - name: Install Node.js dependencies for TypeScript bindings
         run: |
           cd nodejs
-          npm ci
+          pnpm install --frozen-lockfile
 
       - name: Configure git user
         run: |
@@ -137,7 +143,7 @@ jobs:
                - For Rust test failures: Run the specific test with "cargo test -p <crate> <test_name>"
                - For Python test failures: Build with "cd python && maturin develop" then run "pytest <specific_test_file>::<test_name>"
                - For Java test failures: Run "cd java && mvn test -Dtest=<TestClass>#<testMethod>"
-               - For TypeScript test failures: Run "cd nodejs && npm run build && npm test -- --testNamePattern='<test_name>'"
+               - For TypeScript test failures: Run "cd nodejs && pnpm build && pnpm test -- --testNamePattern='<test_name>'"
                - Do NOT run the full test suite - only run the tests that were failing
 
           7. If the additional guidelines are provided, follow them as well.

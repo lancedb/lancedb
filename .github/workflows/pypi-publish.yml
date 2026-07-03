@@ -8,11 +8,17 @@ on:
     # This should trigger a dry run (we skip the final publish step)
     paths:
       - .github/workflows/pypi-publish.yml
+      - .github/workflows/build_linux_wheel/action.yml
+      - .github/workflows/build_mac_wheel/action.yml
+      - .github/workflows/build_windows_wheel/action.yml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 
 env:
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
+
+permissions:
+  contents: read
 
 jobs:
   linux:
@@ -22,25 +28,17 @@ jobs:
       matrix:
         config:
           - platform: x86_64
-            manylinux: "2_17"
-            extra_args: ""
-            runner: ubuntu-22.04
-          - platform: x86_64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
             runner: ubuntu-22.04
-          - platform: aarch64
-            manylinux: "2_17"
-            extra_args: ""
-            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: ubuntu-2404-8x-arm64
+          # For successful fat LTO builds, we need a large runner to avoid OOM errors.
           - platform: aarch64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
             runner: ubuntu-2404-8x-arm64
     runs-on: ${{ matrix.config.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -54,11 +52,12 @@ jobs:
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
-      - uses: ./.github/workflows/upload_wheel
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          fury_token: ${{ secrets.FURY_TOKEN }}
+          name: wheels-linux-${{ matrix.config.platform }}-${{ matrix.config.manylinux }}
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
   mac:
     timeout-minutes: 90
     runs-on: ${{ matrix.config.runner }}
@@ -70,7 +69,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: 10.15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -82,16 +81,21 @@ jobs:
         with:
           python-minor-version: 10
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
-      - uses: ./.github/workflows/upload_wheel
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          fury_token: ${{ secrets.FURY_TOKEN }}
+          name: wheels-mac-${{ matrix.config.target }}
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
   windows:
-    timeout-minutes: 60
+    timeout-minutes: 90
     runs-on: windows-latest
+    env:
+      # link.exe is single-threaded and the long pole on Windows builds. Use
+      # rustc's bundled lld-link instead.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -103,19 +107,70 @@ jobs:
         with:
           python-minor-version: 10
           args: "--release --strip"
-          vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
-      - uses: ./.github/workflows/upload_wheel
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          fury_token: ${{ secrets.FURY_TOKEN }}
+          name: wheels-windows
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
+  publish:
+    name: Publish wheels
+    if: startsWith(github.ref, 'refs/tags/python-v')
+    needs: [linux, mac, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          path: target/wheels
+          merge-multiple: true
+      - name: List wheels
+        run: ls -la target/wheels
+      - name: Choose repo
+        id: choose_repo
+        run: |
+          if [[ ${{ github.ref }} == *beta* ]]; then
+            echo "repo=fury" >> $GITHUB_OUTPUT
+          else
+            echo "repo=pypi" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to Fury
+        if: steps.choose_repo.outputs.repo == 'fury'
+        env:
+          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
+        run: |
+          shopt -s nullglob
+          WHEELS=(target/wheels/lancedb-*.whl)
+          if [[ ${#WHEELS[@]} -eq 0 ]]; then
+            echo "No wheels found in target/wheels/" >&2
+            exit 1
+          fi
+          for WHEEL in "${WHEELS[@]}"; do
+            echo "Uploading $WHEEL to Fury"
+            curl -f -F package=@"$WHEEL" "https://$FURY_TOKEN@push.fury.io/lancedb/"
+          done
+      # NOTE: pypa/gh-action-pypi-publish must be invoked directly from a
+      # workflow file, not from inside a composite action. When called from a
+      # composite, `github.action_repository` is empty (actions/runner#2473)
+      # and the action falls back to `github.repository`, producing a bogus
+      # `docker://ghcr.io/<repo>:<ref>` image reference that GHA tries to pull.
+      - name: Publish to PyPI
+        if: steps.choose_repo.outputs.repo == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: target/wheels/
   gh-release:
     if: startsWith(github.ref, 'refs/tags/python-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -178,13 +233,13 @@ jobs:
   report-failure:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
-    needs: [linux, mac, windows]
+    needs: [linux, mac, windows, publish]
     permissions:
       contents: read
       issues: write
     if: always() && failure() && startsWith(github.ref, 'refs/tags/python-v')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/create-failure-issue
         with:
           job-results: ${{ toJSON(needs) }}

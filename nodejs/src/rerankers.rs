@@ -18,6 +18,7 @@ type RerankHybridFn = ThreadsafeFunction<
     RerankHybridCallbackArgs,
     Status,
     false,
+    true,
 >;
 
 /// Reranker implementation that "wraps" a NodeJS Reranker implementation.
@@ -32,7 +33,10 @@ impl Reranker {
     pub fn new(
         rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
     ) -> napi::Result<Self> {
-        let rerank_hybrid = rerank_hybrid.build_threadsafe_function().build()?;
+        let rerank_hybrid = rerank_hybrid
+            .build_threadsafe_function()
+            .weak::<true>()
+            .build()?;
         Ok(Self { rerank_hybrid })
     }
 }

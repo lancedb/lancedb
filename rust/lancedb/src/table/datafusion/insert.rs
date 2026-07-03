@@ -4,6 +4,7 @@
 //! DataFusion ExecutionPlan for inserting data into LanceDB tables.
 
 use std::any::Any;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use arrow_array::{RecordBatch, UInt64Array};
@@ -20,11 +21,12 @@ use datafusion_physical_plan::{
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::transaction::{Operation, Transaction};
-use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams};
+use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams, WriteProgressFn};
 use lance::io::exec::utils::InstrumentedRecordBatchStreamAdapter;
 use lance_table::format::Fragment;
 
 use crate::table::dataset::DatasetConsistencyWrapper;
+use crate::table::write_progress::WriteProgressTracker;
 
 pub(crate) static COUNT_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
     Arc::new(ArrowSchema::new(vec![Field::new(
@@ -81,7 +83,8 @@ pub struct InsertExec {
     dataset: Arc<Dataset>,
     input: Arc<dyn ExecutionPlan>,
     write_params: WriteParams,
-    properties: PlanProperties,
+    tracker: Option<Arc<WriteProgressTracker>>,
+    properties: Arc<PlanProperties>,
     partial_transactions: Arc<Mutex<Vec<Transaction>>>,
     metrics: ExecutionPlanMetricsSet,
 }
@@ -92,6 +95,16 @@ impl InsertExec {
         dataset: Arc<Dataset>,
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
+    ) -> Self {
+        Self::new_with_tracker(ds_wrapper, dataset, input, write_params, None)
+    }
+
+    pub(crate) fn new_with_tracker(
+        ds_wrapper: DatasetConsistencyWrapper,
+        dataset: Arc<Dataset>,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
+        tracker: Option<Arc<WriteProgressTracker>>,
     ) -> Self {
         let schema = COUNT_SCHEMA.clone();
         let num_partitions = input.output_partitioning().partition_count();
@@ -107,7 +120,8 @@ impl InsertExec {
             dataset,
             input,
             write_params,
-            properties,
+            tracker,
+            properties: Arc::new(properties),
             partial_transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
             metrics: ExecutionPlanMetricsSet::new(),
         }
@@ -136,7 +150,7 @@ impl ExecutionPlan for InsertExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -161,11 +175,12 @@ impl ExecutionPlan for InsertExec {
                 "InsertExec requires exactly one child".to_string(),
             ));
         }
-        Ok(Arc::new(Self::new(
+        Ok(Arc::new(Self::new_with_tracker(
             self.ds_wrapper.clone(),
             self.dataset.clone(),
             children[0].clone(),
             self.write_params.clone(),
+            self.tracker.clone(),
         )))
     }
 
@@ -176,10 +191,11 @@ impl ExecutionPlan for InsertExec {
     ) -> DataFusionResult<SendableRecordBatchStream> {
         let input_stream = self.input.execute(partition, context)?;
         let dataset = self.dataset.clone();
-        let write_params = self.write_params.clone();
+        let mut write_params = self.write_params.clone();
         let partial_transactions = self.partial_transactions.clone();
         let total_partitions = self.input.output_partitioning().partition_count();
         let ds_wrapper = self.ds_wrapper.clone();
+        let tracker = self.tracker.clone();
 
         let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let input_schema = input_stream.schema();
@@ -195,6 +211,20 @@ impl ExecutionPlan for InsertExec {
             ));
 
         let stream = futures::stream::once(async move {
+            if let Some(tracker) = tracker
+                && write_params.write_progress.is_none()
+            {
+                let last_bytes = Arc::new(AtomicU64::new(0));
+                write_params.write_progress = Some(WriteProgressFn::new(move |stats| {
+                    let previous = last_bytes.swap(stats.bytes_written, Ordering::Relaxed);
+                    if stats.bytes_written > previous {
+                        let delta =
+                            usize::try_from(stats.bytes_written - previous).unwrap_or(usize::MAX);
+                        tracker.record_bytes(delta);
+                    }
+                }));
+            }
+
             let transaction = InsertBuilder::new(dataset.clone())
                 .with_params(&write_params)
                 .execute_uncommitted_stream(input_stream)

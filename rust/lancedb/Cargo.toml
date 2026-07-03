@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.28.0-beta.1"
+version = "0.31.0-beta.6"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -14,6 +14,7 @@ rust-version.workspace = true
 ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-select = { workspace = true }
@@ -40,7 +41,7 @@ lance-datafusion.workspace = true
 lance-datagen = { workspace = true }
 lance-file = { workspace = true }
 lance-io = { workspace = true }
-lance-index = { workspace = true }
+lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lindera"] }
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
@@ -50,7 +51,7 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
-tokio = { version = "1.23", features = ["rt-multi-thread"] }
+tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 log.workspace = true
 async-trait = "0"
 bytes = "1"
@@ -75,7 +76,8 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "stream",
 ], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
-uuid = { version = "1.7.0", features = ["v4"] }
+urlencoding = { version = "2", optional = true }
+uuid = { version = "1.7.0", features = ["v4", "v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
 hf-hub = { version = "0.4.1", optional = true, default-features = false, features = [
@@ -93,6 +95,7 @@ semver = { workspace = true }
 anyhow = "1"
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
+tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.55.0" }
@@ -104,21 +107,38 @@ datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
 test-log = "0.2"
+serial_test = "3"
 
 
 [features]
 default = []
-aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
+aws = [
+    "lance/aws",
+    "lance-io/aws",
+    "lance-namespace-impls/dir-aws",
+    "object_store/aws",
+]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
-azure = ["lance/azure", "lance-io/azure", "lance-namespace-impls/dir-azure"]
+azure = [
+    "lance/azure",
+    "lance-io/azure",
+    "lance-namespace-impls/dir-azure",
+    "lance-namespace-impls/credential-vendor-azure",
+]
 huggingface = [
     "lance/huggingface",
     "lance-io/huggingface",
     "lance-namespace-impls/dir-huggingface",
 ]
 dynamodb = ["lance/dynamodb", "aws"]
-remote = ["dep:reqwest", "dep:http", "lance-namespace-impls/rest", "lance-namespace-impls/rest-adapter"]
+remote = [
+    "dep:reqwest",
+    "dep:http",
+    "dep:urlencoding",
+    "lance-namespace-impls/rest",
+    "lance-namespace-impls/rest-adapter",
+]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]
@@ -146,6 +166,10 @@ required-features = ["bedrock"]
 
 [[example]]
 name = "simple"
+
+[[example]]
+name = "polars"
+required-features = ["polars"]
 
 [[example]]
 name = "full_text_search"

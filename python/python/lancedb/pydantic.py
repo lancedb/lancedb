@@ -275,7 +275,18 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
-        child = py_type.__args__[0]
+        # A bare, unparameterised ``typing.List`` / ``typing.Tuple`` matches this
+        # branch (its ``__origin__`` is ``list`` / ``tuple``) but has no
+        # ``__args__``, so we cannot infer the element type. Raise a clear
+        # ``TypeError`` instead of crashing with an opaque ``AttributeError``.
+        args = getattr(py_type, "__args__", None)
+        if not args:
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. Specify the element type, e.g. List[int] instead "
+                "of a bare List."
+            )
+        child = args[0]
         return _pydantic_list_child_to_arrow(child, field)
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."

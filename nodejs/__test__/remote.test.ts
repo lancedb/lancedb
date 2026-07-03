@@ -191,6 +191,40 @@ describe("remote connection", () => {
     );
   });
 
+  it("supports version time-travel and branches on remote", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const body = req.url?.includes("/branches/list")
+          ? JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            })
+          : JSON.stringify({ name: "t", version: 2, schema: { fields: [] } });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        // version-only (and "main" + version) time-travel the main chain
+        const v2 = await db.openTable("t", undefined, { version: 2 });
+        expect(v2.currentBranch()).toBeNull();
+        const mainV2 = await db.openTable("t", undefined, {
+          branch: "main",
+          version: 2,
+        });
+        expect(mainV2.currentBranch()).toBeNull();
+
+        // a non-main branch opens a handle scoped to that branch
+        const exp = await db.openTable("t", undefined, { branch: "exp" });
+        expect(exp.currentBranch()).toBe("exp");
+        const expV2 = await db.openTable("t", undefined, {
+          branch: "exp",
+          version: 2,
+        });
+        expect(expV2.currentBranch()).toBe("exp");
+      },
+    );
+  });
+
   describe("TlsConfig", () => {
     it("should create TlsConfig with all fields", () => {
       const tlsConfig: TlsConfig = {
@@ -615,6 +649,70 @@ describe("remote connection", () => {
           await conn.tableNames();
         },
       );
+    });
+  });
+
+  describe("renameTable", () => {
+    async function captureRenameRequest(
+      call: (db: Connection) => Promise<void>,
+    ): Promise<{ url: string; body: Record<string, unknown> }> {
+      let captured: { url: string; body: Record<string, unknown> } | undefined;
+      await withMockDatabase((req, res) => {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          captured = {
+            url: req.url ?? "",
+            body: raw ? JSON.parse(raw) : {},
+          };
+          res.writeHead(200, { "Content-Type": "application/json" }).end("");
+        });
+      }, call);
+      if (!captured) {
+        throw new Error("mock server never saw a request");
+      }
+      return captured;
+    }
+
+    it("sends rename request for a table in the root namespace", async () => {
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2");
+      });
+      expect(url).toBe("/v1/table/table1/rename/");
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      expect(body).toEqual({ new_table_name: "table2" });
+    });
+
+    it("omits new_namespace when only the current namespace is supplied", async () => {
+      // Safe-default check: passing namespacePath alone must not send
+      // `new_namespace`, so the server keeps the table in its current
+      // namespace instead of silently moving it to root.
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2", {
+          namespacePath: ["ns1"],
+        });
+      });
+      expect(url).toBe("/v1/table/ns1$table1/rename/");
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      expect(body).toEqual({ new_table_name: "table2" });
+    });
+
+    it("includes new_namespace in the body for a cross-namespace rename", async () => {
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2", {
+          namespacePath: ["ns1"],
+          newNamespacePath: ["ns2"],
+        });
+      });
+      expect(url).toBe("/v1/table/ns1$table1/rename/");
+      expect(body).toEqual({
+        // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+        new_table_name: "table2",
+        // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+        new_namespace: ["ns2"],
+      });
     });
   });
 });

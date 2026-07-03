@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow::RecordBatchStream;
-use connection::{Connection, connect};
+use connection::{Connection, connect, connect_namespace, connect_namespace_client};
 use env_logger::Env;
 use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
@@ -15,8 +15,8 @@ use pyo3::{
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
-    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, MergeResult,
-    Table, UpdateResult,
+    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, LsmWriteSpec,
+    MergeResult, Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -26,8 +26,10 @@ pub mod expr;
 pub mod header;
 pub mod index;
 pub mod namespace;
+pub mod oauth;
 pub mod permutation;
 pub mod query;
+pub mod runtime;
 pub mod session;
 pub mod table;
 pub mod util;
@@ -49,8 +51,10 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RecordBatchStream>()?;
     m.add_class::<AddColumnsResult>()?;
     m.add_class::<AlterColumnsResult>()?;
+    m.add_class::<UpdateFieldMetadataResult>()?;
     m.add_class::<AddResult>()?;
     m.add_class::<MergeResult>()?;
+    m.add_class::<LsmWriteSpec>()?;
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
@@ -58,6 +62,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPermutationReader>()?;
     m.add_class::<PyExpr>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_namespace, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_namespace_client, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;

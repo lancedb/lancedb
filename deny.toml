@@ -1,0 +1,222 @@
+# cargo-deny configuration for LanceDB.
+#
+# Run locally with `cargo deny check`. See
+# https://embarkstudios.github.io/cargo-deny/ for the full reference.
+
+# The set of target triples we care about. cargo-deny will only consider
+# dependencies that are used on at least one of these targets. Keeping this
+# explicit avoids noise from platform-specific crates (e.g. wasm, android,
+# ios) that we never actually ship.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories: security vulnerabilities and yanked crates.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+# Fail the check if any crate in the lockfile has been yanked from crates.io.
+# Yanked crates are a signal the author retracted the release (often due to
+# bugs or security issues) and should not be depended on.
+yanked = "deny"
+# Advisory IDs we have explicitly reviewed and chosen to accept. Every
+# entry must include a rationale and, where possible, an upstream issue
+# pointing to a fix. Revisit this list whenever dependencies are updated.
+ignore = [
+    # rsa: Marvin Attack timing side-channel in PKCS#1 v1.5 decryption.
+    # Reached only through opendal → reqsign → rsa. We do not use RSA
+    # decryption in LanceDB ourselves; this is dormant in the signing path.
+    # No fixed release exists upstream as of this writing.
+    # https://rustsec.org/advisories/RUSTSEC-2023-0071
+    { id = "RUSTSEC-2023-0071", reason = "rsa crate via opendal/reqsign; no fixed upstream release" },
+
+    # instant: unmaintained. Pulled in via backoff → instant. Upstream
+    # recommends switching to `web-time`; fix has to come from backoff.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0384
+    { id = "RUSTSEC-2024-0384", reason = "transitive via backoff; waiting on backoff replacement" },
+
+    # paste: unmaintained (author archived the repo). Used transitively by
+    # datafusion and the arrow ecosystem; widespread, no drop-in replacement.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0436
+    { id = "RUSTSEC-2024-0436", reason = "transitive via datafusion; awaiting ecosystem migration" },
+
+    # encoding: unmaintained. Reached through lindera-dictionary, which is
+    # required by the native Lindera tokenizer path. Lindera has not migrated
+    # off this crate yet.
+    # https://rustsec.org/advisories/RUSTSEC-2021-0153
+    { id = "RUSTSEC-2021-0153", reason = "transitive via lindera-dictionary for native Lindera tokenizer" },
+
+    # fast-float: unsound and unmaintained. Reached only through polars-arrow
+    # from the optional Polars integration; replacement requires a Polars
+    # dependency upgrade.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0379
+    { id = "RUSTSEC-2024-0379", reason = "transitive via polars-arrow; waiting on Polars migration" },
+
+    # tantivy: segfault on malformed input due to missing bounds check.
+    # Pulled in via lance for full-text search. We only feed tantivy
+    # documents we construct ourselves, not attacker-controlled bytes.
+    # Tracked for a lance dependency bump.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0003
+    { id = "RUSTSEC-2025-0003", reason = "tantivy via lance; inputs are internally produced, not user-supplied bytes" },
+
+    # backoff: unmaintained. Reached only via async-openai. Replacement
+    # requires async-openai to migrate (or us to drop async-openai).
+    # https://rustsec.org/advisories/RUSTSEC-2025-0012
+    { id = "RUSTSEC-2025-0012", reason = "transitive via async-openai; waiting on upstream migration" },
+
+    # number_prefix: unmaintained. Transitive via indicatif → hf-hub.
+    # No security impact, just maintenance status.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0119
+    { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
+
+    # bincode: unmaintained. Reached through lindera and lindera-dictionary,
+    # which are required by the native Lindera tokenizer path. Lindera has not
+    # migrated to another serialization format yet.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0141
+    { id = "RUSTSEC-2025-0141", reason = "transitive via lindera/lindera-dictionary for native Lindera tokenizer" },
+
+    # lru: soundness issue in IterMut. Reached only through aws-sdk-s3 in
+    # LanceDB's dev-dependency graph; LanceDB does not use that iterator
+    # directly. Clearing this requires the AWS SDK chain to update lru.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0002
+    { id = "RUSTSEC-2026-0002", reason = "transitive via aws-sdk-s3 dev-dependency; waiting on AWS SDK lru upgrade" },
+
+    # rustls-webpki 0.101.7 (old major line): name-constraint checks for
+    # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
+    # from aws-smithy-http-client. The 0.103 line we actively use is patched.
+    # Clearing the 0.101 copy requires the aws-sdk chain to migrate off
+    # rustls 0.21.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0098
+    # https://rustsec.org/advisories/RUSTSEC-2026-0099
+    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+
+    # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
+    # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
+    # we actively use is upgraded to 0.103.13 which contains the fix.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0104
+    { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+
+    # rand 0.8.5: soundness issue only when ThreadRng reseeds inside a custom
+    # logger. Reached through several transitive chains. LanceDB does not use
+    # rand from a custom logger; upgrade once all pinned chains accept 0.8.6+.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0097
+    { id = "RUSTSEC-2026-0097", reason = "transitive rand 0.8.5; LanceDB does not call ThreadRng from custom logging" },
+
+    # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0176
+    # https://rustsec.org/advisories/RUSTSEC-2026-0177
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+
+    # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
+    # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
+    # Pulled in transitively by inferno (dev-only flame-graph dep), lance-namespace-impls
+    # (git dep from lance), and opendal/reqsign (cloud storage XML parsing). The XML
+    # parsed by opendal/reqsign comes from trusted cloud-storage endpoints (S3, GCS,
+    # Azure), not attacker-controlled input. Clearing requires upstream crates to migrate
+    # to quick-xml >= 0.41.0.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0194
+    # https://rustsec.org/advisories/RUSTSEC-2026-0195
+    { id = "RUSTSEC-2026-0194", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+    { id = "RUSTSEC-2026-0195", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses: only allow licenses we've reviewed as compatible with Apache-2.0.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+# SPDX identifiers for licenses that are compatible with our Apache-2.0
+# distribution. Additions require legal review.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "BSL-1.0",
+    "OpenSSL",
+    # 0BSD ("BSD Zero Clause") is effectively public domain — no attribution
+    # required. Pulled in by `mock_instant`.
+    "0BSD",
+    # bzip2-1.0.6 is the permissive upstream bzip2 license (BSD-like). Pulled
+    # in by `libbz2-rs-sys`, the pure-Rust bzip2 implementation.
+    "bzip2-1.0.6",
+    # CDLA-Permissive-2.0 is a permissive data license used by `webpki-roots`
+    # for the Mozilla CA root bundle. Data-only, distribution-compatible.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+# Per-crate license exceptions: allow a license for a specific crate only,
+# rather than globally via the `allow` list above.
+exceptions = [
+    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
+    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
+    # do not distribute, so scope the allowance to `inferno` alone.
+    { allow = ["CDDL-1.0"], crate = "inferno" },
+]
+# Crates whose license cannot be determined from Cargo metadata but whose
+# license we've manually confirmed from upstream. Keep this list minimal.
+[[licenses.clarify]]
+# polars-arrow-format omits the `license` field in its Cargo.toml, but the
+# upstream repo (pola-rs/polars-arrow-format) is dual-licensed Apache-2.0 OR
+# MIT. See https://github.com/pola-rs/polars-arrow-format/blob/main/LICENSE
+crate = "polars-arrow-format"
+expression = "Apache-2.0 OR MIT"
+license-files = []
+
+# ---------------------------------------------------------------------------
+# Bans: disallow specific crates and flag dependency hygiene issues.
+# ---------------------------------------------------------------------------
+[bans]
+# Warn (not deny) on duplicate versions of the same crate. In a large
+# workspace like this one, duplicates are common and often unavoidable
+# transitively. We surface them to discourage growth, but don't fail CI.
+multiple-versions = "warn"
+# Wildcard version requirements (`foo = "*"`) are a footgun — they let any
+# future release in without review. Ban them outright.
+wildcards = "deny"
+# Internal workspace crates reference each other via `path = "..."`, which
+# cargo-deny sees as a wildcard version. That's fine for private workspace
+# members (not published to crates.io), so allow it specifically for paths.
+allow-wildcard-paths = true
+# Features that, if enabled, should cause the check to fail.
+deny = []
+# Crates to skip when checking for duplicate versions.
+skip = []
+# Similar to `skip`, but also skips the entire transitive subtree.
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources: restrict where crates can come from.
+# ---------------------------------------------------------------------------
+[sources]
+# Deny any registry other than the ones explicitly listed below.
+unknown-registry = "deny"
+# Deny any git dependency whose host isn't in the allow-list below. This
+# prevents accidental pulls from arbitrary forks.
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Lance is developed in a sibling repo and pulled as a git dependency until
+# releases are cut to crates.io. Allow that specific host.
+allow-git = [
+    "https://github.com/lance-format/lance",
+]

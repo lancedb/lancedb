@@ -8,6 +8,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
       - python/**
       - rust/**
       - .github/workflows/python.yml
@@ -15,6 +16,9 @@ on:
       - .github/workflows/build_mac_wheel/**
       - .github/workflows/build_windows_wheel/**
       - .github/workflows/run_tests/**
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -37,7 +41,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -62,7 +66,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -91,7 +95,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -107,7 +111,6 @@ jobs:
       - name: Install
         run: |
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
-          pip install tantivy
           pip install mlx
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
@@ -123,7 +126,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -157,7 +160,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -186,7 +189,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -202,14 +205,14 @@ jobs:
       - name: Delete wheels
         run: rm -rf target/wheels
   pydantic1x:
-    timeout-minutes: 30
+    timeout-minutes: 60
     runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -226,6 +229,5 @@ jobs:
           pip install "pydantic<2"
           pip install pyarrow==16
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
-          pip install tantivy
       - name: Run tests
         run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests

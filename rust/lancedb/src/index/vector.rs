@@ -23,17 +23,12 @@ impl VectorIndex {
             .fields
             .iter()
             .map(|field_id| {
-                manifest
-                    .schema
-                    .field_by_id(*field_id)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "field {field_id} of index {} must exist in schema",
-                            index.name
-                        )
-                    })
-                    .name
-                    .clone()
+                manifest.schema.field_path(*field_id).unwrap_or_else(|_| {
+                    panic!(
+                        "field {field_id} of index {} must exist in schema",
+                        index.name
+                    )
+                })
             })
             .collect();
         Self {
@@ -470,6 +465,49 @@ impl Default for IvfHnswSqIndexBuilder {
 }
 
 impl IvfHnswSqIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+    impl_hnsw_params_setter!();
+}
+
+/// Builder for an IVF_HNSW_FLAT index.
+///
+/// This index combines IVF partitioning with an HNSW graph per partition,
+/// storing raw (unquantized) vectors. It offers the highest recall among
+/// the IVF_HNSW family at the cost of more memory and disk space compared
+/// to [`IvfHnswSqIndexBuilder`] or [`IvfHnswPqIndexBuilder`].
+#[derive(Debug, Clone, Serialize)]
+pub struct IvfHnswFlatIndexBuilder {
+    // IVF
+    #[serde(rename = "metric_type")]
+    pub(crate) distance_type: DistanceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target_partition_size: Option<u32>,
+
+    // HNSW
+    pub(crate) m: u32,
+    pub(crate) ef_construction: u32,
+}
+
+impl Default for IvfHnswFlatIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            m: 20,
+            ef_construction: 300,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfHnswFlatIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
     impl_hnsw_params_setter!();

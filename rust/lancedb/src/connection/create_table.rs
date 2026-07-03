@@ -55,7 +55,7 @@ impl CreateTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let store_params = self
             .request
@@ -73,7 +73,7 @@ impl CreateTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,

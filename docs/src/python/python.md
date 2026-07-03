@@ -94,11 +94,11 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ## Full text search
 
-::: lancedb.fts.create_index
+Use [lancedb.table.Table.create_fts_index][] for the synchronous API or
+[lancedb.table.AsyncTable.create_index][] with [lancedb.index.FTS][] for the
+asynchronous API.
 
-::: lancedb.fts.populate_index
-
-::: lancedb.fts.search_index
+::: lancedb.index.FTS
 
 ## Utilities
 
@@ -165,6 +165,12 @@ lists the indices that LanceDb supports.
 ::: lancedb.index.HnswSq
 
 ::: lancedb.index.IvfFlat
+
+::: lancedb.index.IvfSq
+
+::: lancedb.index.IvfRq
+
+::: lancedb.index.HnswFlat
 
 ::: lancedb.table.IndexStatistics
 

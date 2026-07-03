@@ -1,11 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
+use crate::{
+    error::PythonErrorExt,
+    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
+    runtime::future_into_py,
+    table::Table,
+};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
+    connection::NamespaceClientPushdownOperation,
+    database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
@@ -13,13 +25,6 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-};
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::{
-    error::PythonErrorExt,
-    namespace::{create_namespace_storage_options_provider, extract_namespace_arc},
-    table::Table,
 };
 
 #[pyclass]
@@ -37,6 +42,29 @@ impl Connection {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Connection is closed"))
     }
+}
+
+fn parse_namespace_client_pushdown_operations(
+    operations: Option<Vec<String>>,
+) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
+    let mut parsed = HashSet::new();
+    for operation in operations.unwrap_or_default() {
+        match operation.as_str() {
+            "QueryTable" => {
+                parsed.insert(NamespaceClientPushdownOperation::QueryTable);
+            }
+            "CreateTable" => {
+                parsed.insert(NamespaceClientPushdownOperation::CreateTable);
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid pushdown operation: {}",
+                    operation
+                )));
+            }
+        }
+    }
+    Ok(parsed)
 }
 
 impl Connection {
@@ -367,12 +395,17 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::CreateNamespaceRequest;
             // Mode is now a string field
-            let mode_str = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some("Create".to_string()),
-                "exist_ok" => Some("ExistOk".to_string()),
-                "overwrite" => Some("Overwrite".to_string()),
-                _ => None,
-            });
+            let mode_str = mode
+                .map(|m| match m.to_lowercase().as_str() {
+                    "create" => Ok("Create".to_string()),
+                    "exist_ok" => Ok("ExistOk".to_string()),
+                    "overwrite" => Ok("Overwrite".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid mode {:?}: expected one of 'create', 'exist_ok', 'overwrite'",
+                        m
+                    ))),
+                })
+                .transpose()?;
             let request = CreateNamespaceRequest {
                 id: Some(namespace_path),
                 mode: mode_str,
@@ -400,16 +433,26 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::DropNamespaceRequest;
             // Mode and Behavior are now string fields
-            let mode_str = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some("Skip".to_string()),
-                "FAIL" => Some("Fail".to_string()),
-                _ => None,
-            });
-            let behavior_str = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some("Restrict".to_string()),
-                "CASCADE" => Some("Cascade".to_string()),
-                _ => None,
-            });
+            let mode_str = mode
+                .map(|m| match m.to_uppercase().as_str() {
+                    "SKIP" => Ok("Skip".to_string()),
+                    "FAIL" => Ok("Fail".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid mode {:?}: expected one of 'skip', 'fail'",
+                        m
+                    ))),
+                })
+                .transpose()?;
+            let behavior_str = behavior
+                .map(|b| match b.to_uppercase().as_str() {
+                    "RESTRICT" => Ok("Restrict".to_string()),
+                    "CASCADE" => Ok("Cascade".to_string()),
+                    _ => Err(PyValueError::new_err(format!(
+                        "Invalid behavior {:?}: expected one of 'restrict', 'cascade'",
+                        b
+                    ))),
+                })
+                .transpose()?;
             let request = DropNamespaceRequest {
                 id: Some(namespace_path),
                 mode: mode_str,
@@ -496,7 +539,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -508,6 +551,9 @@ pub fn connect(
     client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
     session: Option<crate::session::Session>,
+    manifest_enabled: bool,
+    namespace_client_properties: Option<HashMap<String, String>>,
+    oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -527,15 +573,136 @@ pub fn connect(
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
+        if manifest_enabled {
+            builder = builder.manifest_enabled(true);
+        }
+        if let Some(namespace_client_properties) = namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
+        }
         #[cfg(feature = "remote")]
         if let Some(client_config) = client_config {
             builder = builder.client_config(client_config.into());
+        }
+        if let Some(oauth_config) = oauth_config {
+            let config: lancedb::remote::oauth::OAuthConfig =
+                oauth_config.try_into().infer_error()?;
+            builder = builder.oauth_config(config);
         }
         if let Some(session) = session {
             builder = builder.session(session.inner.clone());
         }
         Ok(Connection::new(builder.execute().await.infer_error()?))
     })
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    namespace_client,
+    read_consistency_interval=None,
+    storage_options=None,
+    session=None,
+    namespace_client_pushdown_operations=None,
+    namespace_client_impl=None,
+    namespace_client_properties=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_namespace_client(
+    py: Python<'_>,
+    namespace_client: Py<PyAny>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    namespace_client_pushdown_operations: Option<Vec<String>>,
+    namespace_client_impl: Option<String>,
+    namespace_client_properties: Option<HashMap<String, String>>,
+) -> PyResult<Connection> {
+    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
+    let ns_properties = namespace_client_properties.unwrap_or_default();
+    let storage_options = storage_options.unwrap_or_default();
+    let session = session.map(|s| s.inner.clone());
+
+    // Prefer building the namespace natively from (impl, properties) so the
+    // read-freshness provider installed
+    let database = if build_namespace_natively(namespace_client_impl.as_deref(), &ns_properties) {
+        let ns_impl = namespace_client_impl.expect("impl present per build_namespace_natively");
+        crate::runtime::block_on(LanceNamespaceDatabase::connect(
+            &ns_impl,
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            namespace_client_pushdown_operations,
+        ))
+        .infer_error()?
+    } else {
+        let namespace_client = extract_namespace_arc(py, namespace_client)?;
+        LanceNamespaceDatabase::from_namespace_client(
+            namespace_client,
+            namespace_client_impl.unwrap_or_else(|| "python".to_string()),
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            namespace_client_pushdown_operations,
+        )
+    };
+
+    Ok(Connection::new(LanceConnection::new(
+        Arc::new(database),
+        Arc::new(lancedb::embeddings::MemoryRegistry::new()),
+    )))
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    namespace_client_impl,
+    namespace_client_properties,
+    read_consistency_interval=None,
+    storage_options=None,
+    session=None,
+    namespace_client_pushdown_operations=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_namespace(
+    namespace_client_impl: String,
+    namespace_client_properties: HashMap<String, String>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    namespace_client_pushdown_operations: Option<Vec<String>>,
+) -> PyResult<Connection> {
+    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
+
+    let mut builder =
+        lancedb::connect_namespace(&namespace_client_impl, namespace_client_properties)
+            .pushdown_operations(namespace_client_pushdown_operations);
+    if let Some(storage_options) = storage_options {
+        builder = builder.storage_options(storage_options);
+    }
+    if let Some(read_consistency_interval) = read_consistency_interval {
+        builder = builder.read_consistency_interval(read_consistency_interval);
+    }
+    if let Some(session) = session {
+        builder = builder.session(session.inner.clone());
+    }
+
+    Ok(Connection::new(
+        crate::runtime::block_on(builder.execute()).infer_error()?,
+    ))
+}
+
+/// Whether to build the namespace natively (from impl + properties) instead of
+/// wrapping a pre-built client. Native construction is required for the
+/// read-freshness provider to be installed
+fn build_namespace_natively(
+    namespace_client_impl: Option<&str>,
+    namespace_client_properties: &HashMap<String, String>,
+) -> bool {
+    matches!(namespace_client_impl, Some("rest")) && !namespace_client_properties.is_empty()
 }
 
 #[derive(FromPyObject)]
@@ -634,5 +801,38 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             header_provider,
             user_id: value.user_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn native_build_only_for_rest_with_properties() {
+        let rest = props(&[("uri", "http://localhost:10024")]);
+
+        // rest + non-empty properties -> build natively (installs the
+        // read-freshness provider so checkout_latest() busts the server cache).
+        assert!(build_namespace_natively(Some("rest"), &rest));
+
+        // dir is local (no server cache) -> wrap the pre-built client unchanged.
+        assert!(!build_namespace_natively(
+            Some("dir"),
+            &props(&[("root", "/tmp")])
+        ));
+
+        // No impl: only a pre-built client was handed in -> wrap it as-is.
+        assert!(!build_namespace_natively(None, &rest));
+
+        // rest but no properties: nothing to build a connection from -> wrap.
+        assert!(!build_namespace_natively(Some("rest"), &HashMap::new()));
     }
 }

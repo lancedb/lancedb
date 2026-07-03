@@ -1,7 +1,5 @@
 [workspace]
 members = ["rust/lancedb", "nodejs", "python"]
-# Python package needs to be built by maturin.
-exclude = ["python"]
 resolver = "2"
 
 [workspace.package]
@@ -15,40 +13,41 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=5.0.0-beta.5", default-features = false, "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=5.0.0-beta.5", default-features = false, "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=5.0.0-beta.5", default-features = false, "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=5.0.0-beta.5", "tag" = "v5.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=9.0.0-beta.10", default-features = false, "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=9.0.0-beta.10", default-features = false, "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=9.0.0-beta.10", default-features = false, "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=9.0.0-beta.10", "tag" = "v9.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "57.2", optional = false }
-arrow-array = "57.2"
-arrow-data = "57.2"
-arrow-ipc = "57.2"
-arrow-ord = "57.2"
-arrow-schema = "57.2"
-arrow-select = "57.2"
-arrow-cast = "57.2"
+arrow = { version = "58.0.0", optional = false }
+arrow-array = "58.0.0"
+arrow-buffer = "58.0.0"
+arrow-data = "58.0.0"
+arrow-ipc = "58.0.0"
+arrow-ord = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+arrow-cast = "58.0.0"
 async-trait = "0"
-datafusion = { version = "52.1", default-features = false }
-datafusion-catalog = "52.1"
-datafusion-common = { version = "52.1", default-features = false }
-datafusion-execution = "52.1"
-datafusion-expr = "52.1"
-datafusion-functions = "52.1"
-datafusion-physical-plan = "52.1"
-datafusion-physical-expr = "52.1"
-datafusion-sql = "52.1"
+datafusion = { version = "53.0.0", default-features = false }
+datafusion-catalog = "53.0.0"
+datafusion-common = { version = "53.0.0", default-features = false }
+datafusion-execution = "53.0.0"
+datafusion-expr = "53.0.0"
+datafusion-functions = "53.0.0"
+datafusion-physical-plan = "53.0.0"
+datafusion-physical-expr = "53.0.0"
+datafusion-sql = "53.0.0"
 env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
@@ -56,7 +55,7 @@ half = { "version" = "2.7.1", default-features = false, features = [
 futures = "0"
 log = "0.4"
 moka = { version = "0.12", features = ["future"] }
-object_store = "0.12.0"
+object_store = "0.13.2"
 pin-project = "1.0.7"
 rand = "0.9"
 snafu = "0.8"

@@ -8,7 +8,17 @@ from abc import abstractmethod
 from datetime import timedelta
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Generator,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Union,
+)
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -282,7 +292,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -313,7 +323,7 @@ class DBConnection(EnforceOverrides):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data)
-        LanceTable(name='my_table', version=1, ...)
+        LanceTable(name='my_table', ...)
         >>> db["my_table"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -334,7 +344,7 @@ class DBConnection(EnforceOverrides):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data)
-        LanceTable(name='table2', version=1, ...)
+        LanceTable(name='table2', ...)
         >>> db["table2"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -357,7 +367,7 @@ class DBConnection(EnforceOverrides):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(name='table3', version=1, ...)
+        LanceTable(name='table3', ...)
         >>> db["table3"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -391,7 +401,7 @@ class DBConnection(EnforceOverrides):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(name='table4', version=1, ...)
+        LanceTable(name='table4', ...)
 
         """
         raise NotImplementedError
@@ -406,6 +416,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -433,7 +445,15 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -529,6 +549,19 @@ class DBConnection(EnforceOverrides):
             "namespace_client is not supported for this connection type"
         )
 
+    def serialize(self) -> str:
+        """Serialize this connection for reconstruction.
+
+        The returned string can be passed to :func:`lancedb.deserialize_conn`
+        to recreate an equivalent connection, e.g. in a remote worker.
+
+        Returns
+        -------
+        str
+            Serialized representation of this connection.
+        """
+        raise NotImplementedError("serialize is not supported for this connection type")
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -555,15 +588,15 @@ class LanceDBConnection(DBConnection):
     >>> db = lancedb.connect("./.lancedb")
     >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
     ...                                   {"vector": [0.5, 1.3], "b": 4}])
-    LanceTable(name='my_table', version=1, ...)
+    LanceTable(name='my_table', ...)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
-    LanceTable(name='another_table', version=1, ...)
+    LanceTable(name='another_table', ...)
     >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
     >>> db["my_table"]
-    LanceTable(name='my_table', version=1, ...)
+    LanceTable(name='my_table', ...)
     >>> "my_table" in db
     True
     >>> db.drop_table("my_table")
@@ -577,10 +610,16 @@ class LanceDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        manifest_enabled: bool = False,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
         _inner: Optional[LanceDbConnection] = None,
     ):
+        self.storage_options = storage_options
+        self._manifest_enabled = manifest_enabled
+        self._namespace_client_properties = namespace_client_properties
         if _inner is not None:
             self._conn = _inner
+            self._cached_namespace_client = None
             return
 
         if not isinstance(uri, Path):
@@ -619,6 +658,8 @@ class LanceDBConnection(DBConnection):
                 None,
                 storage_options,
                 session,
+                manifest_enabled,
+                namespace_client_properties,
             )
 
         # TODO: It would be nice if we didn't store self.storage_options but it is
@@ -626,8 +667,8 @@ class LanceDBConnection(DBConnection):
         # work because some paths like LanceDBConnection.from_inner will lose the
         # storage_options.  Also, this class really shouldn't be holding any state
         # beyond _conn.
-        self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
+        self._cached_namespace_client: Optional[LanceNamespace] = None
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
@@ -651,6 +692,24 @@ class LanceDBConnection(DBConnection):
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
         return val
+
+    @override
+    def serialize(self) -> str:
+        import json
+
+        rci = self.read_consistency_interval
+        return json.dumps(
+            {
+                "connection_type": "local",
+                "uri": self.uri,
+                "storage_options": self.storage_options,
+                "manifest_enabled": self._manifest_enabled,
+                "namespace_client_properties": self._namespace_client_properties,
+                "read_consistency_interval_seconds": (
+                    rci.total_seconds() if rci else None
+                ),
+            }
+        )
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -687,10 +746,10 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
-            self._conn.list_namespaces(
-                namespace_path=namespace_path, page_token=page_token, limit=limit
-            )
+        return self._namespace_conn().list_namespaces(
+            namespace_path=namespace_path,
+            page_token=page_token,
+            limit=limit,
         )
 
     @override
@@ -700,27 +759,10 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
-        """Create a new namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to create.
-        mode: str, optional
-            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
-            or "overwrite" (replace if exists). Case insensitive.
-        properties: Dict[str, str], optional
-            Properties to set on the namespace.
-
-        Returns
-        -------
-        CreateNamespaceResponse
-            Response containing the properties of the created namespace.
-        """
-        return LOOP.run(
-            self._conn.create_namespace(
-                namespace_path=namespace_path, mode=mode, properties=properties
-            )
+        return self._namespace_conn().create_namespace(
+            namespace_path=namespace_path,
+            mode=mode,
+            properties=properties,
         )
 
     @override
@@ -730,46 +772,19 @@ class LanceDBConnection(DBConnection):
         mode: Optional[str] = None,
         behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
-        """Drop a namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to drop.
-        mode: str, optional
-            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
-        behavior: str, optional
-            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
-            Case insensitive.
-
-        Returns
-        -------
-        DropNamespaceResponse
-            Response containing properties and transaction_id if applicable.
-        """
-        return LOOP.run(
-            self._conn.drop_namespace(
-                namespace_path=namespace_path, mode=mode, behavior=behavior
-            )
+        return self._namespace_conn().drop_namespace(
+            namespace_path=namespace_path,
+            mode=mode,
+            behavior=behavior,
         )
 
     @override
     def describe_namespace(
         self, namespace_path: List[str]
     ) -> DescribeNamespaceResponse:
-        """Describe a namespace.
-
-        Parameters
-        ----------
-        namespace_path: List[str]
-            The namespace identifier to describe.
-
-        Returns
-        -------
-        DescribeNamespaceResponse
-            Response containing the namespace properties.
-        """
-        return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
+        return self._namespace_conn().describe_namespace(
+            namespace_path=namespace_path,
+        )
 
     @override
     def list_tables(
@@ -798,6 +813,12 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
+        if namespace_path:
+            return self._namespace_conn().list_tables(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                limit=limit,
+            )
         return LOOP.run(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
@@ -846,11 +867,20 @@ class LanceDBConnection(DBConnection):
             )
         )
 
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
     def __len__(self) -> int:
-        return len(self.table_names())
+        return sum(1 for _ in self._all_table_names())
 
     def __contains__(self, name: str) -> bool:
-        return name in self.table_names()
+        return name in self._all_table_names()
 
     @override
     def create_table(
@@ -886,6 +916,22 @@ class LanceDBConnection(DBConnection):
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
+        if namespace_path:
+            return self._namespace_conn().create_table(
+                name,
+                data=data,
+                schema=schema,
+                mode=mode,
+                exist_ok=exist_ok,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                embedding_functions=embedding_functions,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
+            )
+
         tbl = LanceTable.create(
             self,
             name,
@@ -901,6 +947,19 @@ class LanceDBConnection(DBConnection):
         )
         return tbl
 
+    def _namespace_conn(self) -> DBConnection:
+        """Return a LanceNamespaceDBConnection backed by this connection's
+        directory namespace.  Used to delegate child-namespace operations."""
+        from lancedb.namespace import LanceNamespaceDBConnection
+
+        return LanceNamespaceDBConnection(
+            self.namespace_client(),
+            read_consistency_interval=self.read_consistency_interval,
+            storage_options=self.storage_options,
+            namespace_client_impl=None,
+            namespace_client_properties=None,
+        )
+
     @override
     def open_table(
         self,
@@ -909,6 +968,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -917,7 +978,16 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
         namespace_path: List[str], optional
-            The namespace to open the table from.
+            The namespace to open the table from.  When non-empty, the
+            table is resolved through the directory namespace client.
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -936,13 +1006,27 @@ class LanceDBConnection(DBConnection):
                 stacklevel=2,
             )
 
-        return LanceTable.open(
-            self,
-            name,
-            namespace_path=namespace_path,
-            storage_options=storage_options,
-            index_cache_size=index_cache_size,
-        )
+        if namespace_path:
+            tbl = self._namespace_conn().open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+        else:
+            tbl = LanceTable.open(
+                self,
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+
+        if branch is not None:
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
+        return tbl
 
     def clone_table(
         self,
@@ -1020,6 +1104,9 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
+        if namespace_path:
+            self._namespace_conn().drop_table(name, namespace_path=namespace_path)
+            return
         LOOP.run(
             self._conn.drop_table(
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
@@ -1071,14 +1158,17 @@ class LanceDBConnection(DBConnection):
         """Get the equivalent namespace client for this connection.
 
         Returns a DirectoryNamespace pointing to the same root with the
-        same storage options.
+        same storage options.  The result is cached for the lifetime of
+        this connection.
 
         Returns
         -------
         LanceNamespace
             The namespace client for this connection.
         """
-        return LOOP.run(self._conn.namespace_client())
+        if self._cached_namespace_client is None:
+            self._cached_namespace_client = LOOP.run(self._conn.namespace_client())
+        return self._cached_namespace_client
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
@@ -1353,6 +1443,7 @@ class AsyncConnection(object):
         namespace_path: Optional[List[str]] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -1397,7 +1488,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
 
             To enable stable row IDs (row IDs remain stable after compaction,
             update, delete, and merges), set `new_table_enable_stable_row_ids`
@@ -1550,6 +1641,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
         else:
             data = data_to_reader(data, schema)
@@ -1560,6 +1652,7 @@ class AsyncConnection(object):
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 location=location,
+                namespace_client=namespace_client,
             )
 
         return AsyncTable(new_table)
@@ -1574,6 +1667,8 @@ class AsyncConnection(object):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> AsyncTable:
         """Open a Lance Table in the database.
 
@@ -1588,7 +1683,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.com/docs/storage/>
+            <https://docs.lancedb.com/storage/>
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().
@@ -1609,6 +1704,14 @@ class AsyncConnection(object):
         managed_versioning: bool, optional
             Whether managed versioning is enabled for this table. If provided,
             avoids a redundant describe_table call when namespace_client is set.
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -1625,7 +1728,14 @@ class AsyncConnection(object):
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
         )
-        return AsyncTable(table)
+        tbl = AsyncTable(table)
+        # "main" is the default branch, so treat it as no branch: remote rejects
+        # every branch checkout (even "main"), and the version still applies.
+        if branch is not None and branch != "main":
+            tbl = await tbl.branches.checkout(branch, version)
+        elif version is not None:
+            await tbl.checkout(version)
+        return tbl
 
     async def clone_table(
         self,

@@ -28,7 +28,7 @@ def sync_table(tmpdir_factory) -> Table:
         }
     )
     table = db.create_table("test", data)
-    table.create_fts_index("text", with_position=False, use_tantivy=False)
+    table.create_fts_index("text", with_position=False)
     return table
 
 
@@ -192,7 +192,7 @@ def table_with_id(tmpdir_factory) -> Table:
         }
     )
     table = db.create_table("test_with_id", data)
-    table.create_fts_index("text", with_position=False, use_tantivy=False)
+    table.create_fts_index("text", with_position=False)
     return table
 
 

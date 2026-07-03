@@ -32,6 +32,7 @@ use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
 pub mod namespace;
+pub(crate) mod read_freshness;
 
 pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);

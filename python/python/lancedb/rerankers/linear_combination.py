@@ -102,8 +102,15 @@ class LinearCombinationReranker(Reranker):
 
         combined_list = []
         for row_id, result in results.items():
+            # Convert vector distance to a relevance score in [0, 1] where
+            # higher is better.  Missing vector entries are penalised with
+            # `_invert_score(fill)` = 1 - fill (= 0.0 for the default fill=1).
             vector_score = self._invert_score(result.get("_distance", fill))
-            fts_score = result.get("_score", fill)
+            # FTS scores (BM25) are already in a "higher = more relevant" space.
+            # Missing FTS entries are penalised symmetrically: we use
+            # `1 - fill` so that the same `fill` value drives both missing-vector
+            # and missing-FTS penalties in the same direction.
+            fts_score = result.get("_score", 1 - fill)
             result["_relevance_score"] = self._combine_score(vector_score, fts_score)
             combined_list.append(result)
 
@@ -123,8 +130,12 @@ class LinearCombinationReranker(Reranker):
         return tbl
 
     def _combine_score(self, vector_score, fts_score):
-        # these scores represent distance
-        return 1 - (self.weight * vector_score + (1 - self.weight) * fts_score)
+        # Both vector_score (inverted distance) and fts_score are in a
+        # "higher = more relevant" space.  A straight weighted average gives
+        # higher _relevance_score to better matches, as expected.
+        # Previously this returned `1 - (...)` which inverted the final
+        # ranking so that the *least* relevant document ranked first.
+        return self.weight * vector_score + (1 - self.weight) * fts_score
 
     def _invert_score(self, dist: float):
         # Invert the score between relevance and distance

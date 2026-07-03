@@ -8,6 +8,7 @@ use std::{
 
 use lance::{Dataset, dataset::refs};
 
+use crate::table::merge::lsm::ShardWriterCache;
 use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 
 /// A wrapper around a [Dataset] that provides consistency checks.
@@ -18,6 +19,10 @@ use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetState>>,
     consistency: ConsistencyMode,
+    /// The single MemWAL `ShardWriter` for this dataset, co-located so it is
+    /// cached for the session and shares the dataset's lifecycle. A dataset
+    /// writes to one shard at a time. Shared by `Arc` across clones.
+    shard_writer: Arc<ShardWriterCache>,
 }
 
 /// The current dataset and whether it is pinned to a specific version.
@@ -67,7 +72,30 @@ impl DatasetConsistencyWrapper {
                 pinned_version: None,
             })),
             consistency,
+            shard_writer: Arc::new(ShardWriterCache::default()),
         }
+    }
+
+    /// Create a new wrapper pinned to the dataset's current version.
+    ///
+    /// `dataset` must already be checked out at the desired version; this pins
+    /// to `dataset.version()` without re-resolving. The wrapper is read-only
+    /// (time-travel) until [`as_latest`](Self::as_latest) re-attaches it to the
+    /// latest version.
+    pub fn new_time_travel(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let version = dataset.version().version;
+        let wrapper = Self::new_latest(dataset, read_consistency_interval);
+        wrapper
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pinned_version = Some(version);
+        wrapper
+    }
+
+    /// The MemWAL `ShardWriter` cache co-located with this dataset.
+    pub(crate) fn shard_writer(&self) -> &Arc<ShardWriterCache> {
+        &self.shard_writer
     }
 
     /// Get the current dataset.
@@ -133,8 +161,19 @@ impl DatasetConsistencyWrapper {
     }
 
     /// Checkout a branch and track its HEAD for new versions.
-    pub async fn as_branch(&self, _branch: impl Into<String>) -> Result<()> {
-        todo!("Branch support not yet implemented")
+    pub async fn as_branch(&self, branch: impl Into<String>) -> Result<()> {
+        let branch = branch.into();
+        let dataset = { self.state.lock()?.dataset.clone() };
+        let new_dataset = dataset.checkout_branch(&branch).await?;
+
+        let mut state = self.state.lock()?;
+        state.dataset = Arc::new(new_dataset);
+        state.pinned_version = None;
+        drop(state);
+        if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
+            bg_cache.invalidate();
+        }
+        Ok(())
     }
 
     /// Check that the dataset is in a mutable mode (Latest).
@@ -148,6 +187,17 @@ impl DatasetConsistencyWrapper {
         } else {
             Ok(())
         }
+    }
+
+    /// The branch this wrapper is currently tracking, or `None` for `main`.
+    pub fn current_branch(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dataset
+            .manifest()
+            .branch
+            .clone()
     }
 
     /// Returns the version, if in time travel mode, or None otherwise.
@@ -285,7 +335,10 @@ mod tests {
 
     use super::*;
 
-    use crate::{connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions};
+    use crate::{
+        connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions,
+        utils::background_cache::clock,
+    };
 
     async fn create_test_dataset(uri: &str) -> Dataset {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -465,6 +518,10 @@ mod tests {
 
         let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_millis(200)));
 
+        // Freeze `cached_at` on the mock clock so a slow external write below can't
+        // expire the TTL before the explicit advance_by() does (flake on loaded CI).
+        clock::pin();
+
         // Populate the cache
         let v1 = wrapper.get().await.unwrap().version().version;
         assert_eq!(v1, 1);
@@ -472,12 +529,13 @@ mod tests {
         // External write
         append_to_dataset(uri).await;
 
-        // Should return cached value immediately (within TTL)
+        // Should return cached value immediately (within TTL), regardless of how
+        // long the external write above took on a slow CI runner.
         let v_cached = wrapper.get().await.unwrap().version().version;
         assert_eq!(v_cached, 1);
 
-        // Wait for TTL to expire, then get() should trigger a refresh
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Advance the mock clock past the TTL so the next get() triggers a refresh.
+        clock::advance_by(Duration::from_millis(300));
         let v_after = wrapper.get().await.unwrap().version().version;
         assert_eq!(v_after, 2);
     }
@@ -718,5 +776,32 @@ mod tests {
 
         let result = wrapper.reload().await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_as_branch_is_writable_and_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+
+        // v1 on main, then shallow-clone a branch off it
+        let mut ds = create_test_dataset(uri).await;
+        let v1 = ds.version().version;
+        ds.create_branch("exp", v1, None).await.unwrap();
+
+        // wrapper starts on main: latest, writable, no branch
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        assert_eq!(wrapper.current_branch(), None);
+
+        // switch to the branch
+        wrapper.as_branch("exp").await.unwrap();
+        assert_eq!(wrapper.current_branch().as_deref(), Some("exp"));
+
+        // a branch is writable (unlike a pinned/time-travel checkout)
+        wrapper.ensure_mutable().unwrap();
+        assert_eq!(wrapper.time_travel_version(), None);
+
+        // get() returns the branch dataset
+        let on_branch = wrapper.get().await.unwrap();
+        assert_eq!(on_branch.manifest().branch.as_deref(), Some("exp"));
     }
 }

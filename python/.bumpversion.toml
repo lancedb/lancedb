@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.31.0-beta.1"
+current_version = "0.34.0-beta.6"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -23,6 +23,8 @@ allow_dirty = true
 commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
+# bump-my-version >=1.4.0 rejects pre_commit_hooks containing shell syntax unless opted in.
+allow_shell_hooks = true
 
 # Update Cargo.lock after version bump
 pre_commit_hooks = [

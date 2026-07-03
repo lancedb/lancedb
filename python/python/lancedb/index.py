@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from ._lancedb import (
     IndexConfig,
 )
+from .types import BaseTokenizerType
 
 lang_mapping = {
     "ar": "Arabic",
@@ -93,6 +94,20 @@ class LabelList:
 
 
 @dataclass
+class Fm:
+    """Describe an FM-Index configuration.
+
+    `Fm` is a scalar index on string or binary columns that accelerates
+    substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+    `FTS` index, it matches arbitrary substrings of the raw bytes.
+
+    For example, it works with `url`, `path`, `content`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -111,8 +126,12 @@ class FTS:
         - "simple": Splits text by whitespace and punctuation.
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
+        - "ngram": N-gram tokenizer for substring-style matching.
+        - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
+        - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
     language : str, default "English"
-        The language to use for tokenization.
+        The language to use for stemming and stop-word removal. This is not the
+        primary way to enable CJK tokenization.
     max_token_length : int, default 40
         The maximum token length to index. Tokens longer than this length will be
         ignored.
@@ -127,10 +146,17 @@ class FTS:
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+
+    Notes
+    -----
+    Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
+    require tokenizer models in Lance's language model home. Set
+    ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
+    directory under ``lance/language_models``.
     """
 
     with_position: bool = False
-    base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple"
+    base_tokenizer: BaseTokenizerType = "simple"
     language: str = "English"
     max_token_length: Optional[int] = 40
     lower_case: bool = True
@@ -269,6 +295,9 @@ class HnswPq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -374,11 +403,103 @@ class HnswSq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
+
+
+@dataclass
+class HnswFlat:
+    """Describe a HNSW-FLAT index configuration.
+
+    HNSW-FLAT stands for Hierarchical Navigable Small World without quantization.
+    It stores raw vectors in the HNSW graph, providing the highest recall among
+    the IVF_HNSW family at the cost of more memory and disk space compared to
+    :class:`HnswSq` or :class:`HnswPq`.
+
+    Parameters
+    ----------
+
+    distance_type: str, default "l2"
+
+        The distance metric used to train the index.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance. This is a very common distance metric that
+        accounts for both magnitude and direction when determining the distance
+        between vectors. l2 distance has a range of [0, ∞).
+
+        "cosine" - Cosine distance.  Cosine distance is a distance metric
+        calculated from the cosine similarity between two vectors. Cosine
+        similarity is a measure of similarity between two non-zero vectors of an
+        inner product space. It is defined to equal the cosine of the angle
+        between them.  Unlike l2, the cosine distance is not affected by the
+        magnitude of the vectors.  Cosine distance has a range of [0, 2].
+
+        "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
+        distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+        l2 norm is 1), then dot distance is equivalent to the cosine distance.
+
+    num_partitions, default sqrt(num_rows)
+
+        The number of IVF partitions to create.
+
+        For HNSW, we recommend a small number of partitions. Setting this to 1
+        works well for most tables. For very large tables, training just one HNSW
+        graph will require too much memory. Each partition becomes its own HNSW
+        graph, so setting this value higher reduces the peak memory use of
+        training.
+
+    max_iterations, default 50
+
+        Max iterations to train kmeans.
+
+        When training an IVF index we use kmeans to calculate the partitions.
+        This parameter controls how many iterations of kmeans to run.
+
+    sample_rate, default 256
+
+        The rate used to calculate the number of training vectors for kmeans.
+
+    m, default 20
+
+        The number of neighbors to select for each vector in the HNSW graph.
+
+        This value controls the tradeoff between search speed and accuracy.
+        The higher the value the more accurate the search but the slower it
+        will be.
+
+    ef_construction, default 300
+
+        The number of candidates to evaluate during the construction of the HNSW
+        graph.
+
+        This value controls the tradeoff between build speed and accuracy.
+        The higher the value the more accurate the build but the slower it will
+        be.  150 to 300 is the typical range. 100 is a minimum for good quality
+        search results. In most cases, there is no benefit to setting this higher
+        than 500.  This value should be set to a value that is not less than `ef`
+        in the search phase.
+
+    target_partition_size, default is 1,048,576
+
+        The target size of each partition.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    max_iterations: int = 50
+    sample_rate: int = 256
+    m: int = 20
+    ef_construction: int = 300
+    target_partition_size: Optional[int] = None
 
 
 # Backwards-compatible aliases
 IvfHnswPq = HnswPq
 IvfHnswSq = HnswSq
+IvfHnswFlat = HnswFlat
 
 
 @dataclass
@@ -478,6 +599,9 @@ class IvfFlat:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -508,6 +632,9 @@ class IvfSq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -638,6 +765,9 @@ class IvfPq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -691,6 +821,9 @@ class IvfRq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 __all__ = [
@@ -698,13 +831,16 @@ __all__ = [
     "IvfPq",
     "IvfHnswPq",
     "IvfHnswSq",
+    "IvfHnswFlat",
     "IvfSq",
     "IvfRq",
     "IvfFlat",
     "HnswPq",
     "HnswSq",
+    "HnswFlat",
     "IndexConfig",
     "FTS",
     "Bitmap",
     "LabelList",
+    "Fm",
 ]

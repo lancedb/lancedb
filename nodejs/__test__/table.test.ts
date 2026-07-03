@@ -28,6 +28,7 @@ import {
   List,
   Schema,
   SchemaLike,
+  Struct,
   Type,
   Uint8,
   Utf8,
@@ -84,6 +85,140 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("should support branches", async () => {
+      await table.add([{ id: 1 }]);
+      expect(await table.countRows()).toBe(1);
+
+      expect(table.currentBranch()).toBeNull();
+
+      // fork an isolated, writable branch from main
+      const branch = await (await table.branches()).create("exp");
+      expect(branch.currentBranch()).toBe("exp");
+      expect(await branch.countRows()).toBe(1);
+      await branch.add([{ id: 2 }]);
+      expect(await branch.countRows()).toBe(2);
+      // main is untouched by branch writes
+      expect(await table.countRows()).toBe(1);
+
+      // listed, with main (null) as the parent
+      const list = await (await table.branches()).list();
+      expect(Object.keys(list)).toContain("exp");
+      expect(list["exp"].parentBranch).toBeNull();
+
+      // fromRef="main" is equivalent to the default
+      await (await table.branches()).create("exp2", "main");
+      const list2 = await (await table.branches()).list();
+      expect(list2["exp2"].parentBranch).toBeNull();
+
+      // checkout returns a handle scoped to the branch's latest
+      const checkedOut = await (await table.branches()).checkout("exp");
+      expect(checkedOut.currentBranch()).toBe("exp");
+      expect(await checkedOut.countRows()).toBe(2);
+
+      // delete removes it
+      await (await table.branches()).delete("exp");
+      await (await table.branches()).delete("exp2");
+      const after = await (await table.branches()).list();
+      expect(Object.keys(after)).not.toContain("exp");
+    });
+
+    it("should open a branch via open_table", async () => {
+      const db = await connect(tmpDir.name);
+      await table.add([{ id: 1 }]);
+      const branch = await (await table.branches()).create("exp");
+      await branch.add([{ id: 2 }]);
+
+      // open_table(..., { branch }) returns a handle scoped to the branch
+      const opened = await db.openTable("some_table", undefined, {
+        branch: "exp",
+      });
+      expect(await opened.countRows()).toBe(2);
+      // opening without branch still tracks main
+      expect(await (await db.openTable("some_table")).countRows()).toBe(1);
+    });
+
+    it("should open a branch at a version isolated from main and HEAD", async () => {
+      const db = await connect(tmpDir.name);
+      // main: a single fork-point row
+      const t = await db.createTable("bv_table", [{ id: 0 }]);
+      const mainV1 = await t.version();
+
+      // fork "exp", then advance exp AND main independently past the fork so
+      // they diverge while sharing version numbers
+      const exp = await (await t.branches()).create("exp");
+      await exp.add([{ id: 1 }]); // exp: {0, 1}
+      const expV2 = await exp.version();
+      await exp.add([{ id: 2 }]); // exp HEAD: {0, 1, 2}
+      await t.add([{ id: 100 }, { id: 101 }, { id: 102 }]); // main HEAD: {0,100,101,102}
+      expect(await t.version()).toBe(expV2);
+
+      // open exp at the shared version: the data must be exp's, not main's.
+      // count alone cannot prove this (main@v2 also exists), so assert
+      // provenance by content.
+      const pinned = await db.openTable("bv_table", undefined, {
+        branch: "exp",
+        version: expV2,
+      });
+      expect(await pinned.countRows()).toBe(2); // not exp HEAD (3), not main@v2 (4)
+      expect(await pinned.countRows("id = 1")).toBe(1); // exp's post-fork row
+      expect(await pinned.countRows("id = 100")).toBe(0); // main's rows invisible
+
+      // the same coordinate is reachable directly via branches().checkout(name, version)
+      const pinnedDirect = await (await t.branches()).checkout("exp", expV2);
+      expect(await pinnedDirect.countRows()).toBe(2);
+
+      // the HEADs are unaffected
+      expect(
+        await (
+          await db.openTable("bv_table", undefined, { branch: "exp" })
+        ).countRows(),
+      ).toBe(3);
+      expect(await (await db.openTable("bv_table")).countRows()).toBe(4);
+
+      // version-only (no branch) time-travels main itself: its fork-point
+      // version holds only main's first row, and the shared version number
+      // resolves to main's data, not the branch's ("opens main at the version")
+      const oldMain = await db.openTable("bv_table", undefined, {
+        version: mainV1,
+      });
+      expect(await oldMain.countRows()).toBe(1);
+      const sharedOnMain = await db.openTable("bv_table", undefined, {
+        version: expV2,
+      });
+      expect(await sharedOnMain.countRows()).toBe(4); // main@v2, not exp@v2 (2)
+
+      // detached head: writing to a pinned version is rejected
+      await expect(pinned.add([{ id: 9 }])).rejects.toThrow(
+        /cannot be modified/,
+      );
+
+      // a nonexistent version is rejected -- on main, and on a branch (a
+      // distinct resolution path, on the branch's manifests)
+      await expect(
+        db.openTable("bv_table", undefined, { version: 9999 }),
+      ).rejects.toThrow();
+      await expect(
+        db.openTable("bv_table", undefined, { branch: "exp", version: 9999 }),
+      ).rejects.toThrow();
+
+      // checkoutLatest re-attaches the pinned handle to the BRANCH's HEAD
+      // (writable again), not main's HEAD (4), and not staying pinned (2)
+      await pinned.checkoutLatest();
+      expect(await pinned.countRows()).toBe(3); // exp HEAD
+      await pinned.add([{ id: 3 }]);
+      expect(await pinned.countRows()).toBe(4); // writable again
+    });
+
+    it("rejects invalid branch inputs", async () => {
+      const branches = await table.branches();
+      await expect(branches.create("")).rejects.toThrow("non-empty");
+      await expect(branches.checkout("")).rejects.toThrow("non-empty");
+      await expect(branches.delete("")).rejects.toThrow("non-empty");
+      await expect(branches.create("bad", "main", -1)).rejects.toThrow(
+        "non-negative",
+      );
+    });
+
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);
@@ -113,6 +248,48 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(addRes.version).toBe(2);
       await table.add([{ id: 1 }], { mode: "overwrite" });
       await expect(table.countRows()).resolves.toBe(1);
+    });
+
+    it("should invoke the progress callback", async () => {
+      const events: import("../lancedb").WriteProgress[] = [];
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }], {
+        progress: (p) => events.push(p),
+      });
+
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1];
+      expect(last.done).toBe(true);
+      // Earlier callbacks must have done=false.
+      for (const ev of events.slice(0, -1)) {
+        expect(ev.done).toBe(false);
+      }
+      // outputRows reflects the rows added in this call, not table size.
+      expect(last.outputRows).toBe(3);
+      // The input source (an array) reports a row count, so totalRows is set.
+      expect(last.totalRows).toBe(3);
+      // outputRows is monotonic.
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i].outputRows).toBeGreaterThanOrEqual(
+          events[i - 1].outputRows,
+        );
+      }
+    });
+
+    it("should swallow errors thrown from the progress callback", async () => {
+      const warn = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const res = await table.add([{ id: 1 }, { id: 2 }], {
+          progress: () => {
+            throw new Error("callback bomb");
+          },
+        });
+        expect(res.version).toBeGreaterThan(0);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("should let me close the table", async () => {
@@ -672,13 +849,15 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfPq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfPq",
+        columns: ["vec"],
+      }),
+    );
     const stats = await tbl.indexStats("vec_idx");
-    expect(stats?.loss).toBeDefined();
+    expect(stats).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
@@ -736,6 +915,274 @@ describe("When creating an index", () => {
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
     expect(indices2.length).toBe(0);
+  });
+
+  it("should preserve canonical nested field paths across index lifecycle", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field("rowId", new Int32(), true),
+      new Field("row-id", new Int32(), true),
+      new Field("userId", new Int32(), true),
+      new Field(
+        "metadata",
+        new Struct([new Field("user_id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "MetaData",
+        new Struct([new Field("userId", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "payload",
+        new Struct([new Field("text", new Utf8(), true)]),
+        true,
+      ),
+      new Field(
+        "meta-data",
+        new Struct([new Field("user-id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "literal",
+        new Struct([new Field("a.b", new Int32(), true)]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "nested_field_index_lifecycle",
+      makeArrowTable(
+        Array.from({ length: 300 }, (_, rowId) => ({
+          rowId,
+          "row-id": rowId,
+          userId: rowId,
+          metadata: { ["user_id"]: rowId },
+          ["MetaData"]: { userId: rowId },
+          image: { embedding: [rowId, rowId + 1] },
+          payload: { text: `document ${rowId}` },
+          "meta-data": { "user-id": rowId },
+          literal: { "a.b": rowId },
+        })),
+        { schema: nestedSchema },
+      ),
+    );
+
+    await nestedTable.createIndex("rowId", {
+      config: Index.btree(),
+      name: "row_id_idx",
+    });
+    await nestedTable.createIndex("`row-id`", {
+      config: Index.btree(),
+      name: "row_dash_id_idx",
+    });
+    await nestedTable.createIndex("userId", {
+      config: Index.btree(),
+      name: "top_user_id_idx",
+    });
+    await nestedTable.createIndex("metadata.user_id", {
+      config: Index.btree(),
+      name: "nested_user_id_idx",
+    });
+    await nestedTable.createIndex("MetaData.userId", {
+      config: Index.btree(),
+      name: "mixed_case_metadata_user_id_idx",
+    });
+    await nestedTable.createIndex("`meta-data`.`user-id`", {
+      config: Index.btree(),
+      name: "escaped_names_idx",
+    });
+    await nestedTable.createIndex("literal.`a.b`", {
+      config: Index.btree(),
+      name: "literal_dot_idx",
+    });
+    await nestedTable.createIndex("image.embedding", {
+      name: "image_embedding_idx",
+    });
+    await nestedTable.createIndex("payload.text", {
+      config: Index.fts({ withPosition: false }),
+      name: "payload_text_idx",
+    });
+
+    const indices = await nestedTable.listIndices();
+    expect(indices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "row_id_idx",
+          indexType: "BTree",
+          columns: ["rowId"],
+        }),
+        expect.objectContaining({
+          name: "row_dash_id_idx",
+          indexType: "BTree",
+          columns: ["`row-id`"],
+        }),
+        expect.objectContaining({
+          name: "top_user_id_idx",
+          indexType: "BTree",
+          columns: ["userId"],
+        }),
+        expect.objectContaining({
+          name: "nested_user_id_idx",
+          indexType: "BTree",
+          columns: ["metadata.user_id"],
+        }),
+        expect.objectContaining({
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        }),
+        expect.objectContaining({
+          name: "escaped_names_idx",
+          indexType: "BTree",
+          columns: ["`meta-data`.`user-id`"],
+        }),
+        expect.objectContaining({
+          name: "literal_dot_idx",
+          indexType: "BTree",
+          columns: ["literal.`a.b`"],
+        }),
+        expect.objectContaining({
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        }),
+        expect.objectContaining({
+          name: "payload_text_idx",
+          indexType: "FTS",
+          columns: ["payload.text"],
+        }),
+      ]),
+    );
+
+    const stats = await nestedTable.indexStats(
+      "mixed_case_metadata_user_id_idx",
+    );
+    expect(stats?.numIndexedRows).toEqual(300);
+    expect(stats?.indexType).toEqual("BTREE");
+
+    const filtered = await nestedTable
+      .query()
+      .where("MetaData.userId = 42")
+      .limit(1)
+      .toArray();
+    expect(filtered[0].MetaData.userId).toEqual(42);
+
+    const escapedFiltered = await nestedTable
+      .query()
+      .where("`row-id` = 43")
+      .limit(1)
+      .toArray();
+    expect(escapedFiltered[0]["row-id"]).toEqual(43);
+
+    const explicit = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .column("image.embedding")
+      .limit(1)
+      .toArray();
+    const inferred = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .limit(1)
+      .toArray();
+    expect(inferred[0].rowId).toEqual(explicit[0].rowId);
+
+    await nestedTable.add([
+      {
+        rowId: 300,
+        "row-id": 300,
+        userId: 300,
+        metadata: { ["user_id"]: 300 },
+        ["MetaData"]: { userId: 300 },
+        image: { embedding: [300.0, 301.0] },
+        payload: { text: "document 300" },
+        "meta-data": { "user-id": 300 },
+        literal: { "a.b": 300 },
+      },
+    ]);
+    await nestedTable.optimize();
+    const indicesAfterOptimize = await nestedTable.listIndices();
+    expect(indicesAfterOptimize).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        }),
+        expect.objectContaining({
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        }),
+      ]),
+    );
+  });
+
+  it("should report multiple nested vector candidates", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "text",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "multiple_nested_vectors",
+      makeArrowTable(
+        [
+          {
+            image: { embedding: [0.0, 1.0] },
+            text: { embedding: [2.0, 3.0] },
+          },
+        ],
+        { schema: nestedSchema },
+      ),
+    );
+
+    await expect(
+      nestedTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/image\.embedding.*text\.embedding/);
+  });
+
+  it("should report when no default vector column exists", async () => {
+    const db = await connect(tmpDir.name);
+    const noVectorTable = await db.createTable(
+      "no_vector",
+      makeArrowTable([{ id: 0, label: "cat" }]),
+    );
+
+    await expect(
+      noVectorTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/No vector column/);
   });
 
   it("should wait for index readiness", async () => {
@@ -813,11 +1260,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfHnswSq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfHnswSq",
+        columns: ["vec"],
+      }),
+    );
 
     // Search without specifying the column
     let rst = await tbl
@@ -990,6 +1439,20 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create an FM index", async () => {
+    // FM-Index accelerates substring search on a string/binary column.
+    const db = await connect(tmpDir.name);
+    const fmTbl = await db.createTable("fm_table", [
+      { id: 0, text: "hello world" },
+      { id: 1, text: "foo bar" },
+    ]);
+    await fmTbl.createIndex("text", {
+      config: Index.fm(),
+    });
+    const indexDir = path.join(tmpDir.name, "fm_table.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
@@ -1000,7 +1463,6 @@ describe("When creating an index", () => {
     expect(stats?.distanceType).toBeUndefined();
     expect(stats?.indexType).toEqual("BTREE");
     expect(stats?.numIndices).toEqual(1);
-    expect(stats?.loss).toBeUndefined();
   });
 
   test("when getting stats on non-existent index", async () => {
@@ -1149,6 +1611,35 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
+  });
+
+  it("should expose rich metadata fields on IndexConfig", async () => {
+    await tbl.createIndex("id", { config: Index.btree() });
+    await tbl.createIndex("vec");
+
+    const indicesByName = Object.fromEntries(
+      (await tbl.listIndices()).map((idx) => [idx.name, idx]),
+    );
+
+    const scalarIdx = indicesByName["id_idx"];
+    expect(scalarIdx).toBeDefined();
+    expect(typeof scalarIdx.indexUuid).toBe("string");
+    expect(scalarIdx.numIndexedRows).toBe(300);
+    expect(scalarIdx.numUnindexedRows).toBe(0);
+    expect(scalarIdx.numSegments).toBeGreaterThanOrEqual(1);
+    expect(scalarIdx.sizeBytes).toBeGreaterThan(0);
+    // Use toString check to avoid cross-realm instanceof failures with native Date objects
+    expect(Object.prototype.toString.call(scalarIdx.createdAt)).toBe(
+      "[object Date]",
+    );
+    expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
+    expect(typeof scalarIdx.indexDetails).toBe("object");
+
+    const vectorIdx = indicesByName["vec_idx"];
+    expect(vectorIdx).toBeDefined();
+    expect(typeof vectorIdx.indexUuid).toBe("string");
+    expect(vectorIdx.numIndexedRows).toBe(300);
+    expect(typeof vectorIdx.indexDetails).toBe("object");
   });
 });
 
@@ -1419,6 +1910,33 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema3);
+  });
+
+  it("can update field metadata", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("fm", [
+      { id: 1, category: "a" },
+      { id: 2, category: "b" },
+    ]);
+
+    const res = await table.updateFieldMetadata([
+      { path: "category", metadata: { unit: "label", pii: "false" } },
+    ]);
+    expect(res).toHaveProperty("version");
+    expect(res.version).toBe(2);
+
+    let cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label");
+    expect(cat?.metadata.get("pii")).toBe("false");
+
+    // merge: add a key, delete one via null, keep the rest
+    await table.updateFieldMetadata([
+      { path: "category", metadata: { source: "import", pii: null } },
+    ]);
+    cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label"); // preserved
+    expect(cat?.metadata.get("source")).toBe("import"); // added
+    expect(cat?.metadata.has("pii")).toBe(false); // deleted
   });
 
   it("can cast to various types", async function () {
@@ -1868,6 +2386,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results = await table.search("lance").toArray();
       expect(results.length).toBe(3);
+    });
+
+    test("prewarmData errors on local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "alpha", vector: [0.1, 0.2, 0.3] },
+        { text: "beta", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("prewarm_data_test", data);
+
+      // prewarmData is only supported on remote tables. We verify the call
+      // is wired through napi and surfaces the expected error for both
+      // arg shapes (undefined and string[]).
+      await expect(table.prewarmData()).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
+      await expect(table.prewarmData(["text"])).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
     });
 
     test("full text index on list", async () => {
@@ -2327,5 +2864,226 @@ describe("when creating a table with Float32Array vectors", () => {
     expect(fsl.children[0].type.typeId).toBe(Type.Float);
     // precision: HALF=0, SINGLE=1, DOUBLE=2
     expect((fsl.children[0].type as Float32).precision).toBe(1);
+  });
+});
+
+describe("setUnenforcedPrimaryKey", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("sets a single-column primary key (string or one-element array)", async () => {
+    const conn = await connect(tmpDir.name);
+    const schema = new arrow.Schema([
+      new arrow.Field("id", new arrow.Int64(), false),
+    ]);
+    const t1 = await conn.createEmptyTable("t1", schema);
+    await t1.setUnenforcedPrimaryKey("id");
+
+    const t2 = await conn.createEmptyTable("t2", schema);
+    await t2.setUnenforcedPrimaryKey(["id"]);
+  });
+
+  it("rejects a compound primary key", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await expect(
+      table.setUnenforcedPrimaryKey(["id", "name"]),
+    ).rejects.toThrow();
+  });
+
+  it("rejects changing the primary key once set", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await expect(table.setUnenforcedPrimaryKey("name")).rejects.toThrow();
+    await expect(table.setUnenforcedPrimaryKey("id")).rejects.toThrow();
+  });
+});
+
+describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function makeTable(conn: Connection): Promise<Table> {
+    return await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Int64(), false)]),
+    );
+  }
+
+  it("installs and removes a bucket spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+    });
+    await table.unsetLsmWriteSpec();
+    // A second unset errors — there is no spec left to remove.
+    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
+    // A fresh spec can be installed after unset.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 8,
+    });
+  });
+
+  it("installs an unsharded spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("installs an identity spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    await table.unsetLsmWriteSpec();
+  });
+
+  it("rejects an invalid spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    // num_buckets out of range.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "id",
+        numBuckets: 0,
+      }),
+    ).rejects.toThrow();
+    // Column mismatch.
+    await expect(
+      table.setLsmWriteSpec({
+        specType: "bucket",
+        column: "missing",
+        numBuckets: 4,
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("LSM merge insert", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function bucketTable(conn: Connection): Promise<Table> {
+    // The primary key column must be non-nullable.
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Utf8(), false),
+        new arrow.Field("value", new arrow.Float64(), true),
+      ]),
+    );
+    await table.add([
+      { id: "a", value: 1 },
+      { id: "b", value: 2 },
+    ]);
+    await table.setUnenforcedPrimaryKey("id");
+    // numBuckets = 1: every row routes to the single bucket.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 1,
+    });
+    return table;
+  }
+
+  it("routes merge_insert through the shard writer", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: "c", value: 3 },
+        { id: "d", value: 4 },
+      ]);
+    // LSM path: rows go to the MemWAL, so only numRows is populated.
+    expect(res.numRows).toBe(2);
+    expect(res.version).toBe(0);
+    expect(res.numInsertedRows).toBe(0);
+
+    await table.closeLsmWriters();
+  });
+
+  it("falls back to the standard path with useLsmWrite(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenNotMatchedInsertAll()
+      .useLsmWrite(false)
+      .execute([
+        { id: "b", value: 9 },
+        { id: "e", value: 5 },
+      ]);
+    // Standard path commits: id="e" inserted ("b" already exists).
+    expect(res.numInsertedRows).toBe(1);
+    expect(await table.countRows()).toBe(3);
+  });
+
+  it("supports validateSingleShard(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .validateSingleShard(false)
+      .execute([{ id: "f", value: 6 }]);
+    expect(res.numRows).toBe(1);
+  });
+
+  it("rejects a non-upsert merge under an LSM spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    await expect(
+      table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([{ id: "g", value: 7 }]),
+    ).rejects.toThrow();
   });
 });

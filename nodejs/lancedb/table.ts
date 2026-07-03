@@ -25,13 +25,16 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
+  BranchContents,
   DeleteResult,
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
+  Branches as NativeBranches,
   OptimizeStats,
   TableStatistics,
   Tags,
+  UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
@@ -47,6 +50,33 @@ import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
 /**
+ * Progress snapshot for a write operation, delivered to the `progress`
+ * callback passed to {@link Table.add}.
+ */
+export interface WriteProgress {
+  /** Number of rows written so far. */
+  outputRows: number;
+  /** Number of bytes written so far. */
+  outputBytes: number;
+  /**
+   * Total rows expected, when the input source reports it.
+   *
+   * Always set on the final callback (the one with `done: true`), falling
+   * back to the actual number of rows written when the source could not
+   * report a row count up front.
+   */
+  totalRows?: number;
+  /** Wall-clock seconds since the write started. */
+  elapsedSeconds: number;
+  /** Number of parallel write tasks currently in flight. */
+  activeTasks: number;
+  /** Total number of parallel write tasks (the write parallelism). */
+  totalTasks: number;
+  /** `true` for the final callback; `false` otherwise. */
+  done: boolean;
+}
+
+/**
  * Options for adding data to a table.
  */
 export interface AddDataOptions {
@@ -56,6 +86,28 @@ export interface AddDataOptions {
    * If "overwrite" then the new data will replace the existing data in the table.
    */
   mode: "append" | "overwrite";
+
+  /**
+   * Optional callback invoked periodically with write progress.
+   *
+   * The callback is fired once per batch written and once more with
+   * `done: true` when the write completes. Calls are dispatched
+   * asynchronously to the JS event loop and never block the write — a slow
+   * callback will queue events rather than back-pressure the writer.
+   *
+   * Errors thrown from the callback are logged with `console.warn` and
+   * swallowed — they do not abort the write.
+   *
+   * @example
+   * ```ts
+   * await table.add(data, {
+   *   progress: (p) => {
+   *     console.log(`${p.outputRows}/${p.totalRows ?? "?"} rows`);
+   *   },
+   * });
+   * ```
+   */
+  progress: (progress: WriteProgress) => void;
 }
 
 export interface UpdateOptions {
@@ -104,6 +156,30 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+/**
+ * Specification selecting Lance's MemWAL LSM-style write path for
+ * `mergeInsert`.
+ *
+ * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
+ * `column` and `numBuckets` are required; for `"identity"`, `column` is
+ * required and must be a deterministic function of the unenforced primary
+ * key (every row with a given primary key must always produce the same
+ * `column` value, or upserts of that key can land in different shards and a
+ * stale version can win).
+ */
+export interface LsmWriteSpec {
+  /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
+  specType: "bucket" | "identity" | "unsharded";
+  /** Bucket and identity variants: the sharding column. */
+  column?: string;
+  /** Bucket variant: the number of buckets, in `[1, 1024]`. */
+  numBuckets?: number;
+  /** Names of indexes the MemWAL should keep up to date during writes. */
+  maintainedIndexes?: string[];
+  /** Default `ShardWriter` configuration recorded in the MemWAL index. */
+  writerConfigDefaults?: Record<string, string>;
 }
 
 /**
@@ -286,6 +362,25 @@ export abstract class Table {
   abstract prewarmIndex(name: string): Promise<void>;
 
   /**
+   * Prewarm one or more columns of data in the table.
+   *
+   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
+   *
+   * This will load the column data into the page cache so that future queries that
+   * read those columns avoid the initial cold-start latency.  This call initiates
+   * prewarming and returns once the request is accepted; the warming itself may
+   * continue in the background.  Calling it on already-prewarmed columns is a
+   * no-op on the server.
+   *
+   * Prewarming is generally useful for columns used in filters or projections.
+   * Large columns (e.g. high-dimensional vectors or binary data) may not be
+   * practical to prewarm.
+   *
+   * This feature is currently only supported on remote tables.
+   */
+  abstract prewarmData(columns?: string[]): Promise<void>;
+
+  /**
    * Waits for asynchronous indexing to complete on the table.
    *
    * @param indexNames The name of the indices to wait for
@@ -416,6 +511,18 @@ export abstract class Table {
   abstract alterColumns(
     columnAlterations: ColumnAlteration[],
   ): Promise<AlterColumnsResult>;
+
+  /**
+   * Update per-field (column) metadata.
+   * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
+   * update's metadata is merged into the field's existing metadata by default;
+   * a value of `null` deletes that key, and `replace: true` swaps the whole map.
+   * @returns {Promise<UpdateFieldMetadataResult>} resolves to the new table version.
+   */
+  abstract updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult>;
+
   /**
    * Drop one or more columns from the dataset
    *
@@ -430,6 +537,64 @@ export abstract class Table {
    * containing the new version number of the table after dropping the columns.
    */
   abstract dropColumns(columnNames: string[]): Promise<DropColumnsResult>;
+  /**
+   * Set the unenforced primary key for this table to a single column.
+   *
+   * "Unenforced" means LanceDB does not check uniqueness on writes; the
+   * column is recorded in the schema as the primary key for use by features
+   * such as `merge_insert`. Only single-column primary keys are supported,
+   * and the key cannot be changed once set.
+   * @param {string | string[]} columns The primary key column. A one-element
+   * array is also accepted; passing more than one column is rejected.
+   * @returns {Promise<void>}
+   */
+  abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
+  /**
+   * Install an {@link LsmWriteSpec} on this table, selecting Lance's MemWAL
+   * LSM-style write path for future `mergeInsert` calls.
+   *
+   * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+   *
+   * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
+   *   key (`column` and `numBuckets` required).
+   * - `"identity"` — shard by the raw value of a scalar `column`.
+   * - `"unsharded"` — route every write to a single shard.
+   *
+   * All variants require the table to have an unenforced primary key
+   * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
+   * requires it to be the single column being bucketed.
+   * @param {LsmWriteSpec} spec The sharding spec to install.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * await table.setUnenforcedPrimaryKey("id");
+   * await table.setLsmWriteSpec({
+   *   specType: "bucket",
+   *   column: "id",
+   *   numBuckets: 16,
+   *   maintainedIndexes: ["id_idx"],
+   * });
+   * ```
+   */
+  abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
+  /**
+   * Remove the {@link LsmWriteSpec} from this table, reverting to the standard
+   * `mergeInsert` write path.
+   *
+   * Errors if no spec is currently set.
+   * @returns {Promise<void>}
+   */
+  abstract unsetLsmWriteSpec(): Promise<void>;
+  /**
+   * Drain and close any cached MemWAL shard writers held for this table.
+   *
+   * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * shard writers and caches them for reuse across calls. This closes them,
+   * flushing pending data; writers reopen lazily on the next `mergeInsert`.
+   * It is a no-op when no writers are cached.
+   * @returns {Promise<void>}
+   */
+  abstract closeLsmWriters(): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -489,6 +654,22 @@ export abstract class Table {
    * ```
    */
   abstract tags(): Promise<Tags>;
+
+  /**
+   * Get the branch manager for this table.
+   *
+   * Branches are isolated, writable lines of history forked from another
+   * branch (or version). Writes on a branch do not affect `main`.
+   */
+  abstract branches(): Promise<Branches>;
+
+  /**
+   * The branch this table handle is scoped to, or `null` for the main branch.
+   *
+   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
+   * reports the branch it targets; a handle opened normally reports `null`.
+   */
+  abstract currentBranch(): string | null;
 
   /**
    * Restore the table to the currently checked out version
@@ -617,7 +798,20 @@ export class LocalTable extends Table {
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.inner.add(buffer, mode);
+    // Wrap the user callback so a thrown error doesn't surface as an
+    // unhandled exception (the callback fires from a napi threadsafe
+    // function — exceptions there crash the process).
+    const userProgress = options?.progress;
+    const progress = userProgress
+      ? (p: WriteProgress) => {
+          try {
+            userProgress(p);
+          } catch (e) {
+            console.warn("Table.add progress callback threw:", e);
+          }
+        }
+      : undefined;
+    return await this.inner.add(buffer, mode, progress);
   }
 
   async update(
@@ -708,6 +902,10 @@ export class LocalTable extends Table {
 
   async prewarmIndex(name: string): Promise<void> {
     await this.inner.prewarmIndex(name);
+  }
+
+  async prewarmData(columns?: string[]): Promise<void> {
+    await this.inner.prewarmData(columns);
   }
 
   async waitForIndex(
@@ -870,8 +1068,31 @@ export class LocalTable extends Table {
     return await this.inner.alterColumns(processedAlterations);
   }
 
+  async updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult> {
+    return await this.inner.updateFieldMetadata(updates);
+  }
+
   async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
     return await this.inner.dropColumns(columnNames);
+  }
+
+  async setUnenforcedPrimaryKey(columns: string | string[]): Promise<void> {
+    const cols = typeof columns === "string" ? [columns] : columns;
+    return await this.inner.setUnenforcedPrimaryKey(cols);
+  }
+
+  async setLsmWriteSpec(spec: LsmWriteSpec): Promise<void> {
+    return await this.inner.setLsmWriteSpec(spec);
+  }
+
+  async unsetLsmWriteSpec(): Promise<void> {
+    return await this.inner.unsetLsmWriteSpec();
+  }
+
+  async closeLsmWriters(): Promise<void> {
+    return await this.inner.closeLsmWriters();
   }
 
   async version(): Promise<number> {
@@ -903,6 +1124,14 @@ export class LocalTable extends Table {
 
   async tags(): Promise<Tags> {
     return await this.inner.tags();
+  }
+
+  async branches(): Promise<Branches> {
+    return new Branches(await this.inner.branches());
+  }
+
+  currentBranch(): string | null {
+    return this.inner.currentBranch() ?? null;
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
@@ -1018,4 +1247,74 @@ export interface ColumnAlteration {
   dataType?: string | DataType;
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean;
+}
+
+/** A per-field metadata update, addressed by dot-path. */
+export interface FieldMetadataUpdate {
+  /**
+   * Dot-separated path to the field. For a top-level column this is just its
+   * name; for a nested field it's the path, e.g. "a.b.c".
+   */
+  path: string;
+  /**
+   * Metadata key/value pairs. Merged into the field's existing metadata by
+   * default; a value of `null` deletes that key.
+   */
+  metadata: Record<string, string | null>;
+  /** If true, replace the field's entire metadata map instead of merging. */
+  replace?: boolean;
+}
+
+/**
+ * Branch manager for a {@link Table}.
+ *
+ * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
+ * to the branch; writes on it do not affect `main`.
+ */
+export class Branches {
+  #inner: NativeBranches;
+
+  /**
+   * Construct a Branches manager. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeBranches) {
+    this.#inner = inner;
+  }
+
+  /** List all branches, mapping name to branch metadata. */
+  async list(): Promise<Record<string, BranchContents>> {
+    return await this.#inner.list();
+  }
+
+  /**
+   * Create a branch and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param fromRef Source branch to fork from. Defaults to `main`.
+   * @param fromVersion A specific version on `fromRef`. Defaults to latest.
+   */
+  async create(
+    name: string,
+    fromRef?: string,
+    fromVersion?: number,
+  ): Promise<Table> {
+    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+  }
+
+  /**
+   * Check out an existing branch and return a handle scoped to it.
+   *
+   * With `version` set, the returned handle is pinned to that version of the
+   * branch (a read-only, detached view); otherwise it tracks the branch's
+   * latest and stays writable.
+   */
+  async checkout(name: string, version?: number): Promise<Table> {
+    return new LocalTable(await this.#inner.checkout(name, version));
+  }
+
+  /** Delete a branch. */
+  async delete(name: string): Promise<void> {
+    return await this.#inner.delete(name);
+  }
 }

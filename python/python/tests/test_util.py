@@ -149,6 +149,36 @@ def test_value_to_sql_dict():
     assert value_to_sql({}) == "named_struct()"
 
 
+def test_value_to_sql_dict_key_escaping():
+    # Struct field names that contain a single quote must be escaped (doubled)
+    # the same way string values are, otherwise value_to_sql emits invalid SQL
+    # such as named_struct('it's', 1).
+    assert value_to_sql({"it's": 1}) == "named_struct('it''s', 1)"
+    assert (
+        value_to_sql({"o'brien": "d'angelo"}) == "named_struct('o''brien', 'd''angelo')"
+    )
+    # Escaping also applies to keys of nested structs.
+    assert (
+        value_to_sql({"outer": {"in'r": 1}})
+        == "named_struct('outer', named_struct('in''r', 1))"
+    )
+
+
+def test_value_to_sql_numpy_scalars():
+    # numpy scalars (e.g. pulled from an ndarray or a pandas column) must
+    # convert the same way as their native Python counterparts. np.float64
+    # already worked by virtue of subclassing float, but the integer / bool
+    # / float32 scalars previously raised NotImplementedError.
+    import numpy as np
+
+    assert value_to_sql(np.int32(5)) == "5"
+    assert value_to_sql(np.int64(5)) == "5"
+    assert value_to_sql(np.float32(1.5)) == "1.5"
+    assert value_to_sql(np.float64(1.5)) == "1.5"
+    assert value_to_sql(np.bool_(True)) == "TRUE"
+    assert value_to_sql(np.bool_(False)) == "FALSE"
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)

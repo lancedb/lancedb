@@ -148,6 +148,33 @@ Creates a new empty Table
 
 ***
 
+### createNamespace()
+
+```ts
+abstract createNamespace(namespacePath, options?): Promise<CreateNamespaceResponse>
+```
+
+Create a new namespace at the given path.
+
+#### Parameters
+
+* **namespacePath**: `string`[]
+    The namespace path to create.
+
+* **options?**: `Partial`&lt;[`CreateNamespaceOptions`](../interfaces/CreateNamespaceOptions.md)&gt;
+    Creation `mode`
+    ("create" | "exist_ok" | "overwrite") and optional `properties`
+    to attach to the namespace.
+
+#### Returns
+
+`Promise`&lt;[`CreateNamespaceResponse`](../interfaces/CreateNamespaceResponse.md)&gt;
+
+The properties of the
+  created namespace and an optional transaction id.
+
+***
+
 ### createTable()
 
 #### createTable(options, namespacePath)
@@ -230,6 +257,29 @@ Creates a new Table and initialize it with new data.
 
 ***
 
+### describeNamespace()
+
+```ts
+abstract describeNamespace(namespacePath): Promise<DescribeNamespaceResponse>
+```
+
+Describe a namespace, returning its properties.
+
+#### Parameters
+
+* **namespacePath**: `string`[]
+    The namespace path to describe, in
+    parent → child order, e.g. `["analytics", "sales"]`.
+
+#### Returns
+
+`Promise`&lt;[`DescribeNamespaceResponse`](../interfaces/DescribeNamespaceResponse.md)&gt;
+
+The namespace's properties
+  (may be undefined if the namespace has none).
+
+***
+
 ### display()
 
 ```ts
@@ -260,6 +310,36 @@ Drop all tables in the database.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### dropNamespace()
+
+```ts
+abstract dropNamespace(namespacePath, options?): Promise<DropNamespaceResponse>
+```
+
+Drop a namespace.
+
+Use `behavior: "cascade"` to also drop everything contained in the
+namespace (sub-namespaces and tables). The default `"restrict"`
+behavior refuses to drop a non-empty namespace.
+
+#### Parameters
+
+* **namespacePath**: `string`[]
+    The namespace path to drop.
+
+* **options?**: `Partial`&lt;[`DropNamespaceOptions`](../interfaces/DropNamespaceOptions.md)&gt;
+    `mode` ("skip" | "fail"
+    for missing-namespace handling) and `behavior` ("restrict" | "cascade").
+
+#### Returns
+
+`Promise`&lt;[`DropNamespaceResponse`](../interfaces/DropNamespaceResponse.md)&gt;
+
+Any properties returned by
+  the server and an optional transaction id.
 
 ***
 
@@ -299,6 +379,36 @@ Return true if the connection has not been closed
 
 ***
 
+### listNamespaces()
+
+```ts
+abstract listNamespaces(namespacePath?, options?): Promise<ListNamespacesResponse>
+```
+
+List the immediate child namespaces under the given parent.
+
+Results may be paginated. To retrieve subsequent pages, pass the
+`pageToken` returned by a previous call.
+
+#### Parameters
+
+* **namespacePath?**: `string`[]
+    The parent namespace path. Defaults
+    to the root namespace if omitted.
+
+* **options?**: `Partial`&lt;[`ListNamespacesOptions`](../interfaces/ListNamespacesOptions.md)&gt;
+    Pagination options
+    (`pageToken`, `limit`).
+
+#### Returns
+
+`Promise`&lt;[`ListNamespacesResponse`](../interfaces/ListNamespacesResponse.md)&gt;
+
+Child namespace names and
+  an optional token for fetching the next page.
+
+***
+
 ### openTable()
 
 ```ts
@@ -324,6 +434,39 @@ Open a table in the database.
 #### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
+
+***
+
+### renameTable()
+
+```ts
+abstract renameTable(
+   currentName,
+   newName,
+   options?): Promise<void>
+```
+
+Rename a table.
+
+Currently only supported by LanceDB Cloud. Local OSS connections and
+namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
+a "not supported" error.
+
+#### Parameters
+
+* **currentName**: `string`
+    The current name of the table.
+
+* **newName**: `string`
+    The new name for the table.
+
+* **options?**: [`RenameTableOptions`](../interfaces/RenameTableOptions.md)
+    Optional namespace paths. When
+    `newNamespacePath` is omitted the table stays in `namespacePath`.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use lance::dataset::ReadParams;
+use lance::dataset::refs::MAIN_BRANCH;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
@@ -119,6 +120,8 @@ pub struct OpenTableBuilder {
     parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    branch: Option<String>,
+    version: Option<u64>,
 }
 
 impl OpenTableBuilder {
@@ -139,6 +142,8 @@ impl OpenTableBuilder {
                 managed_versioning: None,
             },
             embedding_registry,
+            branch: None,
+            version: None,
         }
     }
 
@@ -171,7 +176,7 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let store_params = self
             .request
@@ -188,7 +193,7 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -259,14 +264,48 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Open the table scoped to the given branch instead of the default branch.
+    ///
+    /// Reads and writes on the returned table operate in the branch's context.
+    pub fn branch(mut self, branch: impl Into<String>) -> Self {
+        self.branch = Some(branch.into());
+        self
+    }
+
+    /// Open the table pinned to a specific version, producing a read-only "view".
+    ///
+    /// Composes with [`Self::branch`]: when a branch is also set, this opens that
+    /// branch at the given version; otherwise it opens `main` at that version.
+    /// The returned table is a detached head, so operations that modify the table
+    /// will fail until [`Table::checkout_latest`] is called.
+    ///
+    /// ```
+    /// # use lancedb::Connection;
+    /// # async fn f(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    /// let table = conn.open_table("t").branch("exp").version(3).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn version(mut self, version: u64) -> Self {
+        self.version = Some(version);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
-        Ok(Table::new_with_embedding_registry(
-            table,
-            self.parent,
-            self.embedding_registry,
-        ))
+        let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry);
+        // "main" is the default branch, so treat it as no branch.
+        let branch = self.branch.filter(|b| b.as_str() != MAIN_BRANCH);
+        match branch {
+            Some(branch) => table.checkout_branch(&branch, self.version).await,
+            None => {
+                if let Some(version) = self.version {
+                    table.checkout(version).await?;
+                }
+                Ok(table)
+            }
+        }
     }
 }
 
@@ -537,6 +576,9 @@ impl Connection {
     /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
+    ///
+    /// Remote connections using dynamic headers forward them through the
+    /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
     }
@@ -545,6 +587,9 @@ impl Connection {
     /// Returns (impl_type, properties) where:
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
+    ///
+    /// Remote connections using dynamic headers cannot be exported because the
+    /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
     ) -> Result<(String, std::collections::HashMap<String, String>)> {
@@ -582,6 +627,23 @@ pub struct ConnectRequest {
     /// Database specific options
     pub options: HashMap<String, String>,
 
+    /// Extra properties for the equivalent namespace client.
+    ///
+    /// For a local [`ListingDatabase`], these are merged into the backing
+    /// `DirectoryNamespace` properties. This is useful for namespace-specific
+    /// settings such as `table_version_tracking_enabled` that are distinct from
+    /// storage options.
+    pub namespace_client_properties: HashMap<String, String>,
+
+    /// Use directory namespace manifests as the source of truth for native
+    /// LanceDB table metadata.
+    ///
+    /// When enabled for a local/native connection, LanceDB returns a
+    /// namespace-backed database directly. Directory listing fallback remains
+    /// enabled for migration, and directory-listing-to-manifest migration is
+    /// forced on.
+    pub manifest_enabled: bool,
+
     /// The interval at which to check for updates from other processes.
     ///
     /// If None, then consistency is not checked. For performance
@@ -605,6 +667,8 @@ pub struct ConnectRequest {
 pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    #[cfg(feature = "remote")]
+    oauth_config: Option<crate::remote::OAuthConfig>,
 }
 
 #[cfg(feature = "remote")]
@@ -621,9 +685,13 @@ impl ConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                namespace_client_properties: HashMap::new(),
+                manifest_enabled: false,
                 session: None,
             },
             embedding_registry: None,
+            #[cfg(feature = "remote")]
+            oauth_config: None,
         }
     }
 
@@ -712,6 +780,19 @@ impl ConnectBuilder {
         self
     }
 
+    /// Configure OAuth authentication for LanceDB Cloud/Enterprise.
+    ///
+    /// This creates an [`OAuthHeaderProvider`](crate::remote::OAuthHeaderProvider)
+    /// from the given config and sets it as the header provider. OAuth cannot
+    /// be combined with an API key or another header provider.
+    ///
+    /// Token acquisition and refresh are handled in Rust.
+    #[cfg(feature = "remote")]
+    pub fn oauth_config(mut self, config: crate::remote::OAuthConfig) -> Self {
+        self.oauth_config = Some(config);
+        self
+    }
+
     /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
     pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
         self.embedding_registry = Some(registry);
@@ -738,7 +819,7 @@ impl ConnectBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.request.options.insert(key.into(), value.into());
         self
@@ -746,7 +827,7 @@ impl ConnectBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -757,8 +838,43 @@ impl ConnectBuilder {
         self
     }
 
-    /// The interval at which to check for updates from other processes. This
-    /// only affects LanceDB OSS.
+    /// Set an additional property for the equivalent namespace client.
+    pub fn namespace_client_property(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.request
+            .namespace_client_properties
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple additional properties for the equivalent namespace client.
+    pub fn namespace_client_properties(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.request
+                .namespace_client_properties
+                .insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Enable or disable manifest-backed directory namespace mode for local
+    /// native connections.
+    ///
+    /// When enabled, the connection uses the directory namespace database
+    /// directly for all table operations and forces
+    /// `dir_listing_to_manifest_migration_enabled=true`.
+    pub fn manifest_enabled(mut self, enabled: bool) -> Self {
+        self.request.manifest_enabled = enabled;
+        self
+    }
+
+    /// The interval at which to check for updates from other processes.
     ///
     /// If left unset, consistency is not checked. For maximum read
     /// performance, this is the default. For strong consistency, set this to
@@ -770,8 +886,11 @@ impl ConnectBuilder {
     /// This only affects read operations. Write operations are always
     /// consistent.
     ///
-    /// LanceDB Cloud uses eventual consistency under the hood, and is not
-    /// currently configurable.
+    /// # Cost
+    ///
+    /// Stronger consistency is not free. The smaller the interval, the more
+    /// often each read pays the cost of checking for updates against object
+    /// storage, raising per-read latency and cost.
     pub fn read_consistency_interval(
         mut self,
         read_consistency_interval: std::time::Duration,
@@ -819,9 +938,40 @@ impl ConnectBuilder {
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
         })?;
-        let api_key = options.api_key.ok_or_else(|| Error::InvalidInput {
-            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
-        })?;
+        let api_key = match (&self.oauth_config, &options.api_key) {
+            (Some(_), None) => String::new(),
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidInput {
+                    message:
+                        "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud"
+                            .to_string(),
+                });
+            }
+            (None, Some(key)) => key.clone(),
+            (None, None) => {
+                return Err(Error::InvalidInput {
+                    message:
+                        "An api_key or oauth_config is required when connecting to LanceDb Cloud"
+                            .to_string(),
+                });
+            }
+        };
+
+        if self.oauth_config.is_some() && self.request.client_config.header_provider.is_some() {
+            return Err(Error::InvalidInput {
+                message:
+                    "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud"
+                        .to_string(),
+            });
+        }
+
+        let mut client_config = self.request.client_config;
+
+        if let Some(oauth_config) = self.oauth_config {
+            let provider = crate::remote::OAuthHeaderProvider::new(oauth_config)?;
+            client_config.header_provider =
+                Some(Arc::new(provider) as Arc<dyn crate::remote::HeaderProvider>);
+        }
 
         let storage_options = StorageOptions(options.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
@@ -829,8 +979,9 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
-            self.request.client_config,
+            client_config,
             storage_options.into(),
+            self.request.read_consistency_interval,
         )?);
         Ok(Connection {
             internal,
@@ -852,6 +1003,16 @@ impl ConnectBuilder {
     pub async fn execute(self) -> Result<Connection> {
         if self.request.uri.starts_with("db") {
             self.execute_remote()
+        } else if self.request.manifest_enabled {
+            let internal = Arc::new(
+                ListingDatabase::connect_manifest_enabled_namespace_database(&self.request).await?,
+            );
+            Ok(Connection {
+                internal,
+                embedding_registry: self
+                    .embedding_registry
+                    .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+            })
         } else {
             let internal = Arc::new(ListingDatabase::connect_with_options(&self.request).await?);
             Ok(Connection {
@@ -881,7 +1042,7 @@ use std::collections::HashSet;
 /// These operations will be executed on the namespace server instead of locally
 /// when enabled via [`ConnectNamespaceBuilder::pushdown_operations`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PushdownOperation {
+pub enum NamespaceClientPushdownOperation {
     /// Execute queries on the namespace server via `query_table()` instead of locally.
     QueryTable,
     /// Execute table creation on the namespace server via `create_table()`
@@ -893,10 +1054,11 @@ pub struct ConnectNamespaceBuilder {
     ns_impl: String,
     properties: HashMap<String, String>,
     storage_options: HashMap<String, String>,
+    namespace_client_properties: HashMap<String, String>,
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
-    pushdown_operations: HashSet<PushdownOperation>,
+    pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
 }
 
 impl ConnectNamespaceBuilder {
@@ -905,6 +1067,7 @@ impl ConnectNamespaceBuilder {
             ns_impl: ns_impl.to_string(),
             properties,
             storage_options: HashMap::new(),
+            namespace_client_properties: HashMap::new(),
             read_consistency_interval: None,
             embedding_registry: None,
             session: None,
@@ -914,7 +1077,7 @@ impl ConnectNamespaceBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.storage_options.insert(key.into(), value.into());
         self
@@ -922,13 +1085,36 @@ impl ConnectNamespaceBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.com/docs/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
         for (key, value) in pairs {
             self.storage_options.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Set an additional namespace client property.
+    pub fn namespace_client_property(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.namespace_client_properties
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple additional namespace client properties.
+    pub fn namespace_client_properties(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.namespace_client_properties
+                .insert(key.into(), value.into());
         }
         self
     }
@@ -970,11 +1156,11 @@ impl ConnectNamespaceBuilder {
     /// and leveraging server-side compute resources.
     ///
     /// Available operations:
-    /// - [`PushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
-    /// - [`PushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    /// - [`NamespaceClientPushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
+    /// - [`NamespaceClientPushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
     ///
     /// By default, no operations are pushed down (all executed locally).
-    pub fn pushdown_operation(mut self, operation: PushdownOperation) -> Self {
+    pub fn pushdown_operation(mut self, operation: NamespaceClientPushdownOperation) -> Self {
         self.pushdown_operations.insert(operation);
         self
     }
@@ -984,7 +1170,7 @@ impl ConnectNamespaceBuilder {
     /// See [`Self::pushdown_operation`] for details.
     pub fn pushdown_operations(
         mut self,
-        operations: impl IntoIterator<Item = PushdownOperation>,
+        operations: impl IntoIterator<Item = NamespaceClientPushdownOperation>,
     ) -> Self {
         self.pushdown_operations.extend(operations);
         self
@@ -994,10 +1180,13 @@ impl ConnectNamespaceBuilder {
     pub async fn execute(self) -> Result<Connection> {
         use crate::database::namespace::LanceNamespaceDatabase;
 
+        let mut properties = self.properties;
+        properties.extend(self.namespace_client_properties);
+
         let internal = Arc::new(
             LanceNamespaceDatabase::connect(
                 &self.ns_impl,
-                self.properties,
+                properties,
                 self.storage_options,
                 self.read_consistency_interval,
                 self.session,
@@ -1070,6 +1259,9 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
+    use crate::database::listing::{ListingDatabaseOptions, OPT_NEW_TABLE_V2_MANIFEST_PATHS};
+    use crate::database::namespace::LanceNamespaceDatabase;
+    use crate::table::NativeTable;
     use crate::test_utils::connection::new_test_connection;
 
     use super::*;
@@ -1096,6 +1288,83 @@ mod tests {
         assert_eq!(Some(&"EXPLICIT-VALUE".to_string()), options.get(opts_key));
     }
 
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_rejects_api_key_with_oauth_config() {
+        let oauth_config = crate::remote::OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["scope".to_string()],
+            flow: crate::remote::OAuthFlow::ClientCredentials,
+            refresh_buffer_secs: None,
+        };
+
+        let result = ConnectBuilder::new("db://my-container/my-prefix")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .oauth_config(oauth_config)
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::InvalidInput { message })
+                if message
+                    == "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud" =>
+                {}
+            Err(err) => panic!("expected InvalidInput, got {err:?}"),
+            Ok(_) => panic!("expected api_key and oauth_config to be rejected"),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_rejects_header_provider_with_oauth_config() {
+        #[derive(Debug)]
+        struct TestHeaderProvider;
+
+        #[async_trait::async_trait]
+        impl crate::remote::HeaderProvider for TestHeaderProvider {
+            async fn get_headers(&self) -> Result<HashMap<String, String>> {
+                Ok(HashMap::from([(
+                    "authorization".to_string(),
+                    "Bearer token".to_string(),
+                )]))
+            }
+        }
+
+        let oauth_config = crate::remote::OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["scope".to_string()],
+            flow: crate::remote::OAuthFlow::ClientCredentials,
+            refresh_buffer_secs: None,
+        };
+        let client_config = crate::remote::ClientConfig {
+            header_provider: Some(
+                Arc::new(TestHeaderProvider) as Arc<dyn crate::remote::HeaderProvider>
+            ),
+            ..Default::default()
+        };
+
+        let result = ConnectBuilder::new("db://my-container/my-prefix")
+            .region("us-east-1")
+            .client_config(client_config)
+            .oauth_config(oauth_config)
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::InvalidInput { message })
+                if message
+                    == "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud" =>
+                {}
+            Err(err) => panic!("expected InvalidInput, got {err:?}"),
+            Ok(_) => panic!("expected header_provider and oauth_config to be rejected"),
+        }
+    }
+
     #[cfg(not(windows))]
     #[tokio::test]
     async fn test_connect_relative() {
@@ -1115,6 +1384,172 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.uri(), relative_uri.to_str().unwrap().to_string());
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_namespace_client_properties() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let db = connect(uri)
+            .namespace_client_property("table_version_tracking_enabled", "true")
+            .namespace_client_property("manifest_enabled", "true")
+            .execute()
+            .await
+            .unwrap();
+
+        let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
+        assert_eq!(ns_impl, "dir");
+        assert_eq!(properties.get("root"), Some(&uri.to_string()));
+        assert_eq!(
+            properties.get("table_version_tracking_enabled"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            properties.get("manifest_enabled"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_manifest_enabled_uses_directory_namespace() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let db = connect(uri)
+            .manifest_enabled(true)
+            .storage_option("timeout", "30s")
+            .namespace_client_property("manifest_enabled", "false")
+            .namespace_client_property("dir_listing_to_manifest_migration_enabled", "false")
+            .execute()
+            .await
+            .unwrap();
+
+        assert!(
+            db.database()
+                .as_any()
+                .downcast_ref::<LanceNamespaceDatabase>()
+                .is_some()
+        );
+        assert_eq!(db.uri(), uri);
+
+        let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
+        assert_eq!(ns_impl, "dir");
+        assert_eq!(properties.get("root"), Some(&uri.to_string()));
+        assert_eq!(
+            properties.get("manifest_enabled"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            properties.get("dir_listing_to_manifest_migration_enabled"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(properties.get("storage.timeout"), Some(&"30s".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_manifest_enabled_rejects_commit_engine_uri() {
+        let Err(err) = connect("s3+ddb://bucket/db?ddbTableName=manifest")
+            .manifest_enabled(true)
+            .execute()
+            .await
+        else {
+            panic!("expected manifest-enabled s3+ddb connection to fail");
+        };
+        assert!(
+            matches!(err, Error::NotSupported { message } if message.contains("commit engine URI schemes"))
+        );
+
+        let Err(err) = connect("s3://bucket/db?engine=ddb&ddbTableName=manifest")
+            .manifest_enabled(true)
+            .execute()
+            .await
+        else {
+            panic!("expected manifest-enabled engine query connection to fail");
+        };
+        assert!(
+            matches!(err, Error::NotSupported { message } if message.contains("commit engine"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_manifest_enabled_connection_migrates_root_listing_table() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+
+        connect(uri)
+            .execute()
+            .await
+            .unwrap()
+            .create_empty_table("legacy", schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let db = connect(uri).manifest_enabled(true).execute().await.unwrap();
+        let tables = db.table_names().execute().await.unwrap();
+        assert_eq!(tables, vec!["legacy".to_string()]);
+        db.open_table("legacy").execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_manifest_enabled_preserves_new_table_options() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let options = ListingDatabaseOptions::builder()
+            .enable_v2_manifest_paths(true)
+            .build();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+
+        let table = connect(uri)
+            .manifest_enabled(true)
+            .database_options(&options)
+            .execute()
+            .await
+            .unwrap()
+            .create_empty_table("v1_manifest", schema)
+            .storage_option(OPT_NEW_TABLE_V2_MANIFEST_PATHS, "false")
+            .execute()
+            .await
+            .unwrap();
+
+        let native_table = table
+            .base_table()
+            .as_any()
+            .downcast_ref::<NativeTable>()
+            .unwrap();
+        assert!(!native_table.uses_v2_manifest_paths().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_manifest_enabled_vend_input_storage_options() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+
+        let table = connect(uri)
+            .manifest_enabled(true)
+            .storage_option("test_storage_option", "test_value")
+            .namespace_client_property("vend_input_storage_options", "true")
+            .namespace_client_property(
+                "vend_input_storage_options_refresh_interval_millis",
+                "60000",
+            )
+            .execute()
+            .await
+            .unwrap()
+            .create_empty_table("vended", schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let storage_options = table.latest_storage_options().await.unwrap().unwrap();
+        assert_eq!(
+            storage_options.get("test_storage_option"),
+            Some(&"test_value".to_string())
+        );
+        assert!(storage_options.contains_key("expires_at_millis"));
     }
 
     #[tokio::test]

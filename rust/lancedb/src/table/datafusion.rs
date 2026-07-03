@@ -3,6 +3,7 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+mod blob_coerce;
 pub mod cast;
 pub mod insert;
 pub mod reject_nan;
@@ -39,21 +40,26 @@ use lance_index::scalar::FullTextSearchQuery;
 struct MetadataEraserExec {
     input: Arc<dyn ExecutionPlan>,
     schema: Arc<ArrowSchema>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl MetadataEraserExec {
     fn compute_properties_from_input(
         input: &Arc<dyn ExecutionPlan>,
         schema: &Arc<ArrowSchema>,
-    ) -> PlanProperties {
+    ) -> Arc<PlanProperties> {
         let input_properties = input.properties();
         let eq_properties = input_properties
             .eq_properties
             .clone()
             .with_new_schema(schema.clone())
             .unwrap();
-        input_properties.clone().with_eq_properties(eq_properties)
+        Arc::new(
+            input_properties
+                .as_ref()
+                .clone()
+                .with_eq_properties(eq_properties),
+        )
     }
 
     fn new(input: Arc<dyn ExecutionPlan>) -> Self {
@@ -87,7 +93,7 @@ impl ExecutionPlan for MetadataEraserExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
