@@ -541,26 +541,27 @@ class TestExtendedTypeIntegration:
         assert result.num_rows == 1
         assert result["date"][0].as_py() == date(2024, 1, 1)
 
-    def test_decimal_integration(self, type_check_table):
-        """Verify that high-precision Decimal literals avoid float-rounding issues."""
-        val1 = Decimal("1.50")
-        val2 = Decimal("2.50")
+    def test_decimal_integration(self, tmp_path):
+        """A Decimal literal must retain full 128-bit precision in a filter.
 
-        db = lancedb.connect(
-            str(type_check_table.uri).replace("extended_types", "precision_test")
-        )
-        schema = pa.schema([("val", pa.decimal128(4, 2))])
+        1.234567890123456789 and 1.234567890123456790 differ only in the last
+        digit and are indistinguishable once truncated to f64.  The filter
+        therefore returns the single expected row only if ``lit(Decimal)``
+        produces a true ``Decimal128`` scalar rather than being coerced to f64.
+        """
+        low = Decimal("1.234567890123456789")
+        high = Decimal("1.234567890123456790")
+
+        db = lancedb.connect(str(tmp_path / "decimal_precision"))
+        schema = pa.schema([("val", pa.decimal128(19, 18))])
         table = db.create_table(
-            "precision_test",
-            pa.table({"val": [val1, val2]}, schema=schema),
-            mode="overwrite",
+            "decimal_precision",
+            pa.table({"val": [low, high]}, schema=schema),
         )
 
-        # This will only work if lit(val2) is a true Decimal128(38, 18)
-        # or if DataFusion can cast it from Decimal128(19, 18)
-        result = table.search().where(col("val") < lit(val2)).to_arrow()
+        result = table.search().where(col("val") < lit(high)).to_arrow()
         assert result.num_rows == 1
-        assert result["val"][0].as_py() == val1
+        assert result["val"][0].as_py() == low
 
     def test_binary_integration(self, type_check_table):
         """Verify that Binary literals are correctly filtered."""

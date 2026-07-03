@@ -166,6 +166,19 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(i) = value.extract::<i64>() {
         return Ok(PyExpr(df_lit(i)));
     }
+    // Decimal must be checked before f64: Python's Decimal implements __float__,
+    // so value.extract::<f64>() would succeed and silently truncate the value to
+    // f64, losing precision. Build a Decimal128 scalar to preserve it instead.
+    if value.get_type().name()? == "Decimal" {
+        let s = value.call_method0("__str__")?.extract::<String>()?;
+        // Parse the decimal string into an i128 value, precision, and scale.
+        let (val, precision, scale) = parse_decimal(&s)?;
+        return Ok(PyExpr(df_lit(ScalarValue::Decimal128(
+            Some(val),
+            precision,
+            scale,
+        ))));
+    }
     if let Ok(f) = value.extract::<f64>() {
         return Ok(PyExpr(df_lit(f)));
     }
@@ -192,21 +205,9 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
         return Ok(PyExpr(df_lit(ScalarValue::Date32(Some(days)))));
     }
 
-    let type_name = value.get_type().name()?;
-    if type_name == "Decimal" {
-        let s = value.call_method0("__str__")?.extract::<String>()?;
-        // Parse decimal string into i128 and scale
-        let (val, precision, scale) = parse_decimal(&s)?;
-        return Ok(PyExpr(df_lit(ScalarValue::Decimal128(
-            Some(val),
-            precision,
-            scale,
-        ))));
-    }
-
     Err(PyValueError::new_err(format!(
         "unsupported literal type: {}. Supported: bool, int, float, str, bytes, date, datetime, Decimal",
-        type_name
+        value.get_type().name()?
     )))
 }
 
