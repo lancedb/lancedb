@@ -391,6 +391,7 @@ mod tests {
                 SplitStrategy::Random {
                     seed: Some(42),
                     sizes: SplitSizes::Percentages(vec![0.05, 0.30]),
+                    clump_size: None,
                 },
                 None,
             )

@@ -16,6 +16,7 @@ pub struct SplitRandomOptions {
     pub counts: Option<Vec<i64>>,
     pub fixed: Option<i64>,
     pub seed: Option<i64>,
+    pub clump_size: Option<i64>,
     pub split_names: Option<Vec<String>>,
 }
 
@@ -125,10 +126,15 @@ impl PermutationBuilder {
         };
 
         let seed = options.seed.map(|s| s as u64);
+        let clump_size = options.clump_size.map(|c| c as u64);
 
         self.modify(|builder| {
             builder.with_split_strategy(
-                SplitStrategy::Random { seed, sizes },
+                SplitStrategy::Random {
+                    seed,
+                    sizes,
+                    clump_size,
+                },
                 options.split_names.clone(),
             )
         })

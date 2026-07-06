@@ -412,10 +412,12 @@ def test_remote_permutation_is_picklable():
             content_len = int(request.headers.get("Content-Length"))
             body = json.loads(request.rfile.read(content_len))
             if "filter" in body:
-                match = re.search(r"_rowoffset in \((.*?)\)", body["filter"])
-                offsets = [int(offset.strip()) for offset in match.group(1).split(",")]
+                match = re.search(
+                    r"_rowoffset\s+in\s+\((.*?)\)", body["filter"], re.IGNORECASE
+                )
+                offsets = [int(o.strip()) for o in match.group(1).split(",")]
             else:
-                offsets = rows
+                offsets = list(range(len(rows)))
             table = pa.table({"a": [rows[offset] for offset in offsets]})
 
             request.send_response(200)

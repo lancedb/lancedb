@@ -7,7 +7,7 @@ use std::{future::Future, time::Duration};
 use arrow::compute::concat_batches;
 use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
 use arrow_schema::{DataType, SchemaRef};
-use datafusion_expr::Expr;
+use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
@@ -1468,18 +1468,13 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_offsets`] for more details.
     pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
-        let filter = format!(
-            "_rowoffset in ({})",
-            offsets
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let in_list: Vec<Expr> = offsets.iter().map(|o| lit(*o)).collect();
         Self {
             parent,
             request: QueryRequest {
-                filter: Some(QueryFilter::Sql(filter)),
+                filter: Some(QueryFilter::Datafusion(
+                    col("_rowoffset").in_list(in_list, false),
+                )),
                 ..Default::default()
             },
         }
@@ -1489,18 +1484,11 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_row_ids`] for more details.
     pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
-        let filter = format!(
-            "_rowid in ({})",
-            row_ids
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
         Self {
             parent,
             request: QueryRequest {
-                filter: Some(QueryFilter::Sql(filter)),
+                filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
                 ..Default::default()
             },
         }
