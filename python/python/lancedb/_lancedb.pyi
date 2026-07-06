@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
@@ -53,7 +54,9 @@ class PyExpr:
     def to_sql(self) -> str: ...
 
 def expr_col(name: str) -> PyExpr: ...
-def expr_lit(value: Union[bool, int, float, str, bytes]) -> PyExpr: ...
+def expr_lit(
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
 class Session:

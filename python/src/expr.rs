@@ -7,12 +7,14 @@
 //! build type-safe filter / projection expressions that map directly to
 //! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
 
+use std::ops::{Add, Div, Mul, Not, Sub};
+
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
 use datafusion_common::ScalarValue;
 use lancedb::expr::{
     DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
 };
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDate, PyDateTime};
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
 /// A type-safe DataFusion expression.
@@ -63,30 +65,30 @@ impl PyExpr {
         Self(self.0.clone().or(other.0.clone()))
     }
 
+    /// Logical NOT.
     fn not_(&self) -> Self {
-        use std::ops::Not;
         Self(self.0.clone().not())
     }
 
     // ── arithmetic ───────────────────────────────────────────────────────────
 
+    /// Add expressions.
     fn add(&self, other: &Self) -> Self {
-        use std::ops::Add;
         Self(self.0.clone().add(other.0.clone()))
     }
 
+    /// Subtract expressions.
     fn sub(&self, other: &Self) -> Self {
-        use std::ops::Sub;
         Self(self.0.clone().sub(other.0.clone()))
     }
 
+    /// Multiply expressions.
     fn mul(&self, other: &Self) -> Self {
-        use std::ops::Mul;
         Self(self.0.clone().mul(other.0.clone()))
     }
 
+    /// Divide expressions.
     fn div(&self, other: &Self) -> Self {
-        use std::ops::Div;
         Self(self.0.clone().div(other.0.clone()))
     }
 
@@ -153,7 +155,8 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `date`,
+/// `datetime`, `Decimal`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -162,6 +165,19 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     }
     if let Ok(i) = value.extract::<i64>() {
         return Ok(PyExpr(df_lit(i)));
+    }
+    // Decimal must be checked before f64: Python's Decimal implements __float__,
+    // so value.extract::<f64>() would succeed and silently truncate the value to
+    // f64, losing precision. Build a Decimal128 scalar to preserve it instead.
+    if value.get_type().name()? == "Decimal" {
+        let s = value.call_method0("__str__")?.extract::<String>()?;
+        // Parse the decimal string into an i128 value, precision, and scale.
+        let (val, precision, scale) = parse_decimal(&s)?;
+        return Ok(PyExpr(df_lit(ScalarValue::Decimal128(
+            Some(val),
+            precision,
+            scale,
+        ))));
     }
     if let Ok(f) = value.extract::<f64>() {
         return Ok(PyExpr(df_lit(f)));
@@ -173,10 +189,46 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
         let bytes = value.extract::<Vec<u8>>()?;
         return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(bytes)))));
     }
+
+    // datetime.datetime is a subclass of datetime.date, so it must be checked first.
+    if let Ok(dt) = value.downcast::<PyDateTime>() {
+        let ts: f64 = dt.call_method0("timestamp")?.extract()?;
+        let micros = (ts * 1_000_000.0).round() as i64;
+        return Ok(PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
+            Some(micros),
+            None,
+        ))));
+    }
+    if let Ok(d) = value.downcast::<PyDate>() {
+        let ordinal: i32 = d.call_method0("toordinal")?.extract()?;
+        let days = ordinal - 719163; // Unix epoch is 1970-01-01
+        return Ok(PyExpr(df_lit(ScalarValue::Date32(Some(days)))));
+    }
+
     Err(PyValueError::new_err(format!(
-        "unsupported literal type: {}. Supported: bool, int, float, str, bytes",
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes, date, datetime, Decimal",
         value.get_type().name()?
     )))
+}
+
+fn parse_decimal(s: &str) -> PyResult<(i128, u8, i8)> {
+    let s = s.trim();
+    let dot_pos = s.find('.');
+    let scale = if let Some(pos) = dot_pos {
+        (s.len() - pos - 1) as i8
+    } else {
+        0
+    };
+
+    let digits = s.replace('.', "");
+    let val = digits
+        .parse::<i128>()
+        .map_err(|e| PyValueError::new_err(format!("failed to parse decimal digits: {}", e)))?;
+
+    // Precision is total number of digits
+    let precision = digits.trim_start_matches('-').len() as u8;
+
+    Ok((val, precision, scale))
 }
 
 /// Call an arbitrary registered SQL function by name.
