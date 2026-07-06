@@ -471,12 +471,13 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
         progress: Option<Py<PyAny>>,
+        write_parallelism: Option<usize>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -485,6 +486,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(write_parallelism) = write_parallelism {
+            op = op.write_parallelism(write_parallelism);
         }
         if let Some(progress_obj) = progress {
             let is_callable = Python::attach(|py| progress_obj.bind(py).is_callable());

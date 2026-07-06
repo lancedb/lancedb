@@ -11,6 +11,92 @@ import pyarrow.dataset as ds
 
 from .pydantic import LanceModel
 
+# pyarrow's default scanner settings are tuned for narrow rows. For wide rows
+# (e.g. embedding columns) they buffer a huge read-ahead window in host memory
+# and can OOM the client during bulk ingestion. We size the scanner so the
+# estimated in-flight memory stays within a budget, while leaving narrow
+# datasets on pyarrow's defaults (no throughput regression).
+_SCAN_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024  # ~1 GiB in-flight target
+_TARGET_BATCH_BYTES = 16 * 1024 * 1024  # ~16 MiB per batch
+_MIN_BATCH_ROWS = 512
+# pyarrow defaults (see arrow/dataset ScanOptions); we never exceed these.
+_PA_DEFAULT_BATCH_ROWS = 131_072
+_PA_DEFAULT_BATCH_READAHEAD = 16
+_PA_DEFAULT_FRAGMENT_READAHEAD = 4
+# Read-ahead used for wide rows. pyarrow reads a whole parquet row group at a
+# time and keeps `batch_readahead` of them resident, so read-ahead depth (not
+# batch size) dominates peak memory for wide data; keep both small but leave a
+# little prefetch for throughput. Tuned empirically against embedding datasets.
+_WIDE_BATCH_READAHEAD = 2
+_WIDE_FRAGMENT_READAHEAD = 1
+# Estimate for variable-width columns (string/binary/list) whose true width is
+# unknown from the schema alone. Only needs to be large enough to flag "wide".
+_VARIABLE_WIDTH_ESTIMATE = 128
+
+
+def _estimate_field_width(dtype: pa.DataType) -> int:
+    if pa.types.is_fixed_size_list(dtype):
+        return dtype.list_size * _estimate_field_width(dtype.value_type)
+    if pa.types.is_struct(dtype):
+        return sum(
+            _estimate_field_width(dtype.field(i).type) for i in range(dtype.num_fields)
+        )
+    if pa.types.is_dictionary(dtype):
+        return _estimate_field_width(dtype.value_type)
+    if pa.types.is_fixed_size_binary(dtype):
+        return dtype.byte_width
+    if pa.types.is_boolean(dtype):
+        return 1
+    # Fixed-width scalars (ints, floats, temporal, decimal) expose bit_width;
+    # variable-width types (string, binary, list, map, ...) raise ValueError.
+    try:
+        return max(1, dtype.bit_width // 8)
+    except (ValueError, AttributeError):
+        return _VARIABLE_WIDTH_ESTIMATE
+
+
+def _estimate_bytes_per_row(schema: pa.Schema) -> int:
+    return max(1, sum(_estimate_field_width(field.type) for field in schema))
+
+
+def _bounded_scanner_kwargs(schema: pa.Schema) -> dict:
+    """Scanner kwargs that cap in-flight memory for wide rows.
+
+    Narrow datasets keep pyarrow's defaults unchanged (no throughput
+    regression). For wide rows (e.g. embedding columns) pyarrow's default
+    read-ahead buffers many large batches/row-groups at once, which can OOM the
+    client during bulk ingestion, so we shrink the batch size and read-ahead to
+    keep the estimated in-flight memory near the budget.
+
+    Read-ahead (not just batch size) has to drop: pyarrow reads a whole parquet
+    row group at a time and keeps `batch_readahead`/`fragment_readahead` of them
+    resident, so a small batch size alone still pins large row-group buffers.
+    """
+    bytes_per_row = _estimate_bytes_per_row(schema)
+
+    # If pyarrow's defaults already stay within budget, leave them alone so
+    # narrow datasets keep their throughput. A "unit" of in-flight memory is one
+    # default-sized batch, held `batch_readahead + fragment_readahead` deep.
+    default_in_flight = (
+        _PA_DEFAULT_BATCH_ROWS
+        * bytes_per_row
+        * (_PA_DEFAULT_BATCH_READAHEAD + _PA_DEFAULT_FRAGMENT_READAHEAD)
+    )
+    if default_in_flight <= _SCAN_MEMORY_BUDGET_BYTES:
+        return {}
+
+    # Wide rows: cap batch bytes and pull read-ahead down so only a couple of
+    # large row-group buffers are resident at once.
+    batch_size = min(
+        _PA_DEFAULT_BATCH_ROWS,
+        max(_MIN_BATCH_ROWS, _TARGET_BATCH_BYTES // bytes_per_row),
+    )
+    return {
+        "batch_size": batch_size,
+        "batch_readahead": _WIDE_BATCH_READAHEAD,
+        "fragment_readahead": _WIDE_FRAGMENT_READAHEAD,
+    }
+
 
 @dataclass
 class Scannable:
@@ -56,10 +142,11 @@ def _from_table(data: pa.Table) -> Scannable:
 
 @to_scannable.register(ds.Dataset)
 def _from_dataset(data: ds.Dataset) -> Scannable:
+    scanner_kwargs = _bounded_scanner_kwargs(data.schema)
     return Scannable(
         schema=data.schema,
         num_rows=data.count_rows(),
-        reader=lambda: data.scanner().to_reader(),
+        reader=lambda: data.scanner(**scanner_kwargs).to_reader(),
     )
 
 
@@ -206,10 +293,11 @@ def _register_optional_converters():
 
         @to_scannable.register(lance.LanceDataset)
         def _from_lance(data: lance.LanceDataset) -> Scannable:
+            scanner_kwargs = _bounded_scanner_kwargs(data.schema)
             return Scannable(
                 schema=data.schema,
                 num_rows=data.count_rows(),
-                reader=lambda: data.scanner().to_reader(),
+                reader=lambda: data.scanner(**scanner_kwargs).to_reader(),
             )
 
 

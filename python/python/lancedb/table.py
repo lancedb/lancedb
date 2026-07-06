@@ -1207,6 +1207,7 @@ class Table(ABC):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -1251,6 +1252,13 @@ class Table(ABC):
 
                 with tqdm() as pbar:
                     table.add(data, progress=pbar)
+
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -3097,6 +3105,7 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -3118,6 +3127,12 @@ class LanceTable(Table):
         progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -3133,6 +3148,7 @@ class LanceTable(Table):
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
                     progress=progress,
+                    write_parallelism=write_parallelism,
                 )
             )
         finally:
@@ -4787,6 +4803,7 @@ class AsyncTable:
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -4811,6 +4828,12 @@ class AsyncTable:
         progress: callable or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         """
         schema = await self.schema()
@@ -4842,7 +4865,12 @@ class AsyncTable:
         data = to_scannable(data)
         progress, owns = _normalize_progress(progress)
         try:
-            return await self._inner.add(data, mode or "append", progress=progress)
+            return await self._inner.add(
+                data,
+                mode or "append",
+                progress=progress,
+                write_parallelism=write_parallelism,
+            )
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)

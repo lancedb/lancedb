@@ -391,6 +391,29 @@ def test_add(mem_db: DBConnection):
     _add(table, schema)
 
 
+def test_add_write_parallelism(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = mem_db.create_table("test", schema=schema)
+
+    data = pa.table({"id": list(range(1000))}, schema=schema)
+    table.add(data, write_parallelism=4)
+    assert len(table) == 1000
+
+    # invalid parallelism is rejected
+    with pytest.raises(ValueError, match="write_parallelism"):
+        table.add(data, write_parallelism=0)
+
+
+@pytest.mark.asyncio
+async def test_add_write_parallelism_async(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = await mem_db_async.create_table("test", schema=schema)
+
+    data = pa.table({"id": list(range(1000))}, schema=schema)
+    await table.add(data, write_parallelism=4)
+    assert await table.count_rows() == 1000
+
+
 def test_add_struct(mem_db: DBConnection):
     # https://github.com/lancedb/lancedb/issues/2114
     schema = pa.schema(
