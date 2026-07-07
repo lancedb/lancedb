@@ -1489,85 +1489,6 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
-/// Reconstruct an [`LsmWriteSpec`](crate::table::LsmWriteSpec) from the MemWAL
-/// index's `details` JSON as emitted by the server's `describe_indices`.
-///
-/// Mirrors the native reconstruction in `table::merge::lsm`, but reads the
-/// server-resolved `column` name from the sharding field rather than a Lance
-/// field id — field ids do not travel to the remote client, so the server
-/// resolves the name against its schema before serializing the details.
-fn lsm_write_spec_from_details_json(
-    details: &str,
-) -> std::result::Result<crate::table::LsmWriteSpec, String> {
-    use crate::table::LsmWriteSpec;
-
-    #[derive(Deserialize)]
-    struct Details {
-        #[serde(default)]
-        sharding_specs: Vec<ShardingSpec>,
-        #[serde(default)]
-        maintained_indexes: Vec<String>,
-        #[serde(default)]
-        writer_config_defaults: HashMap<String, String>,
-    }
-    #[derive(Deserialize)]
-    struct ShardingSpec {
-        #[serde(default)]
-        fields: Vec<ShardingField>,
-    }
-    #[derive(Deserialize)]
-    struct ShardingField {
-        transform: Option<String>,
-        /// Server-resolved routing column name (bucket / identity only).
-        #[serde(default)]
-        column: Option<String>,
-        #[serde(default)]
-        parameters: HashMap<String, String>,
-    }
-
-    let details: Details = serde_json::from_str(details)
-        .map_err(|e| format!("failed to parse MemWAL index details: {}", e))?;
-
-    let field = details
-        .sharding_specs
-        .first()
-        .and_then(|s| s.fields.first())
-        .ok_or_else(|| "MemWAL index details has no sharding field".to_string())?;
-
-    let column = || {
-        field
-            .column
-            .clone()
-            .ok_or_else(|| "MemWAL sharding field is missing the resolved column name".to_string())
-    };
-
-    let base = match field.transform.as_deref() {
-        Some("bucket") => {
-            let num_buckets = field
-                .parameters
-                .get("num_buckets")
-                .and_then(|s| s.parse::<u32>().ok())
-                .filter(|n| *n > 0)
-                .ok_or_else(|| {
-                    "MemWAL bucket spec has a missing or invalid num_buckets".to_string()
-                })?;
-            LsmWriteSpec::bucket(column()?, num_buckets)
-        }
-        Some("identity") => LsmWriteSpec::identity(column()?),
-        Some("unsharded") => LsmWriteSpec::unsharded(),
-        other => {
-            return Err(format!(
-                "MemWAL index has an unsupported sharding transform {:?}",
-                other
-            ));
-        }
-    };
-
-    Ok(base
-        .with_maintained_indexes(details.maintained_indexes)
-        .with_writer_config_defaults(details.writer_config_defaults))
-}
-
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -2361,8 +2282,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // The spec lives in the `__lance_mem_wal` system index, which the
         // curated `index/list` surface filters out by default. `include_system`
         // opts that entry back in for this read only — `list_indices` stays
-        // curated. The system index's `index_details` carries the decoded
-        // MemWAL state (with the server-resolved shard column name).
+        // curated. The server serializes the resolved `LsmWriteSpec` (shard
+        // column already mapped from its field id) into `index_details`.
         let mut request = self.post_read(&format!("/v1/table/{}/index/list/", self.identifier));
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version, "include_system": true });
@@ -2408,11 +2329,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
-        let spec = lsm_write_spec_from_details_json(&details).map_err(|msg| Error::Http {
-            source: msg.into(),
-            request_id,
-            status_code: None,
-        })?;
+        // The server serializes the resolved `LsmWriteSpec` directly, so it
+        // deserializes back into the same type — no client-side reconstruction.
+        let spec: crate::table::LsmWriteSpec =
+            serde_json::from_str(&details).map_err(|e| Error::Http {
+                source: format!(
+                    "Failed to parse MemWAL index details as LsmWriteSpec: {}",
+                    e
+                )
+                .into(),
+                request_id,
+                status_code: None,
+            })?;
         Ok(Some(spec))
     }
 
@@ -5465,11 +5393,16 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(body["include_system"], serde_json::json!(true));
 
-            // The MemWAL index carries the decoded state in `index_details`,
-            // including the server-resolved `column` name. A user index is
-            // included too, with a type the client has no variant for — proving
-            // the getter reads by name and ignores `index_type`.
-            let details = r#"{"sharding_specs":[{"fields":[{"transform":"bucket","column":"id","parameters":{"num_buckets":"4"}}]}],"maintained_indexes":["id_idx"],"writer_config_defaults":{"durable_write":"false"}}"#;
+            // The server serializes the resolved `LsmWriteSpec` into
+            // `index_details`. A user index is included too, with a type the
+            // client has no variant for — proving the getter reads by name and
+            // ignores `index_type`.
+            let details = serde_json::to_string(
+                &crate::table::LsmWriteSpec::bucket("id", 4)
+                    .with_maintained_indexes(["id_idx"])
+                    .with_writer_config_defaults([("durable_write", "false")]),
+            )
+            .unwrap();
             let response = serde_json::json!({
                 "indexes": [
                     { "index_name": "v_idx", "index_type": "BTREE", "columns": ["v"] },
