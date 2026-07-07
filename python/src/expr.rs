@@ -191,7 +191,7 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     }
 
     // datetime.datetime is a subclass of datetime.date, so it must be checked first.
-    if let Ok(dt) = value.downcast::<PyDateTime>() {
+    if let Ok(dt) = value.cast::<PyDateTime>() {
         let ts: f64 = dt.call_method0("timestamp")?.extract()?;
         let micros = (ts * 1_000_000.0).round() as i64;
         return Ok(PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
@@ -199,7 +199,7 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
             None,
         ))));
     }
-    if let Ok(d) = value.downcast::<PyDate>() {
+    if let Ok(d) = value.cast::<PyDate>() {
         let ordinal: i32 = d.call_method0("toordinal")?.extract()?;
         let days = ordinal - 719163; // Unix epoch is 1970-01-01
         return Ok(PyExpr(df_lit(ScalarValue::Date32(Some(days)))));
