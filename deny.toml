@@ -51,18 +51,6 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2024-0436
     { id = "RUSTSEC-2024-0436", reason = "transitive via datafusion; awaiting ecosystem migration" },
 
-    # encoding: unmaintained. Reached through lindera-dictionary, which is
-    # required by the native Lindera tokenizer path. Lindera has not migrated
-    # off this crate yet.
-    # https://rustsec.org/advisories/RUSTSEC-2021-0153
-    { id = "RUSTSEC-2021-0153", reason = "transitive via lindera-dictionary for native Lindera tokenizer" },
-
-    # fast-float: unsound and unmaintained. Reached only through polars-arrow
-    # from the optional Polars integration; replacement requires a Polars
-    # dependency upgrade.
-    # https://rustsec.org/advisories/RUSTSEC-2024-0379
-    { id = "RUSTSEC-2024-0379", reason = "transitive via polars-arrow; waiting on Polars migration" },
-
     # tantivy: segfault on malformed input due to missing bounds check.
     # Pulled in via lance for full-text search. We only feed tantivy
     # documents we construct ourselves, not attacker-controlled bytes.
@@ -80,18 +68,6 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
-    # bincode: unmaintained. Reached through lindera and lindera-dictionary,
-    # which are required by the native Lindera tokenizer path. Lindera has not
-    # migrated to another serialization format yet.
-    # https://rustsec.org/advisories/RUSTSEC-2025-0141
-    { id = "RUSTSEC-2025-0141", reason = "transitive via lindera/lindera-dictionary for native Lindera tokenizer" },
-
-    # lru: soundness issue in IterMut. Reached only through aws-sdk-s3 in
-    # LanceDB's dev-dependency graph; LanceDB does not use that iterator
-    # directly. Clearing this requires the AWS SDK chain to update lru.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0002
-    { id = "RUSTSEC-2026-0002", reason = "transitive via aws-sdk-s3 dev-dependency; waiting on AWS SDK lru upgrade" },
-
     # rustls-webpki 0.101.7 (old major line): name-constraint checks for
     # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
     # from aws-smithy-http-client. The 0.103 line we actively use is patched.
@@ -107,12 +83,6 @@ ignore = [
     # we actively use is upgraded to 0.103.13 which contains the fix.
     # https://rustsec.org/advisories/RUSTSEC-2026-0104
     { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-
-    # rand 0.8.5: soundness issue only when ThreadRng reseeds inside a custom
-    # logger. Reached through several transitive chains. LanceDB does not use
-    # rand from a custom logger; upgrade once all pinned chains accept 0.8.6+.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0097
-    { id = "RUSTSEC-2026-0097", reason = "transitive rand 0.8.5; LanceDB does not call ThreadRng from custom logging" },
 
     # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
     # https://rustsec.org/advisories/RUSTSEC-2026-0176
