@@ -47,6 +47,9 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
     async fn get_headers(&self) -> Result<HashMap<String, String>>;
 }
 
+/// Default maximum bytes per insert request (1 GiB).
+const DEFAULT_MAX_BYTES_PER_REQUEST: usize = 1024 * 1024 * 1024;
+
 /// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Clone)]
 pub struct ClientConfig {
@@ -71,6 +74,19 @@ pub struct ClientConfig {
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
     pub user_id: Option<String>,
+    /// Maximum number of bytes to send in a single insert HTTP request.
+    ///
+    /// During a multipart write, each partition's data is split into one or more
+    /// parts of at most this many (Arrow IPC, compressed) bytes, each uploaded as
+    /// a separate request under the shared upload id. This bounds how long any
+    /// one request stays open, so large bulk ingests do not exceed the client
+    /// read timeout while the server streams the part to object storage.
+    ///
+    /// The request body is still streamed (not buffered), so this does not
+    /// increase peak memory. Set to `Some(0)` to disable splitting (one request
+    /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
+    /// environment variable. Defaults to 1 GiB.
+    pub max_bytes_per_request: Option<usize>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -87,6 +103,7 @@ impl std::fmt::Debug for ClientConfig {
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
             .field("user_id", &self.user_id)
+            .field("max_bytes_per_request", &self.max_bytes_per_request)
             .finish()
     }
 }
@@ -102,6 +119,7 @@ impl Default for ClientConfig {
             tls_config: None,
             header_provider: None,
             user_id: None,
+            max_bytes_per_request: None,
         }
     }
 }
@@ -248,6 +266,8 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     /// Connection-level read consistency interval. Drives the
     /// `x-lancedb-min-timestamp` freshness header sent on read requests.
     pub(crate) read_consistency_interval: Option<Duration>,
+    /// Maximum bytes per insert request. `None` disables request splitting.
+    pub(crate) max_bytes_per_request: Option<usize>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -429,6 +449,8 @@ impl RestfulLanceDbClient<Sender> {
         };
         debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.clone().try_into()?;
+        let max_bytes_per_request =
+            Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
         Ok(Self {
             client,
             host,
@@ -440,13 +462,38 @@ impl RestfulLanceDbClient<Sender> {
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
             read_consistency_interval,
+            max_bytes_per_request,
         })
+    }
+
+    /// Resolve the max bytes per insert request from config, environment, or the
+    /// default. A value of `0` (from either source) disables request splitting.
+    fn resolve_max_bytes_per_request(passed: Option<usize>) -> Result<Option<usize>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST") {
+            env.parse::<usize>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_BYTES_PER_REQUEST must be a non-negative integer, got '{}'",
+                    env
+                ),
+            })?
+        } else {
+            DEFAULT_MAX_BYTES_PER_REQUEST
+        };
+        Ok((value > 0).then_some(value))
     }
 }
 
 impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    /// Maximum bytes per insert request, or `None` if request splitting is
+    /// disabled.
+    pub(crate) fn max_bytes_per_request(&self) -> Option<usize> {
+        self.max_bytes_per_request
     }
 
     pub fn default_headers(
@@ -875,6 +922,7 @@ pub mod test_utils {
             id_delimiter: "$".to_string(),
             header_provider: None,
             read_consistency_interval,
+            max_bytes_per_request: None,
         }
     }
 
@@ -900,6 +948,9 @@ pub mod test_utils {
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
             read_consistency_interval: None,
+            max_bytes_per_request: config
+                .max_bytes_per_request
+                .and_then(|v| (v > 0).then_some(v)),
         }
     }
 }
@@ -1103,6 +1154,7 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
         };
 
         // Apply dynamic headers
@@ -1139,6 +1191,7 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
         };
 
         // Apply dynamic headers
@@ -1177,6 +1230,7 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
         };
 
         // Header provider errors should fail the request

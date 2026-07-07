@@ -15,7 +15,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use http::header::CONTENT_TYPE;
 use lance::io::exec::utils::InstrumentedRecordBatchStreamAdapter;
 
@@ -49,6 +49,10 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     tracker: Option<Arc<WriteProgressTracker>>,
     /// Branch to write to via `?branch=`. `None` targets the main branch.
     branch: Option<String>,
+    /// For multipart writes, split each partition into parts of at most this
+    /// many bytes, each uploaded as a separate request. `None` sends the whole
+    /// partition as a single request.
+    max_bytes_per_request: Option<usize>,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
@@ -63,7 +67,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         branch: Option<String>,
     ) -> Self {
         Self::new_inner(
-            table_name, identifier, client, input, overwrite, None, tracker, branch,
+            table_name, identifier, client, input, overwrite, None, tracker, branch, None,
         )
     }
 
@@ -82,6 +86,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         upload_id: String,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
+        max_bytes_per_request: Option<usize>,
     ) -> Self {
         Self::new_inner(
             table_name,
@@ -92,6 +97,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             Some(upload_id),
             tracker,
             branch,
+            max_bytes_per_request,
         )
     }
 
@@ -105,6 +111,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         upload_id: Option<String>,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
+        max_bytes_per_request: Option<usize>,
     ) -> Self {
         let num_partitions = if upload_id.is_some() {
             input.output_partitioning().partition_count()
@@ -131,6 +138,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             upload_id,
             tracker,
             branch,
+            max_bytes_per_request,
         }
     }
 
@@ -212,6 +220,173 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
 
         Ok(reqwest::Body::wrap_stream(stream))
     }
+
+    /// Upload a partition as one or more multipart parts, each at most
+    /// `max_bytes` (Arrow IPC, compressed) bytes.
+    ///
+    /// Each part is a separate `/insert?upload_id=...&upload_part_id=...` request
+    /// whose body is still streamed through a bounded channel, so peak memory
+    /// stays at a couple of batches regardless of `max_bytes`. The server stages
+    /// every part under the shared `upload_id` and merges them atomically when
+    /// the caller completes the multipart write. An empty partition still sends
+    /// exactly one (schema-only) part so the session has a transaction to
+    /// commit.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_multipart_chunked(
+        client: RestfulLanceDbClient<S>,
+        identifier: String,
+        table_name: String,
+        upload_id: String,
+        branch: Option<String>,
+        overwrite: bool,
+        max_bytes: usize,
+        mut input: SendableRecordBatchStream,
+        tracker: Option<Arc<WriteProgressTracker>>,
+    ) -> DataFusionResult<()> {
+        let schema = input.schema();
+
+        // Prime the first batch so an empty partition still sends one part and a
+        // non-empty partition never emits a trailing empty part after a cut.
+        let mut next_batch: Option<RecordBatch> = match input.next().await {
+            Some(batch) => Some(batch?),
+            None => None,
+        };
+
+        loop {
+            let first = next_batch.take();
+
+            let (mut chunk_tx, chunk_rx) =
+                futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
+            let body = reqwest::Body::wrap_stream(chunk_rx);
+
+            let part_id = uuid::Uuid::new_v4().to_string();
+            let mut request = client
+                .post(&format!("/v1/table/{}/insert/", identifier))
+                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .query(&[("upload_id", upload_id.as_str())])
+                .query(&[("upload_part_id", part_id.as_str())]);
+            if overwrite {
+                request = request.query(&[("mode", "overwrite")]);
+            }
+            if let Some(ref b) = branch {
+                request = request.query(&[("branch", b.as_str())]);
+            }
+            let request = request.body(body);
+
+            let mut part_bytes: usize = 0;
+            let mut input_ended = false;
+
+            let input_ref = &mut input;
+            let part_bytes_ref = &mut part_bytes;
+            let input_ended_ref = &mut input_ended;
+            let schema_ref = &schema;
+            let producer = async move {
+                let options = arrow_ipc::writer::IpcWriteOptions::default()
+                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                    Vec::new(),
+                    schema_ref,
+                    options,
+                )
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                let mut pending = first;
+                loop {
+                    let batch = match pending.take() {
+                        Some(batch) => batch,
+                        None => match input_ref.next().await {
+                            Some(Ok(batch)) => batch,
+                            Some(Err(e)) => {
+                                // Abort the body so the server does not treat the
+                                // truncated stream as a successful write; the
+                                // original error is surfaced to the caller.
+                                let _ = chunk_tx
+                                    .send(Err(std::io::Error::other("input stream error")))
+                                    .await;
+                                return Err(e);
+                            }
+                            None => {
+                                *input_ended_ref = true;
+                                break;
+                            }
+                        },
+                    };
+                    writer
+                        .write(&batch)
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                    let chunk = std::mem::take(writer.get_mut());
+                    *part_bytes_ref += chunk.len();
+                    if chunk_tx.send(Ok(chunk)).await.is_err() {
+                        // The request finished or failed; stop producing.
+                        break;
+                    }
+                    if *part_bytes_ref >= max_bytes {
+                        break;
+                    }
+                }
+
+                writer
+                    .finish()
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let tail = std::mem::take(writer.get_mut());
+                if !tail.is_empty() {
+                    let _ = chunk_tx.send(Ok(tail)).await;
+                }
+                Ok::<(), DataFusionError>(())
+            };
+
+            let send = async {
+                let (request_id, response) = client
+                    .send(request)
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let response = RemoteTable::<Sender>::handle_table_not_found(
+                    &table_name,
+                    response,
+                    &request_id,
+                )
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let response = client
+                    .check_response(&request_id, response)
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let _ = response.bytes().await.map_err(|e| {
+                    DataFusionError::External(Box::new(Error::Http {
+                        source: Box::new(e),
+                        request_id: request_id.clone(),
+                        status_code: None,
+                    }))
+                })?;
+                Ok::<(), DataFusionError>(())
+            };
+
+            let (producer_result, send_result) = futures::join!(producer, send);
+            // Prefer the producer error (e.g. NaN rejection) over any HTTP error
+            // it induced.
+            producer_result?;
+            send_result?;
+
+            if let Some(ref t) = tracker {
+                t.record_bytes(part_bytes);
+            }
+
+            if input_ended {
+                break;
+            }
+
+            // Look ahead so a size cut landing exactly on the end of input does
+            // not produce a trailing empty part.
+            next_batch = match input.next().await {
+                Some(Ok(batch)) => Some(batch),
+                Some(Err(e)) => return Err(e),
+                None => break,
+            };
+        }
+
+        Ok(())
+    }
 }
 
 impl<S: HttpSend + 'static> DisplayAs for RemoteInsertExec<S> {
@@ -278,6 +453,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             self.upload_id.clone(),
             self.tracker.clone(),
             self.branch.clone(),
+            self.max_bytes_per_request,
         )))
     }
 
@@ -310,8 +486,32 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         let upload_id = self.upload_id.clone();
         let tracker = self.tracker.clone();
         let branch = self.branch.clone();
+        let max_bytes_per_request = self.max_bytes_per_request;
 
         let stream = futures::stream::once(async move {
+            // Multipart writes with a byte budget split the partition into
+            // several bounded, still-streamed requests so no single request
+            // stays open long enough to hit the client read timeout.
+            if let (Some(upload_id), Some(max_bytes)) = (upload_id.clone(), max_bytes_per_request) {
+                Self::send_multipart_chunked(
+                    client,
+                    identifier,
+                    table_name,
+                    upload_id,
+                    branch,
+                    overwrite,
+                    max_bytes,
+                    input_stream,
+                    tracker,
+                )
+                .await?;
+                let count_array: ArrayRef = Arc::new(UInt64Array::from(vec![0u64]));
+                return Ok::<RecordBatch, DataFusionError>(RecordBatch::try_new(
+                    COUNT_SCHEMA.clone(),
+                    vec![count_array],
+                )?);
+            }
+
             let mut request = client
                 .post(&format!("/v1/table/{}/insert/", identifier))
                 .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
@@ -423,9 +623,12 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
+    use datafusion_execution::TaskContext;
+    use datafusion_physical_plan::ExecutionPlan;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use super::RemoteInsertExec;
     use crate::Table;
     use crate::remote::ARROW_STREAM_CONTENT_TYPE;
     use crate::table::datafusion::BaseTableAdapter;
@@ -590,5 +793,110 @@ mod tests {
 
         // Verify: should have made exactly one HTTP request despite multiple input partitions
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Build a single-partition input plan from the given batches.
+    async fn input_plan_from_batches(
+        schema: Arc<ArrowSchema>,
+        batches: Vec<arrow_array::RecordBatch>,
+    ) -> Arc<dyn ExecutionPlan> {
+        use datafusion_catalog::TableProvider;
+        let mem = MemTable::try_new(schema, vec![batches]).unwrap();
+        let ctx = SessionContext::new();
+        mem.scan(&ctx.state(), None, &[], None).await.unwrap()
+    }
+
+    fn counting_insert_client(
+        counter: Arc<AtomicUsize>,
+    ) -> crate::remote::client::RestfulLanceDbClient<crate::remote::client::test_utils::MockSender>
+    {
+        crate::remote::client::test_utils::client_with_handler(move |request| {
+            let path = request.url().path();
+            assert_eq!(path, "/v1/table/my_table/insert/");
+            let query = request.url().query().unwrap_or("");
+            assert!(query.contains("upload_id=upload-1"), "query: {query}");
+            assert!(query.contains("upload_part_id="), "query: {query}");
+            counter.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(String::new())
+                .unwrap()
+        })
+    }
+
+    #[tokio::test]
+    async fn test_multipart_chunked_splits_into_parts() {
+        use futures::StreamExt;
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let client = counting_insert_client(insert_count.clone());
+
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )]));
+        let batches = vec![
+            record_batch!(("id", Int32, [1, 2])).unwrap(),
+            record_batch!(("id", Int32, [3, 4])).unwrap(),
+            record_batch!(("id", Int32, [5, 6])).unwrap(),
+        ];
+        let input = input_plan_from_batches(schema, batches).await;
+
+        // A 1-byte budget forces every batch into its own part.
+        let exec = RemoteInsertExec::new_multipart(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            "upload-1".to_string(),
+            None,
+            None,
+            Some(1),
+        );
+
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        assert_eq!(insert_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_single_part_when_under_budget() {
+        use futures::StreamExt;
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let client = counting_insert_client(insert_count.clone());
+
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )]));
+        let batches = vec![
+            record_batch!(("id", Int32, [1, 2])).unwrap(),
+            record_batch!(("id", Int32, [3, 4])).unwrap(),
+            record_batch!(("id", Int32, [5, 6])).unwrap(),
+        ];
+        let input = input_plan_from_batches(schema, batches).await;
+
+        // A large budget keeps the whole partition in a single part.
+        let exec = RemoteInsertExec::new_multipart(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            "upload-1".to_string(),
+            None,
+            None,
+            Some(64 * 1024 * 1024),
+        );
+
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        assert_eq!(insert_count.load(Ordering::SeqCst), 1);
     }
 }

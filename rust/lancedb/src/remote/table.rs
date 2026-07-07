@@ -1361,6 +1361,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             upload_id.to_string(),
             output.tracker.clone(),
             self.branch.clone(),
+            self.client.max_bytes_per_request(),
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());

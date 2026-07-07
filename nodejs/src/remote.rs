@@ -232,6 +232,8 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             tls_config: config.tls_config.map(Into::into),
             header_provider: None, // the header provider is set separately later
             user_id: config.user_id,
+            // Resolved from LANCE_CLIENT_MAX_BYTES_PER_REQUEST or the default.
+            max_bytes_per_request: None,
         }
     }
 }
