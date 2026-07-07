@@ -8,6 +8,14 @@
 
 ## Properties
 
+### clumpSize?
+
+```ts
+optional clumpSize: number;
+```
+
+***
+
 ### counts?
 
 ```ts

@@ -82,6 +82,9 @@ class RRFReranker(Reranker):
         results from multiple vector searches as it doesn't support reranking
         vector results individually.
         """
+        if not vector_results:
+            raise ValueError("vector_results must not be empty")
+
         # Make sure all elements are of the same type
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
             raise ValueError(

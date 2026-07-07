@@ -30,7 +30,7 @@ from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
 from lancedb.arrow import peek_reader
-from lancedb.background_loop import LOOP
+from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -55,11 +55,13 @@ from .index import (
     Bitmap,
     IvfRq,
     LabelList,
+    Fm,
     HnswPq,
     HnswSq,
     HnswFlat,
     FTS,
 )
+from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -88,6 +90,32 @@ from .util import (
 from .index import lang_mapping
 
 BlobMode = Literal["lazy", "bytes", "descriptions"]
+
+_VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
+
+
+def _should_push_down_query_table(
+    namespace_client: Optional[Any], pushdown_operations: set
+) -> bool:
+    return namespace_client is not None and "QueryTable" in pushdown_operations
+
+
+def _validate_blob_mode(blob_mode: BlobMode) -> None:
+    if blob_mode not in _VALID_BLOB_MODES:
+        modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
+        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
+
+
+def _field_is_blob(field: pa.Field) -> bool:
+    metadata = field.metadata or {}
+    return metadata.get(b"lance-encoding:blob") == b"true" or (
+        metadata.get("lance-encoding:blob") == "true"
+    )
+
+
+def _schema_has_blob_field(schema: pa.Schema) -> bool:
+    return any(_field_is_blob(field) for field in schema)
+
 
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
 _MODEL_BACKED_TOKENIZER_ERRORS = (
@@ -154,6 +182,7 @@ if TYPE_CHECKING:
         AddColumnsResult,
         AddResult,
         AlterColumnsResult,
+        UpdateFieldMetadataResult,
         DeleteResult,
         DropColumnsResult,
         LsmWriteSpec,
@@ -173,6 +202,25 @@ if TYPE_CHECKING:
         BaseTokenizerType,
         DistanceType,
     )
+
+# Type alias for index configuration objects
+IndexConfigType = Union[
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    IvfRq,
+    HnswFlat,
+    HnswPq,
+    HnswSq,
+    BTree,
+    Bitmap,
+    LabelList,
+    Fm,
+    FTS,
+]
+
+# Known distance metrics for legacy API detection
+KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
 
 
 def _into_pyarrow_reader(
@@ -195,7 +243,10 @@ def _into_pyarrow_reader(
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
     if isinstance(data, dict):
-        raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+        raise ValueError(
+            "Cannot create or add rows from a single dictionary. "
+            "Use a list of dictionaries instead."
+        )
 
     if isinstance(data, list):
         # Handle empty list case
@@ -600,6 +651,16 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
+                    # Replace vectors with wrong length (including empty lists
+                    # returned for inputs like empty strings) with None so that
+                    # _handle_bad_vectors can process them according to the
+                    # on_bad_vectors policy instead of crashing when PyArrow
+                    # tries to cast them into a fixed-size list array.
+                    expected_ndims = conf.function.ndims()
+                    col_data = [
+                        v if v is not None and len(v) == expected_ndims else None
+                        for v in col_data
+                    ]
                     if no_vector_column:
                         batch = batch.append_column(
                             schema.field(vector_column),
@@ -739,6 +800,19 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @property
+    def branches(self) -> "Branches":
+        """Branch management for the table.
+
+        Branches are isolated, writable lines of history forked from another
+        branch (or version). Writes on a branch do not affect ``main``.
+        """
+        raise NotImplementedError
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        raise NotImplementedError
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -807,11 +881,49 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        metric="l2",
-        num_partitions=256,
-        num_sub_vectors=96,
+        column: str,
+        /,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        *,
+        index_type: VectorIndexType = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        num_bits: int = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        metric: DistanceType = "l2",
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
@@ -824,46 +936,53 @@ class Table(ABC):
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        config: Optional[IndexConfigType] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
-        """Create an index on the table.
+        """Create an index on a column.
+
+        This method supports both the new unified API and the legacy API
+        for backwards compatibility. The new API takes the column name as the
+        first positional argument and an index configuration object via
+        ``config``; the legacy API takes the distance metric as the first
+        argument plus separate ``vector_column_name`` / ``num_partitions`` /
+        etc. parameters, and emits a ``DeprecationWarning``.
 
         Parameters
         ----------
-        metric: str, default "l2"
-            The distance metric to use when creating the index.
-            Valid values are "l2", "cosine", "dot", or "hamming".
-            l2 is euclidean distance.
-            Hamming is available only for binary vectors.
-        num_partitions: int, default 256
-            The number of IVF partitions to use when creating the index.
-            Default is 256.
-        num_sub_vectors: int, default 96
-            The number of PQ sub-vectors to use when creating the index.
-            Default is 96.
-        vector_column_name: str, default "vector"
-            The vector column name to create the index.
-        replace: bool, default True
-            - If True, replace the existing index if it exists.
+        metric : str
+            For new API: the column name to index.
+            For legacy API: the distance metric ("l2", "cosine", "dot", "hamming").
+        config : IndexConfigType, optional
+            The index configuration object. If provided, uses the new unified API.
+            Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
+            BTree, Bitmap, LabelList, Fm, FTS.
+        replace : bool, default True
+            Whether to replace an existing index on this column.
+        wait_timeout : timedelta, optional
+            Timeout to wait for async indexing to complete.
+        name : str, optional
+            Custom name for the index.
+        train : bool, default True
+            Whether to train the index with existing data.
 
-            - If False, raise an error if duplicate index exists.
-        accelerator: str, default None
-            If set, use the given accelerator to create the index.
-            Only support "cuda" for now.
-        index_cache_size : int, optional
-            The size of the index cache in number of entries. Default value is 256.
-        num_bits: int
-            The number of bits to encode sub-vectors. Only used with the IVF_PQ index.
-            Only 4 and 8 are supported.
-        wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
-        name: str, optional
-            The name of the index. If not provided, a default name will be generated.
-        train: bool, default True
-            Whether to train the index with existing data. Vector indices always train
-            with existing data.
+        Examples
+        --------
+        New API (recommended):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "vector", config=IvfPq(distance_type="l2")
+        ... )
+        >>> table.create_index("category", config=BTree())  # doctest: +SKIP
+        >>> table.create_index("content", config=FTS())  # doctest: +SKIP
+
+        Legacy API (deprecated):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "l2", vector_column_name="vector"
+        ... )
         """
         raise NotImplementedError
 
@@ -1188,7 +1307,7 @@ class Table(ABC):
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1, num_rows=3)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -1432,7 +1551,7 @@ class Table(ABC):
     ) -> MergeResult: ...
 
     @abstractmethod
-    def delete(self, where: str) -> DeleteResult:
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -1440,10 +1559,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -1737,6 +1856,29 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        """
+        Update per-field (column) metadata.
+
+        Parameters
+        ----------
+        updates : dict
+            One or more dicts, each with:
+            - "path": str — dot-path to the field (e.g. "embedding" or "a.b.c").
+            - "metadata": dict[str, str | None] — keys to set; a value of ``None``
+              deletes that key.
+            - "replace": bool, optional — replace the field's whole metadata map
+              instead of merging (default False).
+
+        Returns
+        -------
+        UpdateFieldMetadataResult
+            version: the new table version after the update.
+        """
+
+    @abstractmethod
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
@@ -1890,6 +2032,7 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
         _async: AsyncTable = None,
     ):
         if namespace_path is None:
@@ -1899,6 +2042,14 @@ class LanceTable(Table):
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # When the connection built the namespace client natively (e.g. an
+        # enterprise "rest" connection), the underlying Rust table already
+        # executes QueryTable pushdown itself -- and, unlike this Python urllib3
+        # path, it routes through the read-freshness context provider that emits
+        # the ``x-lancedb-min-timestamp`` header. So we must defer pushdown to
+        # Rust instead of calling the Python ``namespace_client.query_table``
+        # directly, or reads silently bypass read-freshness (stale results).
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         if _async is not None:
             self._table = _async
         else:
@@ -1999,22 +2150,34 @@ class LanceTable(Table):
                 "Please install with `pip install pylance`."
             )
 
-        if self._namespace_client is not None:
+        branch = self.current_branch()
+        version = None if branch is not None else self.version
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            conn_uri = getattr(self._conn, "uri", "")
+            if get_uri_scheme(conn_uri) == "namespace":
+                namespace_client = self._conn.namespace_client()
+                self._namespace_client = namespace_client
+
+        if namespace_client is not None:
             table_id = self._namespace_path + [self.name]
-            return lance.dataset(
-                version=self.version,
+            ds = lance.dataset(
+                version=version,
                 storage_options=self._conn.storage_options,
-                namespace_client=self._namespace_client,
+                namespace_client=namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
-
-        return lance.dataset(
-            self._dataset_path,
-            version=self.version,
-            storage_options=self._conn.storage_options,
-            **kwargs,
-        )
+        else:
+            ds = lance.dataset(
+                self._dataset_path,
+                version=version,
+                storage_options=self._conn.storage_options,
+                **kwargs,
+            )
+        if branch is not None:
+            ds = ds.checkout_version((branch, self.version))
+        return ds
 
     @property
     def schema(self) -> pa.Schema:
@@ -2079,6 +2242,35 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         return Tags(self._table)
+
+    @property
+    def branches(self) -> "Branches":
+        """Branch management for the table.
+
+        ``create``/``checkout`` return a new table handle scoped to the branch;
+        writes on it do not affect ``main``.
+        """
+        return Branches(self)
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        return self._table.current_branch()
+
+    def _wrap_branch_handle(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "LanceTable":
+        # version is unused locally: the pin already lives on async_table and a
+        # local handle is not reopened via a serialized connection.
+        return LanceTable(
+            self._conn,
+            async_table.name,
+            namespace_path=self._namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+            location=self._location,
+            _async=async_table,
+        )
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -2207,9 +2399,14 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
-        if blob_mode == "lazy" and (
-            self._namespace_client is not None
-            or get_uri_scheme(self._dataset_path) == "memory"
+        _validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
+            return self.to_arrow().to_pandas(**kwargs)
+
+        if (
+            blob_mode == "lazy"
+            and self._namespace_client is None
+            and get_uri_scheme(self._dataset_path) == "memory"
         ):
             return self.to_arrow().to_pandas(**kwargs)
 
@@ -2221,6 +2418,14 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+        ):
+            return self._execute_query(Query()).read_all()
+
         return LOOP.run(self._table.to_arrow())
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
@@ -2250,11 +2455,51 @@ class LanceTable(Table):
             dataset, allow_pyarrow_filter=False, batch_size=batch_size
         )
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        metric: DistanceType = "l2",
-        num_partitions=None,
-        num_sub_vectors=None,
+        column: str,
+        /,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        num_bits: int = ...,
+        index_type: Literal[
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        *,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        metric: str = "l2",
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
@@ -2274,47 +2519,232 @@ class LanceTable(Table):
         m: int = 20,
         ef_construction: int = 300,
         *,
+        config: Optional[IndexConfigType] = None,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
-        """Create an index on the table."""
-        if accelerator is not None:
-            # accelerator is only supported through pylance.
-            self.to_lance().create_index(
-                column=vector_column_name,
-                index_type=index_type,
+        """Create an index on a column.
+
+        This method supports both the new unified API and the legacy API
+        for backwards compatibility. The new API takes the column name as the
+        first positional argument and an index configuration object via
+        ``config``; the legacy API takes the distance metric as the first
+        argument plus separate ``vector_column_name`` / ``num_partitions`` /
+        etc. parameters, and emits a ``DeprecationWarning``.
+
+        Parameters
+        ----------
+        metric : str
+            For new API: the column name to index.
+            For legacy API: the distance metric ("l2", "cosine", "dot", "hamming").
+        config : IndexConfigType, optional
+            The index configuration object. If provided, uses the new unified API.
+            Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
+            BTree, Bitmap, LabelList, Fm, FTS.
+        replace : bool, default True
+            Whether to replace an existing index on this column.
+        wait_timeout : timedelta, optional
+            Timeout to wait for async indexing to complete.
+        name : str, optional
+            Custom name for the index.
+        train : bool, default True
+            Whether to train the index with existing data.
+
+        Examples
+        --------
+        New API (recommended):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "vector", config=IvfPq(distance_type="l2")
+        ... )
+        >>> table.create_index("category", config=BTree())  # doctest: +SKIP
+        >>> table.create_index("content", config=FTS())  # doctest: +SKIP
+
+        Legacy API (deprecated):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "l2", vector_column_name="vector"
+        ... )
+        """
+        # Detect whether this is a legacy API call
+        is_legacy = self._is_legacy_create_index_call(
+            metric,
+            config,
+            num_partitions,
+            num_sub_vectors,
+            vector_column_name,
+            accelerator,
+            index_cache_size,
+        )
+
+        if is_legacy:
+            warnings.warn(
+                "The create_index() API with metric/num_partitions parameters is "
+                "deprecated and will be removed in a future version. "
+                "Please migrate to the new unified API:\n"
+                "  # Old (deprecated):\n"
+                "  table.create_index('l2', vector_column_name='my_vector')\n"
+                "  # New (recommended):\n"
+                "  table.create_index('my_vector', config=IvfPq(distance_type='l2'))",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+            # Legacy API: first arg is the distance metric
+            column = vector_column_name
+
+            # Build config from legacy parameters
+            config = self._build_vector_config_from_legacy_params(
                 metric=metric,
+                index_type=index_type,
                 num_partitions=num_partitions,
                 num_sub_vectors=num_sub_vectors,
-                replace=replace,
-                accelerator=accelerator,
-                index_cache_size=index_cache_size,
                 num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
                 m=m,
                 ef_construction=ef_construction,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
-            self.checkout_latest()
-            return
-        elif index_type == "IVF_FLAT":
-            config = IvfFlat(
+
+            # Handle accelerator through pylance
+            if accelerator is not None:
+                self.to_lance().create_index(
+                    column=column,
+                    index_type=index_type,
+                    metric=metric,
+                    num_partitions=num_partitions,
+                    num_sub_vectors=num_sub_vectors,
+                    replace=replace,
+                    accelerator=accelerator,
+                    index_cache_size=index_cache_size,
+                    num_bits=num_bits,
+                    m=m,
+                    ef_construction=ef_construction,
+                    target_partition_size=target_partition_size,
+                )
+                self.checkout_latest()
+                return
+        else:
+            # New API: metric is the column name
+            column = metric
+
+            # Check if config has accelerator set and dispatch to pylance
+            if config is not None and hasattr(config, "accelerator"):
+                acc = getattr(config, "accelerator", None)
+                if acc is not None:
+                    # Dispatch to pylance for GPU acceleration
+                    index_type_map = {
+                        "IvfFlat": "IVF_FLAT",
+                        "IvfSq": "IVF_SQ",
+                        "IvfPq": "IVF_PQ",
+                        "IvfRq": "IVF_RQ",
+                        "HnswPq": "IVF_HNSW_PQ",
+                        "HnswSq": "IVF_HNSW_SQ",
+                    }
+                    cfg_type = type(config).__name__
+                    lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
+
+                    self.to_lance().create_index(
+                        column=column,
+                        index_type=lance_index_type,
+                        metric=getattr(config, "distance_type", "l2"),
+                        num_partitions=getattr(config, "num_partitions", None),
+                        num_sub_vectors=getattr(config, "num_sub_vectors", None),
+                        replace=replace,
+                        accelerator=acc,
+                        num_bits=getattr(config, "num_bits", 8),
+                        m=getattr(config, "m", 20),
+                        ef_construction=getattr(config, "ef_construction", 300),
+                        target_partition_size=getattr(
+                            config, "target_partition_size", None
+                        ),
+                    )
+                    self.checkout_latest()
+                    return
+
+        return LOOP.run(
+            self._table.create_index(
+                column,
+                replace=replace,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+                train=train,
+            )
+        )
+
+    def _is_legacy_create_index_call(
+        self,
+        first_arg: str,
+        config: Optional[IndexConfigType],
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        vector_column_name: str,
+        accelerator: Optional[str],
+        index_cache_size: Optional[int],
+    ) -> bool:
+        """Detect if this is a legacy create_index call."""
+        # If config is provided, it's definitely the new API
+        if config is not None:
+            return False
+
+        # If old-style parameters were explicitly set, it's legacy
+        if any(
+            x is not None
+            for x in (num_partitions, num_sub_vectors, accelerator, index_cache_size)
+        ):
+            return True
+
+        # If vector_column_name differs from default, it's legacy
+        if vector_column_name != VECTOR_COLUMN_NAME:
+            return True
+
+        # If first arg is a known metric, assume legacy
+        if first_arg.lower() in KNOWN_METRICS:
+            return True
+
+        # Otherwise assume new API
+        return False
+
+    def _build_vector_config_from_legacy_params(
+        self,
+        metric: str,
+        index_type: str,
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        num_bits: int,
+        max_iterations: int,
+        sample_rate: int,
+        m: int,
+        ef_construction: int,
+        target_partition_size: Optional[int],
+        accelerator: Optional[str],
+    ) -> IndexConfigType:
+        """Build an index config object from legacy parameters."""
+        if index_type == "IVF_FLAT":
+            return IvfFlat(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_SQ":
-            config = IvfSq(
+            return IvfSq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_PQ":
-            config = IvfPq(
+            return IvfPq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 num_sub_vectors=num_sub_vectors,
@@ -2322,18 +2752,20 @@ class LanceTable(Table):
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_RQ":
-            config = IvfRq(
+            return IvfRq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 num_bits=num_bits,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_HNSW_PQ":
-            config = HnswPq(
+            return HnswPq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 num_sub_vectors=num_sub_vectors,
@@ -2343,9 +2775,10 @@ class LanceTable(Table):
                 m=m,
                 ef_construction=ef_construction,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_HNSW_SQ":
-            config = HnswSq(
+            return HnswSq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -2353,9 +2786,10 @@ class LanceTable(Table):
                 m=m,
                 ef_construction=ef_construction,
                 target_partition_size=target_partition_size,
+                accelerator=accelerator,
             )
         elif index_type == "IVF_HNSW_FLAT":
-            config = HnswFlat(
+            return HnswFlat(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -2366,16 +2800,6 @@ class LanceTable(Table):
             )
         else:
             raise ValueError(f"Unknown index type {index_type}")
-
-        return LOOP.run(
-            self._table.create_index(
-                vector_column_name,
-                replace=replace,
-                config=config,
-                name=name,
-                train=train,
-            )
-        )
 
     def drop_index(self, name: str) -> None:
         """
@@ -2476,6 +2900,11 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.latest_storage_options())
 
+    @deprecation.deprecated(
+        deprecated_in="0.25.0",
+        current_version=__version__,
+        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
+    )
     def create_scalar_index(
         self,
         column: str,
@@ -2484,6 +2913,12 @@ class LanceTable(Table):
         index_type: ScalarIndexType = "BTREE",
         name: Optional[str] = None,
     ):
+        """Create a scalar index on a column.
+
+        .. deprecated:: 0.25.0
+            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
+            Example: ``table.create_index("column", config=BTree())``
+        """
         if index_type == "BTREE":
             config = BTree()
         elif index_type == "BITMAP":
@@ -2496,6 +2931,11 @@ class LanceTable(Table):
             self._table.create_index(column, replace=replace, config=config, name=name)
         )
 
+    @deprecation.deprecated(
+        deprecated_in="0.25.0",
+        current_version=__version__,
+        details="Use create_index() with config=FTS() instead.",
+    )
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
@@ -2519,6 +2959,12 @@ class LanceTable(Table):
         prefix_only: bool = False,
         name: Optional[str] = None,
     ):
+        """Create a full-text search index on a column.
+
+        .. deprecated:: 0.25.0
+            Use :meth:`create_index` with an FTS config instead.
+            Example: ``table.create_index("text_column", config=FTS())``
+        """
         self._ensure_no_legacy_fts_index()
 
         if use_tantivy:
@@ -2928,6 +3374,7 @@ class LanceTable(Table):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """
         Create a new table.
@@ -2990,21 +3437,24 @@ class LanceTable(Table):
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
         if data_storage_version is not None:
             warnings.warn(
-                "setting data_storage_version directly on create_table is deprecated. ",
+                "setting data_storage_version directly on create_table is deprecated. "
                 "Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
             storage_options["new_table_data_storage_version"] = data_storage_version
         if enable_v2_manifest_paths is not None:
             warnings.warn(
-                "setting enable_v2_manifest_paths directly on create_table is ",
+                "setting enable_v2_manifest_paths directly on create_table is "
                 "deprecated. Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
@@ -3030,8 +3480,9 @@ class LanceTable(Table):
         )
         return self
 
-    def delete(self, where: str) -> DeleteResult:
-        return LOOP.run(self._table.delete(where))
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
+        predicate = where._inner if isinstance(where, Expr) else where
+        return LOOP.run(self._table.delete(predicate))
 
     def update(
         self,
@@ -3093,9 +3544,15 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        # Branch queries run locally: the server-side query protocol can't
+        # carry a branch yet.
+        # TODO: push down server-side once it can (with remote table support).
         if (
-            "QueryTable" in self._pushdown_operations
-            and self._namespace_client is not None
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+            and self.current_branch() is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -3279,6 +3736,11 @@ class LanceTable(Table):
     ) -> AlterColumnsResult:
         return LOOP.run(self._table.alter_columns(*alterations))
 
+    def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        return LOOP.run(self._table.update_field_metadata(*updates))
+
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
 
@@ -3296,6 +3758,11 @@ class LanceTable(Table):
         """Remove the LsmWriteSpec. See
         [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
         return LOOP.run(self._table.unset_lsm_write_spec())
+
+    def close_lsm_writers(self) -> None:
+        """Close cached MemWAL shard writers. See
+        [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
+        return LOOP.run(self._table.close_lsm_writers())
 
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -3328,9 +3795,17 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
     def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
         """
         Replace the metadata of a field in the schema
+
+        .. deprecated:: 0.33.1
+            Use :func:`update_field_metadata` instead.
 
         Parameters
         ----------
@@ -3555,7 +4030,16 @@ def _handle_bad_vector_column(
         dim = _infer_vector_dim(vec_arr)
         if dim is None:
             return data
-    has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
+
+    is_null = pc.is_null(vec_arr)
+    # pc.list_value_length returns null for null list entries, so
+    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
+    # True OR null = True (Kleene three-valued logic), ensuring null vectors
+    # are counted as wrong-dim.
+    has_wrong_dim = pc.or_kleene(
+        is_null,
+        pc.not_equal(pc.list_value_length(vec_arr), dim),
+    )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
 
@@ -3811,7 +4295,15 @@ class AsyncTable:
     [AsyncTable.create_index][lancedb.table.AsyncTable.create_index].
     """
 
-    def __init__(self, table: LanceDBTable):
+    def __init__(
+        self,
+        table: LanceDBTable,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
+    ):
         """Create a new AsyncTable object.
 
         You should not create AsyncTable objects directly.
@@ -3820,6 +4312,26 @@ class AsyncTable:
         [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
         Table objects."""
         self._inner = table
+        self._namespace_path = namespace_path or []
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
+        # See LanceTable.__init__: defer QueryTable pushdown to Rust (which emits
+        # the read-freshness header) for natively-built namespace clients.
+        self._route_pushdown_to_rust = route_pushdown_to_rust
+
+    def _set_namespace_context(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
+    ) -> "AsyncTable":
+        self._namespace_path = namespace_path or []
+        self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
+        return self
 
     def __repr__(self):
         return self._inner.__repr__()
@@ -3905,6 +4417,16 @@ class AsyncTable:
         """
         await self._inner.unset_lsm_write_spec()
 
+    async def close_lsm_writers(self) -> None:
+        """Drain and close any cached MemWAL shard writers for this table.
+
+        When an LSM write spec is installed, `merge_insert` opens MemWAL shard
+        writers and caches them for reuse across calls. This closes them,
+        flushing pending data; writers reopen lazily on the next
+        `merge_insert`. It is a no-op when no writers are cached.
+        """
+        await self._inner.close_lsm_writers()
+
     @property
     def name(self) -> str:
         """The name of the table."""
@@ -3961,7 +4483,7 @@ class AsyncTable:
         can be executed with methods like [to_arrow][lancedb.query.AsyncQuery.to_arrow],
         [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
         """
-        return AsyncQuery(self._inner.query())
+        return AsyncQuery(self._inner.query(), self)
 
     async def _to_lance(self, **kwargs) -> lance.LanceDataset:
         try:
@@ -3972,12 +4494,20 @@ class AsyncTable:
                 "Please install with `pip install pylance`."
             )
 
-        return lance.dataset(
+        # lance.dataset() can't open a branch directly, so open the base table
+        # and check out the branch ref (a None branch resolves to main).
+        branch = self.current_branch()
+        table_version = await self.version()
+        version = None if branch is not None else table_version
+        ds = lance.dataset(
             await self.uri(),
-            version=await self.version(),
+            version=version,
             storage_options=await self.latest_storage_options(),
             **kwargs,
         )
+        if branch is not None:
+            ds = ds.checkout_version((branch, table_version))
+        return ds
 
     async def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -3993,7 +4523,13 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        if blob_mode == "lazy":
+        _validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not _schema_has_blob_field(
+            await self.schema()
+        ):
+            return (await self.to_arrow()).to_pandas(**kwargs)
+
+        if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -4004,6 +4540,14 @@ class AsyncTable:
         -------
         pa.Table
         """
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+        ):
+            return (await self._execute_query(Query())).read_all()
+
         return await self.query().to_arrow()
 
     async def create_index(
@@ -4022,6 +4566,7 @@ class AsyncTable:
                 BTree,
                 Bitmap,
                 LabelList,
+                Fm,
                 FTS,
             ]
         ] = None,
@@ -4074,12 +4619,14 @@ class AsyncTable:
                     BTree,
                     Bitmap,
                     LabelList,
+                    Fm,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -4355,7 +4902,7 @@ class AsyncTable:
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1, num_rows=3)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -4521,10 +5068,13 @@ class AsyncTable:
             if embedding is not None:
                 loop = asyncio.get_running_loop()
                 # This function is likely to block, since it either calls an expensive
-                # function or makes an HTTP request to an embeddings REST API.
+                # function or makes an HTTP request to an embeddings REST API. Run it
+                # on a dedicated executor so it can't starve the default executor that
+                # other blocking I/O shares. See
+                # https://github.com/lancedb/lancedb/issues/3310.
                 return (
                     await loop.run_in_executor(
-                        None,
+                        embedding_executor(),
                         embedding.function.compute_query_embeddings_with_retry,
                         query,
                     )
@@ -4678,6 +5228,17 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
+        ):
+            from lancedb.namespace import _execute_server_side_query
+
+            table_id = self._namespace_path + [self.name]
+            return _execute_server_side_query(self._namespace_client, table_id, query)
+
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
         # used for that code path right now.
@@ -4733,12 +5294,15 @@ class AsyncTable:
                 when_not_matched_insert_all=merge._when_not_matched_insert_all,
                 when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
+                use_lsm_write=merge._use_lsm_write,
+                validate_single_shard=merge._validate_single_shard,
             ),
         )
 
-    async def delete(self, where: str) -> DeleteResult:
+    async def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -4746,10 +5310,10 @@ class AsyncTable:
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -4788,7 +5352,8 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        return await self._inner.delete(where)
+        predicate = where._inner if isinstance(where, Expr) else where
+        return await self._inner.delete(predicate)
 
     async def update(
         self,
@@ -4913,6 +5478,13 @@ class AsyncTable:
         """
         return await self._inner.alter_columns(alterations)
 
+    async def update_field_metadata(
+        self, *updates: dict[str, Any]
+    ) -> UpdateFieldMetadataResult:
+        """Update per-field metadata. See
+        [`Table.update_field_metadata`][lancedb.table.Table.update_field_metadata]."""
+        return await self._inner.update_field_metadata(updates)
+
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
@@ -5028,7 +5600,7 @@ class AsyncTable:
         pa.RecordBatch
             A record batch containing the rows at the given offsets.
         """
-        return AsyncTakeQuery(self._inner.take_offsets(offsets))
+        return AsyncTakeQuery(self._inner.take_offsets(offsets), self)
 
     def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
         """
@@ -5057,7 +5629,7 @@ class AsyncTable:
         AsyncTakeQuery
             A query object that can be executed to get the rows.
         """
-        return AsyncTakeQuery(self._inner.take_row_ids(row_ids))
+        return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
 
     @property
     def tags(self) -> AsyncTags:
@@ -5076,6 +5648,19 @@ class AsyncTable:
 
         """
         return AsyncTags(self._inner)
+
+    @property
+    def branches(self) -> AsyncBranches:
+        """Branch management for the table.
+
+        Branches are isolated, writable lines of history forked from another
+        branch (or version). Writes on a branch do not affect ``main``.
+        """
+        return AsyncBranches(self._inner)
+
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        return self._inner.current_branch()
 
     async def optimize(
         self,
@@ -5133,6 +5718,7 @@ class AsyncTable:
                 "The 'retrain' parameter is deprecated and will be removed in a "
                 "future version.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         return await self._inner.optimize(
@@ -5197,11 +5783,19 @@ class AsyncTable:
         """
         await self._inner.migrate_manifest_paths_v2()
 
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
     async def replace_field_metadata(
         self, field_name: str, new_metadata: dict[str, str]
     ):
         """
         Replace the metadata of a field in the schema
+
+        .. deprecated:: 0.33.1
+            Use :func:`update_field_metadata` instead.
 
         Parameters
         ----------
@@ -5230,8 +5824,6 @@ class IndexStatistics:
         The distance type used by the index.
     num_indices: Optional[int]
         The number of parts the index is split into.
-    loss: Optional[float]
-        The KMeans loss for the index, for only vector indices.
     """
 
     num_indexed_rows: int
@@ -5251,7 +5843,6 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
-    loss: Optional[float] = None
 
     # This exists for backwards compatibility with an older API, which returned
     # a dictionary instead of a class.
@@ -5404,6 +5995,69 @@ class Tags:
         LOOP.run(self._table.tags.update(tag, version))
 
 
+class Branches:
+    """
+    Table branch manager.
+    """
+
+    def __init__(self, parent: "LanceTable"):
+        self._parent = parent
+        self._table = parent._table
+
+    def list(self) -> Dict[str, Any]:
+        """List all branches, mapping name to branch metadata."""
+        return LOOP.run(self._table.branches.list())
+
+    def create(
+        self,
+        name: str,
+        from_ref: Optional[str] = None,
+        from_version: Optional[int] = None,
+    ) -> "Table":
+        """Create a branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the new branch.
+        from_ref: str, optional
+            Source branch to fork from. Defaults to ``main``.
+        from_version: int, optional
+            A specific version on ``from_ref`` to fork from. Defaults to latest.
+        """
+        async_table = LOOP.run(
+            self._table.branches.create(name, from_ref, from_version)
+        )
+        return self._wrap(async_table)
+
+    def checkout(self, name: str, version: Optional[int] = None) -> "Table":
+        """Check out an existing branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the branch to check out.
+        version: int, optional
+            A specific version on the branch to pin. When set, the returned
+            handle is a read-only view of that version; when omitted it tracks
+            the branch's latest and stays writable.
+        """
+        async_table = LOOP.run(self._table.branches.checkout(name, version))
+        return self._wrap(async_table, version)
+
+    def delete(self, name: str) -> None:
+        """Delete a branch."""
+        LOOP.run(self._table.branches.delete(name))
+
+    def _wrap(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "Table":
+        # Delegate to the parent so the branch handle keeps its concrete type
+        # (LanceTable / RemoteTable) and connection context; `version` is the
+        # explicit pin so a remote handle can restore branch+version on reopen.
+        return self._parent._wrap_branch_handle(async_table, version)
+
+
 class AsyncTags:
     """
     Async table tag manager.
@@ -5471,3 +6125,56 @@ class AsyncTags:
             The new table version to tag.
         """
         await self._table.tags.update(tag, version)
+
+
+class AsyncBranches:
+    """Async table branch manager."""
+
+    def __init__(self, table):
+        self._table = table
+
+    async def list(self) -> Dict[str, Any]:
+        """List all branches, mapping name to branch metadata."""
+        return await self._table.branches.list()
+
+    async def create(
+        self,
+        name: str,
+        from_ref: Optional[str] = None,
+        from_version: Optional[int] = None,
+    ) -> "AsyncTable":
+        """Create a branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the new branch.
+        from_ref: str, optional
+            Source branch to fork from. Defaults to ``main``.
+        from_version: int, optional
+            A specific version on ``from_ref`` to fork from. Defaults to latest.
+        """
+        # "main" and None are two spellings of the root branch in lance; normalize
+        # so from_ref="main" behaves identically to the default.
+        if from_ref == "main":
+            from_ref = None
+        inner = await self._table.branches.create(name, from_ref, from_version)
+        return AsyncTable(inner)
+
+    async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":
+        """Check out an existing branch and return a handle scoped to it.
+
+        Parameters
+        ----------
+        name: str
+            Name of the branch to check out.
+        version: int, optional
+            A specific version on the branch to pin. When set, the returned
+            handle is a read-only view of that version; when omitted it tracks
+            the branch's latest and stays writable.
+        """
+        return AsyncTable(await self._table.branches.checkout(name, version))
+
+    async def delete(self, name: str) -> None:
+        """Delete a branch."""
+        await self._table.branches.delete(name)

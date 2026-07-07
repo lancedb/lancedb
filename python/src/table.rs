@@ -6,6 +6,7 @@ use crate::runtime::future_into_py;
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
+    expr::PyExpr,
     index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
@@ -16,17 +17,23 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
+    exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
 };
 
 mod scannable;
+
+#[derive(FromPyObject)]
+enum PredicateArg {
+    Expr(PyExpr),
+    Sql(String),
+}
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all, from_py_object)]
@@ -143,18 +150,20 @@ pub struct MergeResult {
     pub num_inserted_rows: u64,
     pub num_deleted_rows: u64,
     pub num_attempts: u32,
+    pub num_rows: u64,
 }
 
 #[pymethods]
 impl MergeResult {
     pub fn __repr__(&self) -> String {
         format!(
-            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={})",
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={}, num_rows={})",
             self.version,
             self.num_updated_rows,
             self.num_inserted_rows,
             self.num_deleted_rows,
-            self.num_attempts
+            self.num_attempts,
+            self.num_rows
         )
     }
 }
@@ -167,6 +176,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: result.num_inserted_rows,
             num_deleted_rows: result.num_deleted_rows,
             num_attempts: result.num_attempts,
+            num_rows: result.num_rows,
         }
     }
 }
@@ -194,6 +204,12 @@ impl LsmWriteSpec {
     }
 
     /// Identity sharding — shard by the raw value of `column`.
+    ///
+    /// `column` must be a deterministic function of the unenforced primary
+    /// key: every row with a given primary key must always produce the same
+    /// `column` value, or upserts of that key can land in different shards
+    /// and a stale version can win. Typically `column` is the primary key
+    /// itself or a stable attribute of it.
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
@@ -342,6 +358,27 @@ impl AlterColumnsResult {
 
 impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
     fn from(result: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct UpdateFieldMetadataResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl UpdateFieldMetadataResult {
+    pub fn __repr__(&self) -> String {
+        format!("UpdateFieldMetadataResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(result: lancedb::table::UpdateFieldMetadataResult) -> Self {
         Self {
             version: result.version,
         }
@@ -531,10 +568,15 @@ impl Table {
         })
     }
 
-    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<Bound<'_, PyAny>> {
+    #[allow(private_interfaces)]
+    pub fn delete(self_: PyRef<'_, Self>, condition: PredicateArg) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.delete(&condition).await.infer_error()?;
+            let result = match &condition {
+                PredicateArg::Expr(e) => inner.delete(&e.0).await,
+                PredicateArg::Sql(s) => inner.delete(s.as_str()).await,
+            }
+            .infer_error()?;
             Ok(DeleteResult::from(result))
         })
     }
@@ -652,13 +694,13 @@ impl Table {
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            Ok(inner
-                .list_indices()
-                .await
-                .infer_error()?
-                .into_iter()
-                .map(IndexConfig::from)
-                .collect::<Vec<_>>())
+            let indices = inner.list_indices().await.infer_error()?;
+            Python::attach(|py| {
+                Ok(indices
+                    .into_iter()
+                    .map(|idx| IndexConfig::from_lancedb(py, idx))
+                    .collect::<Vec<_>>())
+            })
         })
     }
 
@@ -679,10 +721,6 @@ impl Table {
 
                     if let Some(num_indices) = stats.num_indices {
                         dict.set_item("num_indices", num_indices)?;
-                    }
-
-                    if let Some(loss) = stats.loss {
-                        dict.set_item("loss", loss)?;
                     }
 
                     Ok(Some(dict.unbind()))
@@ -834,6 +872,15 @@ impl Table {
         Ok(Tags::new(self.inner_ref()?.clone()))
     }
 
+    pub fn current_branch(&self) -> PyResult<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
+    }
+
+    #[getter]
+    pub fn branches(&self) -> PyResult<Branches> {
+        Ok(Branches::new(self.inner_ref()?.clone()))
+    }
+
     #[pyo3(signature = (offsets))]
     pub fn take_offsets(self_: PyRef<'_, Self>, offsets: Vec<u64>) -> PyResult<TakeQuery> {
         Ok(TakeQuery::new(
@@ -924,14 +971,25 @@ impl Table {
             builder.when_not_matched_insert_all();
         }
         if parameters.when_not_matched_by_source_delete {
-            builder
-                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+            if let Some(e) = parameters.when_not_matched_by_source_condition_expr {
+                builder.when_not_matched_by_source_delete_expr(e.0);
+            } else {
+                builder.when_not_matched_by_source_delete(
+                    parameters.when_not_matched_by_source_condition,
+                );
+            }
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
         }
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
+        }
+        if let Some(use_lsm_write) = parameters.use_lsm_write {
+            builder.use_lsm_write(use_lsm_write);
+        }
+        if let Some(validate_single_shard) = parameters.validate_single_shard {
+            builder.validate_single_shard(validate_single_shard);
         }
 
         future_into_py(self_.py(), async move {
@@ -968,6 +1026,13 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.close_lsm_writers().await.infer_error()
         })
     }
 
@@ -1080,29 +1145,55 @@ impl Table {
         field_name: String,
         metadata: &Bound<'_, PyDict>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let mut new_metadata = HashMap::<String, String>::new();
-        for (column_name, value) in metadata.into_iter() {
-            let key: String = column_name.extract()?;
-            let value: String = value.extract()?;
-            new_metadata.insert(key, value);
+        // Deprecated: forwards to the update_field_metadata path (replace mode).
+        let mut update = FieldMetadataUpdate::new(field_name).replace();
+        for (key, value) in metadata.into_iter() {
+            update = update.set(key.extract::<String>()?, value.extract::<String>()?);
         }
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let native_tbl = inner
-                .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
-            let schema = native_tbl.manifest().await.infer_error()?.schema;
-            let field = schema
-                .field(&field_name)
-                .ok_or_else(|| PyKeyError::new_err(format!("Field {} not found", field_name)))?;
-
-            native_tbl
-                .replace_field_metadata(vec![(field.id as u32, new_metadata)])
-                .await
-                .infer_error()?;
-
+            inner.update_field_metadata(&[update]).await.infer_error()?;
             Ok(())
+        })
+    }
+
+    pub fn update_field_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: Vec<Bound<PyDict>>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let updates = updates
+            .iter()
+            .map(|update| {
+                let path: String = update
+                    .get_item("path")?
+                    .ok_or_else(|| PyValueError::new_err("Missing path"))?
+                    .extract()?;
+                let mut field_update = FieldMetadataUpdate::new(path);
+                if let Some(metadata) = update.get_item("metadata")? {
+                    let metadata_dict = metadata.cast::<PyDict>()?;
+                    for (key, value) in metadata_dict.iter() {
+                        let key: String = key.extract()?;
+                        if value.is_none() {
+                            field_update = field_update.remove(key);
+                        } else {
+                            field_update = field_update.set(key, value.extract::<String>()?);
+                        }
+                    }
+                }
+                if let Some(replace) = update.get_item("replace")?
+                    && replace.extract::<bool>()?
+                {
+                    field_update = field_update.replace();
+                }
+                Ok(field_update)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.update_field_metadata(&updates).await.infer_error()?;
+            Ok(UpdateFieldMetadataResult::from(result))
         })
     }
 }
@@ -1122,8 +1213,11 @@ pub struct MergeInsertParams {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
+    when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
+    use_lsm_write: Option<bool>,
+    validate_single_shard: Option<bool>,
 }
 
 #[pyclass]
@@ -1190,6 +1284,74 @@ impl Tags {
         future_into_py(self_.py(), async move {
             let mut tags = inner.tags().await.infer_error()?;
             tags.update(tag.as_str(), version).await.infer_error()?;
+            Ok(())
+        })
+    }
+}
+
+#[pyclass]
+pub struct Branches {
+    inner: LanceDbTable,
+}
+
+impl Branches {
+    pub fn new(table: LanceDbTable) -> Self {
+        Self { inner: table }
+    }
+}
+
+#[pymethods]
+impl Branches {
+    pub fn list(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let res = inner.list_branches().await.infer_error()?;
+            Python::attach(|py| {
+                let py_dict = PyDict::new(py);
+                for (name, contents) in res {
+                    let value = PyDict::new(py);
+                    value.set_item("parent_branch", contents.parent_branch)?;
+                    value.set_item("parent_version", contents.parent_version)?;
+                    value.set_item("manifest_size", contents.manifest_size)?;
+                    py_dict.set_item(name, value)?;
+                }
+                Ok(py_dict.unbind())
+            })
+        })
+    }
+
+    #[pyo3(signature = (name, from_ref=None, from_version=None))]
+    pub fn create(
+        self_: PyRef<'_, Self>,
+        name: String,
+        from_ref: Option<String>,
+        from_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let from = Ref::Version(from_ref, from_version);
+            let table = inner.create_branch(&name, from).await.infer_error()?;
+            Ok(Table::new(table))
+        })
+    }
+
+    #[pyo3(signature = (name, version=None))]
+    pub fn checkout(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let table = inner.checkout_branch(&name, version).await.infer_error()?;
+            Ok(Table::new(table))
+        })
+    }
+
+    pub fn delete(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.delete_branch(&name).await.infer_error()?;
             Ok(())
         })
     }

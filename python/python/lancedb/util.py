@@ -373,9 +373,15 @@ def _(value: list):
 @value_to_sql.register(dict)
 def _(value: dict):
     # https://datafusion.apache.org/user-guide/sql/scalar_functions.html#named-struct
+    # Render the field name through value_to_sql(str(...)) as well so that keys
+    # containing characters meaningful in SQL (e.g. a single quote) are escaped
+    # the same way string values are. A bare f"'{k}'" would emit invalid SQL for
+    # a key like "it's".
     return (
         "named_struct("
-        + ", ".join(f"'{k}', {value_to_sql(v)}" for k, v in value.items())
+        + ", ".join(
+            f"{value_to_sql(str(k))}, {value_to_sql(v)}" for k, v in value.items()
+        )
         + ")"
     )
 
@@ -383,6 +389,21 @@ def _(value: dict):
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
+
+
+@value_to_sql.register(np.bool_)
+def _(value: np.bool_):
+    return value_to_sql(bool(value))
+
+
+@value_to_sql.register(np.integer)
+def _(value: np.integer):
+    return value_to_sql(int(value))
+
+
+@value_to_sql.register(np.floating)
+def _(value: np.floating):
+    return value_to_sql(float(value))
 
 
 def deprecated(func):

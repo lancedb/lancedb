@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use lancedb::error::Error;
 use napi_derive::*;
 
 /// Timeout configuration for remote HTTP client.
@@ -140,6 +141,84 @@ impl From<TlsConfig> for lancedb::remote::TlsConfig {
     }
 }
 
+/// OAuth configuration for LanceDB authentication.
+///
+/// This is the generated napi-rs binding shape. TypeScript users should prefer
+/// the public `OAuthConfig` type exported from `@lancedb/lancedb`.
+///
+/// All token acquisition and refresh is handled in the Rust layer.
+#[napi(object)]
+#[derive(Clone)]
+pub struct OAuthConfig {
+    /// OIDC issuer URL or OAuth authority URL.
+    /// For Azure: `https://login.microsoftonline.com/{tenant_id}/v2.0`
+    pub issuer_url: String,
+    /// Application / Client ID.
+    pub client_id: String,
+    /// OAuth scopes to request. For Azure managed identity, exactly one scope
+    /// or resource is required. For example: `["api://{app_id}/.default"]`
+    pub scopes: Vec<String>,
+    /// Authentication flow: "client_credentials" or "azure_managed_identity"
+    pub flow: Option<String>,
+    /// Client secret (required for client_credentials).
+    pub client_secret: Option<String>,
+    /// Client ID for user-assigned managed identity (azure_managed_identity).
+    pub managed_identity_client_id: Option<String>,
+    /// Seconds before expiry to trigger proactive refresh (default: 300).
+    /// Keep this well below the token TTL; if it is greater than or equal to
+    /// the TTL, each request refreshes the token.
+    pub refresh_buffer_secs: Option<u32>,
+}
+
+impl std::fmt::Debug for OAuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("scopes", &self.scopes)
+            .field("flow", &self.flow)
+            .field(
+                "client_secret",
+                &self.client_secret.as_deref().map(|_| "<redacted>"),
+            )
+            .field(
+                "managed_identity_client_id",
+                &self.managed_identity_client_id,
+            )
+            .field("refresh_buffer_secs", &self.refresh_buffer_secs)
+            .finish()
+    }
+}
+
+impl TryFrom<OAuthConfig> for lancedb::remote::oauth::OAuthConfig {
+    type Error = Error;
+
+    fn try_from(config: OAuthConfig) -> Result<Self, Self::Error> {
+        use lancedb::remote::oauth::OAuthFlow;
+
+        let flow = match config.flow.as_deref().unwrap_or("client_credentials") {
+            "client_credentials" => OAuthFlow::ClientCredentials,
+            "azure_managed_identity" => OAuthFlow::AzureManagedIdentity {
+                client_id: config.managed_identity_client_id,
+            },
+            other => {
+                return Err(Error::InvalidInput {
+                    message: format!("Unknown OAuth flow type: {other}"),
+                });
+            }
+        };
+
+        Ok(Self {
+            issuer_url: config.issuer_url,
+            client_id: config.client_id,
+            client_secret: config.client_secret,
+            scopes: config.scopes,
+            flow,
+            refresh_buffer_secs: config.refresh_buffer_secs.map(|v| v as u64),
+        })
+    }
+}
+
 impl From<ClientConfig> for lancedb::remote::ClientConfig {
     fn from(config: ClientConfig) -> Self {
         Self {
@@ -154,5 +233,47 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             header_provider: None, // the header provider is set separately later
             user_id: config.user_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unknown_oauth_flow_returns_invalid_input() {
+        let config = OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            scopes: vec!["scope".to_string()],
+            flow: Some("typo".to_string()),
+            client_secret: None,
+            managed_identity_client_id: None,
+            refresh_buffer_secs: None,
+        };
+
+        let err = lancedb::remote::oauth::OAuthConfig::try_from(config).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "Unknown OAuth flow type: typo"
+        ));
+    }
+
+    #[test]
+    fn test_oauth_config_debug_redacts_client_secret() {
+        let config = OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            scopes: vec!["scope".to_string()],
+            flow: Some("client_credentials".to_string()),
+            client_secret: Some("super-secret".to_string()),
+            managed_identity_client_id: None,
+            refresh_buffer_secs: None,
+        };
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(debug.contains("client_secret: Some(\"<redacted>\")"));
     }
 }

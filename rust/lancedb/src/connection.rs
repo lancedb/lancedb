@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use lance::dataset::ReadParams;
+use lance::dataset::refs::MAIN_BRANCH;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
@@ -119,6 +120,8 @@ pub struct OpenTableBuilder {
     parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    branch: Option<String>,
+    version: Option<u64>,
 }
 
 impl OpenTableBuilder {
@@ -139,6 +142,8 @@ impl OpenTableBuilder {
                 managed_versioning: None,
             },
             embedding_registry,
+            branch: None,
+            version: None,
         }
     }
 
@@ -259,14 +264,48 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Open the table scoped to the given branch instead of the default branch.
+    ///
+    /// Reads and writes on the returned table operate in the branch's context.
+    pub fn branch(mut self, branch: impl Into<String>) -> Self {
+        self.branch = Some(branch.into());
+        self
+    }
+
+    /// Open the table pinned to a specific version, producing a read-only "view".
+    ///
+    /// Composes with [`Self::branch`]: when a branch is also set, this opens that
+    /// branch at the given version; otherwise it opens `main` at that version.
+    /// The returned table is a detached head, so operations that modify the table
+    /// will fail until [`Table::checkout_latest`] is called.
+    ///
+    /// ```
+    /// # use lancedb::Connection;
+    /// # async fn f(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    /// let table = conn.open_table("t").branch("exp").version(3).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn version(mut self, version: u64) -> Self {
+        self.version = Some(version);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
-        Ok(Table::new_with_embedding_registry(
-            table,
-            self.parent,
-            self.embedding_registry,
-        ))
+        let table = Table::new_with_embedding_registry(table, self.parent, self.embedding_registry);
+        // "main" is the default branch, so treat it as no branch.
+        let branch = self.branch.filter(|b| b.as_str() != MAIN_BRANCH);
+        match branch {
+            Some(branch) => table.checkout_branch(&branch, self.version).await,
+            None => {
+                if let Some(version) = self.version {
+                    table.checkout(version).await?;
+                }
+                Ok(table)
+            }
+        }
     }
 }
 
@@ -537,6 +576,9 @@ impl Connection {
     /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
+    ///
+    /// Remote connections using dynamic headers forward them through the
+    /// namespace client's per-request context provider.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
     }
@@ -545,6 +587,9 @@ impl Connection {
     /// Returns (impl_type, properties) where:
     /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
     /// - properties: configuration properties for the namespace
+    ///
+    /// Remote connections using dynamic headers cannot be exported because the
+    /// namespace client config only carries static headers.
     pub async fn namespace_client_config(
         &self,
     ) -> Result<(String, std::collections::HashMap<String, String>)> {
@@ -622,6 +667,8 @@ pub struct ConnectRequest {
 pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    #[cfg(feature = "remote")]
+    oauth_config: Option<crate::remote::OAuthConfig>,
 }
 
 #[cfg(feature = "remote")]
@@ -643,6 +690,8 @@ impl ConnectBuilder {
                 session: None,
             },
             embedding_registry: None,
+            #[cfg(feature = "remote")]
+            oauth_config: None,
         }
     }
 
@@ -728,6 +777,19 @@ impl ConnectBuilder {
     #[cfg(feature = "remote")]
     pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.request.client_config = config;
+        self
+    }
+
+    /// Configure OAuth authentication for LanceDB Cloud/Enterprise.
+    ///
+    /// This creates an [`OAuthHeaderProvider`](crate::remote::OAuthHeaderProvider)
+    /// from the given config and sets it as the header provider. OAuth cannot
+    /// be combined with an API key or another header provider.
+    ///
+    /// Token acquisition and refresh are handled in Rust.
+    #[cfg(feature = "remote")]
+    pub fn oauth_config(mut self, config: crate::remote::OAuthConfig) -> Self {
+        self.oauth_config = Some(config);
         self
     }
 
@@ -876,9 +938,40 @@ impl ConnectBuilder {
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
         })?;
-        let api_key = options.api_key.ok_or_else(|| Error::InvalidInput {
-            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
-        })?;
+        let api_key = match (&self.oauth_config, &options.api_key) {
+            (Some(_), None) => String::new(),
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidInput {
+                    message:
+                        "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud"
+                            .to_string(),
+                });
+            }
+            (None, Some(key)) => key.clone(),
+            (None, None) => {
+                return Err(Error::InvalidInput {
+                    message:
+                        "An api_key or oauth_config is required when connecting to LanceDb Cloud"
+                            .to_string(),
+                });
+            }
+        };
+
+        if self.oauth_config.is_some() && self.request.client_config.header_provider.is_some() {
+            return Err(Error::InvalidInput {
+                message:
+                    "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud"
+                        .to_string(),
+            });
+        }
+
+        let mut client_config = self.request.client_config;
+
+        if let Some(oauth_config) = self.oauth_config {
+            let provider = crate::remote::OAuthHeaderProvider::new(oauth_config)?;
+            client_config.header_provider =
+                Some(Arc::new(provider) as Arc<dyn crate::remote::HeaderProvider>);
+        }
 
         let storage_options = StorageOptions(options.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
@@ -886,7 +979,7 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
-            self.request.client_config,
+            client_config,
             storage_options.into(),
             self.request.read_consistency_interval,
         )?);
@@ -1193,6 +1286,83 @@ mod tests {
         options.insert(opts_key.to_string(), "EXPLICIT-VALUE".to_string());
         ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
         assert_eq!(Some(&"EXPLICIT-VALUE".to_string()), options.get(opts_key));
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_rejects_api_key_with_oauth_config() {
+        let oauth_config = crate::remote::OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["scope".to_string()],
+            flow: crate::remote::OAuthFlow::ClientCredentials,
+            refresh_buffer_secs: None,
+        };
+
+        let result = ConnectBuilder::new("db://my-container/my-prefix")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .oauth_config(oauth_config)
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::InvalidInput { message })
+                if message
+                    == "api_key and oauth_config cannot both be set when connecting to LanceDb Cloud" =>
+                {}
+            Err(err) => panic!("expected InvalidInput, got {err:?}"),
+            Ok(_) => panic!("expected api_key and oauth_config to be rejected"),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_rejects_header_provider_with_oauth_config() {
+        #[derive(Debug)]
+        struct TestHeaderProvider;
+
+        #[async_trait::async_trait]
+        impl crate::remote::HeaderProvider for TestHeaderProvider {
+            async fn get_headers(&self) -> Result<HashMap<String, String>> {
+                Ok(HashMap::from([(
+                    "authorization".to_string(),
+                    "Bearer token".to_string(),
+                )]))
+            }
+        }
+
+        let oauth_config = crate::remote::OAuthConfig {
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-id".to_string(),
+            client_secret: Some("secret".to_string()),
+            scopes: vec!["scope".to_string()],
+            flow: crate::remote::OAuthFlow::ClientCredentials,
+            refresh_buffer_secs: None,
+        };
+        let client_config = crate::remote::ClientConfig {
+            header_provider: Some(
+                Arc::new(TestHeaderProvider) as Arc<dyn crate::remote::HeaderProvider>
+            ),
+            ..Default::default()
+        };
+
+        let result = ConnectBuilder::new("db://my-container/my-prefix")
+            .region("us-east-1")
+            .client_config(client_config)
+            .oauth_config(oauth_config)
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::InvalidInput { message })
+                if message
+                    == "oauth_config and client_config.header_provider cannot both be set when connecting to LanceDb Cloud" =>
+                {}
+            Err(err) => panic!("expected InvalidInput, got {err:?}"),
+            Ok(_) => panic!("expected header_provider and oauth_config to be rejected"),
+        }
     }
 
     #[cfg(not(windows))]

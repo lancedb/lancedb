@@ -459,12 +459,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         config: &ClientConfig,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-api-key"),
-            HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
-                message: "non-ascii api key provided".to_string(),
-            })?,
-        );
+        if !api_key.is_empty() {
+            headers.insert(
+                HeaderName::from_static("x-api-key"),
+                HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+                    message: "non-ascii api key provided".to_string(),
+                })?,
+            );
+        }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
@@ -908,6 +910,15 @@ mod tests {
     use serial_test::serial;
     use std::time::Duration;
 
+    // Serializes the env-var-mutating tests below: cargo test runs tests in
+    // parallel, but several of these tests read and write the same process-
+    // global env vars (`LANCEDB_USER_ID*`), so they would race without this.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn test_timeout_config_default() {
         let config = TimeoutConfig::default();
@@ -994,6 +1005,33 @@ mod tests {
         assert_eq!(config_tls.key_file, Some("/path/to/key.pem".to_string()));
         assert!(config_tls.ssl_ca_cert.is_none());
         assert!(!config_tls.assert_hostname);
+    }
+
+    #[test]
+    fn test_default_headers_skip_empty_api_key() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        assert!(!headers.contains_key("x-api-key"));
+
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "api-key",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(headers.get("x-api-key").unwrap(), "api-key");
     }
 
     // Test implementation of HeaderProvider
@@ -1166,6 +1204,7 @@ mod tests {
     #[test]
     #[serial(user_id_env)]
     fn test_resolve_user_id_none() {
+        let _guard = lock_env();
         let config = ClientConfig::default();
         // Clear env vars that might be set from other tests
         // SAFETY: This is only called in tests
@@ -1179,6 +1218,7 @@ mod tests {
     #[test]
     #[serial(user_id_env)]
     fn test_resolve_user_id_from_env() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1194,6 +1234,7 @@ mod tests {
     #[test]
     #[serial(user_id_env)]
     fn test_resolve_user_id_from_env_key() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::remove_var("LANCEDB_USER_ID");
@@ -1215,6 +1256,7 @@ mod tests {
     #[test]
     #[serial(user_id_env)]
     fn test_resolve_user_id_direct_takes_precedence() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "env-user-id");
@@ -1233,6 +1275,7 @@ mod tests {
     #[test]
     #[serial(user_id_env)]
     fn test_resolve_user_id_empty_env_ignored() {
+        let _guard = lock_env();
         // SAFETY: This is only called in tests
         unsafe {
             std::env::set_var("LANCEDB_USER_ID", "");

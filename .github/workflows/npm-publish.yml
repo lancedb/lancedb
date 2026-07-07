@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -170,13 +170,13 @@ jobs:
       run:
         working-directory: nodejs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.1.1
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
           # in October.
@@ -190,7 +190,7 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -244,7 +244,7 @@ jobs:
         if: ${{ !matrix.settings.docker }}
         shell: bash
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lancedb-${{ matrix.settings.target }}
           path: nodejs/dist/*.node
@@ -256,7 +256,7 @@ jobs:
         run: pnpm tsc
       - name: Upload Generic Artifacts
         if: ${{ matrix.settings.target == 'aarch64-apple-darwin' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nodejs-dist
           path: |
@@ -287,13 +287,13 @@ jobs:
         shell: bash
         working-directory: nodejs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.1.1
       - name: Setup Node.js 24 for install
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # pnpm 11 requires Node >= 22.13; use 24 since 22 hits EOL
           # in October.
@@ -303,18 +303,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Setup Node.js ${{ matrix.node }} for test
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lancedb-${{ matrix.settings.target }}
           path: nodejs/dist/
           # For testing purposes:
           # run-id: 13982782871
           # github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nodejs-dist
           path: nodejs/dist
@@ -339,13 +339,13 @@ jobs:
     needs:
       - test-lancedb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.1.1
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -353,14 +353,14 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nodejs-dist
           path: nodejs/dist
           # For testing purposes:
           # run-id: 13982782871
           # github-token: ${{ secrets.GITHUB_TOKEN }} # token with actions:read permissions on target repo
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         name: Download arch-specific binaries
         with:
           pattern: lancedb-*
@@ -398,7 +398,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/create-failure-issue
         with:
           job-results: ${{ toJSON(needs) }}

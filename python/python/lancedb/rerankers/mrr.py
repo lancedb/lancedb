@@ -125,6 +125,9 @@ class MRRReranker(Reranker):
         This cannot reuse rerank_hybrid because MRR semantics require treating
         each vector result as a separate ranking system.
         """
+        if not vector_results:
+            raise ValueError("vector_results must not be empty")
+
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
             raise ValueError(
                 "All elements in vector_results should be of the same type"
@@ -153,9 +156,16 @@ class MRRReranker(Reranker):
                 reciprocal_rank = 1.0 / rank
                 mrr_score_map[result_id].append(reciprocal_rank)
 
+        # MRR averages the reciprocal rank across *all* ranking systems, treating
+        # a system in which a document does not appear as a reciprocal rank of 0.
+        # We therefore divide by the total number of systems, not by the number of
+        # systems the document happens to appear in -- otherwise a document found
+        # by a single ranking would outrank one ranked highly by every system,
+        # defeating the purpose of fusing the rankings.
+        num_systems = len(vector_results)
         final_mrr_scores = {}
         for result_id, reciprocal_ranks in mrr_score_map.items():
-            mean_rr = np.mean(reciprocal_ranks)
+            mean_rr = float(np.sum(reciprocal_ranks)) / num_systems
             final_mrr_scores[result_id] = mean_rr
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)

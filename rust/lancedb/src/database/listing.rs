@@ -18,6 +18,7 @@ use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
+use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
@@ -838,12 +839,15 @@ impl ListingDatabase {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
-        // Apply enable_stable_row_ids: table-level override takes precedence over connection config
-        if let Some(enable_stable_row_ids) =
-            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        let data_schema = request.data.arrow_schema();
+        if let Some(enable_stable_row_ids) = stable_row_ids_override
+            .or(self.new_table_config.enable_stable_row_ids)
+            .or(has_blob_columns(&data_schema).then_some(true))
         {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
+
+        ensure_blob_storage_version(&data_schema, &mut write_params);
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;

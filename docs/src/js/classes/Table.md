@@ -110,6 +110,23 @@ containing the new version number of the table after altering the columns.
 
 ***
 
+### branches()
+
+```ts
+abstract branches(): Promise<Branches>
+```
+
+Get the branch manager for this table.
+
+Branches are isolated, writable lines of history forked from another
+branch (or version). Writes on a branch do not affect `main`.
+
+#### Returns
+
+`Promise`&lt;[`Branches`](Branches.md)&gt;
+
+***
+
 ### checkout()
 
 ```ts
@@ -187,6 +204,25 @@ Any attempt to use the table after it is closed will result in an error.
 
 ***
 
+### closeLsmWriters()
+
+```ts
+abstract closeLsmWriters(): Promise<void>
+```
+
+Drain and close any cached MemWAL shard writers held for this table.
+
+When an [LsmWriteSpec](../interfaces/LsmWriteSpec.md) is installed, `mergeInsert` opens MemWAL
+shard writers and caches them for reuse across calls. This closes them,
+flushing pending data; writers reopen lazily on the next `mergeInsert`.
+It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### countRows()
 
 ```ts
@@ -256,6 +292,23 @@ await table.createIndex("vector", {
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
+
+***
+
+### currentBranch()
+
+```ts
+abstract currentBranch(): null | string
+```
+
+The branch this table handle is scoped to, or `null` for the main branch.
+
+A handle returned by [Branches.create](Branches.md#create) or [Branches.checkout](Branches.md#checkout)
+reports the branch it targets; a handle opened normally reports `null`.
+
+#### Returns
+
+`null` \| `string`
 
 ***
 
@@ -972,6 +1025,29 @@ Keys in the map should specify the name of the column to update.
 Values in the map provide the new value of the column.  These can
 be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
 based on the row being updated (e.g. "my_col + 1")
+
+***
+
+### updateFieldMetadata()
+
+```ts
+abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
+```
+
+Update per-field (column) metadata.
+
+#### Parameters
+
+* **updates**: [`FieldMetadataUpdate`](../interfaces/FieldMetadataUpdate.md)[]
+    One or more per-field updates. Each
+    update's metadata is merged into the field's existing metadata by default;
+    a value of `null` deletes that key, and `replace: true` swaps the whole map.
+
+#### Returns
+
+`Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
+
+resolves to the new table version.
 
 ***
 

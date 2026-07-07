@@ -4,6 +4,8 @@
 
 import os
 import sys
+import threading
+import warnings
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -11,7 +13,7 @@ from unittest.mock import patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -20,9 +22,32 @@ import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 from pydantic import BaseModel
+
+
+def _blob_test_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
 
 
 def test_basic(mem_db: DBConnection):
@@ -56,27 +81,30 @@ def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
     pd.testing.assert_frame_equal(table.to_pandas(), expected)
 
 
-def test_table_to_pandas_blob_bytes(tmp_db: DBConnection):
+def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_invalid_blob_mode", data=data)
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
     pytest.importorskip("lance")
-    data = pa.table(
-        {
-            "id": pa.array([1, 2], pa.int64()),
-            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
-        },
-        schema=pa.schema(
-            [
-                pa.field("id", pa.int64()),
-                pa.field(
-                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
-                ),
-            ]
-        ),
-    )
-    table = tmp_db.create_table("test_to_pandas_blob_bytes", data=data)
+    table = tmp_db.create_table(f"test_to_pandas_blob_{blob_mode}", _blob_test_data())
 
-    df = table.to_pandas(blob_mode="bytes")
+    df = table.to_pandas(blob_mode=blob_mode)
 
-    assert df["blob"].tolist() == [b"hello", b"world"]
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"hello")
+        _assert_lazy_blob(df["blob"].iloc[1], b"world")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"hello", b"world"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"hello"
+        assert not hasattr(first, "readall")
 
 
 def test_table_to_pandas_kwargs(tmp_db: DBConnection):
@@ -92,27 +120,26 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
 @pytest.mark.asyncio
 async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
     pytest.importorskip("lance")
-    data = pa.table(
-        {
-            "id": pa.array([1, 2], pa.int64()),
-            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
-        },
-        schema=pa.schema(
-            [
-                pa.field("id", pa.int64()),
-                pa.field(
-                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
-                ),
-            ]
-        ),
-    )
     table = await tmp_db_async.create_table(
-        "test_async_to_pandas_blob_bytes", data=data
+        "test_async_to_pandas_blob_bytes", data=_blob_test_data()
     )
 
     df = await table.to_pandas(blob_mode="bytes")
 
     assert df["blob"].tolist() == [b"hello", b"world"]
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_invalid_blob_mode_non_blob_table(
+    tmp_db_async: AsyncConnection,
+):
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_invalid_blob_mode",
+        data=pa.table({"id": [1, 2], "text": ["one", "two"]}),
+    )
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        await table.to_pandas(blob_mode="invalid")
 
 
 @pytest.mark.asyncio
@@ -274,6 +301,16 @@ def test_create_table(mem_db: DBConnection):
         assert expected == tbl
 
 
+def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        mem_db.create_table("test", data=data)
+    assert (
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
+    )
+
+
 def test_empty_table(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -303,8 +340,8 @@ def test_add_dictionary(mem_db: DBConnection):
     with pytest.raises(ValueError) as excep_info:
         tbl.add(data=data)
     assert (
-        str(excep_info.value)
-        == "Cannot add a single dictionary to a table. Use a list."
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
     )
 
 
@@ -902,6 +939,356 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+def test_branches(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert table.count_rows() == 2
+
+    # fork an isolated, writable branch from main
+    branch = table.branches.create("exp")
+    assert branch.count_rows() == 2
+    branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    # writes on the branch do not touch main
+    assert branch.count_rows() == 3
+    assert table.count_rows() == 2
+
+    # the branch is listed, with main (None) as its parent
+    branches = table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    # from_ref="main" is equivalent to the default
+    table.branches.create("exp2", from_ref="main")
+    assert table.branches.list()["exp2"]["parent_branch"] is None
+
+    # checkout returns a handle scoped to the branch's latest
+    checked_out = table.branches.checkout("exp")
+    assert checked_out.count_rows() == 3
+
+    # delete removes it
+    table.branches.delete("exp")
+    table.branches.delete("exp2")
+    assert "exp" not in table.branches.list()
+
+
+def test_branch_handle_tracks_concurrent_writes(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("t", [{"id": 1}])
+
+    # two independent handles on the same branch
+    writer = table.branches.create("exp")
+    reader = db.open_table("t", branch="exp")
+    assert reader.count_rows() == 1
+
+    # a concurrent write on the branch is visible to the other handle
+    writer.add([{"id": 2}])
+    assert reader.count_rows() == 2
+    # main is unaffected
+    assert table.count_rows() == 1
+
+
+def test_branch_name_validation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}])
+
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.create("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.checkout("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.delete("")
+
+
+def test_branches_preserve_namespace(tmp_path):
+    pytest.importorskip(
+        "lance"
+    )  # namespace_path routes through lance's DirectoryNamespace
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    assert table.namespace == ["ns1"]
+
+    branch = table.branches.create("exp")
+    assert branch.namespace == ["ns1"]
+    assert branch.id == table.id
+
+    # opening the branch directly also preserves namespace identity
+    opened = db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert opened.namespace == ["ns1"]
+
+
+def test_open_table_with_branch(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    table.branches.create("exp").add([{"i": 2}])
+
+    # open_table(branch=...) returns a handle scoped to the branch
+    assert db.open_table("t", branch="exp").count_rows() == 2
+    # opening without branch still tracks main
+    assert db.open_table("t").count_rows() == 1
+
+
+def test_open_table_with_branch_version(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = db.create_table("t", [{"i": 0}])
+    main_v1 = t.version
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert db.open_table("t", branch="exp").count_rows() == 3
+    assert db.open_table("t").count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert old_main.count_rows() == 1
+    shared_on_main = db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch (a distinct
+    # resolution path, on the branch's manifests)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 3  # exp HEAD, not main's 4
+    pinned.add([{"i": 3}])
+    assert pinned.count_rows() == 4  # writable again
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    table = await db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    branch = await table.branches.create("exp")
+    await branch.add([{"id": 2}])
+
+    # open_table(branch=...) on the async namespace connection must work
+    opened = await db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert await opened.count_rows() == 2
+
+
+def test_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["ns1"])
+    t = db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = db.open_table("t", namespace_path=["ns1"], branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+    assert db.open_table("t", namespace_path=["ns1"], branch="exp").count_rows() == 3
+
+
+def test_namespace_root_table_to_lance_uses_namespace_client(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    table = db.create_table("t", [{"i": 0}])
+
+    assert table._namespace_client is None
+    assert table.to_lance().count_rows() == 1
+    assert table._namespace_client is not None
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    t = await db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the async namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = await db.open_table(
+        "t", namespace_path=["ns1"], branch="exp", version=exp_v2
+    )
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+    assert (
+        await (
+            await db.open_table("t", namespace_path=["ns1"], branch="exp")
+        ).count_rows()
+        == 3
+    )
+
+
+def test_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    branch = table.branches.create("exp")
+    branch.add([{"i": 2}])  # branch: 2 rows, main: 1 row
+
+    assert branch.to_lance().count_rows() == 2
+    assert table.to_lance().count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_branches(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+
+    branch = await table.branches.create("exp")
+    assert await branch.count_rows() == 2
+    await branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    assert await branch.count_rows() == 3
+    assert await table.count_rows() == 2
+
+    branches = await table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    await table.branches.create("exp2", from_ref="main")
+    assert (await table.branches.list())["exp2"]["parent_branch"] is None
+
+    checked_out = await table.branches.checkout("exp")
+    assert await checked_out.count_rows() == 3
+
+    await table.branches.delete("exp")
+    await table.branches.delete("exp2")
+    assert "exp" not in await table.branches.list()
+
+
+@pytest.mark.asyncio
+async def test_async_open_table_with_branch_version(tmp_path):
+    db = await lancedb.connect_async(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = await db.create_table("t", [{"i": 0}])
+    main_v1 = await t.version()
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = await db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = await t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert await pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert await (await db.open_table("t", branch="exp")).count_rows() == 3
+    assert await (await db.open_table("t")).count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = await db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert await old_main.count_rows() == 1
+    shared_on_main = await db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert await shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        await pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    await pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 3  # exp HEAD, not main's 4
+    await pinned.add([{"i": 3}])
+    assert await pinned.count_rows() == 4  # writable again
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
@@ -928,7 +1315,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # Test with target_partition_size
@@ -948,7 +1340,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         target_partition_size=8192,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # target_partition_size has a default value,
@@ -967,7 +1364,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -978,7 +1380,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=False,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -993,7 +1400,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -1008,7 +1420,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -1032,6 +1449,7 @@ def test_create_index_name_and_train_parameters(
         "vector",
         replace=True,
         config=expected_config,
+        wait_timeout=None,
         name="my_custom_index",
         train=True,
     )
@@ -1039,13 +1457,82 @@ def test_create_index_name_and_train_parameters(
     # Test with train=False
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=False
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=False,
     )
 
     # Test with both name and train
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name="my_index_name", train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name="my_index_name",
+        train=True,
+    )
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_legacy_emits_deprecation_warning(
+    mock_create_index, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        "test",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with pytest.warns(DeprecationWarning, match="create_index"):
+        table.create_index(metric="l2", num_partitions=8, vector_column_name="vector")
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "category": "a", "text": "hello world"},
+            {"vector": [5.9, 26.5], "category": "b", "text": "goodbye"},
+        ],
+    )
+
+    # Vector index via new API should not warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        table.create_index("vector", config=IvfPq(distance_type="l2"))
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=IvfPq(distance_type="l2"),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # Scalar index via new API
+    table.create_index("category", config=BTree())
+    mock_create_index.assert_called_with(
+        "category",
+        replace=True,
+        config=BTree(),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # FTS index via new API
+    table.create_index("text", config=FTS(with_position=True))
+    mock_create_index.assert_called_with(
+        "text",
+        replace=True,
+        config=FTS(with_position=True),
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -1161,6 +1648,45 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     data = table.to_arrow()
     assert data["text"].to_pylist() == ["bar"]
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
+
+
+def test_add_nullable_struct_with_none(mem_db: DBConnection):
+    """Regression test for issue #2654: a nullable struct column whose
+    first batch contains only None values must not crash in
+    _align_field_types with AttributeError: 'pyarrow.lib.DataType'
+    object has no attribute 'fields'.
+
+    PyArrow infers an all-None struct column as `null` (not `struct`),
+    so the type-alignment path needs to handle the case where the
+    source field type is null and use the target type directly.
+    """
+    # Use the v2.1 file format so that nullable structs are supported.
+    table = mem_db.create_table(
+        "test_nullable_struct",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "data",
+                    pa.struct([pa.field("x", pa.float32())]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        storage_options=dict(new_table_data_storage_version="2.1"),
+    )
+
+    # Adding a row with a non-null struct should work.
+    table.add([{"id": "1", "data": {"x": 1.0}}])
+
+    # Adding a row with None for the nullable struct field should also
+    # work — this is what used to crash.
+    table.add([{"id": "2", "data": None}])
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("id").to_pylist() == ["1", "2"]
+    assert result.column("data").to_pylist() == [{"x": 1.0}, None]
 
 
 def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
@@ -1461,6 +1987,38 @@ def test_delete(mem_db: DBConnection):
     assert table.to_arrow()["id"].to_pylist() == [1]
 
 
+def test_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert len(table) == 3
+    delete_res = table.delete(col("id") == lit(0))
+    assert delete_res.version == 2
+    assert len(table) == 2
+    assert sorted(table.to_arrow()["id"].to_pylist()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_delete_expr_async(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert await table.count_rows() == 3
+    await table.delete(col("id") == lit(0))
+    assert await table.count_rows() == 2
+    assert sorted((await table.to_arrow())["id"].to_pylist()) == [1, 2]
+
+
 def test_update(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -1644,6 +2202,50 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a").when_matched_update_all().execute(
             new_data, timeout=timedelta(0)
         )
+
+
+def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 1
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_by_source_delete_expr_async(
+    mem_db_async: AsyncConnection,
+):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await mem_db_async.create_table("some_table", data=data)
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
 
 
 # We vary the data format because there are slight differences in how
@@ -1861,8 +2463,9 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
-    # Test with default name
-    table.create_scalar_index("x")
+    # Test with default name; confirm DeprecationWarning fires
+    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+        table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
@@ -1893,18 +2496,32 @@ def test_create_scalar_index(mem_db: DBConnection):
 def test_create_index_nested_field_paths(mem_db: DBConnection):
     schema = pa.schema(
         [
+            pa.field("rowId", pa.int32()),
+            pa.field("row-id", pa.int32()),
+            pa.field("userId", pa.int32()),
             pa.field("metadata", pa.struct([pa.field("user_id", pa.int32())])),
+            pa.field("MetaData", pa.struct([pa.field("userId", pa.int32())])),
             pa.field(
                 "image",
                 pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
             ),
+            pa.field("payload", pa.struct([pa.field("text", pa.string())])),
+            pa.field("meta-data", pa.struct([pa.field("user-id", pa.int32())])),
+            pa.field("literal", pa.struct([pa.field("a.b", pa.int32())])),
         ]
     )
     data = pa.Table.from_pylist(
         [
             {
+                "rowId": i,
+                "row-id": i,
+                "userId": i,
                 "metadata": {"user_id": i},
+                "MetaData": {"userId": i},
                 "image": {"embedding": [float(i), float(i + 1)]},
+                "payload": {"text": f"document {i}"},
+                "meta-data": {"user-id": i},
+                "literal": {"a.b": i},
             }
             for i in range(256)
         ],
@@ -1912,19 +2529,37 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     )
     table = mem_db.create_table("nested_index_paths", data=data)
 
+    table.create_scalar_index("rowId", name="row_id_idx")
+    table.create_scalar_index("`row-id`", name="row_dash_id_idx")
+    table.create_scalar_index("userId", name="top_user_id_idx")
     table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
+    table.create_scalar_index("MetaData.userId", name="mixed_case_metadata_user_id_idx")
+    table.create_scalar_index("`meta-data`.`user-id`", name="escaped_names_idx")
+    table.create_scalar_index("literal.`a.b`", name="literal_dot_idx")
     table.create_index(
         vector_column_name="image.embedding",
         num_partitions=1,
         num_sub_vectors=1,
         name="image_embedding_idx",
     )
+    table.create_fts_index("payload.text", with_position=False, name="payload_text_idx")
 
     indices = sorted(table.list_indices(), key=lambda idx: idx.name)
     assert [(idx.name, idx.index_type, idx.columns) for idx in indices] == [
+        ("escaped_names_idx", "BTree", ["`meta-data`.`user-id`"]),
         ("image_embedding_idx", "IvfPq", ["image.embedding"]),
+        ("literal_dot_idx", "BTree", ["literal.`a.b`"]),
         ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
+        ("mixed_case_metadata_user_id_idx", "BTree", ["MetaData.userId"]),
+        ("payload_text_idx", "FTS", ["payload.text"]),
+        ("row_dash_id_idx", "BTree", ["`row-id`"]),
+        ("row_id_idx", "BTree", ["rowId"]),
+        ("top_user_id_idx", "BTree", ["userId"]),
     ]
+    for index in indices:
+        stats = table.index_stats(index.name)
+        assert stats is not None
+        assert stats.num_indexed_rows == 256
 
     vector_results = (
         table.search([0.0, 1.0], vector_column_name="image.embedding")
@@ -1941,6 +2576,63 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
     assert len(filtered_results) == 1
     assert filtered_results[0]["metadata"]["user_id"] == 42
+
+    escaped_results = table.search().where("`row-id` = 43").limit(1).to_list()
+    assert len(escaped_results) == 1
+    assert escaped_results[0]["row-id"] == 43
+
+    fts_results = table.search("document 44", query_type="fts").limit(1).to_list()
+    assert len(fts_results) == 1
+    assert fts_results[0]["payload"]["text"] == "document 44"
+
+
+def test_index_config_fields(mem_db: DBConnection):
+    """Test that IndexConfig exposes the new rich metadata fields."""
+    vec_array = pa.array(
+        [[float(i), float(i + 1)] for i in range(300)], pa.list_(pa.float32(), 2)
+    )
+    data = pa.Table.from_pydict({"x": list(range(300)), "vector": vec_array})
+    table = mem_db.create_table("index_config_fields", data=data)
+    table.create_scalar_index("x", index_type="BTREE")
+    table.create_index(
+        vector_column_name="vector",
+        num_partitions=1,
+        num_sub_vectors=1,
+    )
+
+    indices = {idx.name: idx for idx in table.list_indices()}
+
+    scalar_idx = indices["x_idx"]
+    assert scalar_idx.index_uuid is not None
+    assert isinstance(scalar_idx.index_uuid, str)
+    assert scalar_idx.num_indexed_rows is not None
+    assert scalar_idx.num_indexed_rows == 300
+    assert scalar_idx.num_unindexed_rows is not None
+    assert scalar_idx.num_unindexed_rows == 0
+    assert scalar_idx.num_segments is not None
+    assert scalar_idx.num_segments >= 1
+    assert scalar_idx.size_bytes is not None
+    assert scalar_idx.size_bytes > 0
+    assert scalar_idx.created_at is not None
+    from datetime import datetime, timezone
+
+    assert isinstance(scalar_idx.created_at, datetime)
+    assert scalar_idx.created_at.tzinfo == timezone.utc
+
+    # __getitem__ compatibility
+    assert scalar_idx["index_uuid"] == scalar_idx.index_uuid
+    assert scalar_idx["num_indexed_rows"] == scalar_idx.num_indexed_rows
+    assert scalar_idx["created_at"] == scalar_idx.created_at
+
+    # index_details is parsed from JSON into a Python object
+    assert scalar_idx.index_details is not None
+    assert isinstance(scalar_idx.index_details, dict)
+    assert scalar_idx["index_details"] == scalar_idx.index_details
+
+    vector_idx = indices["vector_idx"]
+    assert vector_idx.index_uuid is not None
+    assert vector_idx.num_indexed_rows == 300
+    assert isinstance(vector_idx.index_details, dict)
 
 
 def test_empty_query(mem_db: DBConnection):
@@ -2370,6 +3062,30 @@ def test_alter_columns(mem_db: DBConnection):
     assert table.to_arrow().column_names == ["new_id"]
 
 
+def test_update_field_metadata(mem_db: DBConnection):
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = mem_db.create_table("my_table", data=data)
+
+    res = table.update_field_metadata(
+        {"path": "category", "metadata": {"unit": "label", "pii": "false"}}
+    )
+    assert res.version == 2
+    # Arrow field metadata is bytes-keyed
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"pii": b"false",
+    }
+
+    # merge: add a key, delete one via None, keep the rest
+    table.update_field_metadata(
+        {"path": "category", "metadata": {"source": "import", "pii": None}}
+    )
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"source": b"import",
+    }
+
+
 @pytest.mark.asyncio
 async def test_alter_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
@@ -2648,3 +3364,38 @@ def test_sanitize_data_metadata_not_stripped():
     assert result_schema.metadata is not None
     assert result_schema.metadata[b"existing_key"] == b"existing_value"
     assert result_schema.metadata[b"new_key"] == b"new_value"
+
+
+@pytest.mark.asyncio
+async def test_async_search_runs_embedding_on_dedicated_executor(
+    mem_db_async: AsyncConnection,
+):
+    # Regression test for #3310: AsyncTable.search() must run the (potentially
+    # blocking) query-embedding call on the dedicated embedding executor, not
+    # asyncio's default executor -- which is shared with other blocking I/O and
+    # can be starved by a slow embedding call under concurrent load.
+    func = MockTextEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    table = await mem_db_async.create_table("embed_executor", schema=Schema)
+    await table.add([{"text": "hello world"}])
+
+    captured_threads: List[str] = []
+    original = MockTextEmbeddingFunction.generate_embeddings
+
+    def record_thread(self, texts):
+        captured_threads.append(threading.current_thread().name)
+        return original(self, texts)
+
+    # Patch only around the search so we capture the query-embedding call, not
+    # the add-time source-embedding call.
+    with patch.object(MockTextEmbeddingFunction, "generate_embeddings", record_thread):
+        await (await table.search("a query string")).limit(1).to_list()
+
+    assert captured_threads, "search did not invoke the embedding function"
+    assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
+        f"embedding ran off the dedicated executor: {captured_threads}"
+    )

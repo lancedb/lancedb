@@ -3,6 +3,7 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+mod blob_coerce;
 pub mod cast;
 pub mod insert;
 pub mod reject_nan;

@@ -85,6 +85,20 @@ export interface CreateTableOptions {
 
 export interface OpenTableOptions {
   /**
+   * Open the table scoped to this branch instead of the default branch.
+   *
+   * Reads and writes on the returned table operate in the branch's context.
+   */
+  branch?: string;
+  /**
+   * Open the table pinned to this version, producing a read-only view.
+   *
+   * Composes with {@link OpenTableOptions.branch}: when both are set, opens
+   * that branch at the version; otherwise opens `main` at the version. Call
+   * `checkoutLatest` to return to a writable state.
+   */
+  version?: number;
+  /**
    * Configuration for object storage.
    *
    * Options already set on the connection will be inherited by the table,
@@ -483,7 +497,20 @@ export class LocalConnection extends Connection {
       options?.indexCacheSize,
     );
 
-    return new LocalTable(innerTable);
+    let table: Table = new LocalTable(innerTable);
+    // "main" is the default branch, so treat it as no branch. On a real branch,
+    // scope and pin in one step (yielding "version V of branch B"); otherwise
+    // pin the version, if any, against main.
+    const branch =
+      options?.branch != null && options.branch !== "main"
+        ? options.branch
+        : undefined;
+    if (branch != null) {
+      table = await (await table.branches()).checkout(branch, options?.version);
+    } else if (options?.version != null) {
+      await table.checkout(options.version);
+    }
+    return table;
   }
 
   async cloneTable(

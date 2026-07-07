@@ -1,4 +1,5 @@
-from datetime import timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
@@ -10,6 +11,7 @@ from .index import (
     IvfSq,
     Bitmap,
     LabelList,
+    Fm,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -47,11 +49,14 @@ class PyExpr:
     def lower(self) -> "PyExpr": ...
     def upper(self) -> "PyExpr": ...
     def contains(self, substr: "PyExpr") -> "PyExpr": ...
+    def isin(self, values: List["PyExpr"]) -> "PyExpr": ...
     def cast(self, data_type: pa.DataType) -> "PyExpr": ...
     def to_sql(self) -> str: ...
 
 def expr_col(name: str) -> PyExpr: ...
-def expr_lit(value: Union[bool, int, float, str, bytes]) -> PyExpr: ...
+def expr_lit(
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
 class Session:
@@ -186,6 +191,7 @@ class Table:
             BTree,
             Bitmap,
             LabelList,
+            Fm,
             FTS,
         ],
         replace: Optional[bool],
@@ -202,12 +208,15 @@ class Table:
     async def prewarm_index(self, index_name: str) -> None: ...
     async def prewarm_data(self, columns: Optional[List[str]] = None) -> None: ...
     async def list_indices(self) -> list[IndexConfig]: ...
-    async def delete(self, filter: str) -> DeleteResult: ...
+    async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
     async def alter_columns(
         self, columns: list[dict[str, Any]]
     ) -> AlterColumnsResult: ...
+    async def update_field_metadata(
+        self, updates: list[dict[str, Any]]
+    ) -> UpdateFieldMetadataResult: ...
     async def optimize(
         self,
         *,
@@ -220,8 +229,12 @@ class Table:
     async def set_unenforced_primary_key(self, columns: List[str]) -> None: ...
     async def set_lsm_write_spec(self, spec: LsmWriteSpec) -> None: ...
     async def unset_lsm_write_spec(self) -> None: ...
+    async def close_lsm_writers(self) -> None: ...
     @property
     def tags(self) -> Tags: ...
+    @property
+    def branches(self) -> Branches: ...
+    def current_branch(self) -> Optional[str]: ...
     def query(self) -> Query: ...
     def take_offsets(self, offsets: list[int]) -> TakeQuery: ...
     def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
@@ -234,10 +247,30 @@ class Tags:
     async def delete(self, tag: str): ...
     async def update(self, tag: str, version: int): ...
 
+class Branches:
+    async def list(self) -> Dict[str, Any]: ...
+    async def create(
+        self,
+        name: str,
+        from_ref: Optional[str] = None,
+        from_version: Optional[int] = None,
+    ) -> Table: ...
+    async def checkout(self, name: str, version: Optional[int] = None) -> Table: ...
+    async def delete(self, name: str) -> None: ...
+
 class IndexConfig:
     name: str
     index_type: str
     columns: List[str]
+    index_uuid: Optional[str]
+    type_url: Optional[str]
+    created_at: Optional[datetime]
+    num_indexed_rows: Optional[int]
+    num_unindexed_rows: Optional[int]
+    size_bytes: Optional[int]
+    num_segments: Optional[int]
+    index_version: Optional[int]
+    index_details: Optional[Any]
 
 async def connect(
     uri: str,
@@ -249,6 +282,24 @@ async def connect(
     storage_options: Optional[Dict[str, str]],
     session: Optional[Session],
     manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+    oauth_config: Optional[Any] = None,
+) -> Connection: ...
+def connect_namespace(
+    namespace_client_impl: str,
+    namespace_client_properties: Dict[str, str],
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+) -> Connection: ...
+def connect_namespace_client(
+    namespace_client: Any,
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+    namespace_client_impl: Optional[str] = None,
     namespace_client_properties: Optional[Dict[str, str]] = None,
 ) -> Connection: ...
 
@@ -420,6 +471,7 @@ class MergeResult:
     num_inserted_rows: int
     num_deleted_rows: int
     num_attempts: int
+    num_rows: int
 
 class LsmWriteSpec:
     """Specification selecting Lance's MemWAL LSM-style write path for
@@ -456,6 +508,9 @@ class AddColumnsResult:
     version: int
 
 class AlterColumnsResult:
+    version: int
+
+class UpdateFieldMetadataResult:
     version: int
 
 class DropColumnsResult:

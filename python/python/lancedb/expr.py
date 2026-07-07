@@ -19,7 +19,9 @@ operators::
 
 from __future__ import annotations
 
-from typing import Union
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Iterable, Union
 
 import pyarrow as pa
 
@@ -63,7 +65,7 @@ def _coerce(value: "ExprLike") -> "Expr":
 
 
 # Type alias used in annotations.
-ExprLike = Union["Expr", bool, int, float, str, bytes]
+ExprLike = Union["Expr", bool, int, float, str, bytes, date, datetime, Decimal]
 
 
 class Expr:
@@ -118,9 +120,17 @@ class Expr:
         """Logical AND (``expr_a & expr_b``)."""
         return Expr(self._inner.and_(_coerce(other)._inner))
 
+    def __rand__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical AND (``True & expr``)."""
+        return Expr(_coerce(other)._inner.and_(self._inner))
+
     def __or__(self, other: "Expr") -> "Expr":
         """Logical OR (``expr_a | expr_b``)."""
         return Expr(self._inner.or_(_coerce(other)._inner))
+
+    def __ror__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical OR (``False | expr``)."""
+        return Expr(_coerce(other)._inner.or_(self._inner))
 
     def __invert__(self) -> "Expr":
         """Logical NOT (``~expr``)."""
@@ -173,6 +183,11 @@ class Expr:
     def contains(self, substr: "ExprLike") -> "Expr":
         """Return True where the string contains *substr*."""
         return Expr(self._inner.contains(_coerce(substr)._inner))
+
+    def isin(self, values: "Iterable[ExprLike]") -> "Expr":
+        """Return True where the value is one of *values* (SQL ``IN``)."""
+        inner = [_coerce(v)._inner for v in values]
+        return Expr(self._inner.isin(inner))
 
     # ── type cast ────────────────────────────────────────────────────────────
 
@@ -261,13 +276,14 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name))
 
 
-def lit(value: Union[bool, int, float, str, bytes]) -> Expr:
+def lit(value: Union[bool, int, float, str, bytes, date, datetime, Decimal]) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
-        A Python ``bool``, ``int``, ``float``, ``str``, or ``bytes``.
+        A Python ``bool``, ``int``, ``float``, ``str``, ``bytes``, ``date``,
+        ``datetime``, or ``Decimal``.
 
     Examples
     --------
@@ -275,6 +291,9 @@ def lit(value: Union[bool, int, float, str, bytes]) -> Expr:
     >>> col("price") * lit(1.1)
     Expr((price * 1.1))
     """
+    if not isinstance(value, (bool, int, float, str, bytes, date, datetime, Decimal)):
+        raise TypeError(f"Unsupported literal type: {type(value).__name__}")
+
     return Expr(expr_lit(value))
 
 

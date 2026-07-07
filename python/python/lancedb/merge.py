@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Union
+
+from .expr import Expr
 
 if TYPE_CHECKING:
     from .common import DATA
@@ -32,8 +34,11 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_insert_all = False
         self._when_not_matched_by_source_delete = False
         self._when_not_matched_by_source_condition = None
+        self._when_not_matched_by_source_condition_expr = None
         self._timeout = None
         self._use_index = True
+        self._use_lsm_write = None
+        self._validate_single_shard = None
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -46,6 +51,15 @@ class LanceMergeInsertBuilder(object):
         If there are multiple matches then the behavior is undefined.
         Currently this causes multiple copies of the row to be created
         but that behavior is subject to change.
+
+        Parameters
+        ----------
+        where: Optional[str], default None
+            An optional filter to limit which rows are updated. Column
+            references in this expression must be prefixed with "target."
+            to refer to the existing table data. For example, to only
+            update rows where the existing color is red, use:
+            ``where="target.color = 'red'"``
         """
         self._when_matched_update_all = True
         self._when_matched_update_all_condition = where
@@ -60,7 +74,7 @@ class LanceMergeInsertBuilder(object):
         return self
 
     def when_not_matched_by_source_delete(
-        self, condition: Optional[str] = None
+        self, condition: Union[str, Expr, None] = None
     ) -> LanceMergeInsertBuilder:
         """
         Rows that exist only in the target table (old data) will be
@@ -69,13 +83,16 @@ class LanceMergeInsertBuilder(object):
 
         Parameters
         ----------
-        condition: Optional[str], default None
+        condition: str or :class:`~lancedb.expr.Expr` or None, default None
             If None then all such rows will be deleted.  Otherwise the
-            condition will be used as an SQL filter to limit what rows
-            are deleted.
+            condition will be used as a filter to limit what rows are deleted.
+            Can be a SQL string or a type-safe :class:`~lancedb.expr.Expr`
+            built with :func:`~lancedb.expr.col` and :func:`~lancedb.expr.lit`.
         """
         self._when_not_matched_by_source_delete = True
-        if condition is not None:
+        if isinstance(condition, Expr):
+            self._when_not_matched_by_source_condition_expr = condition._inner
+        elif condition is not None:
             self._when_not_matched_by_source_condition = condition
         return self
 
@@ -94,6 +111,46 @@ class LanceMergeInsertBuilder(object):
             Whether to use indices for the merge operation. Defaults to `True`.
         """
         self._use_index = use_index
+        return self
+
+    def use_lsm_write(self, use_lsm_write: bool) -> LanceMergeInsertBuilder:
+        """
+        Controls whether the merge uses the MemWAL LSM write path.
+
+        By default (unset), a `merge_insert` on a table with an LSM write spec
+        is routed through Lance's MemWAL shard writer, and a table without one
+        uses the standard path. Pass `False` to force the standard path even
+        when a spec is set. Pass `True` to require a spec — `merge_insert`
+        raises an error if none is installed.
+
+        Parameters
+        ----------
+        use_lsm_write: bool
+            Whether to use the LSM write path.
+        """
+        self._use_lsm_write = use_lsm_write
+        return self
+
+    def validate_single_shard(
+        self, validate_single_shard: bool
+    ) -> LanceMergeInsertBuilder:
+        """
+        Controls how an LSM merge checks that its input targets a single shard.
+
+        When a table has an LSM write spec, every row in a `merge_insert` call
+        must route to the same shard. When `True` (the default), every row is
+        inspected to verify this. When `False`, only the first row is inspected
+        and the shard it routes to is used for the whole input — a faster path
+        for callers that have already pre-sharded their input.
+
+        Has no effect on tables without an LSM write spec.
+
+        Parameters
+        ----------
+        validate_single_shard: bool
+            Whether to check every row routes to one shard. Defaults to `True`.
+        """
+        self._validate_single_shard = validate_single_shard
         return self
 
     def execute(

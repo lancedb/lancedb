@@ -451,6 +451,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -479,6 +481,14 @@ class DBConnection(EnforceOverrides):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://docs.lancedb.com/storage/>
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -993,6 +1003,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -1003,6 +1015,14 @@ class LanceDBConnection(DBConnection):
         namespace_path: List[str], optional
             The namespace to open the table from.  When non-empty, the
             table is resolved through the directory namespace client.
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -1022,20 +1042,26 @@ class LanceDBConnection(DBConnection):
             )
 
         if namespace_path:
-            return self._namespace_conn().open_table(
+            tbl = self._namespace_conn().open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+        else:
+            tbl = LanceTable.open(
+                self,
                 name,
                 namespace_path=namespace_path,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
             )
 
-        return LanceTable.open(
-            self,
-            name,
-            namespace_path=namespace_path,
-            storage_options=storage_options,
-            index_cache_size=index_cache_size,
-        )
+        if branch is not None:
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
+        return tbl
 
     def clone_table(
         self,
@@ -1676,6 +1702,8 @@ class AsyncConnection(object):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> AsyncTable:
         """Open a Lance Table in the database.
 
@@ -1711,6 +1739,14 @@ class AsyncConnection(object):
         managed_versioning: bool, optional
             Whether managed versioning is enabled for this table. If provided,
             avoids a redundant describe_table call when namespace_client is set.
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -1727,7 +1763,14 @@ class AsyncConnection(object):
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
         )
-        return AsyncTable(table)
+        tbl = AsyncTable(table)
+        # "main" is the default branch, so treat it as no branch: remote rejects
+        # every branch checkout (even "main"), and the version still applies.
+        if branch is not None and branch != "main":
+            tbl = await tbl.branches.checkout(branch, version)
+        elif version is not None:
+            await tbl.checkout(version)
+        return tbl
 
     async def clone_table(
         self,

@@ -703,6 +703,17 @@ export class Index {
   }
 
   /**
+   * Create an FM-Index.
+   *
+   * An FM-Index is a scalar index on string or binary columns that accelerates
+   * substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+   * full-text-search index, it matches arbitrary substrings of the raw bytes.
+   */
+  static fm() {
+    return new Index(LanceDbIndex.fm());
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full

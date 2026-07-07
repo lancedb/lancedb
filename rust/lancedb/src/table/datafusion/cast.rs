@@ -13,8 +13,10 @@ use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
+use lance_arrow::FieldExt;
 use lance_arrow::json::{is_arrow_json_field, is_json_field};
 
+use super::blob_coerce::coerce_blob_expr;
 use crate::{Error, Result};
 
 pub fn cast_to_table_schema(
@@ -74,6 +76,17 @@ fn build_field_exprs(
         // causes a schema-mismatch error inside lance-core.
         if is_arrow_json_field(input_field) && is_json_field(table_field) {
             result.push((input_expr, Arc::clone(input_field) as FieldRef));
+            continue;
+        }
+
+        // Blob columns accept raw binary on write; exact matches pass through below.
+        if table_field.is_blob_v2() && input_field.as_ref() != table_field.as_ref() {
+            result.push(coerce_blob_expr(
+                input_expr,
+                input_field,
+                table_field,
+                &config,
+            )?);
             continue;
         }
 

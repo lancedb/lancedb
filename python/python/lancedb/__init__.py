@@ -89,6 +89,8 @@ def connect(
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
+        OAuth configuration is currently supported only by ``connect_async``;
+        synchronous LanceDB Cloud connections require an API key.
     region: str, default "us-east-1"
         The region to use for LanceDB Cloud.
     host_override: str, optional
@@ -315,6 +317,15 @@ def deserialize_conn(
             manifest_enabled=parsed.get("manifest_enabled", False),
             namespace_client_properties=parsed.get("namespace_client_properties"),
         )
+    elif connection_type == "remote":
+        return RemoteDBConnection(
+            parsed["db_url"],
+            parsed["api_key"],
+            parsed.get("region", "us-east-1"),
+            host_override=parsed.get("host_override"),
+            client_config=parsed.get("client_config"),
+            storage_options=storage_options,
+        )
     else:
         raise ValueError(f"Unknown connection_type: {connection_type}")
 
@@ -331,6 +342,7 @@ async def connect_async(
     session: Optional[Session] = None,
     manifest_enabled: bool = False,
     namespace_client_properties: Optional[Dict[str, str]] = None,
+    oauth_config=None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -380,6 +392,10 @@ async def connect_async(
     namespace_client_properties : dict, optional
         Additional directory namespace client properties to use with
         ``manifest_enabled=True``.
+    oauth_config : OAuthConfig, optional
+        OAuth configuration for LanceDB Cloud/Enterprise. This is supported by
+        ``connect_async`` only; synchronous ``connect`` uses API key
+        authentication for ``db://`` URIs.
 
     Examples
     --------
@@ -426,6 +442,7 @@ async def connect_async(
             session,
             manifest_enabled,
             namespace_client_properties,
+            oauth_config,
         )
     )
 

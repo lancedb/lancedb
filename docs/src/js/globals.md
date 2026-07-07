@@ -12,6 +12,7 @@
 ## Enumerations
 
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
+- [OAuthFlowType](enumerations/OAuthFlowType.md)
 - [Occur](enumerations/Occur.md)
 - [Operator](enumerations/Operator.md)
 
@@ -19,6 +20,8 @@
 
 - [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
+- [BranchContents](classes/BranchContents.md)
+- [Branches](classes/Branches.md)
 - [Connection](classes/Connection.md)
 - [HeaderProvider](classes/HeaderProvider.md)
 - [Index](classes/Index.md)
@@ -65,6 +68,7 @@
 - [DropNamespaceOptions](interfaces/DropNamespaceOptions.md)
 - [DropNamespaceResponse](interfaces/DropNamespaceResponse.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
+- [FieldMetadataUpdate](interfaces/FieldMetadataUpdate.md)
 - [FragmentStatistics](interfaces/FragmentStatistics.md)
 - [FragmentSummaryStats](interfaces/FragmentSummaryStats.md)
 - [FtsOptions](interfaces/FtsOptions.md)
@@ -82,6 +86,8 @@
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MergeResult](interfaces/MergeResult.md)
+- [NativeOAuthConfig](interfaces/NativeOAuthConfig.md)
+- [OAuthConfig](interfaces/OAuthConfig.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
@@ -101,6 +107,7 @@
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [TlsConfig](interfaces/TlsConfig.md)
 - [TokenResponse](interfaces/TokenResponse.md)
+- [UpdateFieldMetadataResult](interfaces/UpdateFieldMetadataResult.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
 - [Version](interfaces/Version.md)

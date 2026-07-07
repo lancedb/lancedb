@@ -257,7 +257,9 @@ pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::List(field) => supported_bitmap_data_type(field.data_type()),
+        DataType::List(field) | DataType::LargeList(field) => {
+            supported_bitmap_data_type(field.data_type())
+        }
         DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
         _ => false,
     }
@@ -275,6 +277,15 @@ fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
         }
         _ => false,
     }
+}
+
+/// FM-Index accelerates substring (`contains`) search over raw bytes, so it
+/// applies to string and binary columns.
+pub fn supported_fm_data_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+    )
 }
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {

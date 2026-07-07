@@ -48,6 +48,8 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     metrics: ExecutionPlanMetricsSet,
     upload_id: Option<String>,
     tracker: Option<Arc<WriteProgressTracker>>,
+    /// Branch to write to via `?branch=`. `None` targets the main branch.
+    branch: Option<String>,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
@@ -59,9 +61,10 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
         tracker: Option<Arc<WriteProgressTracker>>,
+        branch: Option<String>,
     ) -> Self {
         Self::new_inner(
-            table_name, identifier, client, input, overwrite, None, tracker,
+            table_name, identifier, client, input, overwrite, None, tracker, branch,
         )
     }
 
@@ -70,6 +73,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     /// Each partition's insert is staged under the given `upload_id` without
     /// committing. The caller is responsible for calling the complete (or abort)
     /// endpoint after all partitions finish.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_multipart(
         table_name: String,
         identifier: String,
@@ -78,6 +82,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         overwrite: bool,
         upload_id: String,
         tracker: Option<Arc<WriteProgressTracker>>,
+        branch: Option<String>,
     ) -> Self {
         Self::new_inner(
             table_name,
@@ -87,9 +92,11 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             overwrite,
             Some(upload_id),
             tracker,
+            branch,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         table_name: String,
         identifier: String,
@@ -98,6 +105,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         overwrite: bool,
         upload_id: Option<String>,
         tracker: Option<Arc<WriteProgressTracker>>,
+        branch: Option<String>,
     ) -> Self {
         let num_partitions = if upload_id.is_some() {
             input.output_partitioning().partition_count()
@@ -123,6 +131,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             metrics: ExecutionPlanMetricsSet::new(),
             upload_id,
             tracker,
+            branch,
         }
     }
 
@@ -273,6 +282,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             self.overwrite,
             self.upload_id.clone(),
             self.tracker.clone(),
+            self.branch.clone(),
         )))
     }
 
@@ -304,6 +314,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         let table_name = self.table_name.clone();
         let upload_id = self.upload_id.clone();
         let tracker = self.tracker.clone();
+        let branch = self.branch.clone();
 
         let stream = futures::stream::once(async move {
             let mut request = client
@@ -315,6 +326,9 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             }
             if let Some(ref uid) = upload_id {
                 request = request.query(&[("upload_id", uid.as_str())]);
+            }
+            if let Some(ref b) = branch {
+                request = request.query(&[("branch", b.as_str())]);
             }
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();

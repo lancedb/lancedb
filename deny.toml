@@ -113,6 +113,24 @@ ignore = [
     # rand from a custom logger; upgrade once all pinned chains accept 0.8.6+.
     # https://rustsec.org/advisories/RUSTSEC-2026-0097
     { id = "RUSTSEC-2026-0097", reason = "transitive rand 0.8.5; LanceDB does not call ThreadRng from custom logging" },
+
+    # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0176
+    # https://rustsec.org/advisories/RUSTSEC-2026-0177
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+
+    # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
+    # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
+    # Pulled in transitively by inferno (dev-only flame-graph dep), lance-namespace-impls
+    # (git dep from lance), and opendal/reqsign (cloud storage XML parsing). The XML
+    # parsed by opendal/reqsign comes from trusted cloud-storage endpoints (S3, GCS,
+    # Azure), not attacker-controlled input. Clearing requires upstream crates to migrate
+    # to quick-xml >= 0.41.0.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0194
+    # https://rustsec.org/advisories/RUSTSEC-2026-0195
+    { id = "RUSTSEC-2026-0194", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+    { id = "RUSTSEC-2026-0195", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
 ]
 
 # ---------------------------------------------------------------------------
@@ -147,6 +165,14 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
+# Per-crate license exceptions: allow a license for a specific crate only,
+# rather than globally via the `allow` list above.
+exceptions = [
+    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
+    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
+    # do not distribute, so scope the allowance to `inferno` alone.
+    { allow = ["CDDL-1.0"], crate = "inferno" },
+]
 # Crates whose license cannot be determined from Cargo metadata but whose
 # license we've manually confirmed from upstream. Keep this list minimal.
 [[licenses.clarify]]

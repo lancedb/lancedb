@@ -38,10 +38,12 @@ export {
   FragmentSummaryStats,
   Tags,
   TagContents,
+  BranchContents,
   MergeResult,
   AddResult,
   AddColumnsResult,
   AlterColumnsResult,
+  UpdateFieldMetadataResult,
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
@@ -50,6 +52,7 @@ export {
   SplitHashOptions,
   SplitSequentialOptions,
   ShuffleOptions,
+  OAuthConfig as NativeOAuthConfig,
 } from "./native.js";
 
 export {
@@ -110,6 +113,7 @@ export {
 
 export {
   Table,
+  Branches,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -117,6 +121,7 @@ export {
   WriteProgress,
   LsmWriteSpec,
   ColumnAlteration,
+  FieldMetadataUpdate,
 } from "./table";
 
 export {
@@ -125,6 +130,8 @@ export {
   OAuthHeaderProvider,
   TokenResponse,
 } from "./header";
+
+export { OAuthConfig, OAuthFlowType } from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 

@@ -25,13 +25,16 @@ import {
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
+  BranchContents,
   DeleteResult,
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
+  Branches as NativeBranches,
   OptimizeStats,
   TableStatistics,
   Tags,
+  UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
@@ -161,7 +164,10 @@ export interface Version {
  *
  * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
  * `column` and `numBuckets` are required; for `"identity"`, `column` is
- * required.
+ * required and must be a deterministic function of the unenforced primary
+ * key (every row with a given primary key must always produce the same
+ * `column` value, or upserts of that key can land in different shards and a
+ * stale version can win).
  */
 export interface LsmWriteSpec {
   /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
@@ -505,6 +511,18 @@ export abstract class Table {
   abstract alterColumns(
     columnAlterations: ColumnAlteration[],
   ): Promise<AlterColumnsResult>;
+
+  /**
+   * Update per-field (column) metadata.
+   * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
+   * update's metadata is merged into the field's existing metadata by default;
+   * a value of `null` deletes that key, and `replace: true` swaps the whole map.
+   * @returns {Promise<UpdateFieldMetadataResult>} resolves to the new table version.
+   */
+  abstract updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult>;
+
   /**
    * Drop one or more columns from the dataset
    *
@@ -567,6 +585,16 @@ export abstract class Table {
    * @returns {Promise<void>}
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
+  /**
+   * Drain and close any cached MemWAL shard writers held for this table.
+   *
+   * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * shard writers and caches them for reuse across calls. This closes them,
+   * flushing pending data; writers reopen lazily on the next `mergeInsert`.
+   * It is a no-op when no writers are cached.
+   * @returns {Promise<void>}
+   */
+  abstract closeLsmWriters(): Promise<void>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -626,6 +654,22 @@ export abstract class Table {
    * ```
    */
   abstract tags(): Promise<Tags>;
+
+  /**
+   * Get the branch manager for this table.
+   *
+   * Branches are isolated, writable lines of history forked from another
+   * branch (or version). Writes on a branch do not affect `main`.
+   */
+  abstract branches(): Promise<Branches>;
+
+  /**
+   * The branch this table handle is scoped to, or `null` for the main branch.
+   *
+   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
+   * reports the branch it targets; a handle opened normally reports `null`.
+   */
+  abstract currentBranch(): string | null;
 
   /**
    * Restore the table to the currently checked out version
@@ -1024,6 +1068,12 @@ export class LocalTable extends Table {
     return await this.inner.alterColumns(processedAlterations);
   }
 
+  async updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult> {
+    return await this.inner.updateFieldMetadata(updates);
+  }
+
   async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
     return await this.inner.dropColumns(columnNames);
   }
@@ -1039,6 +1089,10 @@ export class LocalTable extends Table {
 
   async unsetLsmWriteSpec(): Promise<void> {
     return await this.inner.unsetLsmWriteSpec();
+  }
+
+  async closeLsmWriters(): Promise<void> {
+    return await this.inner.closeLsmWriters();
   }
 
   async version(): Promise<number> {
@@ -1070,6 +1124,14 @@ export class LocalTable extends Table {
 
   async tags(): Promise<Tags> {
     return await this.inner.tags();
+  }
+
+  async branches(): Promise<Branches> {
+    return new Branches(await this.inner.branches());
+  }
+
+  currentBranch(): string | null {
+    return this.inner.currentBranch() ?? null;
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
@@ -1185,4 +1247,74 @@ export interface ColumnAlteration {
   dataType?: string | DataType;
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean;
+}
+
+/** A per-field metadata update, addressed by dot-path. */
+export interface FieldMetadataUpdate {
+  /**
+   * Dot-separated path to the field. For a top-level column this is just its
+   * name; for a nested field it's the path, e.g. "a.b.c".
+   */
+  path: string;
+  /**
+   * Metadata key/value pairs. Merged into the field's existing metadata by
+   * default; a value of `null` deletes that key.
+   */
+  metadata: Record<string, string | null>;
+  /** If true, replace the field's entire metadata map instead of merging. */
+  replace?: boolean;
+}
+
+/**
+ * Branch manager for a {@link Table}.
+ *
+ * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
+ * to the branch; writes on it do not affect `main`.
+ */
+export class Branches {
+  #inner: NativeBranches;
+
+  /**
+   * Construct a Branches manager. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeBranches) {
+    this.#inner = inner;
+  }
+
+  /** List all branches, mapping name to branch metadata. */
+  async list(): Promise<Record<string, BranchContents>> {
+    return await this.#inner.list();
+  }
+
+  /**
+   * Create a branch and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param fromRef Source branch to fork from. Defaults to `main`.
+   * @param fromVersion A specific version on `fromRef`. Defaults to latest.
+   */
+  async create(
+    name: string,
+    fromRef?: string,
+    fromVersion?: number,
+  ): Promise<Table> {
+    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+  }
+
+  /**
+   * Check out an existing branch and return a handle scoped to it.
+   *
+   * With `version` set, the returned handle is pinned to that version of the
+   * branch (a read-only, detached view); otherwise it tracks the branch's
+   * latest and stays writable.
+   */
+  async checkout(name: string, version?: number): Promise<Table> {
+    return new LocalTable(await this.#inner.checkout(name, version));
+  }
+
+  /** Delete a branch. */
+  async delete(name: string): Promise<void> {
+    return await this.#inner.delete(name);
+  }
 }

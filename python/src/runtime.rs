@@ -56,6 +56,15 @@ fn get_runtime() -> &'static runtime::Runtime {
     unsafe { &*new_ptr }
 }
 
+/// Block the current thread on a future using the shared runtime.
+///
+/// For sync `#[pyfunction]`s that need to drive an async operation (e.g.
+/// building a namespace client). Must not be called from within the runtime's
+/// own worker threads.
+pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    get_runtime().block_on(fut)
+}
+
 /// Runs in async-signal context after `fork()` in the child.  We can only
 /// touch atomics here; we deliberately leak the previous runtime because
 /// dropping a tokio `Runtime` would try to join its (now-dead) worker

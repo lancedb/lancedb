@@ -191,6 +191,40 @@ describe("remote connection", () => {
     );
   });
 
+  it("supports version time-travel and branches on remote", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const body = req.url?.includes("/branches/list")
+          ? JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            })
+          : JSON.stringify({ name: "t", version: 2, schema: { fields: [] } });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        // version-only (and "main" + version) time-travel the main chain
+        const v2 = await db.openTable("t", undefined, { version: 2 });
+        expect(v2.currentBranch()).toBeNull();
+        const mainV2 = await db.openTable("t", undefined, {
+          branch: "main",
+          version: 2,
+        });
+        expect(mainV2.currentBranch()).toBeNull();
+
+        // a non-main branch opens a handle scoped to that branch
+        const exp = await db.openTable("t", undefined, { branch: "exp" });
+        expect(exp.currentBranch()).toBe("exp");
+        const expV2 = await db.openTable("t", undefined, {
+          branch: "exp",
+          version: 2,
+        });
+        expect(expV2.currentBranch()).toBe("exp");
+      },
+    );
+  });
+
   describe("TlsConfig", () => {
     it("should create TlsConfig with all fields", () => {
       const tlsConfig: TlsConfig = {

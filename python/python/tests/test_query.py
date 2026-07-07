@@ -39,6 +39,35 @@ from utils import exception_output
 from importlib.util import find_spec
 
 
+def _blob_query_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4], pa.int64()),
+            "tag": pa.array(["drop", "keep", "keep", "keep"], pa.utf8()),
+            "vector": pa.array(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+            "blob": pa.array([b"one", b"two", b"three", b"four"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("tag", pa.utf8()),
+                pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
+
+
 @pytest.fixture(scope="module")
 def table(tmpdir_factory) -> lancedb.table.Table:
     tmp_path = str(tmpdir_factory.mktemp("data"))
@@ -181,6 +210,216 @@ async def test_query_to_pandas_kwargs(table, table_async):
     assert async_df["id"].tolist() == [1, 2]
 
 
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        f"test_query_to_pandas_blob_{blob_mode}", _blob_query_data()
+    )
+
+    df = (
+        table.search()
+        .select(["id", "blob"])
+        .where("id = 1")
+        .to_pandas(blob_mode=blob_mode)
+    )
+
+    assert df["id"].tolist() == [1]
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"one")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
+
+
+def test_plain_scan_query_to_pandas_blob_projection(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_projection", _blob_query_data()
+    )
+
+    df = (
+        table.search()
+        .where("id >= 2")
+        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
+        .limit(2)
+        .offset(1)
+        .to_pandas(blob_mode="bytes")
+    )
+
+    assert df["id_alias"].tolist() == [3, 4]
+    assert df["payload"].tolist() == [b"three", b"four"]
+    assert df["double_id"].tolist() == [6, 8]
+
+
+@pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
+def test_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+    tmp_db, monkeypatch, blob_mode
+):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+    )
+    query = table.search().where("id = 1").select(["id", "blob"])
+
+    def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before native pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = query.to_pandas(blob_mode=blob_mode)
+
+    assert df["id"].tolist() == [1]
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
+
+
+def test_plain_scan_query_to_pandas_blob_descriptions_flatten_uses_scanner(
+    tmp_db, monkeypatch
+):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_query_to_pandas_blob_desc_flatten", _blob_query_data()
+    )
+    query = table.search().where("id = 1").select(["id", "blob"])
+
+    def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before scanner pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = query.to_pandas(blob_mode="descriptions", flatten=True)
+
+    assert df["id"].tolist() == [1]
+    assert any(column == "blob" or column.startswith("blob.") for column in df.columns)
+
+
+def test_plain_scan_query_to_pandas_scanner_state(tmp_db):
+    pytest.importorskip("lance")
+    data = _blob_query_data()
+    table = tmp_db.create_table("test_query_to_pandas_scanner_state", data.slice(0, 2))
+    table.add(data.slice(2, 2))
+
+    fragments = table.to_lance().get_fragments()
+    assert len(fragments) == 2
+
+    query = (
+        table.search()
+        .select(["id", "blob"])
+        .with_row_address()
+        .fragment_ids([fragments[1].fragment_id])
+    )
+    query_obj = query.to_query_object()
+    assert query_obj.with_row_address is True
+    assert query_obj.fragment_ids == [fragments[1].fragment_id]
+
+    df = query.to_pandas(blob_mode="descriptions")
+
+    assert df["id"].tolist() == [3, 4]
+    assert "_rowaddr" in df.columns
+    assert {rowaddr >> 32 for rowaddr in df["_rowaddr"]} == {fragments[1].fragment_id}
+
+    df_by_fragment = (
+        table.search()
+        .select(["id", "blob"])
+        .with_fragments([fragments[0]])
+        .to_pandas(blob_mode="descriptions")
+    )
+    assert df_by_fragment["id"].tolist() == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_async_plain_scan_query_to_pandas_blob_projection(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_query_to_pandas_blob_projection", _blob_query_data()
+    )
+
+    lazy_df = await (
+        table.query().where("id = 1").select(["id", "blob"]).to_pandas(blob_mode="lazy")
+    )
+    assert lazy_df["id"].tolist() == [1]
+    _assert_lazy_blob(lazy_df["blob"].iloc[0], b"one")
+
+    bytes_df = await (
+        table.query()
+        .where("id >= 2")
+        .select({"id_alias": "id", "payload": "blob", "double_id": "id * 2"})
+        .limit(2)
+        .offset(1)
+        .to_pandas(blob_mode="bytes")
+    )
+    assert bytes_df["id_alias"].tolist() == [3, 4]
+    assert bytes_df["payload"].tolist() == [b"three", b"four"]
+    assert bytes_df["double_id"].tolist() == [6, 8]
+
+    desc_df = await (
+        table.query()
+        .where("id = 1")
+        .select(["blob"])
+        .to_pandas(blob_mode="descriptions")
+    )
+    first = desc_df["blob"].iloc[0]
+    assert first != b"one"
+    assert not hasattr(first, "readall")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
+async def test_async_plain_scan_query_to_pandas_blob_mode_does_not_collect_arrow(
+    tmp_db_async, monkeypatch, blob_mode
+):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_query_to_pandas_blob_no_arrow_collect", _blob_query_data()
+    )
+    query = table.query().where("id = 1").select(["id", "blob"])
+
+    async def fail_to_arrow(*args, **kwargs):
+        raise AssertionError("to_arrow should not be called before native pandas")
+
+    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+
+    df = await query.to_pandas(blob_mode=blob_mode)
+
+    assert df["id"].tolist() == [1]
+    if blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"one"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"one"
+        assert not hasattr(first, "readall")
+
+
+def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table("test_vector_query_blob_mode", _blob_query_data())
+
+    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
+            blob_mode="lazy"
+        )
+
+
+def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_vector_query_blob_descriptions", _blob_query_data()
+    )
+
+    with pytest.raises(RuntimeError, match="plain scan query"):
+        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
+            blob_mode="descriptions"
+        )
+
+
 def test_order_by_plain_query(mem_db):
     table = mem_db.create_table(
         "test_order_by",
@@ -261,6 +500,61 @@ def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names
     assert rs["_rowid"].to_pylist() == [0, 1]
+
+
+def test_where_repeated_combines_with_and(table: lancedb.table.Table):
+    # Calling where() more than once should AND the filters together instead of
+    # silently replacing the previous one (regression test for #2649).
+    builder = table.search().where("id >= 1").where("id < 2")
+    assert builder._where == "(id >= 1) AND (id < 2)"
+
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+def test_where_repeated_combines_expr(table: lancedb.table.Table):
+    from lancedb.expr import col, lit
+
+    builder = table.search().where(col("id") >= lit(1)).where(col("id") < lit(2))
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+def test_where_mixed_filter_kinds_combines(table: lancedb.table.Table):
+    # Mixing a SQL string filter with an expression filter lowers the
+    # expression to SQL and combines them as SQL strings.
+    from lancedb.expr import col, lit
+
+    builder = table.search().where("id >= 1").where(col("id") < lit(2))
+    ids = [row["id"] for row in builder.limit(10).to_list()]
+    assert ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_where_repeated_combines_with_and_async(table_async: AsyncTable):
+    ids = [
+        row["id"]
+        for row in (
+            await table_async.query().where("id >= 1").where("id < 2").to_list()
+        )
+    ]
+    assert ids == [1]
+
+
+@pytest.mark.asyncio
+async def test_where_mixed_filter_kinds_combines_async(table_async: AsyncTable):
+    from lancedb.expr import col, lit
+
+    ids = [
+        row["id"]
+        for row in (
+            await table_async.query()
+            .where("id >= 1")
+            .where(col("id") < lit(2))
+            .to_list()
+        )
+    ]
+    assert ids == [1]
 
 
 def test_distance_range(table: lancedb.table.Table):

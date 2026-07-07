@@ -94,6 +94,20 @@ class LabelList:
 
 
 @dataclass
+class Fm:
+    """Describe an FM-Index configuration.
+
+    `Fm` is a scalar index on string or binary columns that accelerates
+    substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+    `FTS` index, it matches arbitrary substrings of the raw bytes.
+
+    For example, it works with `url`, `path`, `content`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -281,6 +295,9 @@ class HnswPq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -386,6 +403,9 @@ class HnswSq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -579,6 +599,9 @@ class IvfFlat:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -609,6 +632,9 @@ class IvfSq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -739,6 +765,9 @@ class IvfPq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -792,6 +821,9 @@ class IvfRq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 __all__ = [
@@ -810,4 +842,5 @@ __all__ = [
     "FTS",
     "Bitmap",
     "LabelList",
+    "Fm",
 ]
