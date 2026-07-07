@@ -1489,6 +1489,85 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
+/// Reconstruct an [`LsmWriteSpec`](crate::table::LsmWriteSpec) from the MemWAL
+/// index's `details` JSON as emitted by the server's `describe_indices`.
+///
+/// Mirrors the native reconstruction in `table::merge::lsm`, but reads the
+/// server-resolved `column` name from the sharding field rather than a Lance
+/// field id — field ids do not travel to the remote client, so the server
+/// resolves the name against its schema before serializing the details.
+fn lsm_write_spec_from_details_json(
+    details: &str,
+) -> std::result::Result<crate::table::LsmWriteSpec, String> {
+    use crate::table::LsmWriteSpec;
+
+    #[derive(Deserialize)]
+    struct Details {
+        #[serde(default)]
+        sharding_specs: Vec<ShardingSpec>,
+        #[serde(default)]
+        maintained_indexes: Vec<String>,
+        #[serde(default)]
+        writer_config_defaults: HashMap<String, String>,
+    }
+    #[derive(Deserialize)]
+    struct ShardingSpec {
+        #[serde(default)]
+        fields: Vec<ShardingField>,
+    }
+    #[derive(Deserialize)]
+    struct ShardingField {
+        transform: Option<String>,
+        /// Server-resolved routing column name (bucket / identity only).
+        #[serde(default)]
+        column: Option<String>,
+        #[serde(default)]
+        parameters: HashMap<String, String>,
+    }
+
+    let details: Details = serde_json::from_str(details)
+        .map_err(|e| format!("failed to parse MemWAL index details: {}", e))?;
+
+    let field = details
+        .sharding_specs
+        .first()
+        .and_then(|s| s.fields.first())
+        .ok_or_else(|| "MemWAL index details has no sharding field".to_string())?;
+
+    let column = || {
+        field
+            .column
+            .clone()
+            .ok_or_else(|| "MemWAL sharding field is missing the resolved column name".to_string())
+    };
+
+    let base = match field.transform.as_deref() {
+        Some("bucket") => {
+            let num_buckets = field
+                .parameters
+                .get("num_buckets")
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    "MemWAL bucket spec has a missing or invalid num_buckets".to_string()
+                })?;
+            LsmWriteSpec::bucket(column()?, num_buckets)
+        }
+        Some("identity") => LsmWriteSpec::identity(column()?),
+        Some("unsharded") => LsmWriteSpec::unsharded(),
+        other => {
+            return Err(format!(
+                "MemWAL index has an unsupported sharding transform {:?}",
+                other
+            ));
+        }
+    };
+
+    Ok(base
+        .with_maintained_indexes(details.maintained_indexes)
+        .with_writer_config_defaults(details.writer_config_defaults))
+}
+
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -2276,6 +2355,65 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
+    }
+
+    async fn get_lsm_write_spec(&self) -> Result<Option<crate::table::LsmWriteSpec>> {
+        // The spec lives in the `__lance_mem_wal` system index, which the
+        // curated `index/list` surface filters out by default. `include_system`
+        // opts that entry back in for this read only — `list_indices` stays
+        // curated. The system index's `index_details` carries the decoded
+        // MemWAL state (with the server-resolved shard column name).
+        let mut request = self.post_read(&format!("/v1/table/{}/index/list/", self.identifier));
+        let version = self.current_version().await;
+        let mut body = serde_json::json!({ "version": version, "include_system": true });
+        self.apply_branch_body(&mut body);
+        request = request.json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        #[derive(Deserialize)]
+        struct IndexList {
+            #[serde(default)]
+            indexes: Vec<IndexEntry>,
+        }
+        // Only the name and opaque details are read; `index_type` is ignored so
+        // the system index's type (which has no client `IndexType` variant) does
+        // not break deserialization.
+        #[derive(Deserialize)]
+        struct IndexEntry {
+            index_name: String,
+            index_details: Option<String>,
+        }
+
+        let parsed: IndexList = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse index list response: {}", e).into(),
+            request_id: request_id.clone(),
+            status_code: None,
+        })?;
+
+        let Some(entry) = parsed
+            .indexes
+            .into_iter()
+            .find(|i| i.index_name.as_str() == lance_index::mem_wal::MEM_WAL_INDEX_NAME)
+        else {
+            // No MemWAL index installed → LSM write path not enabled.
+            return Ok(None);
+        };
+
+        let details = entry.index_details.ok_or_else(|| Error::Http {
+            source: "index/list returned the MemWAL index without details".into(),
+            request_id: request_id.clone(),
+            status_code: None,
+        })?;
+
+        let spec = lsm_write_spec_from_details_json(&details).map_err(|msg| Error::Http {
+            source: msg.into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(Some(spec))
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -5315,6 +5453,82 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.unset_lsm_write_spec().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/index/list/");
+            // The getter opts the system index back into the listing.
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["include_system"], serde_json::json!(true));
+
+            // The MemWAL index carries the decoded state in `index_details`,
+            // including the server-resolved `column` name. A user index is
+            // included too, with a type the client has no variant for — proving
+            // the getter reads by name and ignores `index_type`.
+            let details = r#"{"sharding_specs":[{"fields":[{"transform":"bucket","column":"id","parameters":{"num_buckets":"4"}}]}],"maintained_indexes":["id_idx"],"writer_config_defaults":{"durable_write":"false"}}"#;
+            let response = serde_json::json!({
+                "indexes": [
+                    { "index_name": "v_idx", "index_type": "BTREE", "columns": ["v"] },
+                    {
+                        "index_name": "__lance_mem_wal",
+                        "index_type": "MemWal",
+                        "columns": [],
+                        "index_details": details,
+                    },
+                ]
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let spec = table
+            .get_lsm_write_spec()
+            .await
+            .unwrap()
+            .expect("a spec should be reported");
+        match spec {
+            crate::table::LsmWriteSpec::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => {
+                assert_eq!(column, "id");
+                assert_eq!(num_buckets, 4);
+                assert_eq!(maintained_indexes, vec!["id_idx".to_string()]);
+                assert_eq!(
+                    writer_config_defaults
+                        .get("durable_write")
+                        .map(String::as_str),
+                    Some("false")
+                );
+            }
+            other => panic!("expected a bucket spec, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec_absent() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/index/list/");
+            // No __lance_mem_wal entry → the LSM write path is not enabled.
+            let response = serde_json::json!({
+                "indexes": [
+                    { "index_name": "v_idx", "index_type": "BTREE", "columns": ["v"] },
+                ]
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
     }
 
     #[tokio::test]

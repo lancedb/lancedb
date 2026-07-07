@@ -2992,6 +2992,46 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("reads back the installed spec via getLsmWriteSpec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // Nothing installed yet.
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // Bucket spec round-trips, including writer config defaults.
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+      writerConfigDefaults: { durable_write: "false" },
+    });
+    const spec = await table.getLsmWriteSpec();
+    expect(spec).toBeDefined();
+    expect(spec?.specType).toBe("bucket");
+    expect(spec?.column).toBe("id");
+    expect(spec?.numBuckets).toBe(4);
+    expect(spec?.writerConfigDefaults).toEqual({ durable_write: "false" });
+
+    // After unset, undefined again.
+    await table.unsetLsmWriteSpec();
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // Identity round-trips (column recovered from the schema).
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    const identity = await table.getLsmWriteSpec();
+    expect(identity?.specType).toBe("identity");
+    expect(identity?.column).toBe("id");
+    await table.unsetLsmWriteSpec();
+
+    // Unsharded round-trips (no routing column).
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    const unsharded = await table.getLsmWriteSpec();
+    expect(unsharded?.specType).toBe("unsharded");
+    expect(unsharded?.column).toBeFalsy();
+  });
 });
 
 describe("LSM merge insert", () => {

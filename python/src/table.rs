@@ -322,6 +322,12 @@ impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     }
 }
 
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+        Self { inner }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
@@ -1026,6 +1032,14 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let spec = inner.get_lsm_write_spec().await.infer_error()?;
+            Ok(spec.map(LsmWriteSpec::from))
         })
     }
 
