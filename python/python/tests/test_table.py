@@ -1180,6 +1180,16 @@ def test_namespace_open_table_with_branch_version(tmp_path):
     assert db.open_table("t", namespace_path=["ns1"], branch="exp").count_rows() == 3
 
 
+def test_namespace_root_table_to_lance_uses_namespace_client(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    table = db.create_table("t", [{"i": 0}])
+
+    assert table._namespace_client is None
+    assert table.to_lance().count_rows() == 1
+    assert table._namespace_client is not None
+
+
 @pytest.mark.asyncio
 async def test_async_namespace_open_table_with_branch_version(tmp_path):
     pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace

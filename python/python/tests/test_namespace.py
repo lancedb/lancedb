@@ -5,6 +5,7 @@
 
 import tempfile
 import shutil
+import importlib
 import pytest
 import pyarrow as pa
 import lancedb
@@ -65,6 +66,9 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     table._namespace_path = ["geneva"]
     table._namespace_client = namespace_client
     table._pushdown_operations = {"QueryTable"}
+    # This test exercises the Python-side pushdown path (non-native client), so
+    # pushdown is not routed to Rust.
+    table._route_pushdown_to_rust = False
     return table
 
 
@@ -99,6 +103,40 @@ class TestNamespaceConnection:
 
         assert isinstance(db, lancedb.LanceNamespaceDBConnection)
         assert len(list(db.table_names())) == 0
+
+    def test_sync_builtin_namespace_uses_rust_without_python_client(self, monkeypatch):
+        """Built-in sync namespace connections should not construct or call the
+        Python namespace client for normal namespace/table management."""
+        namespace_module = importlib.import_module("lancedb.namespace")
+
+        def fail_namespace_connect(*args, **kwargs):
+            raise AssertionError("Python namespace client should not be constructed")
+
+        monkeypatch.setattr(
+            namespace_module, "namespace_connect", fail_namespace_connect
+        )
+
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert isinstance(db, lancedb.LanceNamespaceDBConnection)
+        assert db._namespace_client is None
+        assert db._route_pushdown_to_rust is True
+
+        db.create_namespace(["test_ns"])
+        assert "test_ns" in db.list_namespaces().namespaces
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
+        assert table.namespace == ["test_ns"]
+        assert "test_table" in db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
+
+        opened = db.open_table("test_table", namespace_path=["test_ns"])
+        assert opened.namespace == ["test_ns"]
+
+        db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_namespace(["test_ns"])
+        assert "test_ns" not in db.list_namespaces().namespaces
 
     def test_create_table_through_namespace(self):
         """Test creating a table through namespace."""
@@ -561,6 +599,61 @@ class TestAsyncNamespaceConnection:
         table_names = await db.table_names()
         assert len(list(table_names)) == 0
 
+    async def test_async_builtin_namespace_uses_rust_without_python_client(
+        self, monkeypatch
+    ):
+        """Built-in async namespace connections should not construct or call the
+        Python namespace client for normal namespace/table management."""
+        namespace_module = importlib.import_module("lancedb.namespace")
+
+        def fail_namespace_connect(*args, **kwargs):
+            raise AssertionError("Python namespace client should not be constructed")
+
+        monkeypatch.setattr(
+            namespace_module, "namespace_connect", fail_namespace_connect
+        )
+
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert isinstance(db, lancedb.AsyncLanceNamespaceDBConnection)
+        assert db._namespace_client is None
+        assert db._route_pushdown_to_rust is True
+
+        await db.create_namespace(["test_ns"])
+        assert "test_ns" in (await db.list_namespaces()).namespaces
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        table = await db.create_table(
+            "test_table", schema=schema, namespace_path=["test_ns"]
+        )
+        assert table._namespace_path == ["test_ns"]
+        assert table._namespace_client is None
+        assert table._route_pushdown_to_rust is True
+        assert "test_table" in await db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in (await db.list_tables(namespace_path=["test_ns"])).tables
+
+        opened = await db.open_table("test_table", namespace_path=["test_ns"])
+        assert opened._namespace_path == ["test_ns"]
+
+        await db.drop_table("test_table", namespace_path=["test_ns"])
+        assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
+        await db.drop_namespace(["test_ns"])
+        assert "test_ns" not in (await db.list_namespaces()).namespaces
+
+    async def test_async_namespace_client_is_lazy(self):
+        """namespace_client() should still return the backing client on demand."""
+        pytest.importorskip("lance")
+        from lance.namespace import DirectoryNamespace
+
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert db._namespace_client is None
+
+        ns_client = await db.namespace_client()
+
+        assert isinstance(ns_client, DirectoryNamespace)
+        namespace_id = ns_client.namespace_id().replace("\\\\", "\\")
+        assert str(self.temp_dir) in namespace_id
+        assert db._namespace_client is ns_client
+
     # Async connect via namespace helper is not enabled yet.
 
     async def test_create_table_async(self):
@@ -804,6 +897,39 @@ class TestPushdownOperations:
         """Test that pushdown operations default to empty."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         assert len(db._namespace_client_pushdown_operations) == 0
+
+    def test_route_pushdown_to_rust_for_native_rest(self):
+        """A natively-built rest connection must defer QueryTable pushdown to
+        Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
+        db = lancedb.connect_namespace(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_route_pushdown_to_rust_for_native_dir(self):
+        """The sync dir connection is natively built and defers QueryTable
+        pushdown to Rust."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is True
+
+    def test_async_route_pushdown_to_rust_for_native_rest(self):
+        """The async connection must not silently bypass the read-freshness fix:
+        a natively-built rest connection defers pushdown to Rust (regression test
+        for the async path omitting the freshness header)."""
+        db = lancedb.connect_namespace_async(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_async_route_pushdown_to_rust_for_native_dir(self):
+        """The async dir connection is natively built and defers QueryTable
+        pushdown to Rust."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is True
 
     def test_lance_table_to_arrow_uses_query_pushdown(self):
         namespace_client = _NamespaceClient()

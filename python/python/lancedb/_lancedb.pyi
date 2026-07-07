@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
@@ -53,7 +54,9 @@ class PyExpr:
     def to_sql(self) -> str: ...
 
 def expr_col(name: str) -> PyExpr: ...
-def expr_lit(value: Union[bool, int, float, str, bytes]) -> PyExpr: ...
+def expr_lit(
+    value: Union[bool, int, float, str, bytes, date, datetime, Decimal],
+) -> PyExpr: ...
 def expr_func(name: str, args: List[PyExpr]) -> PyExpr: ...
 
 class Session:
@@ -297,6 +300,24 @@ async def connect(
     storage_options: Optional[Dict[str, str]],
     session: Optional[Session],
     manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+    oauth_config: Optional[Any] = None,
+) -> Connection: ...
+def connect_namespace(
+    namespace_client_impl: str,
+    namespace_client_properties: Dict[str, str],
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+) -> Connection: ...
+def connect_namespace_client(
+    namespace_client: Any,
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+    namespace_client_impl: Optional[str] = None,
     namespace_client_properties: Optional[Dict[str, str]] = None,
 ) -> Connection: ...
 

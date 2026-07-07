@@ -52,6 +52,7 @@ export {
   SplitHashOptions,
   SplitSequentialOptions,
   ShuffleOptions,
+  OAuthConfig as NativeOAuthConfig,
 } from "./native.js";
 
 export {
@@ -129,6 +130,8 @@ export {
   OAuthHeaderProvider,
   TokenResponse,
 } from "./header";
+
+export { OAuthConfig, OAuthFlowType } from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 

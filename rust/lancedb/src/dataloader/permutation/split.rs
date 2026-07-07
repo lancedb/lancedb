@@ -35,9 +35,13 @@ pub enum SplitStrategy {
     /// Rows will be randomly assigned to splits
     ///
     /// A seed can be provided to make the assignment deterministic.
+    ///
+    /// A clump_size can be provided to shuffle contiguous groups of rows together,
+    /// preserving I/O locality while still randomising the split assignment.
     Random {
         seed: Option<u64>,
         sizes: SplitSizes,
+        clump_size: Option<u64>,
     },
     /// Rows will be assigned to splits based on the values in the specified columns.
     ///
@@ -323,13 +327,17 @@ impl Splitter {
                 self.apply_sequential(source, num_rows, &SplitSizes::Counts(vec![num_rows]))
                     .await
             }
-            SplitStrategy::Random { seed, sizes } => {
+            SplitStrategy::Random {
+                seed,
+                sizes,
+                clump_size,
+            } => {
                 let shuffler = Shuffler::new(ShufflerConfig {
                     seed: *seed,
                     // In this case we are only shuffling row ids so we can use a large max_rows_per_file
                     max_rows_per_file: 10 * 1024 * 1024,
                     temp_dir: self.temp_dir.clone(),
-                    clump_size: None,
+                    clump_size: *clump_size,
                 });
 
                 let shuffled = shuffler.shuffle(source, num_rows).await?;
@@ -692,6 +700,7 @@ mod tests {
             SplitStrategy::Random {
                 seed: Some(42),
                 sizes: SplitSizes::Fixed(3),
+                clump_size: None,
             },
         );
 
@@ -718,6 +727,7 @@ mod tests {
             SplitStrategy::Random {
                 seed: Some(42),
                 sizes: SplitSizes::Counts(vec![5, 15, 10]),
+                clump_size: None,
             },
         );
 
@@ -744,6 +754,7 @@ mod tests {
             SplitStrategy::Random {
                 seed: Some(42),
                 sizes: SplitSizes::Percentages(vec![0.217, 0.168, 0.17]),
+                clump_size: None,
             },
         );
 

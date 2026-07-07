@@ -638,6 +638,16 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
+                    # Replace vectors with wrong length (including empty lists
+                    # returned for inputs like empty strings) with None so that
+                    # _handle_bad_vectors can process them according to the
+                    # on_bad_vectors policy instead of crashing when PyArrow
+                    # tries to cast them into a fixed-size list array.
+                    expected_ndims = conf.function.ndims()
+                    col_data = [
+                        v if v is not None and len(v) == expected_ndims else None
+                        for v in col_data
+                    ]
                     if no_vector_column:
                         batch = batch.append_column(
                             schema.field(vector_column),
@@ -2034,6 +2044,7 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
         _async: AsyncTable = None,
     ):
         if namespace_path is None:
@@ -2043,6 +2054,14 @@ class LanceTable(Table):
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # When the connection built the namespace client natively (e.g. an
+        # enterprise "rest" connection), the underlying Rust table already
+        # executes QueryTable pushdown itself -- and, unlike this Python urllib3
+        # path, it routes through the read-freshness context provider that emits
+        # the ``x-lancedb-min-timestamp`` header. So we must defer pushdown to
+        # Rust instead of calling the Python ``namespace_client.query_table``
+        # directly, or reads silently bypass read-freshness (stale results).
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         if _async is not None:
             self._table = _async
         else:
@@ -2145,12 +2164,19 @@ class LanceTable(Table):
 
         branch = self.current_branch()
         version = None if branch is not None else self.version
-        if self._namespace_client is not None:
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            conn_uri = getattr(self._conn, "uri", "")
+            if get_uri_scheme(conn_uri) == "namespace":
+                namespace_client = self._conn.namespace_client()
+                self._namespace_client = namespace_client
+
+        if namespace_client is not None:
             table_id = self._namespace_path + [self.name]
             ds = lance.dataset(
                 version=version,
                 storage_options=self._conn.storage_options,
-                namespace_client=self._namespace_client,
+                namespace_client=namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
@@ -2270,6 +2296,7 @@ class LanceTable(Table):
             namespace_path=self._namespace_path,
             namespace_client=self._namespace_client,
             pushdown_operations=self._pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
@@ -2423,8 +2450,11 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return self._execute_query(Query()).read_all()
 
@@ -3376,6 +3406,7 @@ class LanceTable(Table):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """
         Create a new table.
@@ -3438,6 +3469,7 @@ class LanceTable(Table):
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
         if data_storage_version is not None:
             warnings.warn(
@@ -3551,6 +3583,7 @@ class LanceTable(Table):
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
+            and not self._route_pushdown_to_rust
             and self.current_branch() is None
         ):
             from lancedb.namespace import _execute_server_side_query
@@ -4029,7 +4062,16 @@ def _handle_bad_vector_column(
         dim = _infer_vector_dim(vec_arr)
         if dim is None:
             return data
-    has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
+
+    is_null = pc.is_null(vec_arr)
+    # pc.list_value_length returns null for null list entries, so
+    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
+    # True OR null = True (Kleene three-valued logic), ensuring null vectors
+    # are counted as wrong-dim.
+    has_wrong_dim = pc.or_kleene(
+        is_null,
+        pc.not_equal(pc.list_value_length(vec_arr), dim),
+    )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
 
@@ -4292,6 +4334,7 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """Create a new AsyncTable object.
 
@@ -4304,6 +4347,9 @@ class AsyncTable:
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # See LanceTable.__init__: defer QueryTable pushdown to Rust (which emits
+        # the read-freshness header) for natively-built namespace clients.
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
     def _set_namespace_context(
         self,
@@ -4311,10 +4357,12 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ) -> "AsyncTable":
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         return self
 
     def __repr__(self):
@@ -4526,8 +4574,11 @@ class AsyncTable:
         -------
         pa.Table
         """
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return (await self._execute_query(Query())).read_all()
 
@@ -5211,8 +5262,11 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             from lancedb.namespace import _execute_server_side_query
 

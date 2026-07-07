@@ -7,7 +7,7 @@ use std::{future::Future, time::Duration};
 use arrow::compute::concat_batches;
 use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
 use arrow_schema::{DataType, SchemaRef};
-use datafusion_expr::Expr;
+use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
@@ -401,6 +401,9 @@ pub trait QueryBase {
     ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
+    ///
+    /// Calling this multiple times combines the filters with a logical AND
+    /// (i.e. `(previous) AND (new)`) rather than replacing the previous filter.
     fn only_if(self, filter: impl AsRef<str>) -> Self;
 
     /// Only return rows which match the filter, using an expression builder.
@@ -423,6 +426,9 @@ pub trait QueryBase {
     ///
     /// Note: Expression filters are not supported for remote/server-side queries.
     /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    ///
+    /// Calling this multiple times combines the expressions with a logical AND
+    /// rather than replacing the previous filter.
     fn only_if_expr(self, filter: datafusion_expr::Expr) -> Self;
 
     /// Perform a full text search on the table.
@@ -535,12 +541,13 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
-        self.mut_query().filter = Some(QueryFilter::Sql(filter.as_ref().to_string()));
+        self.mut_query()
+            .add_filter(QueryFilter::Sql(filter.as_ref().to_string()));
         self
     }
 
     fn only_if_expr(mut self, filter: datafusion_expr::Expr) -> Self {
-        self.mut_query().filter = Some(QueryFilter::Datafusion(filter));
+        self.mut_query().add_filter(QueryFilter::Datafusion(filter));
         self
     }
 
@@ -716,6 +723,39 @@ pub enum QueryFilter {
     Datafusion(Expr),
 }
 
+/// Combine two filters with a logical AND.
+///
+/// This is used when a query receives more than one filter (for example when
+/// `where`/`only_if` is called multiple times) so the filters are composed
+/// with AND rather than the later filter silently replacing the earlier one.
+///
+/// SQL string and expression filters are combined within their own
+/// representation. When the two representations are mixed, the expression is
+/// lowered to SQL (via [`crate::expr::expr_to_sql_string`]) and the filters are
+/// combined as SQL strings. Substrait filters cannot be combined and return an
+/// error.
+fn and_filters(existing: QueryFilter, new: QueryFilter) -> Result<QueryFilter> {
+    match (existing, new) {
+        (QueryFilter::Sql(lhs), QueryFilter::Sql(rhs)) => {
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        (QueryFilter::Datafusion(lhs), QueryFilter::Datafusion(rhs)) => {
+            Ok(QueryFilter::Datafusion(lhs.and(rhs)))
+        }
+        (QueryFilter::Sql(lhs), QueryFilter::Datafusion(rhs)) => {
+            let rhs = crate::expr::expr_to_sql_string(&rhs)?;
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        (QueryFilter::Datafusion(lhs), QueryFilter::Sql(rhs)) => {
+            let lhs = crate::expr::expr_to_sql_string(&lhs)?;
+            Ok(QueryFilter::Sql(format!("({lhs}) AND ({rhs})")))
+        }
+        _ => Err(Error::InvalidInput {
+            message: "cannot combine a Substrait filter with another filter".to_string(),
+        }),
+    }
+}
+
 /// A basic query into a table without any kind of search
 ///
 /// This will result in a (potentially filtered) scan if executed
@@ -729,6 +769,13 @@ pub struct QueryRequest {
 
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
+
+    /// An error recorded while combining repeated filters that could not be
+    /// composed (see [`QueryRequest::add_filter`]). It is surfaced when the
+    /// query is executed via [`QueryRequest::check_filter`]. We defer the error
+    /// because the builder methods that set filters return `Self` rather than a
+    /// `Result`.
+    pub(crate) filter_error: Option<String>,
 
     /// Perform a full text search on the table.
     pub full_text_search: Option<FullTextSearchQuery>,
@@ -775,6 +822,7 @@ impl Default for QueryRequest {
             limit: None,
             offset: None,
             filter: None,
+            filter_error: None,
             full_text_search: None,
             select: Select::All,
             fast_search: false,
@@ -785,6 +833,41 @@ impl Default for QueryRequest {
             disable_scoring_autoprojection: false,
             order_by: None,
         }
+    }
+}
+
+impl QueryRequest {
+    /// Add a filter, combining it with any existing filter using a logical AND.
+    ///
+    /// If the new filter cannot be combined with the existing one (because they
+    /// use different representations) the error is recorded and surfaced later
+    /// by [`Self::check_filter`].
+    pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        self.filter = Some(match self.filter.take() {
+            None => new,
+            Some(existing) => match and_filters(existing, new) {
+                Ok(combined) => combined,
+                Err(err) => {
+                    // The filters were consumed while attempting to combine
+                    // them; the recorded error is surfaced by `check_filter`
+                    // before the query executes.
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+        });
+    }
+
+    /// Return an error if combining filters failed (see [`Self::add_filter`]).
+    ///
+    /// This must be called by every backend before executing a query.
+    pub(crate) fn check_filter(&self) -> Result<()> {
+        if let Some(message) = &self.filter_error {
+            return Err(Error::InvalidInput {
+                message: message.clone(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1385,18 +1468,13 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_offsets`] for more details.
     pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
-        let filter = format!(
-            "_rowoffset in ({})",
-            offsets
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let in_list: Vec<Expr> = offsets.iter().map(|o| lit(*o)).collect();
         Self {
             parent,
             request: QueryRequest {
-                filter: Some(QueryFilter::Sql(filter)),
+                filter: Some(QueryFilter::Datafusion(
+                    col("_rowoffset").in_list(in_list, false),
+                )),
                 ..Default::default()
             },
         }
@@ -1406,18 +1484,11 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_row_ids`] for more details.
     pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
-        let filter = format!(
-            "_rowid in ({})",
-            row_ids
-                .iter()
-                .map(|o| o.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
         Self {
             parent,
             request: QueryRequest {
-                filter: Some(QueryFilter::Sql(filter)),
+                filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
                 ..Default::default()
             },
         }
@@ -1680,6 +1751,70 @@ mod tests {
             // pre filter should return 10 rows
             assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_repeated_only_if_combines_with_and() {
+        use crate::expr::{col, lit};
+
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table.query().only_if("id > 0").only_if("id < 100");
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => assert_eq!(sql, "(id > 0) AND (id < 100)"),
+            other => panic!("expected combined SQL filter, got {other:?}"),
+        }
+
+        // A single filter is left untouched.
+        let query = table.query().only_if("id > 0");
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => assert_eq!(sql, "id > 0"),
+            other => panic!("expected single SQL filter, got {other:?}"),
+        }
+
+        // Expression filters are combined with a logical AND as well.
+        let query = table
+            .query()
+            .only_if_expr(col("id").gt(lit(0i32)))
+            .only_if_expr(col("id").lt(lit(100i32)));
+        match &query.request.filter {
+            Some(QueryFilter::Datafusion(expr)) => {
+                assert_eq!(
+                    expr,
+                    &col("id").gt(lit(0i32)).and(col("id").lt(lit(100i32)))
+                );
+            }
+            other => panic!("expected combined Datafusion filter, got {other:?}"),
+        }
+
+        // Mixing an SQL string filter with an expression filter lowers the
+        // expression to SQL and combines them as SQL strings.
+        let query = table
+            .query()
+            .only_if("id > 0")
+            .only_if_expr(col("id").lt(lit(100i32)));
+        match &query.request.filter {
+            Some(QueryFilter::Sql(sql)) => {
+                let expected = format!(
+                    "(id > 0) AND ({})",
+                    crate::expr::expr_to_sql_string(&col("id").lt(lit(100i32))).unwrap()
+                );
+                assert_eq!(sql, &expected);
+            }
+            other => panic!("expected combined SQL filter, got {other:?}"),
+        }
+        assert!(query.request.check_filter().is_ok());
+        // The combined filter executes without error.
+        query.execute().await.unwrap();
     }
 
     #[tokio::test]

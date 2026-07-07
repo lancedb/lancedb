@@ -342,3 +342,9 @@ pub use connection::connect_namespace;
 /// Re-export Lance Session and ObjectStoreRegistry for custom session creation
 pub use lance::session::Session;
 pub use lance_io::object_store::ObjectStoreRegistry;
+
+/// Re-export DataFusion so consumers can build the `Expr` values that public
+/// query/merge APIs (e.g. [`query::QueryBase::only_if_expr`]) accept without
+/// declaring their own (potentially mismatched) direct `datafusion` dependency.
+/// See <https://github.com/lancedb/lancedb/issues/3575>.
+pub use datafusion;

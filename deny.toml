@@ -119,6 +119,18 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0177
     { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
     { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+
+    # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
+    # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
+    # Pulled in transitively by inferno (dev-only flame-graph dep), lance-namespace-impls
+    # (git dep from lance), and opendal/reqsign (cloud storage XML parsing). The XML
+    # parsed by opendal/reqsign comes from trusted cloud-storage endpoints (S3, GCS,
+    # Azure), not attacker-controlled input. Clearing requires upstream crates to migrate
+    # to quick-xml >= 0.41.0.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0194
+    # https://rustsec.org/advisories/RUSTSEC-2026-0195
+    { id = "RUSTSEC-2026-0194", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+    { id = "RUSTSEC-2026-0195", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
 ]
 
 # ---------------------------------------------------------------------------

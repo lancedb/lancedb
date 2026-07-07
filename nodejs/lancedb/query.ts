@@ -362,6 +362,9 @@ export class StandardQueryBase<
    *
    * Filtering performance can often be improved by creating a scalar index
    * on the filter column(s).
+   *
+   * Calling this multiple times combines the filters with a logical AND rather
+   * than replacing the previous filter.
    */
   where(predicate: string): this {
     this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));

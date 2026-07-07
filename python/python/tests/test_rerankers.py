@@ -350,6 +350,38 @@ def test_mrr_reranker_empty_input():
         reranker.rerank_multivector([])
 
 
+def test_mrr_multivector_rewards_consensus():
+    # Reciprocal ranks must be averaged across *all* ranking systems, treating a
+    # missing system as 0. A document ranked first by every system must outrank a
+    # document ranked first by only one of them.
+    reranker = MRRReranker()
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    # Doc 1 is rank 1 in only the first system; doc 2 is rank 1 in two systems
+    # and rank 2 in the third (strong cross-system consensus).
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([2, 3, 4])
+    rs3 = ranking([2, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2, rs3])
+    scores = {
+        row_id: score
+        for row_id, score in zip(
+            result["_rowid"].to_pylist(),
+            result["_relevance_score"].to_pylist(),
+        )
+    }
+
+    # sum of reciprocal ranks / number of systems
+    assert scores[1] == pytest.approx(1.0 / 3)
+    assert scores[2] == pytest.approx((0.5 + 1.0 + 1.0) / 3)
+    assert scores[2] > scores[1]
+    # The consensus document ranks first overall.
+    assert result["_rowid"].to_pylist()[0] == 2
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {

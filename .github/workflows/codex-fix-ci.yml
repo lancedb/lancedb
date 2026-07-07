@@ -36,14 +36,14 @@ jobs:
           echo "guidelines = ${{ inputs.guidelines }}"
 
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
           fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           # pnpm 11 (used by the nodejs install step below) requires
           # Node >= 22.13; use 24 since 22 hits EOL in October.
@@ -82,7 +82,7 @@ jobs:
           cache: maven
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.1.1
       - name: Install Node.js dependencies for TypeScript bindings

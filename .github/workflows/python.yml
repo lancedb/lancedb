@@ -41,7 +41,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -66,7 +66,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -95,7 +95,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -126,7 +126,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -160,7 +160,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -189,7 +189,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -212,7 +212,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true

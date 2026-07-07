@@ -79,13 +79,14 @@ impl PyAsyncPermutationBuilder {
 
 #[pymethods]
 impl PyAsyncPermutationBuilder {
-    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
+    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None, clump_size=None, split_names=None))]
     pub fn split_random(
         slf: PyRefMut<'_, Self>,
         ratios: Option<Vec<f64>>,
         counts: Option<Vec<u64>>,
         fixed: Option<u64>,
         seed: Option<u64>,
+        clump_size: Option<u64>,
         split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
         // Check that exactly one split type is provided
@@ -111,7 +112,14 @@ impl PyAsyncPermutationBuilder {
         };
 
         slf.modify(|builder| {
-            builder.with_split_strategy(SplitStrategy::Random { seed, sizes }, split_names)
+            builder.with_split_strategy(
+                SplitStrategy::Random {
+                    seed,
+                    sizes,
+                    clump_size,
+                },
+                split_names,
+            )
         })
     }
 
