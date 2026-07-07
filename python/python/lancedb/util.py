@@ -515,3 +515,38 @@ def batch_to_tensor_rows(batch: pa.RecordBatch):
     stacked = torch.tensor(numpy.column_stack(columns))
     rows = list(stacked.unbind(dim=0))
     return rows
+
+
+def batch_to_tensor_dict(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a list of per-row dicts of PyTorch Tensors.
+
+    Each column is first converted to a 1-D tensor (zero-copy via DLPack), then
+    sliced per row. The result is a list whose length is ``batch.num_rows`` and
+    whose items are dicts keyed by column name. This shape composes directly
+    with PyTorch's default ``DataLoader`` collate, which stacks the per-row
+    dicts back into a dict of batched tensors.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert.
+
+    Returns
+    -------
+    list[dict[str, torch.Tensor]]
+        One per-row dict per row in the batch. Each dict maps column name to a
+        0-D tensor view into the column.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    tensors = {
+        name: torch.from_dlpack(col)
+        for name, col in zip(batch.schema.names, batch.columns)
+    }
+    return [
+        {name: tensor[i] for name, tensor in tensors.items()}
+        for i in range(batch.num_rows)
+    ]
