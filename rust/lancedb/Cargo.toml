@@ -128,6 +128,12 @@ azure = [
     "lance-namespace-impls/dir-azure",
     "lance-namespace-impls/credential-vendor-azure",
 ]
+cos = ["lance/tencent", "lance-io/tencent"]
+goosefs = [
+    "lance/goosefs",
+    "lance-io/goosefs",
+    "lance-namespace-impls/dir-goosefs",
+]
 huggingface = [
     "lance/huggingface",
     "lance-io/huggingface",
