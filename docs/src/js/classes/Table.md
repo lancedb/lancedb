@@ -398,6 +398,26 @@ Drop an index from the table.
 
 ***
 
+### getLsmWriteSpec()
+
+```ts
+abstract getLsmWriteSpec(): Promise<undefined | LsmWriteSpec>
+```
+
+Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on this table.
+
+Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
+The returned spec — including its `maintainedIndexes` and
+`writerConfigDefaults` — mirrors what was passed to
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec).
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)&gt;
+
+***
+
 ### indexStats()
 
 ```ts
