@@ -11,6 +11,7 @@ import lancedb
 import pyarrow as pa
 import pytest
 from lancedb._lancedb import LsmWriteSpec
+from lancedb.index import BTree
 
 SCHEMA = pa.schema(
     [
@@ -136,3 +137,76 @@ def test_lsm_write_spec_identity_and_writer_config_defaults():
     s = s.with_writer_config_defaults({"durable_write": "false"})
     assert s.writer_config_defaults == {"durable_write": "false"}
     assert "durable_write" in repr(s)
+
+
+def test_get_lsm_write_spec(tmp_path):
+    _db, table = _make_table(tmp_path)
+    table.set_unenforced_primary_key("id")
+
+    # None when nothing is installed.
+    assert table.get_lsm_write_spec() is None
+
+    # A real scalar index is needed to name it as a maintained index.
+    table.create_index("id", config=BTree())
+    idx_name = table.list_indices()[0].name
+
+    # Bucket spec round-trips, including maintained indexes and writer config
+    # defaults.
+    table.set_lsm_write_spec(
+        LsmWriteSpec.bucket("id", 4)
+        .with_maintained_indexes([idx_name])
+        .with_writer_config_defaults({"durable_write": "false"})
+    )
+    spec = table.get_lsm_write_spec()
+    assert spec is not None
+    assert spec.spec_type == "bucket"
+    assert spec.column == "id"
+    assert spec.num_buckets == 4
+    assert spec.maintained_indexes == [idx_name]
+    assert spec.writer_config_defaults == {"durable_write": "false"}
+
+    # After unset, None again.
+    table.unset_lsm_write_spec()
+    assert table.get_lsm_write_spec() is None
+
+    # Identity round-trips (column recovered from the schema).
+    table.set_lsm_write_spec(LsmWriteSpec.identity("id"))
+    spec = table.get_lsm_write_spec()
+    assert spec.spec_type == "identity"
+    assert spec.column == "id"
+    table.unset_lsm_write_spec()
+
+    # Unsharded round-trips (no routing column).
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    spec = table.get_lsm_write_spec()
+    assert spec.spec_type == "unsharded"
+    assert spec.column is None
+
+
+@pytest.mark.asyncio
+async def test_async_get_lsm_write_spec(tmp_path):
+    db = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+    table = await db.create_table(
+        "t",
+        pa.RecordBatchReader.from_batches(SCHEMA, [_batch(["seed"], [0])]),
+    )
+
+    assert await table.get_lsm_write_spec() is None
+
+    # A real scalar index is needed to name it as a maintained index.
+    await table.create_index("id", config=BTree())
+    idx_name = (await table.list_indices())[0].name
+
+    await table.set_lsm_write_spec(
+        LsmWriteSpec.bucket("id", 8).with_maintained_indexes([idx_name])
+    )
+    spec = await table.get_lsm_write_spec()
+    assert spec is not None
+    assert spec.spec_type == "bucket"
+    assert spec.column == "id"
+    assert spec.num_buckets == 8
+    assert spec.maintained_indexes == [idx_name]
+    await table.unset_lsm_write_spec()
+    assert await table.get_lsm_write_spec() is None

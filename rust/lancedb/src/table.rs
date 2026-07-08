@@ -581,6 +581,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "unset_lsm_write_spec is not supported on this table type".into(),
         })
     }
+    /// Read the [`LsmWriteSpec`] currently installed on this table, returning
+    /// `None` when the MemWAL LSM write path is not enabled.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations that
+    /// support the MemWAL LSM write path must override this.
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        Err(Error::NotSupported {
+            message: "get_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
     /// Drain and close any cached MemWAL shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
@@ -1536,6 +1546,29 @@ impl Table {
     /// Errors if no spec is currently set.
     pub async fn unset_lsm_write_spec(&self) -> Result<()> {
         self.inner.unset_lsm_write_spec().await
+    }
+
+    /// Read the [`LsmWriteSpec`] currently installed on this table.
+    ///
+    /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
+    /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
+    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
+    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
+    /// [`Table::set_lsm_write_spec`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use lancedb::table::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(spec) = table.get_lsm_write_spec().await? {
+    ///     println!("LSM write path enabled: {:?}", spec);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        self.inner.get_lsm_write_spec().await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.
@@ -2848,6 +2881,10 @@ impl BaseTable for NativeTable {
 
     async fn unset_lsm_write_spec(&self) -> Result<()> {
         merge::lsm::unset_lsm_write_spec(self).await
+    }
+
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        merge::lsm::get_lsm_write_spec(self).await
     }
 
     async fn close_lsm_writers(&self) -> Result<()> {
@@ -4409,6 +4446,67 @@ mod tests {
             let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
             assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // No spec installed yet.
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // A real scalar index is needed to name it as a maintained index.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let idx_name = table.list_indices().await.unwrap()[0].name.clone();
+
+        // Bucket spec round-trips exactly, including the routing column (recovered
+        // from its field id), maintained indexes, and writer config defaults.
+        let spec = LsmWriteSpec::bucket("id", 4)
+            .with_maintained_indexes([idx_name])
+            .with_writer_config_defaults([("durable_write", "false")]);
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+
+        // After unset, no spec is reported.
+        table.unset_lsm_write_spec().await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // Identity sharding round-trips (column recovered from the schema).
+        let spec = LsmWriteSpec::identity("region");
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        table.unset_lsm_write_spec().await.unwrap();
+
+        // Unsharded round-trips (no routing column).
+        let spec = LsmWriteSpec::unsharded();
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
     }
 
     #[tokio::test]

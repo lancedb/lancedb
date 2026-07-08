@@ -3759,6 +3759,11 @@ class LanceTable(Table):
         [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
+    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the installed LsmWriteSpec, or ``None``. See
+        [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
+        return LOOP.run(self._table.get_lsm_write_spec())
+
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
         [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
@@ -4416,6 +4421,17 @@ class AsyncTable:
         is currently set.
         """
         await self._inner.unset_lsm_write_spec()
+
+    async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the LsmWriteSpec currently installed on this table.
+
+        Returns ``None`` when the MemWAL LSM write path is not enabled (no
+        spec has been set, or it was removed with `unset_lsm_write_spec`).
+        The returned spec — including its ``maintained_indexes`` and
+        ``writer_config_defaults`` — mirrors what was passed to
+        `set_lsm_write_spec`.
+        """
+        return await self._inner.get_lsm_write_spec()
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.

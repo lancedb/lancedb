@@ -20,6 +20,7 @@ use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
+use crate::table::LsmWriteSpec;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
@@ -2269,8 +2270,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
-    async fn set_lsm_write_spec(&self, spec: crate::table::LsmWriteSpec) -> Result<()> {
-        use crate::table::LsmWriteSpec;
+    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
@@ -2320,6 +2320,69 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
+    }
+
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        // Read counterpart to set/unset, resolved server-side against HEAD. The
+        // server reads the spec from the `__lance_mem_wal` system index (shard
+        // column mapped from its Lance field id against the current schema) and
+        // re-encodes it into the same sophon-owned shape the set endpoint
+        // accepts — no lance/lancedb types cross the wire. `lsm_write_spec` is
+        // null when the LSM write path is not enabled for the table.
+        let request = self.post_read(&format!(
+            "/v1/table/{}/get_lsm_write_spec/",
+            self.identifier
+        ));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        // Mirror of sophon's `Sharding` (internally tagged on `mode`) and
+        // `LsmWriteSpecBody` / `GetLsmWriteSpecResponse`.
+        #[derive(Deserialize)]
+        #[serde(tag = "mode", rename_all = "snake_case")]
+        enum Sharding {
+            Unsharded,
+            Bucket { column: String, num_buckets: u32 },
+            Identity { column: String },
+        }
+        #[derive(Deserialize)]
+        struct LsmWriteSpecBody {
+            sharding: Sharding,
+            #[serde(default)]
+            maintained_indexes: Vec<String>,
+            #[serde(default)]
+            writer_config_defaults: std::collections::HashMap<String, String>,
+        }
+        #[derive(Deserialize)]
+        struct GetLsmWriteSpecResponse {
+            lsm_write_spec: Option<LsmWriteSpecBody>,
+        }
+
+        let parsed: GetLsmWriteSpecResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse get_lsm_write_spec response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        let Some(body) = parsed.lsm_write_spec else {
+            // The LSM write path is not enabled for this table.
+            return Ok(None);
+        };
+
+        let spec = match body.sharding {
+            Sharding::Bucket {
+                column,
+                num_buckets,
+            } => LsmWriteSpec::bucket(column, num_buckets),
+            Sharding::Identity { column } => LsmWriteSpec::identity(column),
+            Sharding::Unsharded => LsmWriteSpec::unsharded(),
+        }
+        .with_maintained_indexes(body.maintained_indexes)
+        .with_writer_config_defaults(body.writer_config_defaults);
+
+        Ok(Some(spec))
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -5359,6 +5422,74 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.unset_lsm_write_spec().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/get_lsm_write_spec/"
+            );
+
+            // The server resolves the spec and re-encodes it into the same
+            // sophon-owned shape the set endpoint accepts (`Sharding` internally
+            // tagged on `mode`, wrapped in `lsm_write_spec`).
+            let response = serde_json::json!({
+                "lsm_write_spec": {
+                    "sharding": { "mode": "bucket", "column": "id", "num_buckets": 4 },
+                    "maintained_indexes": ["id_idx"],
+                    "writer_config_defaults": { "durable_write": "false" },
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let spec = table
+            .get_lsm_write_spec()
+            .await
+            .unwrap()
+            .expect("a spec should be reported");
+        match spec {
+            crate::table::LsmWriteSpec::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => {
+                assert_eq!(column, "id");
+                assert_eq!(num_buckets, 4);
+                assert_eq!(maintained_indexes, vec!["id_idx".to_string()]);
+                assert_eq!(
+                    writer_config_defaults
+                        .get("durable_write")
+                        .map(String::as_str),
+                    Some("false")
+                );
+            }
+            other => panic!("expected a bucket spec, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec_absent() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/get_lsm_write_spec/"
+            );
+            // Null spec → the LSM write path is not enabled.
+            let response = serde_json::json!({ "lsm_write_spec": null });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
     }
 
     #[tokio::test]

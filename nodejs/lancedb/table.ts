@@ -586,6 +586,17 @@ export abstract class Table {
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
   /**
+   * Read the {@link LsmWriteSpec} currently installed on this table.
+   *
+   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
+   * The returned spec — including its `maintainedIndexes` and
+   * `writerConfigDefaults` — mirrors what was passed to
+   * {@link Table#setLsmWriteSpec}.
+   * @returns {Promise<LsmWriteSpec | undefined>}
+   */
+  abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
+  /**
    * Drain and close any cached MemWAL shard writers held for this table.
    *
    * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
@@ -1089,6 +1100,15 @@ export class LocalTable extends Table {
 
   async unsetLsmWriteSpec(): Promise<void> {
     return await this.inner.unsetLsmWriteSpec();
+  }
+
+  async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
+    // The native binding types `specType` as a plain `string`; narrow it back
+    // to the public union. The Rust `From` impl only ever emits one of the
+    // three valid values, so the cast is safe.
+    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
+      | LsmWriteSpec
+      | undefined;
   }
 
   async closeLsmWriters(): Promise<void> {

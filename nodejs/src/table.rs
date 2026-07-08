@@ -412,6 +412,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_lsm_write_spec(&self) -> napi::Result<Option<LsmWriteSpec>> {
+        let spec = self
+            .inner_ref()?
+            .get_lsm_write_spec()
+            .await
+            .default_error()?;
+        Ok(spec.map(LsmWriteSpec::from))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close_lsm_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_lsm_writers().await.default_error()
     }
@@ -725,6 +735,47 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
         Ok(spec
             .with_maintained_indexes(maintained)
             .with_writer_config_defaults(writer_config_defaults))
+    }
+}
+
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(spec: lancedb::table::LsmWriteSpec) -> Self {
+        use lancedb::table::LsmWriteSpec as Native;
+        match spec {
+            Native::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "bucket".to_string(),
+                column: Some(column),
+                num_buckets: Some(num_buckets),
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Identity {
+                column,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "identity".to_string(),
+                column: Some(column),
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "unsharded".to_string(),
+                column: None,
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+        }
     }
 }
 

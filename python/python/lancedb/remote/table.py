@@ -912,6 +912,10 @@ class RemoteTable(Table):
         """Not supported on LanceDB Cloud."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
+    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the installed LsmWriteSpec, or ``None``."""
+        return LOOP.run(self._table.get_lsm_write_spec())
+
     def close_lsm_writers(self) -> None:
         """No-op on LanceDB Cloud (no local shard writers)."""
         return LOOP.run(self._table.close_lsm_writers())

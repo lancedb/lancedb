@@ -2992,6 +2992,56 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("reads back the installed spec via getLsmWriteSpec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // Nothing installed yet.
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // A real scalar index is needed to name it as a maintained index.
+    await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await table.createIndex("id");
+    const indexName = (await table.listIndices())[0].name;
+
+    // Bucket spec round-trips, including maintained indexes and writer config
+    // defaults. Lance writer-config keys are canonically snake_case.
+    // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
+    const writerConfigDefaults = { durable_write: "false" };
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+      maintainedIndexes: [indexName],
+      writerConfigDefaults,
+    });
+    const spec = await table.getLsmWriteSpec();
+    expect(spec).toBeDefined();
+    expect(spec?.specType).toBe("bucket");
+    expect(spec?.column).toBe("id");
+    expect(spec?.numBuckets).toBe(4);
+    expect(spec?.maintainedIndexes).toEqual([indexName]);
+    expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
+
+    // After unset, undefined again.
+    await table.unsetLsmWriteSpec();
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // Identity round-trips (column recovered from the schema).
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    const identity = await table.getLsmWriteSpec();
+    expect(identity?.specType).toBe("identity");
+    expect(identity?.column).toBe("id");
+    await table.unsetLsmWriteSpec();
+
+    // Unsharded round-trips (no routing column).
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    const unsharded = await table.getLsmWriteSpec();
+    expect(unsharded?.specType).toBe("unsharded");
+    expect(unsharded?.column).toBeFalsy();
+  });
 });
 
 describe("LSM merge insert", () => {
