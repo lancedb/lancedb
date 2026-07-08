@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+import pickle
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -546,6 +547,22 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_func.call_count == 1
     # Verify that sleep was never called (no retries)
     assert mock_sleep.call_count == 0
+
+
+def test_ollama_embeddings_pickle():
+    """OllamaEmbeddings must pickle even after the cached client is created."""
+    registry = get_registry()
+    model = registry.get("ollama").create(name="nomic-embed-text")
+
+    # Simulate accessing the cached client, which stores it on the instance.
+    model.__dict__["_ollama_client"] = MagicMock()
+
+    pickled = pickle.dumps(model)
+    restored = pickle.loads(pickled)
+
+    assert restored.name == "nomic-embed-text"
+    assert restored.host == "http://localhost:11434"
+    assert "_ollama_client" not in restored.__dict__
 
 
 def test_url_retrieve_downloads_image():
