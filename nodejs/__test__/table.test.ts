@@ -3001,14 +3001,20 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     // Nothing installed yet.
     expect(await table.getLsmWriteSpec()).toBeUndefined();
 
-    // Bucket spec round-trips, including writer config defaults. Lance
-    // writer-config keys are canonically snake_case.
+    // A real scalar index is needed to name it as a maintained index.
+    await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await table.createIndex("id");
+    const indexName = (await table.listIndices())[0].name;
+
+    // Bucket spec round-trips, including maintained indexes and writer config
+    // defaults. Lance writer-config keys are canonically snake_case.
     // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
     const writerConfigDefaults = { durable_write: "false" };
     await table.setLsmWriteSpec({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
+      maintainedIndexes: [indexName],
       writerConfigDefaults,
     });
     const spec = await table.getLsmWriteSpec();
@@ -3016,6 +3022,7 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     expect(spec?.specType).toBe("bucket");
     expect(spec?.column).toBe("id");
     expect(spec?.numBuckets).toBe(4);
+    expect(spec?.maintainedIndexes).toEqual([indexName]);
     expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
 
     // After unset, undefined again.

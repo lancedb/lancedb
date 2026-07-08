@@ -11,6 +11,7 @@ import lancedb
 import pyarrow as pa
 import pytest
 from lancedb._lancedb import LsmWriteSpec
+from lancedb.index import BTree
 
 SCHEMA = pa.schema(
     [
@@ -145,17 +146,23 @@ def test_get_lsm_write_spec(tmp_path):
     # None when nothing is installed.
     assert table.get_lsm_write_spec() is None
 
-    # Bucket spec round-trips, including writer config defaults.
+    # A real scalar index is needed to name it as a maintained index.
+    table.create_index("id", config=BTree())
+    idx_name = table.list_indices()[0].name
+
+    # Bucket spec round-trips, including maintained indexes and writer config
+    # defaults.
     table.set_lsm_write_spec(
-        LsmWriteSpec.bucket("id", 4).with_writer_config_defaults(
-            {"durable_write": "false"}
-        )
+        LsmWriteSpec.bucket("id", 4)
+        .with_maintained_indexes([idx_name])
+        .with_writer_config_defaults({"durable_write": "false"})
     )
     spec = table.get_lsm_write_spec()
     assert spec is not None
     assert spec.spec_type == "bucket"
     assert spec.column == "id"
     assert spec.num_buckets == 4
+    assert spec.maintained_indexes == [idx_name]
     assert spec.writer_config_defaults == {"durable_write": "false"}
 
     # After unset, None again.
@@ -187,11 +194,19 @@ async def test_async_get_lsm_write_spec(tmp_path):
     )
 
     assert await table.get_lsm_write_spec() is None
-    await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 8))
+
+    # A real scalar index is needed to name it as a maintained index.
+    await table.create_index("id", config=BTree())
+    idx_name = (await table.list_indices())[0].name
+
+    await table.set_lsm_write_spec(
+        LsmWriteSpec.bucket("id", 8).with_maintained_indexes([idx_name])
+    )
     spec = await table.get_lsm_write_spec()
     assert spec is not None
     assert spec.spec_type == "bucket"
     assert spec.column == "id"
     assert spec.num_buckets == 8
+    assert spec.maintained_indexes == [idx_name]
     await table.unset_lsm_write_spec()
     assert await table.get_lsm_write_spec() is None
