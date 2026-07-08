@@ -3001,19 +3001,22 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     // Nothing installed yet.
     expect(await table.getLsmWriteSpec()).toBeUndefined();
 
-    // Bucket spec round-trips, including writer config defaults.
+    // Bucket spec round-trips, including writer config defaults. Lance
+    // writer-config keys are canonically snake_case.
+    // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
+    const writerConfigDefaults = { durable_write: "false" };
     await table.setLsmWriteSpec({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
-      writerConfigDefaults: { durable_write: "false" },
+      writerConfigDefaults,
     });
     const spec = await table.getLsmWriteSpec();
     expect(spec).toBeDefined();
     expect(spec?.specType).toBe("bucket");
     expect(spec?.column).toBe("id");
     expect(spec?.numBuckets).toBe(4);
-    expect(spec?.writerConfigDefaults).toEqual({ durable_write: "false" });
+    expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
 
     // After unset, undefined again.
     await table.unsetLsmWriteSpec();

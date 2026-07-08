@@ -1103,7 +1103,12 @@ export class LocalTable extends Table {
   }
 
   async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
-    return (await this.inner.getLsmWriteSpec()) ?? undefined;
+    // The native binding types `specType` as a plain `string`; narrow it back
+    // to the public union. The Rust `From` impl only ever emits one of the
+    // three valid values, so the cast is safe.
+    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
+      | LsmWriteSpec
+      | undefined;
   }
 
   async closeLsmWriters(): Promise<void> {
