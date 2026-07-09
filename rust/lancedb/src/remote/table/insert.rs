@@ -228,16 +228,16 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     /// whose body is still streamed through a bounded channel, so peak memory
     /// stays at a couple of batches regardless of `max_bytes`. The server stages
     /// every part under the shared `upload_id` and merges them atomically when
-    /// the caller completes the multipart write. An empty partition still sends
-    /// exactly one (schema-only) part so the session has a transaction to
-    /// commit.
+    /// the caller completes the multipart write. An empty partition stages
+    /// nothing: the multipart write always has at least one non-empty partition
+    /// to commit.
     #[allow(clippy::too_many_arguments)]
     async fn send_multipart_chunked(
-        client: RestfulLanceDbClient<S>,
-        identifier: String,
-        table_name: String,
-        upload_id: String,
-        branch: Option<String>,
+        client: &RestfulLanceDbClient<S>,
+        identifier: &str,
+        table_name: &str,
+        upload_id: &str,
+        branch: Option<&str>,
         overwrite: bool,
         max_bytes: usize,
         mut input: SendableRecordBatchStream,
@@ -245,128 +245,21 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     ) -> DataFusionResult<()> {
         let schema = input.schema();
 
-        // Prime the first batch so an empty partition still sends one part and a
-        // non-empty partition never emits a trailing empty part after a cut.
-        let mut next_batch: Option<RecordBatch> = match input.next().await {
-            Some(batch) => Some(batch?),
-            None => None,
+        // A part always starts from a batch we already hold: the first batch of
+        // the partition, or the look-ahead batch from the previous part. This
+        // keeps empty partitions from staging a part and stops a size cut that
+        // lands exactly on the end of input from emitting a trailing empty part.
+        let mut first = match input.next().await {
+            Some(batch) => batch?,
+            None => return Ok(()),
         };
 
         loop {
-            let first = next_batch.take();
-
-            let (mut chunk_tx, chunk_rx) =
-                futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
-            let body = reqwest::Body::wrap_stream(chunk_rx);
-
-            let part_id = uuid::Uuid::new_v4().to_string();
-            let mut request = client
-                .post(&format!("/v1/table/{}/insert/", identifier))
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-                .query(&[("upload_id", upload_id.as_str())])
-                .query(&[("upload_part_id", part_id.as_str())]);
-            if overwrite {
-                request = request.query(&[("mode", "overwrite")]);
-            }
-            if let Some(ref b) = branch {
-                request = request.query(&[("branch", b.as_str())]);
-            }
-            let request = request.body(body);
-
-            let mut part_bytes: usize = 0;
-            let mut input_ended = false;
-
-            let input_ref = &mut input;
-            let part_bytes_ref = &mut part_bytes;
-            let input_ended_ref = &mut input_ended;
-            let schema_ref = &schema;
-            let producer = async move {
-                let options = arrow_ipc::writer::IpcWriteOptions::default()
-                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
-                    Vec::new(),
-                    schema_ref,
-                    options,
-                )
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-                let mut pending = first;
-                loop {
-                    let batch = match pending.take() {
-                        Some(batch) => batch,
-                        None => match input_ref.next().await {
-                            Some(Ok(batch)) => batch,
-                            Some(Err(e)) => {
-                                // Abort the body so the server does not treat the
-                                // truncated stream as a successful write; the
-                                // original error is surfaced to the caller.
-                                let _ = chunk_tx
-                                    .send(Err(std::io::Error::other("input stream error")))
-                                    .await;
-                                return Err(e);
-                            }
-                            None => {
-                                *input_ended_ref = true;
-                                break;
-                            }
-                        },
-                    };
-                    writer
-                        .write(&batch)
-                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                    let chunk = std::mem::take(writer.get_mut());
-                    *part_bytes_ref += chunk.len();
-                    if chunk_tx.send(Ok(chunk)).await.is_err() {
-                        // The request finished or failed; stop producing.
-                        break;
-                    }
-                    if *part_bytes_ref >= max_bytes {
-                        break;
-                    }
-                }
-
-                writer
-                    .finish()
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                let tail = std::mem::take(writer.get_mut());
-                if !tail.is_empty() {
-                    let _ = chunk_tx.send(Ok(tail)).await;
-                }
-                Ok::<(), DataFusionError>(())
-            };
-
-            let send = async {
-                let (request_id, response) = client
-                    .send(request)
-                    .await
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                let response = RemoteTable::<Sender>::handle_table_not_found(
-                    &table_name,
-                    response,
-                    &request_id,
-                )
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                let response = client
-                    .check_response(&request_id, response)
-                    .await
-                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
-                let _ = response.bytes().await.map_err(|e| {
-                    DataFusionError::External(Box::new(Error::Http {
-                        source: Box::new(e),
-                        request_id: request_id.clone(),
-                        status_code: None,
-                    }))
-                })?;
-                Ok::<(), DataFusionError>(())
-            };
-
-            let (producer_result, send_result) = futures::join!(producer, send);
-            // Prefer the producer error (e.g. NaN rejection) over any HTTP error
-            // it induced.
-            producer_result?;
-            send_result?;
+            let (part_bytes, input_ended) = Self::send_one_part(
+                client, identifier, table_name, upload_id, branch, overwrite, &schema, max_bytes,
+                first, &mut input,
+            )
+            .await?;
 
             if let Some(ref t) = tracker {
                 t.record_bytes(part_bytes);
@@ -376,16 +269,159 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
                 break;
             }
 
-            // Look ahead so a size cut landing exactly on the end of input does
-            // not produce a trailing empty part.
-            next_batch = match input.next().await {
-                Some(Ok(batch)) => Some(batch),
-                Some(Err(e)) => return Err(e),
+            first = match input.next().await {
+                Some(batch) => batch?,
                 None => break,
             };
         }
 
         Ok(())
+    }
+
+    /// Build the `/insert` request for a single multipart part.
+    fn build_part_request(
+        client: &RestfulLanceDbClient<S>,
+        identifier: &str,
+        upload_id: &str,
+        part_id: &str,
+        branch: Option<&str>,
+        overwrite: bool,
+        body: reqwest::Body,
+    ) -> reqwest::RequestBuilder {
+        let mut request = client
+            .post(&format!("/v1/table/{}/insert/", identifier))
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            .query(&[("upload_id", upload_id)])
+            .query(&[("upload_part_id", part_id)]);
+        if overwrite {
+            request = request.query(&[("mode", "overwrite")]);
+        }
+        if let Some(b) = branch {
+            request = request.query(&[("branch", b)]);
+        }
+        request.body(body)
+    }
+
+    /// Send a single part's request and drain the response, mapping HTTP and
+    /// table-not-found errors into `DataFusionError`.
+    async fn send_part_request(
+        client: &RestfulLanceDbClient<S>,
+        table_name: &str,
+        request: reqwest::RequestBuilder,
+    ) -> DataFusionResult<()> {
+        let (request_id, response) = client
+            .send(request)
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        let response =
+            RemoteTable::<Sender>::handle_table_not_found(table_name, response, &request_id)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        let response = client
+            .check_response(&request_id, response)
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        response.bytes().await.map_err(|e| {
+            DataFusionError::External(Box::new(Error::Http {
+                source: Box::new(e),
+                request_id: request_id.clone(),
+                status_code: None,
+            }))
+        })?;
+        Ok(())
+    }
+
+    /// Stream one part, starting from `first` and pulling from `input` until the
+    /// part reaches `max_bytes` or the input ends. The body is streamed through
+    /// a bounded channel concurrently with the request, so peak memory stays at
+    /// a couple of batches. Returns the compressed bytes written and whether the
+    /// input was exhausted while filling this part.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_one_part(
+        client: &RestfulLanceDbClient<S>,
+        identifier: &str,
+        table_name: &str,
+        upload_id: &str,
+        branch: Option<&str>,
+        overwrite: bool,
+        schema: &arrow_schema::SchemaRef,
+        max_bytes: usize,
+        first: RecordBatch,
+        input: &mut SendableRecordBatchStream,
+    ) -> DataFusionResult<(usize, bool)> {
+        let (mut chunk_tx, chunk_rx) =
+            futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
+        let body = reqwest::Body::wrap_stream(chunk_rx);
+
+        let part_id = uuid::Uuid::new_v4().to_string();
+        let request = Self::build_part_request(
+            client, identifier, upload_id, &part_id, branch, overwrite, body,
+        );
+
+        let producer = async move {
+            let options = arrow_ipc::writer::IpcWriteOptions::default()
+                .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new_with_options(Vec::new(), schema, options)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+            let mut part_bytes: usize = 0;
+            let mut input_ended = false;
+            let mut pending = Some(first);
+            loop {
+                let batch = match pending.take() {
+                    Some(batch) => batch,
+                    None => match input.next().await {
+                        Some(Ok(batch)) => batch,
+                        Some(Err(e)) => {
+                            // Abort the body so the server does not treat the
+                            // truncated stream as a successful write; the
+                            // original error is surfaced to the caller.
+                            let _ = chunk_tx
+                                .send(Err(std::io::Error::other("input stream error")))
+                                .await;
+                            return Err(e);
+                        }
+                        None => {
+                            input_ended = true;
+                            break;
+                        }
+                    },
+                };
+                writer
+                    .write(&batch)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                let chunk = std::mem::take(writer.get_mut());
+                part_bytes += chunk.len();
+                if chunk_tx.send(Ok(chunk)).await.is_err() {
+                    // The request finished or failed; stop producing.
+                    break;
+                }
+                if part_bytes >= max_bytes {
+                    break;
+                }
+            }
+
+            writer
+                .finish()
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            let tail = std::mem::take(writer.get_mut());
+            if !tail.is_empty() {
+                let _ = chunk_tx.send(Ok(tail)).await;
+            }
+            Ok::<(usize, bool), DataFusionError>((part_bytes, input_ended))
+        };
+
+        let send = Self::send_part_request(client, table_name, request);
+
+        let (producer_result, send_result) = futures::join!(producer, send);
+        // Prefer the producer error (e.g. NaN rejection) over any HTTP error it
+        // induced.
+        let (part_bytes, input_ended) = producer_result?;
+        send_result?;
+
+        Ok((part_bytes, input_ended))
     }
 }
 
@@ -492,13 +528,15 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             // Multipart writes with a byte budget split the partition into
             // several bounded, still-streamed requests so no single request
             // stays open long enough to hit the client read timeout.
-            if let (Some(upload_id), Some(max_bytes)) = (upload_id.clone(), max_bytes_per_request) {
+            if let (Some(upload_id), Some(max_bytes)) =
+                (upload_id.as_deref(), max_bytes_per_request)
+            {
                 Self::send_multipart_chunked(
-                    client,
-                    identifier,
-                    table_name,
+                    &client,
+                    &identifier,
+                    &table_name,
                     upload_id,
-                    branch,
+                    branch.as_deref(),
                     overwrite,
                     max_bytes,
                     input_stream,
