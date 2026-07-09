@@ -323,12 +323,21 @@ impl ListingDatabase {
         namespace_client_properties: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Arc<lance::session::Session>,
+        uses_commit_engine: bool,
     ) -> Result<Arc<LanceNamespaceDatabase>> {
-        let ns_properties = Self::build_namespace_client_properties(
+        let mut ns_properties = Self::build_namespace_client_properties(
             uri,
             &storage_options,
             namespace_client_properties,
         );
+        // The directory namespace enables manifest-based listing by default, which
+        // opens a `__manifest` table under the root. That is incompatible with an
+        // external commit engine (e.g. `s3+ddb://`): the manifest table URI has no
+        // `ddbTableName` query, so building its commit handler fails. Disable the
+        // manifest so these connections fall back to directory listing.
+        if uses_commit_engine {
+            ns_properties.insert("manifest_enabled".to_string(), "false".to_string());
+        }
         Ok(Arc::new(
             LanceNamespaceDatabase::connect(
                 "dir",
@@ -503,6 +512,12 @@ impl ListingDatabase {
                     }
                 }
 
+                // A commit engine is in use either via an explicit `engine=` query
+                // param or a `<scheme>+<engine>` URI scheme (e.g. `s3+ddb`). The
+                // manifest namespace is incompatible with these, so track it to
+                // disable the manifest below.
+                let uses_commit_engine = engine.is_some() || url.scheme().contains('+');
+
                 // Filter out the commit store query param -- it's a lancedb param
                 url.query_pairs_mut().clear();
                 url.query_pairs_mut().extend_pairs(filtered_querys);
@@ -575,6 +590,7 @@ impl ListingDatabase {
                     request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
                     session.clone(),
+                    uses_commit_engine,
                 )
                 .await?;
 
@@ -629,6 +645,7 @@ impl ListingDatabase {
             namespace_client_properties,
             read_consistency_interval,
             session.clone(),
+            false,
         )
         .await?;
 

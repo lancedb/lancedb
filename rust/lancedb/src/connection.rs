@@ -1472,6 +1472,33 @@ mod tests {
         );
     }
 
+    // A default connection to a commit-engine URI must disable the manifest
+    // namespace: the `__manifest` table under the root has no `ddbTableName`
+    // query, so building its commit handler would fail. See the DynamoDB
+    // regression fixed alongside the Lance v9 bump.
+    #[cfg(feature = "dynamodb")]
+    #[tokio::test]
+    async fn test_default_connect_disables_manifest_for_commit_engine() {
+        for uri in [
+            "s3+ddb://bucket/db?ddbTableName=manifest",
+            "s3://bucket/db?engine=ddb&ddbTableName=manifest",
+        ] {
+            let db = connect(uri)
+                .storage_option("region", "us-east-1")
+                .execute()
+                .await
+                .unwrap_or_else(|e| panic!("expected {uri} to connect, got {e:?}"));
+
+            let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
+            assert_eq!(ns_impl, "dir");
+            assert_eq!(
+                properties.get("manifest_enabled"),
+                Some(&"false".to_string()),
+                "manifest should be disabled for commit-engine URI {uri}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_manifest_enabled_connection_migrates_root_listing_table() {
         let tmp_dir = tempdir().unwrap();
