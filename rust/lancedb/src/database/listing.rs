@@ -342,15 +342,17 @@ impl ListingDatabase {
         ))
     }
 
-    fn namespace_database_uri(table_base_uri: &str, query_string: Option<&str>) -> String {
-        if url::Url::parse(table_base_uri)
-            .map(|url| url.scheme().contains('+'))
-            .unwrap_or(false)
-            && let Some(query_string) = query_string
-        {
-            return format!("{}?{}", table_base_uri, query_string);
-        }
-        table_base_uri.to_string()
+    fn storage_base_uri(uri: &str) -> String {
+        let Ok(mut url) = url::Url::parse(uri) else {
+            return uri.to_string();
+        };
+        url.set_query(None);
+        let Some((storage_scheme, _commit_scheme)) = url.scheme().split_once('+') else {
+            return url.to_string();
+        };
+        let storage_scheme = storage_scheme.to_string();
+        let _ = url.set_scheme(&storage_scheme);
+        url.to_string()
     }
 
     async fn prepare_namespace_root(
@@ -531,6 +533,8 @@ impl ListingDatabase {
                 // will add a trailing '?' to the url
                 url.set_query(None);
 
+                let storage_base_uri = Self::storage_base_uri(url.as_str());
+
                 let table_base_uri = if let Some(store) = engine {
                     static WARN_ONCE: std::sync::Once = std::sync::Once::new();
                     WARN_ONCE.call_once(|| {
@@ -542,8 +546,6 @@ impl ListingDatabase {
                 } else {
                     url.to_string()
                 };
-
-                let plain_uri = url.to_string();
 
                 let session = request
                     .session
@@ -561,13 +563,13 @@ impl ListingDatabase {
                 };
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
-                    &plain_uri,
+                    &storage_base_uri,
                     &os_params,
                 )
                 .await?;
                 if object_store.is_local() {
-                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
-                        path: plain_uri.clone(),
+                    Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
+                        path: storage_base_uri.clone(),
                     })?;
                 }
 
@@ -580,10 +582,8 @@ impl ListingDatabase {
                     None => None,
                 };
 
-                let namespace_database_uri =
-                    Self::namespace_database_uri(&table_base_uri, query_string.as_deref());
                 let namespace_database = Self::connect_namespace_database(
-                    &namespace_database_uri,
+                    &storage_base_uri,
                     options.storage_options.clone(),
                     request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
@@ -2351,18 +2351,20 @@ mod tests {
     }
 
     #[test]
-    fn test_namespace_database_uri_preserves_commit_engine_query() {
+    fn test_storage_base_uri_strips_commit_engine_scheme() {
         assert_eq!(
-            ListingDatabase::namespace_database_uri(
-                "s3+ddb://bucket/prefix",
-                Some("ddbTableName=commit_table")
-            ),
-            "s3+ddb://bucket/prefix?ddbTableName=commit_table"
+            ListingDatabase::storage_base_uri("s3+ddb://bucket/prefix?ddbTableName=commit_table"),
+            "s3://bucket/prefix"
         );
 
         assert_eq!(
-            ListingDatabase::namespace_database_uri("s3://bucket/prefix", Some("foo=bar")),
+            ListingDatabase::storage_base_uri("s3://bucket/prefix?foo=bar"),
             "s3://bucket/prefix"
+        );
+
+        assert_eq!(
+            ListingDatabase::storage_base_uri("/tmp/lancedb"),
+            "/tmp/lancedb"
         );
     }
 
