@@ -131,6 +131,7 @@
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [connect](functions/connect.md)
 - [connectNamespace](functions/connectNamespace.md)
+- [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
