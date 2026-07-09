@@ -1310,6 +1310,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_listing_database_root_ops_do_not_create_manifest() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert!(!tempdir.path().join("__manifest").exists());
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.open_table(OpenTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            index_cache_size: None,
+            lance_read_params: None,
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        })
+        .await
+        .unwrap();
+
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+
+        assert_eq!(table_names, vec!["root_table".to_string()]);
+        assert!(!tempdir.path().join("__manifest").exists());
+    }
+
+    #[tokio::test]
     async fn test_clone_table_basic() {
         let (_tempdir, db) = setup_database().await;
 
