@@ -342,6 +342,17 @@ impl ListingDatabase {
         ))
     }
 
+    fn namespace_database_uri(table_base_uri: &str, query_string: Option<&str>) -> String {
+        if url::Url::parse(table_base_uri)
+            .map(|url| url.scheme().contains('+'))
+            .unwrap_or(false)
+            && let Some(query_string) = query_string
+        {
+            return format!("{}?{}", table_base_uri, query_string);
+        }
+        table_base_uri.to_string()
+    }
+
     async fn prepare_namespace_root(
         uri: &str,
         storage_options: &HashMap<String, String>,
@@ -569,8 +580,10 @@ impl ListingDatabase {
                     None => None,
                 };
 
+                let namespace_database_uri =
+                    Self::namespace_database_uri(&table_base_uri, query_string.as_deref());
                 let namespace_database = Self::connect_namespace_database(
-                    &table_base_uri,
+                    &namespace_database_uri,
                     options.storage_options.clone(),
                     request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
@@ -2335,6 +2348,22 @@ mod tests {
         let captured =
             capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem&foo=bar", ENGINE));
         assert_eq!(captured.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn test_namespace_database_uri_preserves_commit_engine_query() {
+        assert_eq!(
+            ListingDatabase::namespace_database_uri(
+                "s3+ddb://bucket/prefix",
+                Some("ddbTableName=commit_table")
+            ),
+            "s3+ddb://bucket/prefix?ddbTableName=commit_table"
+        );
+
+        assert_eq!(
+            ListingDatabase::namespace_database_uri("s3://bucket/prefix", Some("foo=bar")),
+            "s3://bucket/prefix"
+        );
     }
 
     /// Regression: connecting via a URL-style URI (which goes through

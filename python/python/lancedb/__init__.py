@@ -149,8 +149,14 @@ def connect(
 
     For object storage, use a URI prefix:
 
-    >>> db = lancedb.connect("s3://my-bucket/lancedb",
-    ...                      storage_options={"aws_access_key_id": "***"})
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "s3://my-bucket/lancedb",
+    ...     storage_options={
+    ...         "aws_access_key_id": "***",
+    ...         "aws_secret_access_key": "***",
+    ...         "aws_region": "us-east-1",
+    ...     },
+    ... )
 
     For tests and temporary data, use an in-memory database:
 
