@@ -996,14 +996,11 @@ class RemoteTable(Table):
         )
 
     def fetch_blobs(self, column: str, row_ids) -> pa.LargeBinaryArray:
-        raise NotImplementedError(
-            "fetch_blobs() is not yet supported on the LanceDB Cloud"
-        )
+        raise NotImplementedError("fetch_blobs() is not supported on LanceDB Cloud")
 
     def fetch_blob_files(self, column: str, row_ids):
         raise NotImplementedError(
-            "fetch_blob_files() is not supported on LanceDB Cloud; "
-            "use fetch_blobs() to materialize bytes"
+            "fetch_blob_files() is not supported on LanceDB Cloud"
         )
 
     def head(self, n=5) -> pa.Table:

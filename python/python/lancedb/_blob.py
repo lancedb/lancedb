@@ -28,16 +28,10 @@ BLOB_MODE_TO_HANDLING = {
     "descriptions": "blobs_descriptions",
 }
 
-_AUTO_ROWID_METADATA_KEY = b"lancedb._rowid"
+ROW_ID_FIELD_NAME = "_lance_row_id"
 
 FetchBlobsSync = Callable[[str, pa.Table], pa.Array | pa.ChunkedArray]
 FetchBlobsAsync = Callable[[str, pa.Table], Awaitable[pa.Array | pa.ChunkedArray]]
-
-
-def validate_blob_mode(blob_mode: BlobMode) -> None:
-    if blob_mode not in BLOB_MODE_TO_HANDLING:
-        modes = ", ".join(repr(mode) for mode in BLOB_MODE_TO_HANDLING)
-        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
 
 
 class BlobFile(io.RawIOBase):
@@ -104,6 +98,12 @@ class BlobFile(io.RawIOBase):
         return f"<BlobFile size={self.size()}>"
 
 
+def validate_blob_mode(blob_mode: BlobMode) -> None:
+    if blob_mode not in BLOB_MODE_TO_HANDLING:
+        modes = ", ".join(repr(mode) for mode in BLOB_MODE_TO_HANDLING)
+        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
+
+
 def supports_blob_auto_row_id(table: Table | AsyncTable | RemoteTable) -> bool:
     """Blob auto row-id applies to native tables, not LanceDB Cloud."""
     from .remote.table import RemoteTable
@@ -118,27 +118,6 @@ def supports_blob_auto_row_id(table: Table | AsyncTable | RemoteTable) -> bool:
             return False
 
     return True
-
-
-def _iter_projection_pairs(
-    projection: QueryProjectionSpec,
-) -> Iterable[tuple[str, str]]:
-    if isinstance(projection, dict):
-        for name, expr in projection.items():
-            if isinstance(expr, str):
-                yield name, expr
-            elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
-        return
-    for column in projection:
-        if isinstance(column, str):
-            yield column, column
-        elif isinstance(column, tuple) and len(column) == 2:
-            name, expr = column
-            if isinstance(expr, str):
-                yield name, expr
-            elif isinstance(expr, Expr):
-                yield name, expr.to_sql()
 
 
 def projection_includes_blob_column(
@@ -203,15 +182,11 @@ def finalize_blob_query_table(
     *,
     user_requested_row_id: bool,
     blob_auto_row_id: bool,
+    blob_paths: Iterable[str] = (),
 ) -> pa.Table:
     if user_requested_row_id or not blob_auto_row_id:
         return tbl
-    return stash_auto_row_ids(tbl)
-
-
-def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:
-    index = tbl.schema.get_field_index(output_name)
-    return tbl.set_column(index, pa.field(output_name, blobs.type), [blobs])
+    return stash_auto_row_ids(tbl, blob_paths)
 
 
 async def replace_v2_blob_columns_with_bytes(
@@ -240,60 +215,199 @@ def replace_v2_blob_columns_with_bytes_sync(
     return tbl
 
 
-def _serialize_auto_row_ids(row_ids: pa.Array | pa.ChunkedArray) -> bytes:
-    if isinstance(row_ids, pa.ChunkedArray):
-        row_ids = row_ids.combine_chunks()
-    if row_ids.type != pa.uint64():
-        row_ids = row_ids.cast(pa.uint64())
-
-    batch = pa.record_batch([row_ids], names=["_rowid"])
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, batch.schema) as writer:
-        writer.write_batch(batch)
-    return sink.getvalue().to_pybytes()
-
-
-def _deserialize_auto_row_ids(raw: bytes) -> list[int]:
-    with pa.ipc.open_stream(pa.BufferReader(raw)) as reader:
-        table = reader.read_all()
-    if table.num_columns != 1 or table.column_names[0] != "_rowid":
-        raise ValueError("query result has invalid hidden _rowid metadata")
-    return table["_rowid"].to_pylist()
-
-
-def stash_auto_row_ids(tbl: pa.Table) -> pa.Table:
+def stash_auto_row_ids(tbl: pa.Table, blob_paths: Iterable[str]) -> pa.Table:
     if "_rowid" not in tbl.column_names:
         raise ValueError("query result has no '_rowid' column to hide")
 
-    raw = _serialize_auto_row_ids(tbl["_rowid"])
-    tbl = tbl.drop_columns(["_rowid"])
-    metadata = dict(tbl.schema.metadata or {})
-    metadata[_AUTO_ROWID_METADATA_KEY] = raw
-    return tbl.replace_schema_metadata(metadata)
+    present_paths = [p for p in blob_paths if p.split(".")[0] in tbl.column_names]
+    if not present_paths:
+        raise ValueError("query result has no blob v2 column to carry a row id")
+
+    row_ids = tbl["_rowid"]
+    if isinstance(row_ids, pa.ChunkedArray):
+        row_ids = row_ids.combine_chunks()
+    row_ids = row_ids.cast(pa.uint64())
+
+    for path in present_paths:
+        tbl = _embed_row_id_in_column(tbl, path, row_ids)
+    return tbl.drop_columns(["_rowid"])
 
 
-def read_row_ids_from_hits(hits: pa.Table) -> list[int]:
+def read_row_ids_from_hits(hits: pa.Table, blob_column: str) -> list[int]:
     if "_rowid" in hits.column_names:
         return hits["_rowid"].to_pylist()
 
-    metadata = hits.schema.metadata or {}
-    raw = metadata.get(_AUTO_ROWID_METADATA_KEY)
-    if raw is None:
-        raise ValueError(
-            "query result has no '_rowid' column or hidden row-id metadata; "
-            "pass fresh blob query results, call .with_row_id(True), or pass "
-            "a list of row ids"
+    try:
+        leaf = _leaf_struct_column(hits, blob_column)
+        if ROW_ID_FIELD_NAME in leaf.type.names:
+            return leaf.field(ROW_ID_FIELD_NAME).to_pylist()
+    except KeyError:
+        pass
+
+    # blob_column is the source name; aliased projections use the output name in hits.
+    row_ids = _find_row_id_in_any_column(hits)
+    if row_ids is not None:
+        return row_ids
+
+    raise ValueError(
+        f"query result has no '_rowid' column and no '{ROW_ID_FIELD_NAME}' "
+        f"field on blob column '{blob_column}'. Pass fresh blob query "
+        "results, call .with_row_id(True), or pass a list of row ids."
+    )
+
+
+def _find_row_id_in_any_column(tbl: pa.Table) -> Optional[list[int]]:
+    for name in tbl.column_names:
+        column = tbl.column(name)
+        if isinstance(column, pa.ChunkedArray):
+            column = column.combine_chunks()
+        row_ids = _find_row_id_in_struct(column)
+        if row_ids is not None:
+            return row_ids
+    return None
+
+
+def _find_row_id_in_struct(array: pa.Array) -> Optional[list[int]]:
+    if not pa.types.is_struct(array.type):
+        return None
+    if ROW_ID_FIELD_NAME in array.type.names:
+        return array.field(ROW_ID_FIELD_NAME).to_pylist()
+    for i in range(array.type.num_fields):
+        row_ids = _find_row_id_in_struct(array.field(i))
+        if row_ids is not None:
+            return row_ids
+    return None
+
+
+def _iter_projection_pairs(
+    projection: QueryProjectionSpec,
+) -> Iterable[tuple[str, str]]:
+    if isinstance(projection, dict):
+        for name, expr in projection.items():
+            if isinstance(expr, str):
+                yield name, expr
+            elif isinstance(expr, Expr):
+                yield name, expr.to_sql()
+        return
+    for column in projection:
+        if isinstance(column, str):
+            yield column, column
+        elif isinstance(column, tuple) and len(column) == 2:
+            name, expr = column
+            if isinstance(expr, str):
+                yield name, expr
+            elif isinstance(expr, Expr):
+                yield name, expr.to_sql()
+
+
+def _set_blob_column(tbl: pa.Table, output_name: str, blobs: pa.Array) -> pa.Table:
+    index = tbl.schema.get_field_index(output_name)
+    return tbl.set_column(index, pa.field(output_name, blobs.type), [blobs])
+
+
+def _embed_row_id_in_column(tbl: pa.Table, path: str, row_ids: pa.Array) -> pa.Table:
+    def add_row_id(children: list, child_fields: list) -> None:
+        children.append(row_ids)
+        child_fields.append(pa.field(ROW_ID_FIELD_NAME, pa.uint64(), nullable=False))
+
+    return _transform_struct_column(tbl, path, add_row_id)
+
+
+def strip_auto_row_ids(tbl: pa.Table, blob_paths: Iterable[str]) -> pa.Table:
+    """Remove any `_lance_row_id` field embedded in blob descriptor structs.
+
+    For read-only descriptor views (`blob_mode="descriptions"`) that never
+    fetch bytes, so have no use for the row id.
+    """
+
+    def drop_row_id(children: list, child_fields: list) -> None:
+        for i, field in enumerate(child_fields):
+            if field.name == ROW_ID_FIELD_NAME:
+                del children[i], child_fields[i]
+                return
+
+    for path in blob_paths:
+        if path.split(".")[0] not in tbl.column_names:
+            continue
+        tbl = _transform_struct_column(tbl, path, drop_row_id)
+    return tbl
+
+
+def _transform_struct_column(
+    tbl: pa.Table, path: str, leaf_transform: Callable[[list, list], None]
+) -> pa.Table:
+    top_name, *rest = path.split(".")
+    top_index = tbl.schema.get_field_index(top_name)
+    top_field = tbl.schema.field(top_index)
+    top_array = tbl.column(top_name)
+    if isinstance(top_array, pa.ChunkedArray):
+        top_array = top_array.combine_chunks()
+
+    new_array, new_field = _rebuild_struct(top_array, top_field, rest, leaf_transform)
+    return tbl.set_column(top_index, new_field, new_array)
+
+
+def _rebuild_struct(
+    struct_array: pa.StructArray,
+    struct_field: pa.Field,
+    remaining_path: list[str],
+    leaf_transform: Callable[[list, list], None],
+) -> tuple[pa.StructArray, pa.Field]:
+    null_mask = struct_array.is_null()
+    if not remaining_path:
+        children = [struct_array.field(i) for i in range(struct_array.type.num_fields)]
+        child_fields = list(struct_array.type)
+        leaf_transform(children, child_fields)
+        new_array = pa.StructArray.from_arrays(
+            children, fields=child_fields, mask=null_mask
+        )
+    else:
+        child_name = remaining_path[0]
+        child_index = struct_array.type.get_field_index(child_name)
+        child_array = struct_array.field(child_index)
+        child_field = struct_array.type.field(child_index)
+        new_child_array, new_child_field = _rebuild_struct(
+            child_array, child_field, remaining_path[1:], leaf_transform
         )
 
-    row_ids = _deserialize_auto_row_ids(raw)
-    if len(row_ids) != hits.num_rows:
-        raise ValueError("query result hidden _rowid metadata has the wrong length")
-    return row_ids
+        children = []
+        child_fields = []
+        for i in range(struct_array.type.num_fields):
+            field = struct_array.type.field(i)
+            if field.name == child_name:
+                children.append(new_child_array)
+                child_fields.append(new_child_field)
+            else:
+                children.append(struct_array.field(i))
+                child_fields.append(field)
+        new_array = pa.StructArray.from_arrays(
+            children, fields=child_fields, mask=null_mask
+        )
+
+    new_field = pa.field(
+        struct_field.name,
+        new_array.type,
+        nullable=struct_field.nullable,
+        metadata=struct_field.metadata,
+    )
+    return new_array, new_field
 
 
-def _normalize_blob_row_ids(row_ids: Union[list[int], pa.Table]) -> list[int]:
+def _leaf_struct_column(tbl: pa.Table, path: str) -> pa.StructArray:
+    parts = path.split(".")
+    column = tbl.column(parts[0])
+    if isinstance(column, pa.ChunkedArray):
+        column = column.combine_chunks()
+    for part in parts[1:]:
+        column = column.field(part)
+    return column
+
+
+def _normalize_blob_row_ids(
+    row_ids: Union[list[int], pa.Table], blob_column: str
+) -> list[int]:
     if isinstance(row_ids, pa.Table):
-        return read_row_ids_from_hits(row_ids)
+        return read_row_ids_from_hits(row_ids, blob_column)
     if isinstance(row_ids, (pa.Array, pa.ChunkedArray)):
         raise ValueError(
             "pass a query table with _rowid, not a column array "

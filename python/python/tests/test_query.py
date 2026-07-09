@@ -2055,7 +2055,7 @@ def test_blob_v2_expr_projection_stash(tmp_db):
     hits = table.search().select({"blob_alias": col("blob")}).limit(2).to_arrow()
 
     assert "_rowid" not in hits.column_names
-    assert b"lancedb._rowid" in (hits.schema.metadata or {})
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
     blobs = table.fetch_blobs("blob", hits)
     assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
 

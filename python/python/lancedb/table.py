@@ -33,6 +33,7 @@ from ._blob import (
     BlobFile,
     _normalize_blob_row_ids,
     _wrap_blob_files,
+    strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode
@@ -2222,16 +2223,12 @@ class LanceTable(Table):
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
-        return LOOP.run(
-            self._table.fetch_blobs(column, _normalize_blob_row_ids(row_ids))
-        )
+        return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
-        return LOOP.run(
-            self._table.fetch_blob_files(column, _normalize_blob_row_ids(row_ids))
-        )
+        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
     @property
     def tags(self) -> Tags:
@@ -2430,7 +2427,12 @@ class LanceTable(Table):
         """
         validate_blob_mode(blob_mode)
         if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
-            return self.to_arrow().to_pandas(**kwargs)
+            arrow_tbl = self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(
+                    arrow_tbl, blob_v2_column_paths(self.schema)
+                )
+            return arrow_tbl.to_pandas(**kwargs)
 
         if (
             blob_mode == "lazy"
@@ -4556,14 +4558,16 @@ class AsyncTable:
         pd.DataFrame
         """
         validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not schema_has_blob_field(
-            await self.schema()
-        ):
-            return (await self.to_arrow()).to_pandas(**kwargs)
+        schema = await self.schema()
+        if blob_mode == "descriptions" or not schema_has_blob_field(schema):
+            arrow_tbl = await self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(arrow_tbl, blob_v2_column_paths(schema))
+            return arrow_tbl.to_pandas(**kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
-        if blob_mode == "bytes" and blob_v2_column_paths(await self.schema()):
+        if blob_mode == "bytes" and blob_v2_column_paths(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -5671,13 +5675,15 @@ class AsyncTable:
     async def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
-        return await self._inner.fetch_blobs(column, _normalize_blob_row_ids(row_ids))
+        return await self._inner.fetch_blobs(
+            column, _normalize_blob_row_ids(row_ids, column)
+        )
 
     async def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
         handles = await self._inner.fetch_blob_files(
-            column, _normalize_blob_row_ids(row_ids)
+            column, _normalize_blob_row_ids(row_ids, column)
         )
         return _wrap_blob_files(handles)
 

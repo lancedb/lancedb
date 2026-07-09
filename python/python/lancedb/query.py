@@ -1286,10 +1286,17 @@ class LanceQueryBuilder(ABC):
         return query
 
     def _finalize_blob_query_table(self, tbl: pa.Table) -> pa.Table:
+        blob_auto_row_id = self._blob_auto_row_id_enabled()
+        blob_paths = (
+            blob_v2_projection_sources(self._table.schema, self._columns).keys()
+            if blob_auto_row_id
+            else ()
+        )
         return finalize_blob_query_table(
             tbl,
             user_requested_row_id=self._user_requested_row_id(),
-            blob_auto_row_id=self._blob_auto_row_id_enabled(),
+            blob_auto_row_id=blob_auto_row_id,
+            blob_paths=blob_paths,
         )
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
@@ -2659,6 +2666,7 @@ class AsyncQueryBase(object):
         self._fragment_ids = None
         self._with_row_id = None
         self._blob_auto_row_id = False
+        self._blob_paths: tuple[str, ...] = ()
 
     def to_query_object(self) -> Query:
         """
@@ -2685,11 +2693,13 @@ class AsyncQueryBase(object):
             tbl,
             user_requested_row_id=self._user_requested_row_id(),
             blob_auto_row_id=self._blob_auto_row_id_enabled(),
+            blob_paths=self._blob_paths,
         )
 
     async def _maybe_add_blob_row_id(self) -> None:
         if self._table is None or not supports_blob_auto_row_id(self._table):
             self._blob_auto_row_id = False
+            self._blob_paths = ()
             return
 
         req = self._inner.to_query_request()
@@ -2701,7 +2711,9 @@ class AsyncQueryBase(object):
             with_row_id=self._with_row_id,
         )
         if not self._blob_auto_row_id:
+            self._blob_paths = ()
             return
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, req.select).keys())
         self._inner.with_row_id()
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
@@ -3759,6 +3771,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
+        blob_paths: tuple[str, ...] = ()
         if self._table is not None and supports_blob_auto_row_id(self._table):
             schema = await self._table.schema()
             blob_auto_row_id = blob_auto_row_id_for_scan(
@@ -3767,7 +3780,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
                 req.select,
                 with_row_id=self._with_row_id,
             )
+            if blob_auto_row_id:
+                blob_paths = tuple(
+                    blob_v2_projection_sources(schema, req.select).keys()
+                )
         self._blob_auto_row_id = blob_auto_row_id
+        self._blob_paths = blob_paths
 
         fts_query.with_row_id()
         vec_query.with_row_id()
