@@ -259,7 +259,7 @@ pub struct ListingDatabase {
     session: Arc<lance::session::Session>,
 
     // Namespace-backed database for child namespace operations
-    namespace_database: Arc<LanceNamespaceDatabase>,
+    namespace_database: Arc<ListingNamespaceDatabase>,
 }
 
 impl std::fmt::Display for ListingDatabase {
@@ -283,6 +283,65 @@ impl std::fmt::Display for ListingDatabase {
 const LANCE_EXTENSION: &str = "lance";
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
+
+#[derive(Debug)]
+struct ListingNamespaceDatabase {
+    uri: String,
+    storage_options: HashMap<String, String>,
+    namespace_client_properties: HashMap<String, String>,
+    read_consistency_interval: Option<std::time::Duration>,
+    session: Arc<lance::session::Session>,
+    database: tokio::sync::Mutex<Option<Arc<LanceNamespaceDatabase>>>,
+}
+
+impl ListingNamespaceDatabase {
+    fn new(
+        uri: String,
+        storage_options: HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Arc<lance::session::Session>,
+    ) -> Self {
+        Self {
+            uri,
+            storage_options,
+            namespace_client_properties,
+            read_consistency_interval,
+            session,
+            database: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    fn namespace_client_properties(&self) -> HashMap<String, String> {
+        ListingDatabase::build_namespace_client_properties(
+            &self.uri,
+            &self.storage_options,
+            self.namespace_client_properties.clone(),
+        )
+    }
+
+    async fn get(&self) -> Result<Arc<LanceNamespaceDatabase>> {
+        let mut database = self.database.lock().await;
+        if let Some(database) = database.as_ref() {
+            return Ok(database.clone());
+        }
+
+        let initialized = ListingDatabase::connect_namespace_database(
+            &self.uri,
+            self.storage_options.clone(),
+            self.namespace_client_properties.clone(),
+            self.read_consistency_interval,
+            self.session.clone(),
+        )
+        .await?;
+        *database = Some(initialized.clone());
+        Ok(initialized)
+    }
+
+    fn namespace_client_config(&self) -> (String, HashMap<String, String>) {
+        ("dir".to_string(), self.namespace_client_properties())
+    }
+}
 
 /// A connection to LanceDB
 impl ListingDatabase {
@@ -569,14 +628,13 @@ impl ListingDatabase {
                     None => None,
                 };
 
-                let namespace_database = Self::connect_namespace_database(
-                    &table_base_uri,
+                let namespace_database = Arc::new(ListingNamespaceDatabase::new(
+                    table_base_uri.clone(),
                     options.storage_options.clone(),
                     request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
                     session.clone(),
-                )
-                .await?;
+                ));
 
                 Ok(Self {
                     uri: table_base_uri,
@@ -623,14 +681,13 @@ impl ListingDatabase {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
 
-        let namespace_database = Self::connect_namespace_database(
-            path,
+        let namespace_database = Arc::new(ListingNamespaceDatabase::new(
+            path.to_string(),
             HashMap::new(),
             namespace_client_properties,
             read_consistency_interval,
             session.clone(),
-        )
-        .await?;
+        ));
 
         Ok(Self {
             uri: path.to_string(),
@@ -701,8 +758,8 @@ impl ListingDatabase {
         Ok(uri)
     }
 
-    fn namespace_database(&self) -> Arc<LanceNamespaceDatabase> {
-        self.namespace_database.clone()
+    async fn namespace_database(&self) -> Result<Arc<LanceNamespaceDatabase>> {
+        self.namespace_database.get().await
     }
 
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
@@ -904,7 +961,10 @@ impl Database for ListingDatabase {
         &self,
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
-        self.namespace_database().list_namespaces(request).await
+        self.namespace_database()
+            .await?
+            .list_namespaces(request)
+            .await
     }
 
     fn uri(&self) -> &str {
@@ -927,24 +987,33 @@ impl Database for ListingDatabase {
         &self,
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
-        self.namespace_database().create_namespace(request).await
+        self.namespace_database()
+            .await?
+            .create_namespace(request)
+            .await
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
-        self.namespace_database().drop_namespace(request).await
+        self.namespace_database()
+            .await?
+            .drop_namespace(request)
+            .await
     }
 
     async fn describe_namespace(
         &self,
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
-        self.namespace_database().describe_namespace(request).await
+        self.namespace_database()
+            .await?
+            .describe_namespace(request)
+            .await
     }
 
     #[allow(deprecated)]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         if !request.namespace_path.is_empty() {
-            return self.namespace_database().table_names(request).await;
+            return self.namespace_database().await?.table_names(request).await;
         }
         let mut f = self
             .object_store
@@ -977,7 +1046,7 @@ impl Database for ListingDatabase {
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
-            return self.namespace_database().list_tables(request).await;
+            return self.namespace_database().await?.list_tables(request).await;
         }
         let mut f = self
             .object_store
@@ -1026,7 +1095,7 @@ impl Database for ListingDatabase {
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         if !request.namespace_path.is_empty() {
-            return self.namespace_database().create_table(request).await;
+            return self.namespace_database().await?.create_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
         let table_uri = request
@@ -1144,7 +1213,7 @@ impl Database for ListingDatabase {
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         if !request.namespace_path.is_empty() {
-            return self.namespace_database().open_table(request).await;
+            return self.namespace_database().await?.open_table(request).await;
         }
         // Use provided location if available, otherwise derive from table name
         let table_uri = request
@@ -1242,6 +1311,7 @@ impl Database for ListingDatabase {
         if !namespace_path.is_empty() {
             return self
                 .namespace_database()
+                .await?
                 .drop_table(name, namespace_path)
                 .await;
         }
@@ -1254,6 +1324,7 @@ impl Database for ListingDatabase {
         if !namespace_path.is_empty() {
             return self
                 .namespace_database()
+                .await?
                 .drop_all_tables(namespace_path)
                 .await;
         }
@@ -1266,11 +1337,11 @@ impl Database for ListingDatabase {
     }
 
     async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
-        self.namespace_database.namespace_client().await
+        self.namespace_database().await?.namespace_client().await
     }
 
     async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
-        self.namespace_database.namespace_client_config().await
+        Ok(self.namespace_database.namespace_client_config())
     }
 }
 
@@ -1330,6 +1401,7 @@ mod tests {
             .unwrap();
 
         assert!(!tempdir.path().join("__manifest").exists());
+        assert!(db.namespace_database.database.lock().await.is_none());
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         db.create_table(CreateTableRequest {
@@ -1361,6 +1433,12 @@ mod tests {
 
         assert_eq!(table_names, vec!["root_table".to_string()]);
         assert!(!tempdir.path().join("__manifest").exists());
+        assert!(db.namespace_database.database.lock().await.is_none());
+
+        let (ns_impl, properties) = db.namespace_client_config().await.unwrap();
+        assert_eq!(ns_impl, "dir");
+        assert_eq!(properties.get("root"), Some(&uri.to_string()));
+        assert!(db.namespace_database.database.lock().await.is_none());
     }
 
     #[tokio::test]
