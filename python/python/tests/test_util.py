@@ -25,8 +25,40 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
 from utils import exception_output
+
+
+def _struct_table() -> pa.Table:
+    return pa.table(
+        {
+            "id": [1, 2],
+            "nested": pa.array([{"a": 1, "b": 2}, {"a": 3, "b": 4}]),
+        }
+    )
+
+
+def test_flatten_columns():
+    tbl = _struct_table()
+
+    # None / False mean "do not flatten": the struct column is preserved.
+    # `False` is a regression guard: because bool is a subclass of int it used
+    # to fall into the integer branch and raise ValueError (see issue).
+    for no_flatten in (None, False):
+        result = flatten_columns(tbl, no_flatten)
+        assert result.column_names == ["id", "nested"]
+
+    # True flattens all nested levels.
+    flattened = flatten_columns(tbl, True)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # A positive integer flattens up to that depth.
+    flattened = flatten_columns(tbl, 1)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # Non-positive integers are still rejected.
+    with pytest.raises(ValueError):
+        flatten_columns(tbl, 0)
 
 
 def test_normalize_uri():

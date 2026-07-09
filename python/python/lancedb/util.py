@@ -177,7 +177,10 @@ def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
                 continue
             else:
                 break
-    elif isinstance(flatten, int):
+    # `bool` is a subclass of `int`, so guard against it explicitly: `flatten=False`
+    # (and `None`) must mean "do not flatten" rather than falling into the integer
+    # branch and raising on the `flatten <= 0` check.
+    elif isinstance(flatten, int) and not isinstance(flatten, bool):
         if flatten <= 0:
             raise ValueError(
                 "Please specify a positive integer for flatten or the boolean "
