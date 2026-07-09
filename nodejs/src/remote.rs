@@ -234,6 +234,8 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             user_id: config.user_id,
             // Resolved from LANCE_CLIENT_MAX_BYTES_PER_REQUEST or the default.
             max_bytes_per_request: None,
+            // Resolved from LANCE_CLIENT_MAX_REQUEST_DURATION or the read timeout.
+            max_request_duration: None,
         }
     }
 }

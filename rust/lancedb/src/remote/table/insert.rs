@@ -4,6 +4,7 @@
 //! DataFusion ExecutionPlan for inserting data into remote LanceDB tables.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_ipc::CompressionType;
@@ -53,6 +54,11 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     /// many bytes, each uploaded as a separate request. `None` sends the whole
     /// partition as a single request.
     max_bytes_per_request: Option<usize>,
+    /// For multipart writes, also cut a part once it has been uploading for this
+    /// long, even if it has not reached `max_bytes_per_request`. Bounds request
+    /// duration on slow/throttled uploads so no request exceeds the read
+    /// timeout. `None` disables the time-based cut.
+    max_request_duration: Option<Duration>,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
@@ -67,7 +73,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         branch: Option<String>,
     ) -> Self {
         Self::new_inner(
-            table_name, identifier, client, input, overwrite, None, tracker, branch, None,
+            table_name, identifier, client, input, overwrite, None, tracker, branch, None, None,
         )
     }
 
@@ -87,6 +93,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
         max_bytes_per_request: Option<usize>,
+        max_request_duration: Option<Duration>,
     ) -> Self {
         Self::new_inner(
             table_name,
@@ -98,6 +105,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             tracker,
             branch,
             max_bytes_per_request,
+            max_request_duration,
         )
     }
 
@@ -112,6 +120,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
         max_bytes_per_request: Option<usize>,
+        max_request_duration: Option<Duration>,
     ) -> Self {
         let num_partitions = if upload_id.is_some() {
             input.output_partitioning().partition_count()
@@ -139,6 +148,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             tracker,
             branch,
             max_bytes_per_request,
+            max_request_duration,
         }
     }
 
@@ -221,8 +231,9 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         Ok(reqwest::Body::wrap_stream(stream))
     }
 
-    /// Upload a partition as one or more multipart parts, each at most
-    /// `max_bytes` (Arrow IPC, compressed) bytes.
+    /// Upload a partition as one or more multipart parts, cutting a new part
+    /// whenever the current one reaches `max_bytes` (Arrow IPC, compressed) or
+    /// has been uploading for `max_duration`, whichever comes first.
     ///
     /// Each part is a separate `/insert?upload_id=...&upload_part_id=...` request
     /// whose body is still streamed through a bounded channel, so peak memory
@@ -231,6 +242,10 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     /// the caller completes the multipart write. An empty partition stages
     /// nothing: the multipart write always has at least one non-empty partition
     /// to commit.
+    ///
+    /// The byte budget targets a good on-disk fragment size; the duration budget
+    /// bounds request time so a slow or throttled upload does not keep a request
+    /// open past the client read timeout (which also covers the request body).
     #[allow(clippy::too_many_arguments)]
     async fn send_multipart_chunked(
         client: &RestfulLanceDbClient<S>,
@@ -240,6 +255,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         branch: Option<&str>,
         overwrite: bool,
         max_bytes: usize,
+        max_duration: Option<Duration>,
         mut input: SendableRecordBatchStream,
         tracker: Option<Arc<WriteProgressTracker>>,
     ) -> DataFusionResult<()> {
@@ -256,8 +272,17 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
 
         loop {
             let (part_bytes, input_ended) = Self::send_one_part(
-                client, identifier, table_name, upload_id, branch, overwrite, &schema, max_bytes,
-                first, &mut input,
+                client,
+                identifier,
+                table_name,
+                upload_id,
+                branch,
+                overwrite,
+                &schema,
+                max_bytes,
+                max_duration,
+                first,
+                &mut input,
             )
             .await?;
 
@@ -332,10 +357,11 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     }
 
     /// Stream one part, starting from `first` and pulling from `input` until the
-    /// part reaches `max_bytes` or the input ends. The body is streamed through
-    /// a bounded channel concurrently with the request, so peak memory stays at
-    /// a couple of batches. Returns the compressed bytes written and whether the
-    /// input was exhausted while filling this part.
+    /// part reaches `max_bytes`, has been uploading for `max_duration`, or the
+    /// input ends. The body is streamed through a bounded channel concurrently
+    /// with the request, so peak memory stays at a couple of batches. Returns the
+    /// compressed bytes written and whether the input was exhausted while filling
+    /// this part.
     #[allow(clippy::too_many_arguments)]
     async fn send_one_part(
         client: &RestfulLanceDbClient<S>,
@@ -346,6 +372,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         overwrite: bool,
         schema: &arrow_schema::SchemaRef,
         max_bytes: usize,
+        max_duration: Option<Duration>,
         first: RecordBatch,
         input: &mut SendableRecordBatchStream,
     ) -> DataFusionResult<(usize, bool)> {
@@ -358,6 +385,9 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             client, identifier, upload_id, &part_id, branch, overwrite, body,
         );
 
+        // Measured from just before the request is sent, matching the window the
+        // client read timeout applies to the upload.
+        let started = Instant::now();
         let producer = async move {
             let options = arrow_ipc::writer::IpcWriteOptions::default()
                 .try_with_compression(Some(CompressionType::LZ4_FRAME))
@@ -398,7 +428,9 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
                     // The request finished or failed; stop producing.
                     break;
                 }
-                if part_bytes >= max_bytes {
+                if part_bytes >= max_bytes
+                    || max_duration.is_some_and(|limit| started.elapsed() >= limit)
+                {
                     break;
                 }
             }
@@ -490,6 +522,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             self.tracker.clone(),
             self.branch.clone(),
             self.max_bytes_per_request,
+            self.max_request_duration,
         )))
     }
 
@@ -523,6 +556,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         let tracker = self.tracker.clone();
         let branch = self.branch.clone();
         let max_bytes_per_request = self.max_bytes_per_request;
+        let max_request_duration = self.max_request_duration;
 
         let stream = futures::stream::once(async move {
             // Multipart writes with a byte budget split the partition into
@@ -539,6 +573,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                     branch.as_deref(),
                     overwrite,
                     max_bytes,
+                    max_request_duration,
                     input_stream,
                     tracker,
                 )
@@ -892,6 +927,7 @@ mod tests {
             None,
             None,
             Some(1),
+            None,
         );
 
         let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
@@ -919,7 +955,8 @@ mod tests {
         ];
         let input = input_plan_from_batches(schema, batches).await;
 
-        // A large budget keeps the whole partition in a single part.
+        // A large byte budget and no time limit keep the whole partition in a
+        // single part.
         let exec = RemoteInsertExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
@@ -930,11 +967,53 @@ mod tests {
             None,
             None,
             Some(64 * 1024 * 1024),
+            None,
         );
 
         let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
         while stream.next().await.transpose().unwrap().is_some() {}
 
         assert_eq!(insert_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_chunked_splits_by_duration() {
+        use futures::StreamExt;
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let client = counting_insert_client(insert_count.clone());
+
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )]));
+        let batches = vec![
+            record_batch!(("id", Int32, [1, 2])).unwrap(),
+            record_batch!(("id", Int32, [3, 4])).unwrap(),
+            record_batch!(("id", Int32, [5, 6])).unwrap(),
+        ];
+        let input = input_plan_from_batches(schema, batches).await;
+
+        // A large byte budget but a tiny duration budget: writing and sending
+        // one batch already takes longer than the limit, so each batch is cut
+        // into its own part on the time check rather than the byte check.
+        let exec = RemoteInsertExec::new_multipart(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            "upload-1".to_string(),
+            None,
+            None,
+            Some(64 * 1024 * 1024),
+            Some(std::time::Duration::from_nanos(1)),
+        );
+
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        assert_eq!(insert_count.load(Ordering::SeqCst), 3);
     }
 }

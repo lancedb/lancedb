@@ -1362,6 +1362,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             output.tracker.clone(),
             self.branch.clone(),
             self.client.max_bytes_per_request(),
+            self.client.max_request_duration(),
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());

@@ -47,8 +47,19 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
     async fn get_headers(&self) -> Result<HashMap<String, String>>;
 }
 
-/// Default maximum bytes per insert request (1 GiB).
-const DEFAULT_MAX_BYTES_PER_REQUEST: usize = 1024 * 1024 * 1024;
+/// Default maximum bytes per insert request (8 GiB).
+///
+/// Sized so a multipart part can hold at least one full Lance data file (the
+/// default is 1M rows / 90 GB per file), which keeps fragments from being split
+/// into undersized files across parts. The time-based cut
+/// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
+/// uploads, so a large byte budget does not risk the read timeout.
+const DEFAULT_MAX_BYTES_PER_REQUEST: usize = 8 * 1024 * 1024 * 1024;
+
+/// The default max request duration is the read timeout divided by this, leaving
+/// headroom for the server to finalize and acknowledge a part before the read
+/// timeout (which also covers the request-body upload) fires.
+const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 
 /// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Clone)]
@@ -85,8 +96,22 @@ pub struct ClientConfig {
     /// The request body is still streamed (not buffered), so this does not
     /// increase peak memory. Set to `Some(0)` to disable splitting (one request
     /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
-    /// environment variable. Defaults to 1 GiB.
+    /// environment variable. Defaults to 8 GiB.
     pub max_bytes_per_request: Option<usize>,
+    /// Maximum wall-clock time to spend uploading a single insert HTTP request.
+    ///
+    /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
+    /// part is cut when it reaches either the byte budget or this duration,
+    /// whichever comes first. The client read timeout also covers the
+    /// request-body upload, so a slow or throttled upload of a large part can
+    /// hit that timeout before the byte budget is reached; cutting by time keeps
+    /// each request short enough that it completes (and the server acknowledges
+    /// the part) within the read timeout.
+    ///
+    /// Set to `Some(Duration::ZERO)` to disable the time-based cut. You can also
+    /// set the `LANCE_CLIENT_MAX_REQUEST_DURATION` environment variable (integer
+    /// seconds). Defaults to half the resolved read timeout.
+    pub max_request_duration: Option<Duration>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -104,6 +129,7 @@ impl std::fmt::Debug for ClientConfig {
             )
             .field("user_id", &self.user_id)
             .field("max_bytes_per_request", &self.max_bytes_per_request)
+            .field("max_request_duration", &self.max_request_duration)
             .finish()
     }
 }
@@ -120,6 +146,7 @@ impl Default for ClientConfig {
             header_provider: None,
             user_id: None,
             max_bytes_per_request: None,
+            max_request_duration: None,
         }
     }
 }
@@ -268,6 +295,9 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) read_consistency_interval: Option<Duration>,
     /// Maximum bytes per insert request. `None` disables request splitting.
     pub(crate) max_bytes_per_request: Option<usize>,
+    /// Maximum wall-clock time per insert request. `None` disables the
+    /// time-based part cut.
+    pub(crate) max_request_duration: Option<Duration>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -451,6 +481,8 @@ impl RestfulLanceDbClient<Sender> {
         let retry_config = client_config.retry_config.clone().try_into()?;
         let max_bytes_per_request =
             Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
+        let max_request_duration =
+            Self::resolve_max_request_duration(client_config.max_request_duration, read_timeout)?;
         Ok(Self {
             client,
             host,
@@ -463,6 +495,7 @@ impl RestfulLanceDbClient<Sender> {
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
+            max_request_duration,
         })
     }
 
@@ -483,6 +516,30 @@ impl RestfulLanceDbClient<Sender> {
         };
         Ok((value > 0).then_some(value))
     }
+
+    /// Resolve the max request duration from config, environment, or a default
+    /// derived from the read timeout. A zero duration (from either source)
+    /// disables the time-based cut.
+    fn resolve_max_request_duration(
+        passed: Option<Duration>,
+        read_timeout: Duration,
+    ) -> Result<Option<Duration>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_REQUEST_DURATION") {
+            let secs = env.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_REQUEST_DURATION must be a non-negative integer \
+                     number of seconds, got '{}'",
+                    env
+                ),
+            })?;
+            Duration::from_secs(secs)
+        } else {
+            read_timeout / DEFAULT_MAX_REQUEST_DURATION_DIVISOR
+        };
+        Ok((!value.is_zero()).then_some(value))
+    }
 }
 
 impl<S: HttpSend> RestfulLanceDbClient<S> {
@@ -494,6 +551,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     /// disabled.
     pub(crate) fn max_bytes_per_request(&self) -> Option<usize> {
         self.max_bytes_per_request
+    }
+
+    /// Maximum wall-clock time per insert request, or `None` if the time-based
+    /// cut is disabled.
+    pub(crate) fn max_request_duration(&self) -> Option<Duration> {
+        self.max_request_duration
     }
 
     pub fn default_headers(
@@ -923,6 +986,7 @@ pub mod test_utils {
             header_provider: None,
             read_consistency_interval,
             max_bytes_per_request: None,
+            max_request_duration: None,
         }
     }
 
@@ -951,6 +1015,9 @@ pub mod test_utils {
             max_bytes_per_request: config
                 .max_bytes_per_request
                 .and_then(|v| (v > 0).then_some(v)),
+            max_request_duration: config
+                .max_request_duration
+                .and_then(|v| (!v.is_zero()).then_some(v)),
         }
     }
 }
@@ -1155,6 +1222,7 @@ mod tests {
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Apply dynamic headers
@@ -1192,6 +1260,7 @@ mod tests {
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Apply dynamic headers
@@ -1231,6 +1300,7 @@ mod tests {
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
             max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Header provider errors should fail the request
