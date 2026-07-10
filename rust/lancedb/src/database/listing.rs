@@ -739,6 +739,27 @@ impl ListingDatabase {
                     },
                     _ => Error::from(err),
                 })?;
+
+            // Removing the files leaves the shared session's metadata cache
+            // (keyed by the dataset URI prefix, see `Session::metadata_cache`
+            // and `GlobalMetadataCache::for_dataset`) holding metadata for the
+            // now-deleted dataset. If a table is later re-created under the same
+            // URI, a mutation can resolve a stale row-id sequence and panic
+            // inside lance ("row id missing from index"). Invalidate the dropped
+            // dataset's cached metadata so the session stays consistent.
+            // See https://github.com/lancedb/lancedb/issues/3626.
+            if let Ok(table_uri) = self.table_uri(&name) {
+                // Strip any query string; lance keys the cache off the dataset
+                // path, and the `.lance` suffix makes this a safe prefix.
+                let uri_prefix = match table_uri.split_once('?') {
+                    Some((base, _)) => base,
+                    None => table_uri.as_str(),
+                };
+                self.session
+                    .file_metadata_cache()
+                    .invalidate_prefix(uri_prefix)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -1307,6 +1328,60 @@ mod tests {
             .unwrap();
 
         (tempdir, db)
+    }
+
+    // Count entries in the shared session metadata cache that belong to the
+    // dataset at `table_uri` (entries are prefixed with `{uri}/`).
+    async fn metadata_cache_entries(db: &ListingDatabase, table_uri: &str) -> usize {
+        match db.session.metadata_cache_keys().await {
+            Some(keys) => keys.filter(|k| k.starts_with(table_uri)).count(),
+            None => 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_purges_session_metadata_cache() {
+        // GH#3626: drop_table removed the files but left the shared session's
+        // metadata cache holding entries for the dropped dataset's URI. A table
+        // re-created under the same URI could then resolve stale metadata and
+        // panic inside lance. Verify the cache is purged on drop.
+        let (_tempdir, db) = setup_database().await;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "cache_drop".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        // Force a metadata read so the dataset is cached under its URI.
+        table.schema().await.unwrap();
+
+        let table_uri = db.table_uri("cache_drop").unwrap();
+        assert!(
+            metadata_cache_entries(&db, &table_uri).await > 0,
+            "expected the session metadata cache to be populated after use"
+        );
+
+        db.drop_table("cache_drop", &[]).await.unwrap();
+
+        assert_eq!(
+            metadata_cache_entries(&db, &table_uri).await,
+            0,
+            "drop_table should purge the dropped dataset's session cache entries"
+        );
     }
 
     #[tokio::test]
