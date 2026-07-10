@@ -103,7 +103,7 @@ jobs:
             features: fp16kernels
             pre_build: brew install protobuf
           - target: x86_64-pc-windows-msvc
-            host: windows-latest
+            host: windows-2025-8x-x64
             features: ","
             pre_build: |-
               choco install --no-progress protoc ninja nasm
@@ -111,12 +111,21 @@ jobs:
               # There is an issue where choco doesn't add nasm to the path
               export PATH="$PATH:/c/Program Files/NASM"
               nasm -v
+              # Fat LTO of the cdylib is single-threaded and the peak-memory
+              # step of the build, and had started hitting rustc-LLVM OOM on the
+              # Windows runners. ThinLTO parallelizes it across the runner's
+              # cores and keeps peak memory well under the limit.
+              export CARGO_PROFILE_RELEASE_LTO=thin
+              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: aarch64-pc-windows-msvc
-            host: windows-latest
+            host: windows-2025-8x-x64
             features: ","
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
+                # See ThinLTO note on the x86_64-pc-windows-msvc target above.
+                export CARGO_PROFILE_RELEASE_LTO=thin
+                export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
