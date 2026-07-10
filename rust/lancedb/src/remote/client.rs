@@ -293,6 +293,11 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     /// Connection-level read consistency interval. Drives the
     /// `x-lancedb-min-timestamp` freshness header sent on read requests.
     pub(crate) read_consistency_interval: Option<Duration>,
+    // Note the `Option` here means the opposite of the same-named
+    // `ClientConfig` fields: those are pre-resolution, where `None` means "fall
+    // back to env var / default". These are post-resolution (see
+    // `resolve_max_bytes_per_request` / `resolve_max_request_duration`), where a
+    // default has already been applied and `None` means the feature is disabled.
     /// Maximum bytes per insert request. `None` disables request splitting.
     pub(crate) max_bytes_per_request: Option<usize>,
     /// Maximum wall-clock time per insert request. `None` disables the
@@ -1411,5 +1416,194 @@ mod tests {
         unsafe {
             std::env::remove_var("LANCEDB_USER_ID");
         }
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_passed_value_wins() {
+        // An explicit config value is used verbatim; env/default are not consulted.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_zero_disables() {
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(0)).unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_default_when_unset() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        assert_eq!(resolved, Some(DEFAULT_MAX_BYTES_PER_REQUEST));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_from_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(4096));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_config_overrides_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        // A config value takes precedence over the environment variable.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "not-a-number");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_passed_value_wins() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::from_secs(42)),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_zero_disables() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::ZERO),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_default_is_half_read_timeout() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(150)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_from_env_seconds() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "30");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "12.5");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
     }
 }
