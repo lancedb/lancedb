@@ -45,6 +45,32 @@ def _blob_test_data():
     )
 
 
+def _blob_v2_table(db: DBConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = db.create_table(name, schema=schema)
+    table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+async def _blob_v2_table_async(db: AsyncConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table(name, schema=schema)
+    await table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+def _blob_table(db: DBConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return db.create_table(name, data=_blob_test_data())
+    return _blob_v2_table(db, name)
+
+
+async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return await db.create_table(name, data=_blob_test_data())
+    return await _blob_v2_table_async(db, name)
+
+
 def _assert_lazy_blob(value, expected: bytes):
     assert hasattr(value, "readall")
     assert value.readall() == expected
@@ -107,6 +133,18 @@ def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
         assert not hasattr(first, "readall")
 
 
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+def test_table_to_pandas_blob_bytes(tmp_db: DBConnection, blob_schema):
+    pytest.importorskip("lance")
+    table = _blob_table(tmp_db, f"test_to_pandas_blob_{blob_schema}_bytes", blob_schema)
+
+    df = table.to_pandas(blob_mode="bytes")
+
+    assert list(df.columns) == ["id", "blob"]
+    assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
+
+
 def test_table_to_pandas_kwargs(tmp_db: DBConnection):
     pd = pytest.importorskip("pandas")
     data = pa.table({"id": pa.array([1, 2], pa.int64())})
@@ -118,15 +156,20 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
 
 
 @pytest.mark.asyncio
-async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+async def test_async_table_to_pandas_blob_bytes(
+    tmp_db_async: AsyncConnection, blob_schema
+):
     pytest.importorskip("lance")
-    table = await tmp_db_async.create_table(
-        "test_async_to_pandas_blob_bytes", data=_blob_test_data()
+    table = await _blob_table_async(
+        tmp_db_async, f"test_async_to_pandas_blob_{blob_schema}_bytes", blob_schema
     )
 
     df = await table.to_pandas(blob_mode="bytes")
 
+    assert list(df.columns) == ["id", "blob"]
     assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
 
 
 @pytest.mark.asyncio

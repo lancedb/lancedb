@@ -16,7 +16,7 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, LsmWriteSpec,
-    MergeResult, Table, UpdateFieldMetadataResult, UpdateResult,
+    MergeResult, PyBlobFile, Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -44,6 +44,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<PyBlobFile>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;
     m.add_class::<FTSQuery>()?;
