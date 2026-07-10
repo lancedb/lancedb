@@ -15,6 +15,8 @@ from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT, api_key_not_found_help
 
+EMBEDDING_BATCH_SIZE = 100
+
 
 @register("gemini-text")
 class GeminiText(TextEmbeddingFunction):
@@ -141,12 +143,19 @@ class GeminiText(TextEmbeddingFunction):
             config_kwargs["task_type"] = task_type.upper()  # API expects uppercase
 
         config = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
-        response = self.client.models.embed_content(
-            model=self.name,
-            contents=contents,
-            config=config,
-        )
-        return [np.array(e.values) for e in response.embeddings]
+
+        # Call embed_content in groups of at most EMBEDDING_BATCH_SIZE docs at a time
+        embeddings = []
+        for i in range(0, len(contents), EMBEDDING_BATCH_SIZE):
+            chunk = contents[i : i + EMBEDDING_BATCH_SIZE]
+            response = self.client.models.embed_content(
+                model=self.name,
+                contents=chunk,
+                config=config,
+            )
+            embeddings.extend([np.array(e.values) for e in response.embeddings])
+
+        return embeddings
 
     @cached_property
     def client(self):

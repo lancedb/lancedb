@@ -149,3 +149,35 @@ class TestGeminiText:
                 mock_types.EmbedContentConfig.assert_called_once_with(
                     output_dimensionality=3072
                 )
+
+    def test_generate_embeddings_chunked(self):
+        """Test that generate_embeddings chunks texts into groups of 100."""
+        with patch.dict("os.environ", {"GOOGLE_API_KEY": "test-key"}):
+            with patch("lancedb.embeddings.gemini_text.attempt_import_or_raise"):
+                registry = get_registry()
+                func = registry.get("gemini-text").create()
+
+                # Passing 250 texts should make 3 calls (100, 100, 50)
+                texts = [f"text_{i}" for i in range(250)]
+
+                # Mock client response to return correct number of embeddings per chunk
+                def mock_embed_side_effect(model, contents, config=None):
+                    mock_resp = MagicMock()
+                    mock_embeddings = []
+                    for _ in contents:
+                        emb = MagicMock()
+                        # Each embedding is length 768
+                        emb.values = [0.1] * 768
+                        mock_embeddings.append(emb)
+                    mock_resp.embeddings = mock_embeddings
+                    return mock_resp
+
+                self.mock_client.models.embed_content.side_effect = (
+                    mock_embed_side_effect
+                )
+
+                embeddings = func.generate_embeddings(texts)
+
+                # embed_content should be called 3 times
+                assert self.mock_client.models.embed_content.call_count == 3
+                assert len(embeddings) == 250
