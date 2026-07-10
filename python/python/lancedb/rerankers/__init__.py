@@ -12,6 +12,7 @@ from .rrf import RRFReranker
 from .mrr import MRRReranker
 from .answerdotai import AnswerdotaiRerankers
 from .voyageai import VoyageAIReranker
+from .watsonx import WatsonxReranker
 
 __all__ = [
     "Reranker",
@@ -25,4 +26,5 @@ __all__ = [
     "AnswerdotaiRerankers",
     "VoyageAIReranker",
     "MRRReranker",
+    "WatsonxReranker",
 ]
