@@ -54,7 +54,7 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
 /// into undersized files across parts. The time-based cut
 /// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
 /// uploads, so a large byte budget does not risk the read timeout.
-const DEFAULT_MAX_BYTES_PER_REQUEST: usize = 8 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
 
 /// The default max request duration is the read timeout divided by this, leaving
 /// headroom for the server to finalize and acknowledge a part before the read
@@ -97,7 +97,7 @@ pub struct ClientConfig {
     /// increase peak memory. Set to `Some(0)` to disable splitting (one request
     /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
     /// environment variable. Defaults to 8 GiB.
-    pub max_bytes_per_request: Option<usize>,
+    pub max_bytes_per_request: Option<u64>,
     /// Maximum wall-clock time to spend uploading a single insert HTTP request.
     ///
     /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
@@ -299,7 +299,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     // `resolve_max_bytes_per_request` / `resolve_max_request_duration`), where a
     // default has already been applied and `None` means the feature is disabled.
     /// Maximum bytes per insert request. `None` disables request splitting.
-    pub(crate) max_bytes_per_request: Option<usize>,
+    pub(crate) max_bytes_per_request: Option<u64>,
     /// Maximum wall-clock time per insert request. `None` disables the
     /// time-based part cut.
     pub(crate) max_request_duration: Option<Duration>,
@@ -506,11 +506,11 @@ impl RestfulLanceDbClient<Sender> {
 
     /// Resolve the max bytes per insert request from config, environment, or the
     /// default. A value of `0` (from either source) disables request splitting.
-    fn resolve_max_bytes_per_request(passed: Option<usize>) -> Result<Option<usize>> {
+    fn resolve_max_bytes_per_request(passed: Option<u64>) -> Result<Option<u64>> {
         let value = if let Some(value) = passed {
             value
         } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST") {
-            env.parse::<usize>().map_err(|_| Error::InvalidInput {
+            env.parse::<u64>().map_err(|_| Error::InvalidInput {
                 message: format!(
                     "LANCE_CLIENT_MAX_BYTES_PER_REQUEST must be a non-negative integer, got '{}'",
                     env
@@ -554,7 +554,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     /// Maximum bytes per insert request, or `None` if request splitting is
     /// disabled.
-    pub(crate) fn max_bytes_per_request(&self) -> Option<usize> {
+    pub(crate) fn max_bytes_per_request(&self) -> Option<u64> {
         self.max_bytes_per_request
     }
 

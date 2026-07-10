@@ -53,7 +53,7 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     /// For multipart writes, split each partition into parts of at most this
     /// many bytes, each uploaded as a separate request. `None` sends the whole
     /// partition as a single request.
-    max_bytes_per_request: Option<usize>,
+    max_bytes_per_request: Option<u64>,
     /// For multipart writes, also cut a part once it has been uploading for this
     /// long, even if it has not reached `max_bytes_per_request`. Bounds request
     /// duration on slow/throttled uploads so no request exceeds the read
@@ -92,7 +92,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         upload_id: String,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
-        max_bytes_per_request: Option<usize>,
+        max_bytes_per_request: Option<u64>,
         max_request_duration: Option<Duration>,
     ) -> Self {
         Self::new_inner(
@@ -119,7 +119,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         upload_id: Option<String>,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
-        max_bytes_per_request: Option<usize>,
+        max_bytes_per_request: Option<u64>,
         max_request_duration: Option<Duration>,
     ) -> Self {
         let num_partitions = if upload_id.is_some() {
@@ -263,7 +263,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
     /// open past the client read timeout (which also covers the request body).
     async fn send_multipart_chunked(
         &self,
-        max_bytes: usize,
+        max_bytes: u64,
         max_duration: Option<Duration>,
         mut input: SendableRecordBatchStream,
         tracker: Option<Arc<WriteProgressTracker>>,
@@ -280,13 +280,16 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         };
 
         loop {
-            let (part_bytes, input_ended) = self
-                .send_one_part(&schema, max_bytes, max_duration, first, &mut input)
+            let input_ended = self
+                .send_one_part(
+                    &schema,
+                    max_bytes,
+                    max_duration,
+                    first,
+                    &mut input,
+                    &tracker,
+                )
                 .await?;
-
-            if let Some(ref t) = tracker {
-                t.record_bytes(part_bytes);
-            }
 
             if input_ended {
                 break;
@@ -351,17 +354,19 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
     /// Stream one part, starting from `first` and pulling from `input` until the
     /// part reaches `max_bytes`, has been uploading for `max_duration`, or the
     /// input ends. The body is streamed through a bounded channel concurrently
-    /// with the request, so peak memory stays at a couple of batches. Returns the
-    /// compressed bytes written and whether the input was exhausted while filling
-    /// this part.
+    /// with the request, so peak memory stays at a couple of batches. Wire bytes
+    /// are recorded on `tracker` as each chunk is produced, so progress advances
+    /// smoothly rather than jumping once per completed part. Returns whether the
+    /// input was exhausted while filling this part.
     async fn send_one_part(
         &self,
         schema: &arrow_schema::SchemaRef,
-        max_bytes: usize,
+        max_bytes: u64,
         max_duration: Option<Duration>,
         first: RecordBatch,
         input: &mut SendableRecordBatchStream,
-    ) -> DataFusionResult<(usize, bool)> {
+        tracker: &Option<Arc<WriteProgressTracker>>,
+    ) -> DataFusionResult<bool> {
         let (mut chunk_tx, chunk_rx) =
             futures::channel::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
         let body = reqwest::Body::wrap_stream(chunk_rx);
@@ -372,8 +377,9 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         // Measured from just before the request is sent, matching the window the
         // client read timeout applies to the upload.
         let started = Instant::now();
+        let tracker = tracker.clone();
         // Unlike `stream_as_http_body`, this producer also cuts the part at the
-        // byte/time budget and reports `(bytes, input_ended)` back, so it drives
+        // byte/time budget and reports back whether the input ended, so it drives
         // its own bounded mpsc channel joined with the request instead of reusing
         // that helper.
         let producer = async move {
@@ -384,7 +390,7 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
                 arrow_ipc::writer::StreamWriter::try_new_with_options(Vec::new(), schema, options)
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-            let mut part_bytes: usize = 0;
+            let mut part_bytes: u64 = 0;
             let mut input_ended = false;
             let mut pending = Some(first);
             loop {
@@ -411,10 +417,14 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
                     .write(&batch)
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
                 let chunk = std::mem::take(writer.get_mut());
-                part_bytes += chunk.len();
+                let chunk_len = chunk.len();
+                part_bytes += chunk_len as u64;
                 if chunk_tx.send(Ok(chunk)).await.is_err() {
                     // The request finished or failed; stop producing.
                     break;
+                }
+                if let Some(ref t) = tracker {
+                    t.record_bytes(chunk_len);
                 }
                 if part_bytes >= max_bytes
                     || max_duration.is_some_and(|limit| started.elapsed() >= limit)
@@ -428,9 +438,14 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
             let tail = std::mem::take(writer.get_mut());
             if !tail.is_empty() {
-                let _ = chunk_tx.send(Ok(tail)).await;
+                let tail_len = tail.len();
+                if chunk_tx.send(Ok(tail)).await.is_ok()
+                    && let Some(ref t) = tracker
+                {
+                    t.record_bytes(tail_len);
+                }
             }
-            Ok::<(usize, bool), DataFusionError>((part_bytes, input_ended))
+            Ok::<bool, DataFusionError>(input_ended)
         };
 
         let send = self.send_part_request(request);
@@ -442,10 +457,10 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
         let (producer_result, send_result) = futures::join!(producer, send);
         // Prefer the producer error (e.g. NaN rejection) over any HTTP error it
         // induced.
-        let (part_bytes, input_ended) = producer_result?;
+        let input_ended = producer_result?;
         send_result?;
 
-        Ok((part_bytes, input_ended))
+        Ok(input_ended)
     }
 }
 
@@ -1283,6 +1298,72 @@ mod tests {
         assert!(
             err.to_string().contains("boom"),
             "expected original input error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multipart_records_progress_within_a_part() {
+        use crate::table::write_progress::{ProgressCallback, WriteProgress, WriteProgressTracker};
+        use futures::StreamExt;
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let client = counting_insert_client(insert_count.clone());
+
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )]));
+        let batches = vec![
+            record_batch!(("id", Int32, [1, 2])).unwrap(),
+            record_batch!(("id", Int32, [3, 4])).unwrap(),
+            record_batch!(("id", Int32, [5, 6])).unwrap(),
+        ];
+        let input = input_plan_from_batches(schema, batches).await;
+
+        let observed = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let observed_cb = observed.clone();
+        let callback: ProgressCallback = Arc::new(Mutex::new(move |p: &WriteProgress| {
+            observed_cb.lock().unwrap().push(p.output_bytes());
+        }));
+        let tracker = Arc::new(WriteProgressTracker::new(callback, None));
+
+        // A large byte budget keeps all three batches in one part; smooth
+        // progress therefore requires bytes to be reported per chunk rather than
+        // once when the part completes.
+        let exec = RemoteInsertExec::new_multipart(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            "upload-1".to_string(),
+            Some(tracker),
+            None,
+            Some(64 * 1024 * 1024),
+            None,
+        );
+
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+
+        assert_eq!(
+            insert_count.load(Ordering::SeqCst),
+            1,
+            "batches should all land in a single part"
+        );
+        let observed = observed.lock().unwrap();
+        assert!(
+            observed.len() > 1,
+            "expected multiple incremental progress updates within the part: {observed:?}"
+        );
+        assert!(
+            observed.windows(2).all(|w| w[1] >= w[0]),
+            "progress bytes should be monotonic: {observed:?}"
+        );
+        assert!(
+            *observed.last().unwrap() > 0,
+            "final progress should report bytes: {observed:?}"
         );
     }
 }
