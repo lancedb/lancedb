@@ -44,7 +44,6 @@ lance-io = { workspace = true }
 lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lindera"] }
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
-lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
 lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
@@ -95,6 +94,7 @@ semver = { workspace = true }
 
 [dev-dependencies]
 anyhow = "1"
+lance-testing = { workspace = true }
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
 tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
