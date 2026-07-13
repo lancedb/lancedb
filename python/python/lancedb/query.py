@@ -2634,7 +2634,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.ef(self._ef)
         if self._bypass_vector_index:
             self._vector_query.bypass_vector_index()
-        if self._lower_bound or self._upper_bound:
+        if self._lower_bound is not None or self._upper_bound is not None:
             self._vector_query.distance_range(
                 lower_bound=self._lower_bound, upper_bound=self._upper_bound
             )
