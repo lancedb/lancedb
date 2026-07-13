@@ -1084,6 +1084,81 @@ def test_fts_query_to_json():
     assert json_str == expected
 
 
+def test_fts_phrase_query_is_preserved_in_query_object():
+    query = LanceFtsQueryBuilder(mock.Mock(), "puppy runs").phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == '"puppy runs"'
+
+
+def test_fts_phrase_query_execution_preserves_user_text():
+    table = mock.Mock()
+    table.schema = pa.schema([])
+    table._execute_query.return_value = pa.table({"text": ["result"]}).to_reader()
+
+    class CapturingReranker:
+        score = "relevance"
+
+        def __init__(self):
+            self.queries = []
+
+        def rerank_fts(self, query, results):
+            self.queries.append(query)
+            return results.append_column("_relevance_score", [[1.0]])
+
+    reranker = CapturingReranker()
+    query = (
+        LanceFtsQueryBuilder(table, "puppy runs")
+        .phrase_query()
+        .with_row_id(False)
+        .rerank(reranker)
+    )
+
+    query.to_arrow()
+
+    backend_query = table._execute_query.call_args.args[0]
+    assert (
+        backend_query.full_text_query.query,
+        reranker.queries,
+        query._query,
+    ) == ('"puppy runs"', ["puppy runs"], "puppy runs")
+
+
+def test_fts_phrase_query_false_preserves_string():
+    query = LanceFtsQueryBuilder(mock.Mock(), "puppy runs").phrase_query(False)
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == "puppy runs"
+
+
+def test_fts_phrase_query_preserves_fully_quoted_string():
+    query = LanceFtsQueryBuilder(mock.Mock(), '"puppy runs"').phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == '"puppy runs"'
+
+
+def test_fts_phrase_query_preserves_structured_phrase_query():
+    phrase_query = PhraseQuery("puppy runs", "text")
+    query = LanceFtsQueryBuilder(mock.Mock(), phrase_query).phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == phrase_query
+
+
+def test_fts_phrase_query_rejects_other_structured_queries():
+    query = LanceFtsQueryBuilder(
+        mock.Mock(), MatchQuery("puppy", "text")
+    ).phrase_query()
+
+    with pytest.raises(TypeError, match="Please use PhraseQuery for phrase queries"):
+        query.to_query_object()
+
+
 def test_fts_fast_search(table):
     table.create_fts_index("text")
 

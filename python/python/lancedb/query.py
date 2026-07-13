@@ -1951,8 +1951,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         phrase_query: bool, default True
-            If True, then the query will be wrapped in quotes and
-            double quotes replaced by single quotes.
+            If True, then an unquoted string query will be wrapped in quotes.
 
         Returns
         -------
@@ -1961,6 +1960,18 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         """
         self._phrase_query = phrase_query
         return self
+
+    def _query_with_phrase_semantics(self) -> str | FullTextQuery:
+        query = self._query
+        if not self._phrase_query:
+            return query
+        if isinstance(query, str):
+            if not query.startswith('"') or not query.endswith('"'):
+                return f'"{query}"'
+            return query
+        if isinstance(query, PhraseQuery):
+            return query
+        raise TypeError("Please use PhraseQuery for phrase queries.")
 
     def fast_search(self) -> LanceFtsQueryBuilder:
         """
@@ -1986,7 +1997,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
             full_text_query=FullTextSearchQuery(
-                query=self._query, columns=self._fts_columns
+                query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
             offset=self._offset,
             fast_search=self._fast_search,
@@ -2004,15 +2015,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         self._table._ensure_no_legacy_fts_index()
 
-        query = self._query
-        if self._phrase_query:
-            if isinstance(query, str):
-                if not query.startswith('"') or not query.endswith('"'):
-                    self._query = f'"{query}"'
-            elif isinstance(query, FullTextQuery) and not isinstance(
-                query, PhraseQuery
-            ):
-                raise TypeError("Please use PhraseQuery for phrase queries.")
         query = self._query_for_scan()
         results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
@@ -2143,14 +2145,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         return vector_query, text_query
 
-    def phrase_query(self, phrase_query: bool = None) -> LanceHybridQueryBuilder:
+    def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
         """Set whether to use phrase query.
 
         Parameters
         ----------
         phrase_query: bool, default True
-            If True, then the query will be wrapped in quotes and
-            double quotes replaced by single quotes.
+            If True, then an unquoted string query will be wrapped in quotes.
 
         Returns
         -------

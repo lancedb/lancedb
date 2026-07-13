@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from unittest import mock
+
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
@@ -175,6 +177,23 @@ async def test_analyze_plan(table: AsyncTable):
 
     assert "AnalyzeExec" in res
     assert "metrics=" in res
+
+
+def test_hybrid_phrase_query_is_preserved_in_analyze_plan():
+    table = mock.Mock()
+    analyzed_queries = []
+    table._analyze_plan.side_effect = lambda query: analyzed_queries.append(query) or ""
+
+    (
+        LanceHybridQueryBuilder(table)
+        .vector([0.1, 0.2])
+        .text("puppy runs")
+        .phrase_query()
+        .analyze_plan()
+    )
+
+    assert len(analyzed_queries) == 2
+    assert analyzed_queries[1].full_text_query.query == '"puppy runs"'
 
 
 @pytest.fixture
