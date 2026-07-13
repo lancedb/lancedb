@@ -139,6 +139,20 @@ def test_hybrid_query_distance_range(sync_table: Table):
             assert 0.2 <= dist.as_py() <= 0.5
 
 
+def test_hybrid_query_applies_zero_upper_distance_bound(sync_table: Table):
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("elephant")
+        .distance_range(upper_bound=0.0)
+        .rerank(RRFReranker(return_score="all"))
+        .limit(4)
+        .to_arrow()
+    )
+
+    assert len(result) == 0
+
+
 @pytest.mark.asyncio
 async def test_hybrid_query_distance_range_async(table: AsyncTable):
     reranker = RRFReranker(return_score="all")
