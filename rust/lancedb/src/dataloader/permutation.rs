@@ -12,6 +12,7 @@
 //! of rows.
 
 pub mod builder;
+pub mod cache;
 pub mod reader;
 pub mod shuffle;
 pub mod split;

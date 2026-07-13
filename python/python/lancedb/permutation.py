@@ -8,7 +8,12 @@ import os
 from deprecation import deprecated
 import pyarrow as pa
 
-from ._lancedb import async_permutation_builder, PermutationReader
+from ._lancedb import (
+    async_permutation_builder,
+    CachingPermutationReader,
+    PermutationReader,
+    SharedOffsetCache,
+)
 from .table import LanceTable, Table
 from .background_loop import LOOP
 from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
@@ -1018,6 +1023,28 @@ class Permutation:
         assert transform is not None, "transform is required"
         new = copy.copy(self)
         new.transform_fn = transform
+        return new
+
+    def with_cache(self, cache: "SharedOffsetCache") -> "Permutation":
+        """
+        Wrap this permutation's reader with a local LanceDB cache.
+
+        Fetched rows are stored in a local LanceDB table so that expensive
+        remote reads are not repeated across epochs.
+
+        Parameters
+        ----------
+        cache : SharedOffsetCache
+            A shared offset cache created via ``SharedOffsetCache.create``.
+
+        Returns
+        -------
+        Permutation
+            A new permutation backed by the caching reader.
+        """
+        self._ensure_open()
+        new = copy.copy(self)
+        new.reader = LOOP.run(CachingPermutationReader.create(self.reader, cache))
         return new
 
     def take_offsets(self, offsets: list[int]) -> Any:
