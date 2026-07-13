@@ -84,7 +84,7 @@ export function sanitizeMetadata(
     throw Error("Expected metadata, if present, to be a Map<string, string>");
   }
   for (const item of metadataLike) {
-    if (!(typeof item[0] === "string" || !(typeof item[1] === "string"))) {
+    if (typeof item[0] !== "string" || typeof item[1] !== "string") {
       throw Error(
         "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
       );

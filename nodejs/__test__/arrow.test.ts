@@ -991,6 +991,37 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
         expectValidMapField(roundTripped.schema.fields[0]);
       });
+
+      it("preserves string schema metadata", function () {
+        const metadata = new Map([["source", "fixture"]]);
+        const schema = new Schema(
+          [new Field("value", new Int32(), true)],
+          metadata,
+        );
+
+        expect(makeEmptyTable(schema).schema.metadata.get("source")).toBe(
+          "fixture",
+        );
+      });
+
+      it.each([
+        ["non-string keys", new Map<unknown, unknown>([[42, "fixture"]])],
+        ["non-string values", new Map<unknown, unknown>([["source", 42]])],
+        [
+          "non-string keys and values",
+          new Map<unknown, unknown>([[42, false]]),
+        ],
+      ])("rejects schema metadata with %s", function (_, metadataLike) {
+        const metadata = metadataLike as unknown as Map<string, string>;
+        const schema = new Schema(
+          [new Field("value", new Int32(), true)],
+          metadata,
+        );
+
+        expect(() => makeEmptyTable(schema)).toThrow(
+          "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
+        );
+      });
     });
 
     describe("when using two versions of arrow", function () {
