@@ -55,5 +55,7 @@ IndexType = Literal[
 ]
 
 # Tokenizer literals
-BuiltinTokenizerType = Literal["simple", "raw", "whitespace", "ngram"]
+BuiltinTokenizerType = Literal[
+    "simple", "raw", "whitespace", "ngram", "icu", "icu/split"
+]
 BaseTokenizerType = BuiltinTokenizerType | str

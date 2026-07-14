@@ -2307,6 +2307,56 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
+    test("tokenizes FTS queries by column or index name", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        {
+          text: "Running in cafés",
+          japanese: "Hello, こんにちは世界!",
+          vector: [0.1, 0.2, 0.3],
+        },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "simple" }),
+      });
+      await table.createIndex("japanese", {
+        config: Index.fts({
+          baseTokenizer: "icu",
+          stem: false,
+          removeStopWords: false,
+        }),
+        name: "japanese_icu_idx",
+      });
+
+      await expect(
+        table.tokenizeFtsQuery("hello", {} as never),
+      ).rejects.toThrow("Specify exactly one");
+      await expect(
+        table.tokenizeFtsQuery("hello", {
+          column: "text",
+          indexName: "text_idx",
+        } as never),
+      ).rejects.toThrow("Specify exactly one");
+
+      const simpleTokens = await table.tokenizeFtsQuery("Running in cafés", {
+        column: "text",
+      });
+      expect(simpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const icuTokens = await table.tokenizeFtsQuery("Hello, こんにちは世界!", {
+        indexName: "japanese_icu_idx",
+      });
+      expect(icuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+    });
+
     test("full text search fast search", async () => {
       const db = await connect(tmpDir.name);
       const data = [{ text: "hello world", vector: [0.1, 0.2, 0.3], id: 1 }];

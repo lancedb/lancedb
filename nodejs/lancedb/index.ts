@@ -124,6 +124,8 @@ export {
   OptimizeOptions,
   Version,
   WriteProgress,
+  FtsToken,
+  TokenizeFtsQueryOptions,
   LsmWriteSpec,
   ColumnAlteration,
   FieldMetadataUpdate,

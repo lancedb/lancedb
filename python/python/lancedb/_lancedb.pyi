@@ -238,6 +238,13 @@ class Table:
     async def prewarm_index(self, index_name: str) -> None: ...
     async def prewarm_data(self, columns: Optional[List[str]] = None) -> None: ...
     async def list_indices(self) -> list[IndexConfig]: ...
+    async def tokenize_fts_query(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> list[FtsToken]: ...
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -510,6 +517,10 @@ class MergeResult:
     num_deleted_rows: int
     num_attempts: int
     num_rows: int
+
+class FtsToken:
+    text: str
+    position: int
 
 class LsmWriteSpec:
     """Specification selecting Lance's MemWAL LSM-style write path for

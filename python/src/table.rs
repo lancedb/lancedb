@@ -19,8 +19,8 @@ use arrow::{
 };
 use lancedb::blob::BlobFile;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -486,6 +486,29 @@ impl PyBlobFile {
     }
 }
 
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FtsToken {
+    pub text: String,
+    pub position: u32,
+}
+
+#[pymethods]
+impl FtsToken {
+    pub fn __repr__(&self) -> String {
+        format!("FtsToken(text={:?}, position={})", self.text, self.position)
+    }
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
+        }
+    }
+}
+
 #[pyclass]
 pub struct Table {
     // We keep a copy of the name to use if the inner table is dropped
@@ -781,6 +804,23 @@ impl Table {
                     .map(|idx| IndexConfig::from_lancedb(py, idx))
                     .collect::<Vec<_>>())
             })
+        })
+    }
+
+    #[pyo3(signature = (query, *, column=None, index_name=None))]
+    pub fn tokenize_fts_query(
+        self_: PyRef<'_, Self>,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let tokens = inner
+                .tokenize_fts_query(&query, column.as_deref(), index_name.as_deref())
+                .await
+                .infer_error()?;
+            Ok(tokens.into_iter().map(FtsToken::from).collect::<Vec<_>>())
         })
     }
 

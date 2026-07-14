@@ -15,8 +15,8 @@ use pyo3::{
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
-    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, LsmWriteSpec,
-    MergeResult, PyBlobFile, Table, UpdateFieldMetadataResult, UpdateResult,
+    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
+    LsmWriteSpec, MergeResult, PyBlobFile, Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -60,6 +60,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
+    m.add_class::<FtsToken>()?;
     m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_class::<PyPermutationReader>()?;
     m.add_class::<PyExpr>()?;

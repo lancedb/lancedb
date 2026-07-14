@@ -158,6 +158,26 @@ export interface Version {
   metadata: Record<string, string>;
 }
 
+/** Token produced by the tokenizer configured on a full-text search index. */
+export interface FtsToken {
+  /** Token text after tokenizer filters have been applied. */
+  text: string;
+  /** Token position used by full-text query matching. */
+  position: number;
+}
+
+export type TokenizeFtsQueryOptions =
+  | {
+      /** FTS-indexed column whose tokenizer should be used. */
+      column: string;
+      indexName?: never;
+    }
+  | {
+      /** Name of the FTS index whose tokenizer should be used. */
+      indexName: string;
+      column?: never;
+    };
+
 /**
  * Specification selecting Lance's MemWAL LSM-style write path for
  * `mergeInsert`.
@@ -716,6 +736,19 @@ export abstract class Table {
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /** List all indices that have been created with {@link Table.createIndex} */
   abstract listIndices(): Promise<IndexConfig[]>;
+  /**
+   * Tokenize a full-text search query using the tokenizer configured on an FTS index.
+   *
+   * Specify exactly one of `column` or `indexName`.
+   *
+   * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+   * the client process from index metadata. For remote tables, this means the
+   * same tokenizer model files must also exist locally.
+   */
+  abstract tokenizeFtsQuery(
+    query: string,
+    options: TokenizeFtsQueryOptions,
+  ): Promise<FtsToken[]>;
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
@@ -1171,6 +1204,17 @@ export class LocalTable extends Table {
 
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
+  }
+
+  async tokenizeFtsQuery(
+    query: string,
+    options: TokenizeFtsQueryOptions,
+  ): Promise<FtsToken[]> {
+    return await this.inner.tokenizeFtsQuery(
+      query,
+      options?.column,
+      options?.indexName,
+    );
   }
 
   async toArrow(): Promise<ArrowTable> {

@@ -509,8 +509,18 @@ export interface FtsOptions {
    * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   *
+   * "icu" - ICU dictionary-based word segmentation.
+   *
+   * "icu/split" - ICU segmentation with simple-style delimiter splitting.
    */
-  baseTokenizer?: "simple" | "whitespace" | "raw" | "ngram";
+  baseTokenizer?:
+    | "simple"
+    | "whitespace"
+    | "raw"
+    | "ngram"
+    | "icu"
+    | "icu/split";
 
   /**
    * language for stemming and stop words

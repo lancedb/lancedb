@@ -2817,8 +2817,7 @@ mod tests {
     use super::*;
 
     use crate::remote::client::{ClientConfig, RetryConfig};
-    use crate::table::AddDataMode;
-    use crate::table::FieldMetadataUpdate;
+    use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
@@ -4886,6 +4885,139 @@ mod tests {
         assert_eq!(text_idx.index_details, None);
         assert_eq!(text_idx.type_url, None);
         assert_eq!(text_idx.created_at, None);
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_fts_query_uses_remote_index_details() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let index_details = serde_json::json!({
+            "base_tokenizer": "icu",
+            "language": "English",
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": false,
+            "ascii_folding": true,
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_details": index_details,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let tokens = table
+            .tokenize_fts_query("Hello, こんにちは世界!", None, Some("text_idx"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "hello".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "こんにちは".to_string(),
+                    position: 1,
+                },
+                FtsToken {
+                    text: "世界".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_fts_query_requires_one_selector() {
+        let table = Table::new_with_handler("my_table", move |request| -> http::Response<String> {
+            panic!("Unexpected request: {:?}", request);
+        });
+
+        let err = table
+            .tokenize_fts_query("hello", None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("Specify exactly one of 'column' or 'index_name'")
+        ));
+
+        let err = table
+            .tokenize_fts_query("hello", Some("text"), Some("text_idx"))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("Specify exactly one of 'column' or 'index_name'")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_fts_query_remote_requires_index_details() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let err = table
+            .tokenize_fts_query("hello", Some("text"), None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("does not include tokenizer details")
+        ));
     }
 
     #[test]
