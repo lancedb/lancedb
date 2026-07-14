@@ -1155,7 +1155,10 @@ def test_fts_phrase_query_rejects_other_structured_queries():
         mock.Mock(), MatchQuery("puppy", "text")
     ).phrase_query()
 
-    with pytest.raises(TypeError, match="Please use PhraseQuery for phrase queries"):
+    with pytest.raises(
+        TypeError,
+        match=r"phrase_query\(\) requires a string or PhraseQuery, got MatchQuery",
+    ):
         query.to_query_object()
 
 

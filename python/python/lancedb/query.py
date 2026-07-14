@@ -1971,7 +1971,10 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             return query
         if isinstance(query, PhraseQuery):
             return query
-        raise TypeError("Please use PhraseQuery for phrase queries.")
+        raise TypeError(
+            "phrase_query() requires a string or PhraseQuery, "
+            f"got {type(query).__name__}"
+        )
 
     def fast_search(self) -> LanceFtsQueryBuilder:
         """
