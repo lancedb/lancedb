@@ -52,7 +52,7 @@ jobs:
             extra_args: ""
             runner: ubuntu-22.04
             package_name: "lancedb-compat"
-            rustflags: "-C target-cpu=x86-64-v2"
+            rustflags: "-Ctarget-cpu=x86-64-v2"
     runs-on: ${{ matrix.config.runner }}
     steps:
       - uses: actions/checkout@v6
