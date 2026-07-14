@@ -6239,6 +6239,25 @@ class Branches:
         """Delete a branch."""
         LOOP.run(self._table.branches.delete(name))
 
+    def diff(self, from_branch: str) -> Dict[str, Any]:
+        """Diff a branch against main. Dict keys match the REST body (camelCase)."""
+        return LOOP.run(self._table.branches.diff(from_branch))
+
+    def merge(self, from_branch: str, dry_run: bool = True) -> Dict[str, Any]:
+        """Merge a branch into main, or dry-run.
+
+        Parameters
+        ----------
+        from_branch: str
+            Branch to merge from.
+        dry_run: bool, default True
+            When True, only preview. When False, attempt the merge.
+
+        Dict keys match the REST body (camelCase). A rejected merge returns
+        ``status="rejected"`` instead of raising.
+        """
+        return LOOP.run(self._table.branches.merge(from_branch, dry_run))
+
     def _wrap(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "Table":
@@ -6368,3 +6387,15 @@ class AsyncBranches:
     async def delete(self, name: str) -> None:
         """Delete a branch."""
         await self._table.branches.delete(name)
+
+    async def diff(self, from_branch: str) -> Dict[str, Any]:
+        """Diff a branch against main."""
+        return await self._table.branches.diff(from_branch)
+
+    async def merge(self, from_branch: str, dry_run: bool = True) -> Dict[str, Any]:
+        """Merge a branch into main, or dry-run.
+
+        Dict keys match the REST body (camelCase). A rejected merge returns
+        ``status="rejected"`` instead of raising.
+        """
+        return await self._table.branches.merge(from_branch, dry_run)
