@@ -245,7 +245,7 @@ class RemoteTable(Table):
         """List all the indices on the table"""
         return LOOP.run(self._table.list_indices())
 
-    def tokenize_fts_query(
+    def tokenize(
         self,
         query: str,
         *,
@@ -259,7 +259,7 @@ class RemoteTable(Table):
         model files must exist locally.
         """
         return LOOP.run(
-            self._table.tokenize_fts_query(query, column=column, index_name=index_name)
+            self._table.tokenize(query, column=column, index_name=index_name)
         )
 
     def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:

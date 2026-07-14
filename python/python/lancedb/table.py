@@ -1803,7 +1803,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def tokenize_fts_query(
+    def tokenize(
         self,
         query: str,
         *,
@@ -3765,7 +3765,7 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.list_indices())
 
-    def tokenize_fts_query(
+    def tokenize(
         self,
         query: str,
         *,
@@ -3782,7 +3782,7 @@ class LanceTable(Table):
         this means the same tokenizer model files must also exist locally.
         """
         return LOOP.run(
-            self._table.tokenize_fts_query(query, column=column, index_name=index_name)
+            self._table.tokenize(query, column=column, index_name=index_name)
         )
 
     def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
@@ -5845,7 +5845,7 @@ class AsyncTable:
         """
         return await self._inner.list_indices()
 
-    async def tokenize_fts_query(
+    async def tokenize(
         self,
         query: str,
         *,
@@ -5861,9 +5861,7 @@ class AsyncTable:
         rebuilt in the client process from index metadata. For remote tables,
         this means the same tokenizer model files must also exist locally.
         """
-        return await self._inner.tokenize_fts_query(
-            query, column=column, index_name=index_name
-        )
+        return await self._inner.tokenize(query, column=column, index_name=index_name)
 
     async def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """

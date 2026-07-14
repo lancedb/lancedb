@@ -934,10 +934,10 @@ Return the table as an arrow table
 
 ***
 
-### tokenizeFtsQuery()
+### tokenize()
 
 ```ts
-abstract tokenizeFtsQuery(query, options): Promise<FtsToken[]>
+abstract tokenize(query, options): Promise<FtsToken[]>
 ```
 
 Tokenize a full-text search query using the tokenizer configured on an FTS index.
@@ -952,7 +952,7 @@ same tokenizer model files must also exist locally.
 
 * **query**: `string`
 
-* **options**: [`TokenizeFtsQueryOptions`](../type-aliases/TokenizeFtsQueryOptions.md)
+* **options**: [`TokenizeTableOptions`](../type-aliases/TokenizeTableOptions.md)
 
 #### Returns
 

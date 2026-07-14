@@ -16,6 +16,7 @@ import {
   PhraseQuery,
   Table,
   connect,
+  tokenize,
 } from "../lancedb";
 import {
   Table as ArrowTable,
@@ -2329,17 +2330,17 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         name: "japanese_icu_idx",
       });
 
+      await expect(table.tokenize("hello", {} as never)).rejects.toThrow(
+        "Specify exactly one",
+      );
       await expect(
-        table.tokenizeFtsQuery("hello", {} as never),
-      ).rejects.toThrow("Specify exactly one");
-      await expect(
-        table.tokenizeFtsQuery("hello", {
+        table.tokenize("hello", {
           column: "text",
           indexName: "text_idx",
         } as never),
       ).rejects.toThrow("Specify exactly one");
 
-      const simpleTokens = await table.tokenizeFtsQuery("Running in cafés", {
+      const simpleTokens = await table.tokenize("Running in cafés", {
         column: "text",
       });
       expect(simpleTokens).toEqual([
@@ -2347,10 +2348,29 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         { text: "cafe", position: 2 },
       ]);
 
-      const icuTokens = await table.tokenizeFtsQuery("Hello, こんにちは世界!", {
+      const icuTokens = await table.tokenize("Hello, こんにちは世界!", {
         indexName: "japanese_icu_idx",
       });
       expect(icuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+
+      const directSimpleTokens = await tokenize("Running in cafés", {
+        baseTokenizer: "simple",
+      });
+      expect(directSimpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const directIcuTokens = await tokenize("Hello, こんにちは世界!", {
+        baseTokenizer: "icu",
+        stem: false,
+        removeStopWords: false,
+      });
+      expect(directIcuTokens).toEqual([
         { text: "hello", position: 0 },
         { text: "こんにちは", position: 1 },
         { text: "世界", position: 2 },

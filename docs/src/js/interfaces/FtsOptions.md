@@ -23,13 +23,7 @@ whether to remove punctuation
 ### baseTokenizer?
 
 ```ts
-optional baseTokenizer:
-  | "raw"
-  | "simple"
-  | "whitespace"
-  | "ngram"
-  | "icu"
-  | "icu/split";
+optional baseTokenizer: BaseTokenizer;
 ```
 
 The tokenizer to use when building the index.

@@ -4888,7 +4888,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tokenize_fts_query_uses_remote_index_details() {
+    async fn test_tokenize_uses_remote_index_details() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let index_details = serde_json::json!({
             "base_tokenizer": "icu",
@@ -4929,7 +4929,7 @@ mod tests {
         });
 
         let tokens = table
-            .tokenize_fts_query("Hello, こんにちは世界!", None, Some("text_idx"))
+            .tokenize("Hello, こんにちは世界!", "text_idx")
             .await
             .unwrap();
 
@@ -4953,34 +4953,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tokenize_fts_query_requires_one_selector() {
+    async fn test_tokenize_requires_existing_index_name() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let table = Table::new_with_handler("my_table", move |request| -> http::Response<String> {
-            panic!("Unexpected request: {:?}", request);
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({ "indexes": [] });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
         });
 
-        let err = table
-            .tokenize_fts_query("hello", None, None)
-            .await
-            .unwrap_err();
+        let err = table.tokenize("hello", "text_idx").await.unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidInput { message }
-                if message.contains("Specify exactly one of 'column' or 'index_name'")
-        ));
-
-        let err = table
-            .tokenize_fts_query("hello", Some("text"), Some("text_idx"))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message }
-                if message.contains("Specify exactly one of 'column' or 'index_name'")
+                if message.contains("No index named 'text_idx'")
         ));
     }
 
     #[tokio::test]
-    async fn test_tokenize_fts_query_remote_requires_index_details() {
+    async fn test_tokenize_with_column_remote_requires_index_details() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
@@ -5009,7 +5011,7 @@ mod tests {
         });
 
         let err = table
-            .tokenize_fts_query("hello", Some("text"), None)
+            .tokenize_with_column("hello", "text")
             .await
             .unwrap_err();
 

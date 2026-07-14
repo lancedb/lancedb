@@ -482,28 +482,22 @@ pub struct FtsToken {
     pub position: u32,
 }
 
-enum FtsIndexSelector {
-    Column(String),
-    IndexName(String),
-}
-
-impl FtsIndexSelector {
-    fn new(column: Option<&str>, index_name: Option<&str>) -> Result<Self> {
-        match (column, index_name) {
-            (Some(_), Some(_)) | (None, None) => Err(Error::InvalidInput {
-                message: "Specify exactly one of 'column' or 'index_name'".to_string(),
-            }),
-            (Some(column), None) => Ok(Self::Column(column.to_string())),
-            (None, Some(index_name)) => Ok(Self::IndexName(index_name.to_string())),
-        }
-    }
-
-    fn description(&self) -> String {
-        match self {
-            Self::Column(column) => format!("column '{}'", column),
-            Self::IndexName(index_name) => format!("index name '{}'", index_name),
-        }
-    }
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. Use
+/// [`crate::index::scalar::FtsIndexBuilder`] to supply the same tokenizer
+/// options used when creating an FTS index.
+pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToken>> {
+    let mut tokenizer = params.build().map_err(|err| Error::InvalidInput {
+        message: format!("Failed to build tokenizer: {}", err),
+    })?;
+    let tokens = collect_query_tokens(query, &mut tokenizer);
+    Ok((0..tokens.len())
+        .map(|idx| FtsToken {
+            text: tokens.get_token(idx).to_string(),
+            position: tokens.position(idx),
+        })
+        .collect())
 }
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -1694,87 +1688,83 @@ impl Table {
         self.inner.list_indices().await
     }
 
-    /// Tokenize a full-text search query using an FTS index tokenizer.
-    ///
-    /// Specify exactly one of `column` or `index_name`. When `column` is used,
-    /// the column must have exactly one FTS index.
+    /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
     /// same tokenizer model files must also exist locally.
-    pub async fn tokenize_fts_query(
+    pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| idx.name == index_name)
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("No index named '{}'", index_name),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!("Index name '{}' is ambiguous", index_name),
+                });
+            }
+        };
+        if index.index_type != IndexType::FTS {
+            return Err(Error::InvalidInput {
+                message: format!("Index '{}' is not a full text search index", index_name),
+            });
+        }
+        self.tokenize_with_index(query, index, index_name)
+    }
+
+    /// Tokenize a full-text search query using the tokenizer configured on the
+    /// FTS index for a column.
+    ///
+    /// The column must have exactly one FTS index. Model-backed tokenizers such
+    /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
+    /// index metadata. For remote tables, this means the same tokenizer model
+    /// files must also exist locally.
+    pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
+        let schema = self.inner.schema().await?;
+        let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| {
+                idx.index_type == IndexType::FTS
+                    && idx.columns.len() == 1
+                    && idx.columns[0] == column
+            })
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("Column '{}' does not have a full text search index", column),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Column '{}' has multiple full text search indexes; tokenization by column is ambiguous",
+                        column
+                    ),
+                });
+            }
+        };
+        self.tokenize(query, &index.name).await
+    }
+
+    fn tokenize_with_index(
         &self,
         query: &str,
-        column: Option<&str>,
-        index_name: Option<&str>,
+        index: &IndexConfig,
+        index_name: &str,
     ) -> Result<Vec<FtsToken>> {
-        let selector = match FtsIndexSelector::new(column, index_name)? {
-            FtsIndexSelector::Column(column) => {
-                let schema = self.inner.schema().await?;
-                let (column, _) = resolve_arrow_field_path(schema.as_ref(), &column)?;
-                FtsIndexSelector::Column(column)
-            }
-            selector => selector,
-        };
-        let indices = self.inner.list_indices().await?;
-        let index = match &selector {
-            FtsIndexSelector::Column(column) => {
-                let matches = indices
-                    .iter()
-                    .filter(|idx| {
-                        idx.index_type == IndexType::FTS
-                            && idx.columns.len() == 1
-                            && idx.columns[0] == *column
-                    })
-                    .collect::<Vec<_>>();
-                match matches.as_slice() {
-                    [index] => *index,
-                    [] => {
-                        return Err(Error::InvalidInput {
-                            message: format!(
-                                "Column '{}' does not have a full text search index",
-                                column
-                            ),
-                        });
-                    }
-                    _ => {
-                        return Err(Error::InvalidInput {
-                            message: format!(
-                                "Column '{}' has multiple full text search indexes; tokenization by column is ambiguous",
-                                column
-                            ),
-                        });
-                    }
-                }
-            }
-            FtsIndexSelector::IndexName(index_name) => {
-                let matches = indices
-                    .iter()
-                    .filter(|idx| idx.name == *index_name)
-                    .collect::<Vec<_>>();
-                let index = match matches.as_slice() {
-                    [index] => *index,
-                    [] => {
-                        return Err(Error::InvalidInput {
-                            message: format!("No index named '{}'", index_name),
-                        });
-                    }
-                    _ => {
-                        return Err(Error::InvalidInput {
-                            message: format!("Index name '{}' is ambiguous", index_name),
-                        });
-                    }
-                };
-                if index.index_type != IndexType::FTS {
-                    return Err(Error::InvalidInput {
-                        message: format!("Index '{}' is not a full text search index", index_name),
-                    });
-                }
-                index
-            }
-        };
-        let selector_description = selector.description();
-
+        let selector_description = format!("index name '{}'", index_name);
         let details = index
             .index_details
             .as_deref()
@@ -1792,19 +1782,15 @@ impl Table {
                 ),
             }
         })?;
-        let mut tokenizer = params.build().map_err(|err| Error::InvalidInput {
-            message: format!(
-                "Failed to build tokenizer for full text search index '{}' for {}: {}",
-                index.name, selector_description, err
-            ),
-        })?;
-        let tokens = collect_query_tokens(query, &mut tokenizer);
-        Ok((0..tokens.len())
-            .map(|idx| FtsToken {
-                text: tokens.get_token(idx).to_string(),
-                position: tokens.position(idx),
-            })
-            .collect())
+        tokenize(query, &params).map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!(
+                    "{} for full text search index '{}' for {}",
+                    message, index.name, selector_description
+                ),
+            },
+            err => err,
+        })
     }
 
     /// Get the table URI (storage location)
@@ -3381,6 +3367,27 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+
+    #[test]
+    fn test_tokenize_uses_explicit_simple_tokenizer() {
+        let params =
+            crate::index::scalar::FtsIndexBuilder::default().base_tokenizer("simple".to_string());
+        let tokens = crate::tokenize("Running in cafés", &params).unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "run".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "cafe".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn test_open() {

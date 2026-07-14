@@ -166,7 +166,7 @@ export interface FtsToken {
   position: number;
 }
 
-export type TokenizeFtsQueryOptions =
+export type TokenizeTableOptions =
   | {
       /** FTS-indexed column whose tokenizer should be used. */
       column: string;
@@ -745,9 +745,9 @@ export abstract class Table {
    * the client process from index metadata. For remote tables, this means the
    * same tokenizer model files must also exist locally.
    */
-  abstract tokenizeFtsQuery(
+  abstract tokenize(
     query: string,
-    options: TokenizeFtsQueryOptions,
+    options: TokenizeTableOptions,
   ): Promise<FtsToken[]>;
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
@@ -1206,11 +1206,11 @@ export class LocalTable extends Table {
     return await this.inner.listIndices();
   }
 
-  async tokenizeFtsQuery(
+  async tokenize(
     query: string,
-    options: TokenizeFtsQueryOptions,
+    options: TokenizeTableOptions,
   ): Promise<FtsToken[]> {
-    return await this.inner.tokenizeFtsQuery(
+    return await this.inner.tokenize(
       query,
       options?.column,
       options?.indexName,

@@ -575,20 +575,24 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn tokenize_fts_query(
+    pub async fn tokenize(
         &self,
         query: String,
         column: Option<String>,
         index_name: Option<String>,
     ) -> napi::Result<Vec<FtsToken>> {
-        Ok(self
-            .inner_ref()?
-            .tokenize_fts_query(&query, column.as_deref(), index_name.as_deref())
-            .await
-            .default_error()?
-            .into_iter()
-            .map(FtsToken::from)
-            .collect())
+        let table = self.inner_ref()?;
+        let tokens = match (column.as_deref(), index_name.as_deref()) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(napi::Error::from_reason(
+                    "Specify exactly one of 'column' or 'indexName'",
+                ));
+            }
+            (Some(column), None) => table.tokenize_with_column(&query, column).await,
+            (None, Some(index_name)) => table.tokenize(&query, index_name).await,
+        }
+        .default_error()?;
+        Ok(tokens.into_iter().map(FtsToken::from).collect())
     }
 
     #[napi(catch_unwind)]

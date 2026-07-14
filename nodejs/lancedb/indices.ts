@@ -486,6 +486,16 @@ export interface IvfFlatOptions {
   sampleRate?: number;
 }
 
+export type BaseTokenizer =
+  | "simple"
+  | "whitespace"
+  | "raw"
+  | "ngram"
+  | "icu"
+  | "icu/split"
+  | `jieba/${string}`
+  | `lindera/${string}`;
+
 /**
  * Options to create a full text search index
  */
@@ -514,13 +524,7 @@ export interface FtsOptions {
    *
    * "icu/split" - ICU segmentation with simple-style delimiter splitting.
    */
-  baseTokenizer?:
-    | "simple"
-    | "whitespace"
-    | "raw"
-    | "ngram"
-    | "icu"
-    | "icu/split";
+  baseTokenizer?: BaseTokenizer;
 
   /**
    * language for stemming and stop words

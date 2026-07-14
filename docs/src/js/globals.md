@@ -108,6 +108,7 @@
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [TlsConfig](interfaces/TlsConfig.md)
 - [TokenResponse](interfaces/TokenResponse.md)
+- [TokenizeOptions](interfaces/TokenizeOptions.md)
 - [UpdateFieldMetadataResult](interfaces/UpdateFieldMetadataResult.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
@@ -117,6 +118,7 @@
 
 ## Type Aliases
 
+- [BaseTokenizer](type-aliases/BaseTokenizer.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
@@ -126,7 +128,7 @@
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
-- [TokenizeFtsQueryOptions](type-aliases/TokenizeFtsQueryOptions.md)
+- [TokenizeTableOptions](type-aliases/TokenizeTableOptions.md)
 
 ## Functions
 
@@ -137,3 +139,4 @@
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
+- [tokenize](functions/tokenize.md)
