@@ -23,6 +23,7 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_index::IndexCriteria;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
@@ -42,6 +43,7 @@ use std::sync::Arc;
 
 use crate::connection::NamespaceClientPushdownOperation;
 
+use crate::DistanceType;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
@@ -2967,17 +2969,21 @@ impl BaseTable for NativeTable {
             .await?
             .into_iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = match idx_desc.index_type().parse() {
-                    Ok(index_type) => index_type,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to parse index type for index {}: {}",
-                            idx_desc.name(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+                let index_type: crate::index::IndexType = idx_desc
+                    .index_type()
+                    .parse()
+                    .unwrap_or(crate::index::IndexType::Unknown);
+                if index_type == crate::index::IndexType::Unknown {
+                    // Internal or future index types that this version doesn't recognize
+                    // (e.g. Lance's internal FragReuseIndex) are silently excluded from
+                    // the user-visible index listing.
+                    log::debug!(
+                        "Skipping unrecognized index '{}' (type '{}') in list_indices",
+                        idx_desc.name(),
+                        idx_desc.index_type(),
+                    );
+                    return None;
+                }
 
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
@@ -3044,40 +3050,83 @@ impl BaseTable for NativeTable {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
-        let stats = match self
-            .dataset
-            .get()
-            .await?
-            .index_statistics(index_name.as_ref())
-            .await
-        {
-            Ok(stats) => stats,
-            Err(lance_core::Error::IndexNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(Error::from(e)),
+        // describe_indices() reads only manifest-level metadata (no index file I/O).
+        // VectorIndexDetails in the manifest carries distance_type for indices written
+        // by recent Lance versions. For older datasets that didn't write those details
+        // we fall back to index_statistics() for vector index types.
+        let dataset = self.dataset.get().await?;
+
+        let mut descriptions = dataset
+            .describe_indices(Some(IndexCriteria::default().with_name(index_name)))
+            .await?;
+        let Some(description) = descriptions.pop() else {
+            return Ok(None);
         };
 
-        let mut stats: IndexStatisticsImpl =
-            serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-                message: format!("error deserializing index statistics: {}", e),
-            })?;
+        let index_type: crate::index::IndexType = description
+            .index_type()
+            .parse()
+            .unwrap_or(crate::index::IndexType::Unknown);
 
-        let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
-            message: "index statistics is empty".to_string(),
-        })?;
-        // Index type should be present at one of the levels.
-        let index_type =
-            stats
-                .index_type
-                .or(first_index.index_type)
-                .ok_or_else(|| Error::InvalidInput {
-                    message: "index statistics was missing index type".to_string(),
-                })?;
-        Ok(Some(IndexStatistics {
-            num_indexed_rows: stats.num_indexed_rows,
-            num_unindexed_rows: stats.num_unindexed_rows,
+        let is_vector = matches!(
             index_type,
-            distance_type: first_index.metric_type,
-            num_indices: stats.num_indices,
+            crate::index::IndexType::IvfFlat
+                | crate::index::IndexType::IvfSq
+                | crate::index::IndexType::IvfPq
+                | crate::index::IndexType::IvfRq
+                | crate::index::IndexType::IvfHnswPq
+                | crate::index::IndexType::IvfHnswSq
+                | crate::index::IndexType::IvfHnswFlat
+        );
+
+        // details() serializes VectorIndexDetails to JSON with an uppercase "metric_type"
+        // field (e.g. "L2", "COSINE"). Parse it with a case-insensitive match.
+        let distance_type = description.details().ok().and_then(|json| {
+            #[derive(serde::Deserialize)]
+            struct Details {
+                metric_type: Option<String>,
+            }
+            serde_json::from_str::<Details>(&json)
+                .ok()
+                .and_then(|d| d.metric_type)
+                .and_then(|m| match m.to_uppercase().as_str() {
+                    "L2" => Some(DistanceType::L2),
+                    "COSINE" => Some(DistanceType::Cosine),
+                    "DOT" => Some(DistanceType::Dot),
+                    "HAMMING" => Some(DistanceType::Hamming),
+                    _ => None,
+                })
+        });
+
+        // Older Lance datasets didn't write VectorIndexDetails, so distance_type won't
+        // be in the manifest. Fall back to index_statistics() only in that case.
+        if is_vector && distance_type.is_none() {
+            let stats = dataset.index_statistics(index_name).await?;
+            let mut stats: IndexStatisticsImpl =
+                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                    message: format!("error deserializing index statistics: {}", e),
+                })?;
+            let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+                message: "index statistics is empty".to_string(),
+            })?;
+            return Ok(Some(IndexStatistics {
+                num_indexed_rows: stats.num_indexed_rows,
+                num_unindexed_rows: stats.num_unindexed_rows,
+                index_type,
+                distance_type: first_index.metric_type,
+                num_indices: stats.num_indices,
+            }));
+        }
+
+        let num_indexed_rows = description.rows_indexed() as usize;
+        let total_rows = dataset.count_rows(None).await?;
+        let num_unindexed_rows = total_rows.saturating_sub(num_indexed_rows);
+        Ok(Some(IndexStatistics {
+            num_indexed_rows,
+            num_unindexed_rows,
+            index_type,
+            distance_type,
+            num_indices: Some(description.metadata().len() as u32),
         }))
     }
 

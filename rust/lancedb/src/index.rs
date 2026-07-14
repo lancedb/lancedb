@@ -317,6 +317,8 @@ pub enum IndexType {
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
+    /// Catch-all for index types not recognized by this version of LanceDB.
+    Unknown,
 }
 
 impl std::fmt::Display for IndexType {
@@ -334,6 +336,7 @@ impl std::fmt::Display for IndexType {
             Self::LabelList => write!(f, "LABEL_LIST"),
             Self::Fm => write!(f, "FM"),
             Self::FTS => write!(f, "FTS"),
+            Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
 }
@@ -355,9 +358,7 @@ impl std::str::FromStr for IndexType {
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
             "IVF_HNSW_FLAT" => Ok(Self::IvfHnswFlat),
-            _ => Err(Error::InvalidInput {
-                message: format!("the input value {} is not a valid IndexType", value),
-            }),
+            _ => Ok(Self::Unknown),
         }
     }
 }
@@ -425,20 +426,15 @@ pub struct IndexConfig {
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexMetadata {
     pub metric_type: Option<DistanceType>,
-    // Sometimes the index type is provided at this level.
-    pub index_type: Option<IndexType>,
 }
 
-// This struct is used to deserialize the JSON data returned from the Lance API
-// Dataset::index_statistics().
+// Deserializes the JSON returned by Dataset::index_statistics().
 #[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexStatisticsImpl {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
     pub indices: Vec<IndexMetadata>,
-    // Sometimes, the index type is provided at this level.
-    pub index_type: Option<IndexType>,
     pub num_indices: Option<u32>,
 }
 
