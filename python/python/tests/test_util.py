@@ -287,7 +287,9 @@ def test_append_vector_columns():
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
 def test_handle_bad_vectors_jagged(on_bad_vectors):
-    vector = pa.array([[1.0, 2.0], [3.0], [4.0, 5.0]])
+    vector = pa.array(
+        [[1.0, 2.0], [3.0], [4.0, 5.0], [6.0, 7.0, 8.0], [None, 9.0], None]
+    )
     schema = pa.schema({"vector": pa.list_(pa.float64())})
     data = pa.table({"vector": vector}, schema=schema)
 
@@ -313,11 +315,20 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         ).read_all()
 
     if on_bad_vectors == "drop":
-        expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], [4.0, 5.0], [None, 9.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[1.0, 2.0], [3.0, 42.0], [4.0, 5.0]])
+        expected = pa.array(
+            [
+                [1.0, 2.0],
+                [3.0, 42.0],
+                [4.0, 5.0],
+                [6.0, 7.0],
+                [None, 9.0],
+                [42.0, 42.0],
+            ]
+        )
     elif on_bad_vectors == "null":
-        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
 
     assert output["vector"].combine_chunks() == expected
 
