@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as arrow from "../lancedb/arrow";
-import { sanitizeField, sanitizeType } from "../lancedb/sanitize";
+import { sanitizeField, sanitizeMap, sanitizeType } from "../lancedb/sanitize";
 
 describe("sanitize", function () {
   describe("sanitizeType function", function () {
@@ -178,6 +178,17 @@ describe("sanitize", function () {
         }),
       ).toThrow(
         "Unable to sanitize type for field: invalid_field due to error: Error: Unrecognized type name in schema: invalid_type",
+      );
+    });
+  });
+
+  describe("sanitizeMap function", function () {
+    it.each([
+      ["no children", []],
+      ["two children", [{}, {}]],
+    ])("should reject a Map type with %s", function (_, children) {
+      expect(() => sanitizeMap({ children, keysSorted: false })).toThrow(
+        "Expected a Map type to have exactly one child",
       );
     });
   });

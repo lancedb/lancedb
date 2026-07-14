@@ -52,6 +52,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       Float64,
       Struct,
       List,
+      Map_,
       Int16,
       Int32,
       Int64,
@@ -68,6 +69,30 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     } = <any>arrow;
     type Schema = ApacheArrow["Schema"];
     type Table = ApacheArrow["Table"];
+
+    function expectValidMapField(
+      // biome-ignore lint/suspicious/noExplicitAny: Arrow Field types vary across supported versions
+      field: any,
+    ): void {
+      expect(DataType.isMap(field.type)).toBe(true);
+      expect(field.type.keysSorted).toBe(true);
+      expect(field.type.children).toHaveLength(1);
+
+      const entries = field.type.children[0];
+      expect(entries.name).toBe("entries");
+      expect(entries.nullable).toBe(false);
+      expect(DataType.isStruct(entries.type)).toBe(true);
+      expect(entries.type.children).toHaveLength(2);
+
+      const [key, value] = entries.type.children;
+      expect([key.name, value.name]).toEqual(["key", "value"]);
+      expect(key.nullable).toBe(false);
+      expect(DataType.isUtf8(key.type)).toBe(true);
+      expect(value.nullable).toBe(true);
+      expect(DataType.isInt(value.type)).toBe(true);
+      expect(value.type.bitWidth).toBe(32);
+      expect(value.type.isSigned).toBe(true);
+    }
 
     // Helper method to verify various ways to create a table
     async function checkTableCreation(
@@ -937,6 +962,34 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (_, __, schema) => (<any>makeEmptyTable)(schema),
           false,
         );
+      });
+
+      it("will make an empty table with a Map field", async function () {
+        const schema = new Schema([
+          new Field(
+            "attributes",
+            new Map_(
+              new Field(
+                "entries",
+                new Struct([
+                  new Field("key", new Utf8(), false),
+                  new Field("value", new Int32(), true),
+                ]),
+                false,
+              ),
+              true,
+            ),
+          ),
+        ]);
+
+        const table = makeEmptyTable(schema);
+
+        expectValidMapField(table.schema.fields[0]);
+
+        const buffer = await fromTableToBuffer(table);
+        const roundTripped = tableFromIPC(buffer);
+
+        expectValidMapField(roundTripped.schema.fields[0]);
       });
     });
 

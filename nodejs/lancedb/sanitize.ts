@@ -288,12 +288,11 @@ export function sanitizeMap(typeLike: object) {
   if (!("keysSorted" in typeLike) || typeof typeLike.keysSorted !== "boolean") {
     throw Error("Expected a Map type to have a `keysSorted` property");
   }
+  if (typeLike.children.length !== 1) {
+    throw Error("Expected a Map type to have exactly one child");
+  }
 
-  return new Map_(
-    // biome-ignore lint/suspicious/noExplicitAny: skip
-    typeLike.children.map((field) => sanitizeField(field)) as any,
-    typeLike.keysSorted,
-  );
+  return new Map_(sanitizeField(typeLike.children[0]), typeLike.keysSorted);
 }
 
 export function sanitizeDuration(typeLike: object) {
