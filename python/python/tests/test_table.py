@@ -1845,7 +1845,9 @@ def test_on_bad_vectors_fill_preserves_arrow_nested_vector_type(mem_db: DBConnec
         fill_value=0.0,
     )
 
-    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0], [0.0, 0.0]]
+    vector = table.to_arrow()["vector"]
+    assert vector.type == pa.list_(pa.float32())
+    assert vector.to_pylist() == [[1.0, 2.0], [0.0, 3.0]]
 
 
 @pytest.mark.parametrize(
