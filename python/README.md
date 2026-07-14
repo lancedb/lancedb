@@ -29,8 +29,6 @@ RUSTFLAGS="-C target-cpu=x86-64-v2" maturin build --release
 pip install ./target/wheels/lancedb-*.whl
 ```
 
-> **Note:** `lancedb-compat` requires the runtime SIMD dispatch added in [lance-format/lance#6630](https://github.com/lance-format/lance/pull/6630). It becomes available once that lance PR merges and lancedb's lance dep is bumped to a release that includes it.
-
 ### Preview Releases
 
 Stable releases are created about every 2 weeks. For the latest features and bug fixes, you can install the preview release. These releases receive the same level of testing as stable releases, but are not guaranteed to be available for more than 6 months after they are released. Once your application is stable, we recommend switching to stable releases.
