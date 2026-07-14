@@ -28,16 +28,6 @@ MODELS_DIMS = {
     "sentence-transformers/all-minilm-l12-v2": 384,
 }
 
-# Models that are current (non-deprecated). Legacy entries above are intentionally
-# excluded so that model_names() guides new users toward supported options.
-_CURRENT_MODELS = [
-    "ibm/granite-embedding-278m-multilingual",
-    "ibm/slate-125m-english-rtrvr-v2",
-    "ibm/slate-30m-english-rtrvr-v2",
-    "intfloat/multilingual-e5-large",
-    "sentence-transformers/all-minilm-l6-v2",
-]
-
 
 @register("watsonx")
 class WatsonxEmbeddings(TextEmbeddingFunction):
@@ -86,7 +76,7 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
 
     @staticmethod
     def model_names():
-        return list(_CURRENT_MODELS)
+        return list(MODELS_DIMS.keys())
 
     def ndims(self):
         return self._ndims
@@ -95,7 +85,8 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
     def _ndims(self):
         if self.name not in MODELS_DIMS:
             raise ValueError(
-                f"Unknown model '{self.name}'. Supported models: {_CURRENT_MODELS}"
+                f"Unknown model '{self.name}'. "
+                f"Available models: {list(MODELS_DIMS.keys())}"
             )
         return MODELS_DIMS[self.name]
 

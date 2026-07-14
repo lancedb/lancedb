@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from lancedb.embeddings import get_registry
-from lancedb.embeddings.watsonx import MODELS_DIMS, _CURRENT_MODELS, WatsonxEmbeddings
+from lancedb.embeddings.watsonx import MODELS_DIMS, WatsonxEmbeddings
 
 
 # ---------------------------------------------------------------------------
@@ -66,12 +66,16 @@ class TestRegistry:
     def test_watsonx_registered(self):
         assert get_registry().get("watsonx") is not None
 
-    def test_model_names_returns_current_only(self):
+    def test_model_names_returns_all_available(self):
         names = WatsonxEmbeddings.model_names()
-        assert names == _CURRENT_MODELS
-        # Legacy names must not appear in model_names()
-        for legacy in ("ibm/slate-125m-english-rtrvr", "ibm/slate-30m-english-rtrvr"):
-            assert legacy not in names
+        assert names == list(MODELS_DIMS.keys())
+        for name in (
+            "ibm/granite-embedding-278m-multilingual",
+            "ibm/slate-125m-english-rtrvr-v2",
+            "ibm/slate-125m-english-rtrvr",
+            "ibm/slate-30m-english-rtrvr",
+        ):
+            assert name in names
 
 
 # ---------------------------------------------------------------------------
