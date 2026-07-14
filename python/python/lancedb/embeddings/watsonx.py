@@ -14,20 +14,27 @@ import numpy as np
 
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 
-MODELS_DIMS = {
-    # Models available on the watsonx.ai SaaS platform.
-    # Note: IBM has announced deprecation with future withdrawal dates for some
-    # of these (slate-*-v2, all-minilm-l6-v2). ibm/granite-embedding-278m-multilingual
-    # is the recommended replacement.  See:
-    # https://dataplatform.cloud.ibm.com/docs/content/wsj/analyze-data/fm-models-embed.html
+# Models currently available on the watsonx.ai SaaS platform.
+# These are the IDs advertised to new users via model_names() and shown in
+# validation error messages.  Regional availability and withdrawal dates are
+# documented at:
+# https://www.ibm.com/docs/en/watsonx/saas?topic=models-supported-encoder
+CURRENT_MODELS: dict[str, int] = {
     "ibm/granite-embedding-278m-multilingual": 768,
     "ibm/slate-125m-english-rtrvr-v2": 768,
     "ibm/slate-30m-english-rtrvr-v2": 384,
     "intfloat/multilingual-e5-large": 1024,
+}
+
+# Full dimension map including legacy model IDs from earlier releases.
+# Kept so that existing tables whose stored metadata uses these names can still
+# resolve dimensions on load without raising an error.  These IDs are NOT
+# advertised to new users.
+MODELS_DIMS: dict[str, int] = {
+    **CURRENT_MODELS,
+    # Deprecated — withdrawal announced but still functional until the dates above.
     "sentence-transformers/all-minilm-l6-v2": 384,
-    # Pre-v2 model names from earlier releases of this integration.
-    # Retained so that existing tables whose stored metadata uses these names
-    # can still resolve dimensions on load without raising an error.
+    # Pre-v2 legacy names retained for metadata compatibility only.
     "ibm/slate-125m-english-rtrvr": 768,
     "ibm/slate-30m-english-rtrvr": 384,
     "sentence-transformers/all-minilm-l12-v2": 384,
@@ -86,7 +93,13 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
 
     @staticmethod
     def model_names():
-        return list(MODELS_DIMS.keys())
+        """Return the IDs of models currently available for new tables.
+
+        Legacy / deprecated IDs are intentionally excluded.  They remain
+        resolvable for dimension lookups on existing tables via ``MODELS_DIMS``,
+        but should not be used when creating new tables.
+        """
+        return list(CURRENT_MODELS.keys())
 
     def ndims(self):
         return self._ndims
@@ -96,7 +109,7 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         if self.name not in MODELS_DIMS:
             raise ValueError(
                 f"Unknown model '{self.name}'. "
-                f"Available models: {list(MODELS_DIMS.keys())}"
+                f"Available models: {list(CURRENT_MODELS.keys())}"
             )
         return MODELS_DIMS[self.name]
 

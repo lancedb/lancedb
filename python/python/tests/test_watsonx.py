@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from lancedb.embeddings import get_registry
-from lancedb.embeddings.watsonx import MODELS_DIMS, WatsonxEmbeddings
+from lancedb.embeddings.watsonx import CURRENT_MODELS, MODELS_DIMS, WatsonxEmbeddings
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +66,27 @@ class TestRegistry:
     def test_watsonx_registered(self):
         assert get_registry().get("watsonx") is not None
 
-    def test_model_names_returns_all_available(self):
+    def test_model_names_returns_only_current_models(self):
         names = WatsonxEmbeddings.model_names()
-        assert names == list(MODELS_DIMS.keys())
+        assert names == list(CURRENT_MODELS.keys())
+        # Current models must all be present.
         for name in (
             "ibm/granite-embedding-278m-multilingual",
             "ibm/slate-125m-english-rtrvr-v2",
+            "ibm/slate-30m-english-rtrvr-v2",
+            "intfloat/multilingual-e5-large",
+        ):
+            assert name in names, f"{name!r} missing from model_names()"
+        # Legacy / deprecated IDs must NOT appear in model_names().
+        for legacy in (
             "ibm/slate-125m-english-rtrvr",
             "ibm/slate-30m-english-rtrvr",
+            "sentence-transformers/all-minilm-l12-v2",
+            "sentence-transformers/all-minilm-l6-v2",
         ):
-            assert name in names
+            assert legacy not in names, (
+                f"Legacy model {legacy!r} should not appear in model_names()"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +196,36 @@ class TestScopeResolution:
         assert call_kwargs.get("space_id") == "explicit-space"
         assert "project_id" not in call_kwargs
 
+    def test_both_env_vars_raises(self, monkeypatch):
+        """When both WATSONX_PROJECT_ID and WATSONX_SPACE_ID env vars are set
+        (and neither is passed explicitly), it must raise 'not both'."""
+        func = WatsonxEmbeddings(name="ibm/granite-embedding-278m-multilingual")
+        mock_ibm = MagicMock()
+        mock_foundation = MagicMock()
+
+        def _fake_import(name):
+            if name == "ibm_watsonx_ai":
+                return mock_ibm
+            if name == "ibm_watsonx_ai.foundation_models":
+                return mock_foundation
+            raise ImportError(name)
+
+        with patch.dict(
+            "os.environ",
+            {
+                "WATSONX_API_KEY": "key",
+                "WATSONX_PROJECT_ID": "env-proj",
+                "WATSONX_SPACE_ID": "env-space",
+            },
+            clear=True,
+        ):
+            with patch(
+                "lancedb.embeddings.watsonx.attempt_import_or_raise",
+                side_effect=_fake_import,
+            ):
+                with pytest.raises(ValueError, match="not both"):
+                    _ = func._watsonx_client
+
     def test_both_explicit_raises(self):
         func = WatsonxEmbeddings(
             name="ibm/granite-embedding-278m-multilingual",
@@ -290,6 +331,31 @@ class TestMetadataRoundTrip:
             f"Model changed on reload: was {original.name!r}, "
             f"became {reloaded.name!r}. "
             "The class-level default must not change without a migration path."
+        )
+
+    def test_reload_from_legacy_metadata_explicit(self):
+        """
+        Deserialize a representative legacy metadata payload and assert the exact
+        model name — this is the real cross-version regression guard.
+
+        Tables created before the v2 rename stored ``model: {"name": ...}`` with
+        the pre-v2 name.  Reloading must produce exactly that model, not silently
+        switch to the current class default.
+        """
+        from lancedb.embeddings.registry import EmbeddingFunctionRegistry
+
+        registry = EmbeddingFunctionRegistry.get_instance()
+
+        # This is what is stored in Arrow metadata for a table created with the
+        # pre-v2 default model name (no explicit name= was passed at the time).
+        legacy_stored = {"name": "ibm/slate-125m-english-rtrvr"}
+
+        reloaded = registry.get("watsonx").create(**legacy_stored)
+
+        assert reloaded.name == "ibm/slate-125m-english-rtrvr", (
+            f"Legacy metadata reload returned {reloaded.name!r} instead of "
+            "'ibm/slate-125m-english-rtrvr'. "
+            "MODELS_DIMS must keep legacy entries for backward compat."
         )
 
     def test_legacy_model_names_resolve_dims(self):
