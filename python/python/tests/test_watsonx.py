@@ -259,19 +259,44 @@ class TestScopeResolution:
 
 
 class TestMetadataRoundTrip:
-    def test_legacy_default_reloads_without_error(self):
+    def test_reload_with_empty_model_metadata_preserves_model(self):
         """
-        Simulate an old table whose stored metadata has no 'name' key (so the
-        class default is used on reload).  The legacy default
-        ``ibm/slate-125m-english-rtrvr`` must still resolve its dims.
-        """
-        WatsonxEmbeddings(name="ibm/slate-125m-english-rtrvr")
-        # Dimension lookup must not raise — the model is in MODELS_DIMS.
-        assert MODELS_DIMS["ibm/slate-125m-english-rtrvr"] == 768
+        Reproduce the exact deserialization path used by the registry:
 
-    def test_new_table_uses_granite_default(self):
-        func = WatsonxEmbeddings()
-        assert func.name == "ibm/granite-embedding-278m-multilingual"
+            create(**{})  →  safe_model_dump() == {}
+            →  stored as  model: {}
+            →  reloaded via  create(**{})
+
+        The model must be identical before and after — no silent switch.
+        This guards against changing the class-level default between releases.
+        """
+        from lancedb.embeddings.registry import EmbeddingFunctionRegistry
+
+        registry = EmbeddingFunctionRegistry.get_instance()
+
+        # Simulate original table creation with no explicit args.
+        original = registry.get("watsonx").create()
+        stored = original.safe_model_dump()  # what gets written to arrow metadata
+
+        assert stored == {}, (
+            f"Expected empty stored args when create() called with no kwargs; "
+            f"got {stored!r}"
+        )
+
+        # Simulate reload: registry calls create(**stored) == create(**{})
+        reloaded = registry.get("watsonx").create(**stored)
+
+        assert reloaded.name == original.name, (
+            f"Model changed on reload: was {original.name!r}, "
+            f"became {reloaded.name!r}. "
+            "The class-level default must not change without a migration path."
+        )
+
+    def test_legacy_model_names_resolve_dims(self):
+        """Legacy names in MODELS_DIMS so ndims() never raises on old tables."""
+        assert MODELS_DIMS["ibm/slate-125m-english-rtrvr"] == 768
+        assert MODELS_DIMS["ibm/slate-30m-english-rtrvr"] == 384
+        assert MODELS_DIMS["sentence-transformers/all-minilm-l12-v2"] == 384
 
 
 # ---------------------------------------------------------------------------

@@ -42,8 +42,9 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name : str, default "ibm/granite-embedding-278m-multilingual"
-        The ID of the embedding model to use.
+    name : str, default "ibm/slate-125m-english-rtrvr"
+        The ID of the embedding model to use.  For new tables,
+        ``"ibm/granite-embedding-278m-multilingual"`` is recommended.
     api_key : str, optional
         IBM Cloud API key.  Falls back to the ``WATSONX_API_KEY`` environment
         variable when not provided.
@@ -63,7 +64,11 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         ``{"truncate_input_tokens": 512}``).
     """
 
-    name: str = "ibm/granite-embedding-278m-multilingual"
+    # Intentionally kept at the original pre-PR default so that existing tables
+    # whose stored metadata contains model:{} reload with the same model they
+    # were created with.  New users should pass name= explicitly, e.g.
+    # name="ibm/granite-embedding-278m-multilingual".
+    name: str = "ibm/slate-125m-english-rtrvr"
     api_key: Optional[str] = None
     project_id: Optional[str] = None
     space_id: Optional[str] = None
