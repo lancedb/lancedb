@@ -934,6 +934,32 @@ Return the table as an arrow table
 
 ***
 
+### tokenizeFtsQuery()
+
+```ts
+abstract tokenizeFtsQuery(query, options): Promise<FtsToken[]>
+```
+
+Tokenize a full-text search query using the tokenizer configured on an FTS index.
+
+Specify exactly one of `column` or `indexName`.
+
+Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+the client process from index metadata. For remote tables, this means the
+same tokenizer model files must also exist locally.
+
+#### Parameters
+
+* **query**: `string`
+
+* **options**: [`TokenizeFtsQueryOptions`](../type-aliases/TokenizeFtsQueryOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FtsToken`](../interfaces/FtsToken.md)[]&gt;
+
+***
+
 ### unsetLsmWriteSpec()
 
 ```ts

@@ -23,7 +23,13 @@ whether to remove punctuation
 ### baseTokenizer?
 
 ```ts
-optional baseTokenizer: "raw" | "simple" | "whitespace" | "ngram";
+optional baseTokenizer:
+  | "raw"
+  | "simple"
+  | "whitespace"
+  | "ngram"
+  | "icu"
+  | "icu/split";
 ```
 
 The tokenizer to use when building the index.
@@ -36,6 +42,10 @@ The following tokenizers are available:
 "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
 
 "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+
+"icu" - ICU dictionary-based word segmentation.
+
+"icu/split" - ICU segmentation with simple-style delimiter splitting.
 
 ***
 

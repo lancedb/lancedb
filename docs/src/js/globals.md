@@ -72,6 +72,7 @@
 - [FragmentStatistics](interfaces/FragmentStatistics.md)
 - [FragmentSummaryStats](interfaces/FragmentSummaryStats.md)
 - [FtsOptions](interfaces/FtsOptions.md)
+- [FtsToken](interfaces/FtsToken.md)
 - [FullTextQuery](interfaces/FullTextQuery.md)
 - [FullTextSearchOptions](interfaces/FullTextSearchOptions.md)
 - [HnswPqOptions](interfaces/HnswPqOptions.md)
@@ -125,6 +126,7 @@
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
+- [TokenizeFtsQueryOptions](type-aliases/TokenizeFtsQueryOptions.md)
 
 ## Functions
 
