@@ -15,14 +15,19 @@ import numpy as np
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 
 MODELS_DIMS = {
-    # Current models
+    # Models available on the watsonx.ai SaaS platform.
+    # Note: IBM has announced deprecation with future withdrawal dates for some
+    # of these (slate-*-v2, all-minilm-l6-v2). ibm/granite-embedding-278m-multilingual
+    # is the recommended replacement.  See:
+    # https://dataplatform.cloud.ibm.com/docs/content/wsj/analyze-data/fm-models-embed.html
     "ibm/granite-embedding-278m-multilingual": 768,
     "ibm/slate-125m-english-rtrvr-v2": 768,
     "ibm/slate-30m-english-rtrvr-v2": 384,
     "intfloat/multilingual-e5-large": 1024,
     "sentence-transformers/all-minilm-l6-v2": 384,
-    # Legacy model names — kept so that tables created with the old defaults
-    # can still resolve their dimensions on load without errors.
+    # Pre-v2 model names from earlier releases of this integration.
+    # Retained so that existing tables whose stored metadata uses these names
+    # can still resolve dimensions on load without raising an error.
     "ibm/slate-125m-english-rtrvr": 768,
     "ibm/slate-30m-english-rtrvr": 384,
     "sentence-transformers/all-minilm-l12-v2": 384,
