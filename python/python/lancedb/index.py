@@ -127,6 +127,8 @@ class FTS:
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
         - "ngram": N-gram tokenizer for substring-style matching.
+        - "icu": ICU dictionary-based word segmentation.
+        - "icu/split": ICU segmentation with simple-style delimiter splitting.
         - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
         - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
     language : str, default "English"

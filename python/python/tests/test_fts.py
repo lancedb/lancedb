@@ -786,6 +786,97 @@ def test_language(mem_db: DBConnection):
     assert len(results) == 0
 
 
+def test_tokenize_uses_simple_index_tokenizer(mem_db: DBConnection):
+    data = pa.table({"text": ["Running in cafés"], "other": ["Running in cafés"]})
+    table = mem_db.create_table("test_tokenize", data=data)
+    table.create_index("text", config=FTS(base_tokenizer="simple"))
+
+    tokens = table.tokenize("Running in cafés", column="text")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_icu_index_tokenizer_by_name(mem_db: DBConnection):
+    data = pa.table({"text": ["Hello, こんにちは世界!"]})
+    table = mem_db.create_table("test_tokenize_icu", data=data)
+    table.create_index(
+        "text",
+        config=FTS(
+            base_tokenizer="icu",
+            stem=False,
+            remove_stop_words=False,
+        ),
+        name="text_icu_idx",
+    )
+
+    tokens = table.tokenize("Hello, こんにちは世界!", index_name="text_icu_idx")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("hello", 0),
+        ("こんにちは", 1),
+        ("世界", 2),
+    ]
+
+
+def test_tokenize_requires_one_selector(mem_db: DBConnection):
+    data = pa.table({"text": ["hello world"]})
+    table = mem_db.create_table("test_tokenize_selector", data=data)
+    table.create_index("text", config=FTS(), name="text_idx")
+
+    with pytest.raises(ValueError, match="Specify exactly one"):
+        table.tokenize("hello")
+
+    with pytest.raises(ValueError, match="Specify exactly one"):
+        table.tokenize("hello", column="text", index_name="text_idx")
+
+
+def test_tokenize_requires_fts_index(mem_db: DBConnection):
+    data = pa.table({"text": ["hello world"]})
+    table = mem_db.create_table("test_tokenize_no_index", data=data)
+
+    with pytest.raises(ValueError, match="does not have a full text search index"):
+        table.tokenize("hello", column="text")
+
+
+@pytest.mark.asyncio
+async def test_tokenize_async(async_table):
+    await async_table.create_index("text", config=FTS())
+
+    tokens = await async_table.tokenize("Running in cafés", column="text")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_explicit_simple_tokenizer():
+    tokens = ldb.tokenize("Running in cafés", base_tokenizer="simple")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_explicit_icu_tokenizer():
+    tokens = ldb.tokenize(
+        "Hello, こんにちは世界!",
+        base_tokenizer="icu",
+        stem=False,
+        remove_stop_words=False,
+    )
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("hello", 0),
+        ("こんにちは", 1),
+        ("世界", 2),
+    ]
+
+
 def test_fts_on_list(mem_db: DBConnection):
     data = pa.table(
         {

@@ -18,14 +18,16 @@ use arrow::{
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::blob::BlobFile;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pymethods,
+    pyclass, pyfunction, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
 };
 
@@ -486,6 +488,78 @@ impl PyBlobFile {
     }
 }
 
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FtsToken {
+    pub text: String,
+    pub position: u32,
+}
+
+#[pymethods]
+impl FtsToken {
+    pub fn __repr__(&self) -> String {
+        format!("FtsToken(text={:?}, position={})", self.text, self.position)
+    }
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
+        }
+    }
+}
+
+#[pyfunction(signature = (
+    query,
+    *,
+    base_tokenizer = "simple".to_string(),
+    language = "English".to_string(),
+    max_token_length = Some(40),
+    lower_case = true,
+    stem = true,
+    remove_stop_words = true,
+    ascii_folding = true,
+    ngram_min_length = 3,
+    ngram_max_length = 3,
+    prefix_only = false
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn tokenize(
+    query: String,
+    base_tokenizer: String,
+    language: String,
+    max_token_length: Option<u32>,
+    lower_case: bool,
+    stem: bool,
+    remove_stop_words: bool,
+    ascii_folding: bool,
+    ngram_min_length: u32,
+    ngram_max_length: u32,
+    prefix_only: bool,
+) -> PyResult<Vec<FtsToken>> {
+    let params = FtsIndexBuilder::default()
+        .base_tokenizer(base_tokenizer)
+        .language(&language)
+        .map_err(|_| {
+            PyValueError::new_err(format!(
+                "LanceDB does not support the requested language: '{}'",
+                language
+            ))
+        })?
+        .max_token_length(max_token_length.map(|value| value as usize))
+        .lower_case(lower_case)
+        .stem(stem)
+        .remove_stop_words(remove_stop_words)
+        .ascii_folding(ascii_folding)
+        .ngram_min_length(ngram_min_length)
+        .ngram_max_length(ngram_max_length)
+        .ngram_prefix_only(prefix_only);
+    let tokens = lancedb_tokenize(&query, &params).infer_error()?;
+    Ok(tokens.into_iter().map(FtsToken::from).collect())
+}
+
 #[pyclass]
 pub struct Table {
     // We keep a copy of the name to use if the inner table is dropped
@@ -781,6 +855,29 @@ impl Table {
                     .map(|idx| IndexConfig::from_lancedb(py, idx))
                     .collect::<Vec<_>>())
             })
+        })
+    }
+
+    #[pyo3(signature = (query, *, column=None, index_name=None))]
+    pub fn tokenize(
+        self_: PyRef<'_, Self>,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let tokens = match (column.as_deref(), index_name.as_deref()) {
+                (Some(_), Some(_)) | (None, None) => {
+                    return Err(PyValueError::new_err(
+                        "Specify exactly one of 'column' or 'index_name'",
+                    ));
+                }
+                (Some(column), None) => inner.tokenize_with_column(&query, column).await,
+                (None, Some(index_name)) => inner.tokenize(&query, index_name).await,
+            }
+            .infer_error()?;
+            Ok(tokens.into_iter().map(FtsToken::from).collect::<Vec<_>>())
         })
     }
 

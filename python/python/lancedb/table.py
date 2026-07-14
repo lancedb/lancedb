@@ -173,6 +173,7 @@ if TYPE_CHECKING:
         UpdateFieldMetadataResult,
         DeleteResult,
         DropColumnsResult,
+        FtsToken,
         LsmWriteSpec,
         MergeResult,
         UpdateResult,
@@ -1147,6 +1148,8 @@ class Table(ABC):
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
             - "ngram": N-Gram tokenizer.
+            - "icu": ICU dictionary-based word segmentation.
+            - "icu/split": ICU segmentation with simple-style delimiter splitting.
             - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
             - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
         language : str, default "English"
@@ -1797,6 +1800,24 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+        """
+
+    @abstractmethod
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
         """
 
     @abstractmethod
@@ -3743,6 +3764,26 @@ class LanceTable(Table):
         List all indices that have been created with Self::create_index
         """
         return LOOP.run(self._table.list_indices())
+
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
+        """
+        return LOOP.run(
+            self._table.tokenize(query, column=column, index_name=index_name)
+        )
 
     def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """
@@ -5803,6 +5844,24 @@ class AsyncTable:
         List all indices that have been created with Self::create_index
         """
         return await self._inner.list_indices()
+
+    async def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
+        """
+        return await self._inner.tokenize(query, column=column, index_name=index_name)
 
     async def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """

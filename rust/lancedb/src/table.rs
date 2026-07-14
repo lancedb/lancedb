@@ -28,6 +28,8 @@ use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOption
 pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
+use lance_index::scalar::InvertedIndexParams;
+use lance_index::scalar::inverted::query::collect_query_tokens;
 use lance_namespace::LanceNamespace;
 use lance_namespace::error::NamespaceError;
 use lance_namespace::models::DescribeTableRequest;
@@ -51,10 +53,10 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
-use crate::index::{IndexConfig, IndexStatisticsImpl};
+use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam};
+use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
@@ -471,6 +473,33 @@ impl LsmWriteSpec {
             } => writer_config_defaults,
         }
     }
+}
+
+/// A token produced by the tokenizer configured on a full-text search index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsToken {
+    /// The token text after the index tokenizer has applied its filters.
+    pub text: String,
+    /// The token position used by full-text query matching.
+    pub position: u32,
+}
+
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. Use
+/// [`crate::index::scalar::FtsIndexBuilder`] to supply the same tokenizer
+/// options used when creating an FTS index.
+pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToken>> {
+    let mut tokenizer = params.build().map_err(|err| Error::InvalidInput {
+        message: format!("Failed to build tokenizer: {}", err),
+    })?;
+    let tokens = collect_query_tokens(query, &mut tokenizer);
+    Ok((0..tokens.len())
+        .map(|idx| FtsToken {
+            text: tokens.get_token(idx).to_string(),
+            position: tokens.position(idx),
+        })
+        .collect())
 }
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -1659,6 +1688,111 @@ impl Table {
     /// List all indices that have been created with [`Self::create_index`]
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
+    }
+
+    /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
+    ///
+    /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+    /// the client process from index metadata. For remote tables, this means the
+    /// same tokenizer model files must also exist locally.
+    pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| idx.name == index_name)
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("No index named '{}'", index_name),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!("Index name '{}' is ambiguous", index_name),
+                });
+            }
+        };
+        if index.index_type != IndexType::FTS {
+            return Err(Error::InvalidInput {
+                message: format!("Index '{}' is not a full text search index", index_name),
+            });
+        }
+        self.tokenize_with_index(query, index, index_name)
+    }
+
+    /// Tokenize a full-text search query using the tokenizer configured on the
+    /// FTS index for a column.
+    ///
+    /// The column must have exactly one FTS index. Model-backed tokenizers such
+    /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
+    /// index metadata. For remote tables, this means the same tokenizer model
+    /// files must also exist locally.
+    pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
+        let schema = self.inner.schema().await?;
+        let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| {
+                idx.index_type == IndexType::FTS
+                    && idx.columns.len() == 1
+                    && idx.columns[0] == column
+            })
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("Column '{}' does not have a full text search index", column),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Column '{}' has multiple full text search indexes; tokenization by column is ambiguous",
+                        column
+                    ),
+                });
+            }
+        };
+        self.tokenize(query, &index.name).await
+    }
+
+    fn tokenize_with_index(
+        &self,
+        query: &str,
+        index: &IndexConfig,
+        index_name: &str,
+    ) -> Result<Vec<FtsToken>> {
+        let selector_description = format!("index name '{}'", index_name);
+        let details = index
+            .index_details
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!(
+                    "Full text search index '{}' for {} does not include tokenizer details",
+                    index.name, selector_description
+                ),
+            })?;
+        let params = serde_json::from_str::<InvertedIndexParams>(details).map_err(|err| {
+            Error::InvalidInput {
+                message: format!(
+                    "Failed to parse tokenizer details for full text search index '{}' for {}: {}",
+                    index.name, selector_description, err
+                ),
+            }
+        })?;
+        tokenize(query, &params).map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!(
+                    "{} for full text search index '{}' for {}",
+                    message, index.name, selector_description
+                ),
+            },
+            err => err,
+        })
     }
 
     /// Get the table URI (storage location)
@@ -3282,6 +3416,27 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+
+    #[test]
+    fn test_tokenize_uses_explicit_simple_tokenizer() {
+        let params =
+            crate::index::scalar::FtsIndexBuilder::default().base_tokenizer("simple".to_string());
+        let tokens = crate::tokenize("Running in cafés", &params).unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "run".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "cafe".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn test_open() {

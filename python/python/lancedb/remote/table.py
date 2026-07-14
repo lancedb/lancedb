@@ -28,6 +28,7 @@ from lancedb._lancedb import (
     UpdateFieldMetadataResult,
     DeleteResult,
     DropColumnsResult,
+    FtsToken,
     IndexConfig,
     LsmWriteSpec,
     MergeResult,
@@ -243,6 +244,23 @@ class RemoteTable(Table):
     def list_indices(self) -> Iterable[IndexConfig]:
         """List all the indices on the table"""
         return LOOP.run(self._table.list_indices())
+
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """Tokenize a query using the tokenizer configured on an FTS index.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata, so the same tokenizer
+        model files must exist locally.
+        """
+        return LOOP.run(
+            self._table.tokenize(query, column=column, index_name=index_name)
+        )
 
     def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:
         """List all the stats of a specified index"""

@@ -13,9 +13,12 @@ import {
   Connection as LanceDbConnection,
   JsHeaderProvider as NativeJsHeaderProvider,
   Session,
+  tokenize as nativeTokenize,
 } from "./native.js";
 
 import { HeaderProvider } from "./header";
+import type { BaseTokenizer } from "./indices";
+import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
@@ -114,6 +117,7 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
+  BaseTokenizer,
 } from "./indices";
 
 export {
@@ -124,6 +128,8 @@ export {
   OptimizeOptions,
   Version,
   WriteProgress,
+  FtsToken,
+  TokenizeTableOptions,
   LsmWriteSpec,
   ColumnAlteration,
   FieldMetadataUpdate,
@@ -154,6 +160,68 @@ export {
   MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
+
+/**
+ * Options for tokenizing a full-text search query without a table index.
+ */
+export interface TokenizeOptions {
+  /**
+   * The tokenizer to use. The default is "simple".
+   */
+  baseTokenizer?: BaseTokenizer;
+
+  /** Language for stemming and stop words. */
+  language?: string;
+
+  /** Maximum token length; tokens longer than this are ignored. */
+  maxTokenLength?: number;
+
+  /** Whether to lowercase tokens. */
+  lowercase?: boolean;
+
+  /** Whether to stem tokens. */
+  stem?: boolean;
+
+  /** Whether to remove stop words. */
+  removeStopWords?: boolean;
+
+  /** Whether to fold ASCII characters. */
+  asciiFolding?: boolean;
+
+  /** N-gram minimum length. */
+  ngramMinLength?: number;
+
+  /** N-gram maximum length. */
+  ngramMaxLength?: number;
+
+  /** Whether to only emit token prefixes for the n-gram tokenizer. */
+  prefixOnly?: boolean;
+}
+
+/**
+ * Tokenize a full-text search query using an explicit tokenizer.
+ *
+ * This does not require a table or FTS index. The tokenizer options match
+ * {@link Index.fts}.
+ */
+export async function tokenize(
+  query: string,
+  options?: Partial<TokenizeOptions>,
+): Promise<FtsToken[]> {
+  return await nativeTokenize(
+    query,
+    options?.baseTokenizer,
+    options?.language,
+    options?.maxTokenLength,
+    options?.lowercase,
+    options?.stem,
+    options?.removeStopWords,
+    options?.asciiFolding,
+    options?.ngramMinLength,
+    options?.ngramMaxLength,
+    options?.prefixOnly,
+  );
+}
 
 /**
  * Connect to a LanceDB instance at the given URI.

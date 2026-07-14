@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
-    FieldMetadataUpdate as LanceFieldMetadataUpdate, NewColumnTransform, OptimizeAction,
-    OptimizeOptions, Ref, Table as LanceDbTable,
+    FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -575,6 +575,27 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn tokenize(
+        &self,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> napi::Result<Vec<FtsToken>> {
+        let table = self.inner_ref()?;
+        let tokens = match (column.as_deref(), index_name.as_deref()) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(napi::Error::from_reason(
+                    "Specify exactly one of 'column' or 'indexName'",
+                ));
+            }
+            (Some(column), None) => table.tokenize_with_column(&query, column).await,
+            (None, Some(index_name)) => table.tokenize(&query, index_name).await,
+        }
+        .default_error()?;
+        Ok(tokens.into_iter().map(FtsToken::from).collect())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
         let tbl = self.inner_ref()?;
         let stats = tbl.index_stats(&index_name).await.default_error()?;
@@ -677,6 +698,24 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_details: value
                 .index_details
                 .and_then(|s| serde_json::from_str(&s).ok()),
+        }
+    }
+}
+
+#[napi(object)]
+/// A token produced by the tokenizer configured on a full-text search index.
+pub struct FtsToken {
+    /// The token text after the index tokenizer has applied its filters.
+    pub text: String,
+    /// The token position used by full-text query matching.
+    pub position: u32,
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
         }
     }
 }

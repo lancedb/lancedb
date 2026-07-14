@@ -207,7 +207,15 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 /// a built-in pull-based adapter.
 #[cfg(feature = "metrics")]
 pub use metrics;
-pub use table::Table;
+pub use table::{FtsToken, Table};
+
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. The tokenizer options are the
+/// same [`index::scalar::FtsIndexBuilder`] values used when creating an FTS index.
+pub fn tokenize(query: &str, params: &index::scalar::FtsIndexBuilder) -> Result<Vec<FtsToken>> {
+    table::tokenize(query, params)
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
