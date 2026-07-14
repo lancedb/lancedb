@@ -4154,15 +4154,56 @@ def _handle_bad_vector_column(
                 raise ValueError(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
-            vec_arr = pc.if_else(
-                is_bad,
-                pa.scalar([fill_value] * dim, type=vec_arr.type),
-                vec_arr,
-            )
+            vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
     return data.set_column(position, vector_column_name, vec_arr)
+
+
+def _fill_bad_vector_values(
+    arr: Union[pa.Array, pa.ChunkedArray],
+    dim: int,
+    fill_value: float,
+) -> pa.Array:
+    if not isinstance(arr, pa.ChunkedArray):
+        arr = pa.chunked_array([arr])
+    arr = arr.combine_chunks()
+
+    # A fixed-size slice truncates long vectors and pads short vectors with nulls.
+    # Slice an array marking the original child nulls in parallel so padding nulls
+    # can be distinguished from null values that were already present.
+    sliced = pc.list_slice(arr, 0, dim, return_fixed_size_list=True)
+    child_nulls = pc.is_null(arr.values)
+    parent_nulls = pc.is_null(arr)
+    if pa.types.is_list(arr.type):
+        original_child_nulls = pa.ListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    elif pa.types.is_large_list(arr.type):
+        original_child_nulls = pa.LargeListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    else:
+        original_child_nulls = pa.FixedSizeListArray.from_arrays(
+            child_nulls, arr.type.list_size, mask=parent_nulls
+        )
+    sliced_child_nulls = pc.list_slice(
+        original_child_nulls, 0, dim, return_fixed_size_list=True
+    )
+    needs_fill = pc.is_null(sliced_child_nulls.values)
+
+    values = sliced.values
+    if pa.types.is_floating(values.type):
+        values_for_nan_check = (
+            values.cast(pa.float32()) if pa.types.is_float16(values.type) else values
+        )
+        needs_fill = pc.or_kleene(needs_fill, pc.is_nan(values_for_nan_check))
+
+    fill_scalar = pa.scalar(fill_value).cast(values.type)
+    filled_values = pc.if_else(needs_fill, fill_scalar, values)
+    filled = pa.FixedSizeListArray.from_arrays(filled_values, dim)
+    return filled.cast(arr.type)
 
 
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
