@@ -3,10 +3,14 @@
 
 """Tests for the type-safe expression builder API."""
 
-import pytest
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+
 import pyarrow as pa
+import pytest
+
 import lancedb
-from lancedb.expr import Expr, col, lit, func
+from lancedb.expr import Expr, col, func, lit
 
 
 # ── unit tests for Expr construction ─────────────────────────────────────────
@@ -53,6 +57,28 @@ class TestExprConstruction:
     def test_func_unknown_raises(self):
         with pytest.raises(Exception):
             func("not_a_real_function", col("x"))
+
+    def test_lit_date(self):
+        e = lit(date(2024, 1, 1))
+        assert isinstance(e, Expr)
+
+    def test_lit_datetime(self):
+        # Naive datetime
+        e = lit(datetime(2024, 1, 1, 10, 0))
+        assert isinstance(e, Expr)
+
+    def test_lit_datetime_tz(self):
+        # Timezone-aware datetime
+        tz = timezone(timedelta(hours=5))
+        dt = datetime(2024, 1, 1, 10, 0, tzinfo=tz)
+        e = lit(dt)
+        assert isinstance(e, Expr)
+
+    def test_lit_decimal_precision(self):
+        # High precision Decimal that would be rounded if converted to float
+        d = Decimal("1.234567890123456789")
+        e = lit(d)
+        assert isinstance(e, Expr)
 
 
 class TestExprOperators:
@@ -141,6 +167,20 @@ class TestExprOperators:
         e = col("name") == "alice"
         assert isinstance(e, Expr)
         assert e.to_sql() == "(name = 'alice')"
+
+    def test_reflexive_comparisons(self):
+        # 10 < col("age") swaps to col("age") > 10
+        assert (10 < col("age")).to_sql() == "(age > 10)"
+        assert (10 <= col("age")).to_sql() == "(age >= 10)"
+        assert (10 > col("age")).to_sql() == "(age < 10)"
+        assert (10 >= col("age")).to_sql() == "(age <= 10)"
+        assert (10 == col("age")).to_sql() == "(age = 10)"
+        assert (10 != col("age")).to_sql() == "(age <> 10)"
+
+    def test_reflexive_logical(self):
+        # True & Expr calls Expr.__rand__(True)
+        assert (True & (col("age") > 18)).to_sql() == "(true AND (age > 18))"
+        assert (False | (col("age") > 18)).to_sql() == "(false OR (age > 18))"
 
 
 class TestExprBytesLiteral:
@@ -280,6 +320,40 @@ class TestExprRepr:
         e = col("x")
         with pytest.raises(TypeError):
             {e: 1}
+
+
+class TestExprReflexive:
+    def test_reflexive_eq(self):
+        e = 1 == col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(x = 1)"
+
+    def test_reflexive_ne(self):
+        e = 1 != col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(x <> 1)"
+
+    def test_reflexive_lt(self):
+        # 1 < x  =>  (x > 1)
+        e = 1 < col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(x > 1)"
+
+    def test_reflexive_gt(self):
+        # 1 > x  =>  (x < 1)
+        e = 1 > col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(x < 1)"
+
+    def test_reflexive_and(self):
+        e = True & col("active")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(true AND active)"
+
+    def test_reflexive_or(self):
+        e = False | col("inactive")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(false OR inactive)"
 
 
 # ── integration tests: end-to-end query against a real table ─────────────────
@@ -432,6 +506,72 @@ class TestColNamingIntegration:
         assert sorted(result["upper_name"].to_pylist()) == ["ALICE", "BOB", "CHARLIE"]
 
 
+@pytest.fixture
+def type_check_table(tmp_path):
+    """Fixture that creates a table with Date32 and Decimal128 columns."""
+    db = lancedb.connect(str(tmp_path))
+    schema = pa.schema(
+        [
+            ("date", pa.date32()),
+            ("decimal", pa.decimal128(10, 2)),
+            ("binary", pa.binary()),
+        ]
+    )
+    data = pa.table(
+        {
+            "date": [date(2024, 1, 1), date(2024, 1, 2)],
+            "decimal": [Decimal("10.50"), Decimal("20.75")],
+            "binary": [b"\x01", b"\x02"],
+        },
+        schema=schema,
+    )
+    return db.create_table("extended_types", data)
+
+
+class TestExtendedTypeIntegration:
+    """Integration tests verifying that typed literals work correctly in filters."""
+
+    def test_date_integration(self, type_check_table):
+        """Verify that Date32 literals are correctly parsed and filtered."""
+        result = (
+            type_check_table.search()
+            .where(col("date") == lit(date(2024, 1, 1)))
+            .to_arrow()
+        )
+        assert result.num_rows == 1
+        assert result["date"][0].as_py() == date(2024, 1, 1)
+
+    def test_decimal_integration(self, tmp_path):
+        """A Decimal literal must retain full 128-bit precision in a filter.
+
+        1.234567890123456789 and 1.234567890123456790 differ only in the last
+        digit and are indistinguishable once truncated to f64.  The filter
+        therefore returns the single expected row only if ``lit(Decimal)``
+        produces a true ``Decimal128`` scalar rather than being coerced to f64.
+        """
+        low = Decimal("1.234567890123456789")
+        high = Decimal("1.234567890123456790")
+
+        db = lancedb.connect(str(tmp_path / "decimal_precision"))
+        schema = pa.schema([("val", pa.decimal128(19, 18))])
+        table = db.create_table(
+            "decimal_precision",
+            pa.table({"val": [low, high]}, schema=schema),
+        )
+
+        result = table.search().where(col("val") < lit(high)).to_arrow()
+        assert result.num_rows == 1
+        assert result["val"][0].as_py() == low
+
+    def test_binary_integration(self, type_check_table):
+        """Verify that Binary literals are correctly filtered."""
+        result = (
+            type_check_table.search().where(col("binary") == lit(b"\x01")).to_arrow()
+        )
+        assert result.num_rows == 1
+        assert result["binary"][0].as_py() == b"\x01"
+
+
 # ── bytes / binary column integration tests ───────────────────────────────────
 
 
@@ -448,6 +588,27 @@ def binary_table(tmp_path):
         }
     )
     return db.create_table("binary_test", data)
+
+
+class TestExprIsin:
+    def test_isin_ints(self):
+        assert col("id").isin([1, 2, 3]).to_sql() == "id IN (1, 2, 3)"
+
+    def test_isin_strs(self):
+        assert (
+            col("status").isin(["active", "pending"]).to_sql()
+            == "status IN ('active', 'pending')"
+        )
+
+    def test_isin_coerces_and_mixes(self):
+        assert col("id").isin([lit(1), 2]).to_sql() == "id IN (1, 2)"
+
+    def test_isin_empty(self):
+        assert col("id").isin([]).to_sql() == "id IN ()"
+
+    def test_isin_filter(self, simple_table):
+        result = simple_table.search().where(col("id").isin([1, 3, 5])).to_arrow()
+        assert result.num_rows == 3
 
 
 class TestExprBytesIntegration:

@@ -35,6 +35,15 @@ pub enum AnyQuery {
     VectorQuery(VectorQueryRequest),
 }
 
+impl AnyQuery {
+    pub(crate) fn base(&self) -> &QueryRequest {
+        match self {
+            Self::Query(query) => query,
+            Self::VectorQuery(query) => &query.base,
+        }
+    }
+}
+
 //Decide between namespace or local
 pub async fn execute_query(
     table: &NativeTable,
@@ -44,15 +53,33 @@ pub async fn execute_query(
     // QueryTable pushdown runs the query server-side, but only on the main
     // branch: the namespace request carries no branch yet, so a branch handle
     // must fall through to local execution.
-    if table
-        .pushdown_operations
-        .contains(&NamespaceClientPushdownOperation::QueryTable)
+    if can_execute_namespace_query(table, query)
         && let Some(ref namespace_client) = table.namespace_client
-        && table.dataset.current_branch().is_none()
     {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
     }
     execute_generic_query(table, query, options).await
+}
+
+fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> bool {
+    table
+        .pushdown_operations
+        .contains(&NamespaceClientPushdownOperation::QueryTable)
+        && table.namespace_client.is_some()
+        && table.dataset.current_branch().is_none()
+        && !requires_local_namespace_execution(query)
+}
+
+fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
+    // The namespace QueryTable request has no approx_mode field yet, so
+    // pushing this query down would silently ignore the user's setting.
+    matches!(
+        query,
+        AnyQuery::VectorQuery(VectorQueryRequest {
+            approx_mode: Some(_),
+            ..
+        })
+    )
 }
 
 pub async fn analyze_query_plan(
@@ -90,6 +117,7 @@ pub async fn create_plan(
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
+    query.base.check_filter()?;
 
     let ds_ref = table.dataset.get().await?;
     let schema = ds_ref.schema();
@@ -165,6 +193,10 @@ pub async fn create_plan(
             scanner.nearest(&column, query_vector, top_k)?;
         } else {
             scanner.nearest(&column, query_vector.as_ref(), top_k)?;
+        }
+
+        if let Some(approx_mode) = query.approx_mode {
+            scanner.approx_mode(approx_mode.into());
         }
 
         scanner.minimum_nprobes(query.minimum_nprobes);
@@ -335,6 +367,7 @@ async fn execute_namespace_query(
 
 /// Convert an AnyQuery to the namespace QueryTableRequest format.
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
+    query.base().check_filter()?;
     match query {
         AnyQuery::VectorQuery(vq) => {
             // Extract the query vector(s)
@@ -557,24 +590,45 @@ fn array_to_f32_vec(arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<f32>> {
     })
 }
 
+/// Magic bytes that prefix (and suffix) the Arrow IPC *file* format.
+const ARROW_IPC_FILE_MAGIC: &[u8] = b"ARROW1";
+
 /// Parse Arrow IPC response from the namespace server.
+///
+/// The server may return either the Arrow IPC *file* format or the *stream*
+/// format. REST/phalanx returns the file format (it begins with the `ARROW1`
+/// magic); reading that with a `StreamReader` fails with "failed to fill whole
+/// buffer". Detect the magic and pick the matching reader so both are handled.
 async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBatchStream> {
-    use arrow_ipc::reader::StreamReader;
+    use arrow_ipc::reader::{FileReader, StreamReader};
     use std::io::Cursor;
 
-    let cursor = Cursor::new(bytes);
-    let reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Runtime {
-        message: format!("Failed to parse Arrow IPC response: {}", e),
-    })?;
-
-    // Collect all record batches
-    let schema = reader.schema();
-    let batches: Vec<_> = reader
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Runtime {
-            message: format!("Failed to read Arrow IPC batches: {}", e),
+    let (schema, batches) = if bytes.starts_with(ARROW_IPC_FILE_MAGIC) {
+        let reader = FileReader::try_new(Cursor::new(bytes), None).map_err(|e| Error::Runtime {
+            message: format!("Failed to parse Arrow IPC file response: {}", e),
         })?;
+        let schema = reader.schema();
+        let batches = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC file batches: {}", e),
+            })?;
+        (schema, batches)
+    } else {
+        let reader =
+            StreamReader::try_new(Cursor::new(bytes), None).map_err(|e| Error::Runtime {
+                message: format!("Failed to parse Arrow IPC response: {}", e),
+            })?;
+        let schema = reader.schema();
+        let batches = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC batches: {}", e),
+            })?;
+        (schema, batches)
+    };
 
     // Create a stream from the batches
     let stream = futures::stream::iter(batches.into_iter().map(Ok));
@@ -587,12 +641,73 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use arrow_array::Float32Array;
+    use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array};
     use futures::TryStreamExt;
-    use std::sync::Arc;
+    use lance_arrow::FixedSizeListArrayExt;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
-    use crate::query::QueryExecutionOptions;
+    use crate::query::{QueryExecutionOptions, QueryRequest};
+
+    fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
+        FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_parse_arrow_ipc_response_handles_file_and_stream() {
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_ipc::writer::{FileWriter, StreamWriter};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+        )
+        .unwrap();
+
+        // Arrow IPC *file* format -- what REST/phalanx returns. Previously this
+        // failed with "failed to fill whole buffer" because we used a StreamReader.
+        let mut file_buf = Vec::new();
+        {
+            let mut writer = FileWriter::try_new(&mut file_buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(file_buf.starts_with(ARROW_IPC_FILE_MAGIC));
+        let rows: usize = parse_arrow_ipc_response(bytes::Bytes::from(file_buf))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 3);
+
+        // Arrow IPC *stream* format must still parse.
+        let mut stream_buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut stream_buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(!stream_buf.starts_with(ARROW_IPC_FILE_MAGIC));
+        let rows: usize = parse_arrow_ipc_response(bytes::Bytes::from(stream_buf))
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 3);
+    }
 
     #[test]
     fn test_convert_to_namespace_query_vector() {
@@ -715,6 +830,80 @@ mod tests {
         assert_eq!(count, 2); // 4 and 5
     }
 
+    #[derive(Debug, Default)]
+    struct CountingNamespaceClient {
+        query_table_calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for CountingNamespaceClient {
+        fn namespace_id(&self) -> String {
+            "counting".to_string()
+        }
+
+        async fn query_table(&self, _request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
+            self.query_table_calls.fetch_add(1, Ordering::SeqCst);
+            panic!("approx_mode queries must not be pushed down to namespace query_table");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_approx_mode_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let vectors = Arc::new(fixed_size_list_array(
+            vec![0.0, 0.0, 10.0, 10.0, 20.0, 20.0],
+            2,
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), vectors],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_approx_mode_namespace_fallback", batch)
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as ArrayRef],
+            approx_mode: Some(crate::ApproxMode::Accurate),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn test_create_plan_multivector_structure() {
         use arrow_array::{Float32Array, RecordBatch};
@@ -777,6 +966,99 @@ mod tests {
         assert!(
             display.contains("query_index"),
             "Plan should add query_index column"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_applies_approx_mode_to_ann_query() {
+        use arrow_array::RecordBatch;
+        use arrow_schema::{DataType, Field, Schema};
+        use datafusion_physical_plan::ExecutionPlan;
+        use lance::io::exec::{ANNIvfPartitionExec, ANNIvfSubIndexExec};
+        use lance_index::vector::ApproxMode;
+
+        use crate::connect;
+        use crate::index::{Index, vector::IvfRqIndexBuilder};
+        use crate::table::query::create_plan;
+
+        fn find_ann_approx_mode(plan: &dyn ExecutionPlan) -> Option<ApproxMode> {
+            if let Some(ann) = plan.as_any().downcast_ref::<ANNIvfSubIndexExec>() {
+                return Some(ann.query().approx_mode);
+            }
+            if let Some(ann) = plan.as_any().downcast_ref::<ANNIvfPartitionExec>() {
+                return Some(ann.query.approx_mode);
+            }
+            plan.children()
+                .into_iter()
+                .find_map(|child| find_ann_approx_mode(child.as_ref()))
+        }
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let dimension = 8;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dimension,
+                ),
+                false,
+            ),
+        ]));
+
+        let vectors = Arc::new(fixed_size_list_array(
+            (0..512 * dimension)
+                .map(|value| value as f32 / dimension as f32)
+                .collect(),
+            dimension,
+        ));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow_array::Int32Array::from_iter_values(0..512)),
+                vectors,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_approx_mode_plan", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .num_partitions(1)
+                        .sample_rate(1)
+                        .max_iterations(1)
+                        .num_bits(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let native_table = table.as_native().unwrap();
+        let query_vector = Arc::new(Float32Array::from(vec![0.0; dimension as usize]));
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as ArrayRef],
+            base: QueryRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+            approx_mode: Some(crate::ApproxMode::Accurate),
+            ..Default::default()
+        });
+
+        let plan = create_plan(native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            find_ann_approx_mode(plan.as_ref()),
+            Some(ApproxMode::Accurate)
         );
     }
 }

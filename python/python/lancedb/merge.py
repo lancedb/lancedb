@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Union
+
+from .expr import Expr
 
 if TYPE_CHECKING:
     from .common import DATA
@@ -32,6 +34,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_insert_all = False
         self._when_not_matched_by_source_delete = False
         self._when_not_matched_by_source_condition = None
+        self._when_not_matched_by_source_condition_expr = None
         self._timeout = None
         self._use_index = True
         self._use_lsm_write = None
@@ -48,6 +51,15 @@ class LanceMergeInsertBuilder(object):
         If there are multiple matches then the behavior is undefined.
         Currently this causes multiple copies of the row to be created
         but that behavior is subject to change.
+
+        Parameters
+        ----------
+        where: Optional[str], default None
+            An optional filter to limit which rows are updated. Column
+            references in this expression must be prefixed with "target."
+            to refer to the existing table data. For example, to only
+            update rows where the existing color is red, use:
+            ``where="target.color = 'red'"``
         """
         self._when_matched_update_all = True
         self._when_matched_update_all_condition = where
@@ -62,7 +74,7 @@ class LanceMergeInsertBuilder(object):
         return self
 
     def when_not_matched_by_source_delete(
-        self, condition: Optional[str] = None
+        self, condition: Union[str, Expr, None] = None
     ) -> LanceMergeInsertBuilder:
         """
         Rows that exist only in the target table (old data) will be
@@ -71,13 +83,16 @@ class LanceMergeInsertBuilder(object):
 
         Parameters
         ----------
-        condition: Optional[str], default None
+        condition: str or :class:`~lancedb.expr.Expr` or None, default None
             If None then all such rows will be deleted.  Otherwise the
-            condition will be used as an SQL filter to limit what rows
-            are deleted.
+            condition will be used as a filter to limit what rows are deleted.
+            Can be a SQL string or a type-safe :class:`~lancedb.expr.Expr`
+            built with :func:`~lancedb.expr.col` and :func:`~lancedb.expr.lit`.
         """
         self._when_not_matched_by_source_delete = True
-        if condition is not None:
+        if isinstance(condition, Expr):
+            self._when_not_matched_by_source_condition_expr = condition._inner
+        elif condition is not None:
             self._when_not_matched_by_source_condition = condition
         return self
 

@@ -4,7 +4,7 @@
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
@@ -16,18 +16,22 @@ use lance_namespace::{
         CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
         DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
-        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse, RenameTableRequest,
     },
 };
 use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
+use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
 use crate::database::listing::{
     NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, OPT_NEW_TABLE_STORAGE_VERSION,
     OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+};
+use crate::database::read_freshness::{
+    FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
 use crate::table::{NativeTable, map_namespace_lance_error};
@@ -51,6 +55,10 @@ fn is_table_already_exists_namespace_error(err: &lance::Error) -> bool {
     false
 }
 
+/// Object-id delimiter default (matches `RestNamespaceBuilder`'s); overridable
+/// via the `delimiter` property.
+const DEFAULT_NAMESPACE_DELIMITER: &str = "$";
+
 /// A database implementation that uses lance-namespace for table management
 pub struct LanceNamespaceDatabase {
     namespace: Arc<dyn LanceNamespace>,
@@ -70,6 +78,17 @@ pub struct LanceNamespaceDatabase {
     ns_properties: HashMap<String, String>,
     // Options for tables created by this connection
     new_table_config: NewTableConfig,
+    // Per-table read-freshness baselines, shared with the context provider.
+    freshness_baselines: FreshnessBaselines,
+    // Delimiter for building freshness keys; see `table_freshness`.
+    delimiter: String,
+}
+
+fn resolve_delimiter(ns_properties: &HashMap<String, String>) -> String {
+    ns_properties
+        .get("delimiter")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_NAMESPACE_DELIMITER.to_string())
 }
 
 impl LanceNamespaceDatabase {
@@ -82,6 +101,9 @@ impl LanceNamespaceDatabase {
         session: Option<Arc<lance::session::Session>>,
         namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
+        // Client is pre-built, so we can't install the freshness provider here;
+        // baselines are still tracked for a uniform bump path.
+        let delimiter = resolve_delimiter(&namespace_client_properties);
         Self {
             namespace: namespace_client,
             storage_options,
@@ -92,6 +114,8 @@ impl LanceNamespaceDatabase {
             ns_impl: namespace_client_impl,
             ns_properties: namespace_client_properties,
             new_table_config: NewTableConfig::default(),
+            freshness_baselines: Arc::new(Mutex::new(HashMap::new())),
+            delimiter,
         }
     }
 
@@ -136,10 +160,19 @@ impl LanceNamespaceDatabase {
         if let Some(ref sess) = session {
             builder = builder.session(sess.clone());
         }
+
+        // Install the read-freshness provider before building the client.
+        let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
+        builder = builder.context_provider(Arc::new(ReadFreshnessContextProvider::new(
+            freshness_baselines.clone(),
+            read_consistency_interval,
+        )));
+
         let namespace = builder.connect().await.map_err(|e| Error::InvalidInput {
             message: format!("Failed to connect to namespace: {:?}", e),
         })?;
 
+        let delimiter = resolve_delimiter(&ns_properties);
         Ok(Self {
             namespace,
             storage_options,
@@ -150,7 +183,18 @@ impl LanceNamespaceDatabase {
             ns_impl: ns_impl.to_string(),
             ns_properties,
             new_table_config,
+            freshness_baselines,
+            delimiter,
         })
+    }
+
+    /// Build a table's freshness handle, keyed to match the `object_id` the
+    /// namespace client sends on reads (table-id parts joined by the delimiter).
+    fn table_freshness(&self, namespace_path: &[String], name: &str) -> TableFreshness {
+        let mut parts = namespace_path.to_vec();
+        parts.push(name.to_string());
+        let key = parts.join(&self.delimiter);
+        TableFreshness::new(self.freshness_baselines.clone(), key)
     }
 
     fn extract_storage_overrides(
@@ -214,11 +258,15 @@ impl LanceNamespaceDatabase {
             params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
-        if let Some(enable_stable_row_ids) =
-            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        let data_schema = request.data.schema();
+        if let Some(enable_stable_row_ids) = stable_row_ids_override
+            .or(self.new_table_config.enable_stable_row_ids)
+            .or(has_blob_columns(data_schema.as_ref()).then_some(true))
         {
             params.enable_stable_row_ids = enable_stable_row_ids;
         }
+
+        ensure_blob_storage_version(data_schema.as_ref(), params);
 
         Ok(())
     }
@@ -331,7 +379,8 @@ impl Database for LanceNamespaceDatabase {
                         self.pushdown_operations.clone(),
                         self.session.clone(),
                     )
-                    .await?;
+                    .await?
+                    .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
                     return Ok(Arc::new(native_table));
                 }
@@ -437,8 +486,11 @@ impl Database for LanceNamespaceDatabase {
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning == Some(true) {
-            let external_store =
-                LanceNamespaceExternalManifestStore::new(self.namespace.clone(), table_id.clone());
+            let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
+                self.namespace.clone(),
+                table_id.clone(),
+                &location,
+            )?;
             let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: Arc::new(external_store),
             });
@@ -459,7 +511,8 @@ impl Database for LanceNamespaceDatabase {
             self.pushdown_operations.clone(),
             self.session.clone(),
         )
-        .await?;
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
         Ok(Arc::new(native_table))
     }
@@ -475,7 +528,8 @@ impl Database for LanceNamespaceDatabase {
             self.pushdown_operations.clone(),
             self.session.clone(),
         )
-        .await?;
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
         Ok(Arc::new(native_table))
     }
@@ -488,14 +542,34 @@ impl Database for LanceNamespaceDatabase {
 
     async fn rename_table(
         &self,
-        _cur_name: &str,
-        _new_name: &str,
-        _cur_namespace_path: &[String],
-        _new_namespace_path: &[String],
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "rename_table is not supported for namespace connections".to_string(),
-        })
+        let mut cur_table_id = cur_namespace_path.to_vec();
+        cur_table_id.push(cur_name.to_string());
+
+        let new_namespace_id = if new_namespace_path.is_empty() {
+            None
+        } else {
+            Some(new_namespace_path.to_vec())
+        };
+
+        let rename_request = RenameTableRequest {
+            id: Some(cur_table_id),
+            new_table_name: new_name.to_string(),
+            new_namespace_id,
+            ..Default::default()
+        };
+        self.namespace
+            .rename_table(rename_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to rename table: {}", e),
+            })?;
+
+        Ok(())
     }
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {

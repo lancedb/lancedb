@@ -215,6 +215,20 @@ describe("Query orderBy", () => {
     expect(results[2].score).toBeCloseTo(4.1, 0.001);
   });
 
+  it("should combine repeated where clauses with AND", async () => {
+    const results = await table
+      .query()
+      .where("score > 1.0")
+      .where("score < 3.0")
+      .orderBy({ columnName: "score" })
+      .toArray();
+    // Only rows matching both predicates should be returned, rather than the
+    // second where() silently replacing the first.
+    expect(results.length).toBe(2);
+    expect(results[0].score).toBeCloseTo(1.2, 0.001);
+    expect(results[1].score).toBeCloseTo(2.8, 0.001);
+  });
+
   it("should support method chaining with limit", async () => {
     const results = await table
       .query()

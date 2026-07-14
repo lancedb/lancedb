@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
@@ -410,6 +412,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_lsm_write_spec(&self) -> napi::Result<Option<LsmWriteSpec>> {
+        let spec = self
+            .inner_ref()?
+            .get_lsm_write_spec()
+            .await
+            .default_error()?;
+        Ok(spec.map(LsmWriteSpec::from))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close_lsm_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_lsm_writers().await.default_error()
     }
@@ -483,6 +495,12 @@ impl Table {
         Ok(Branches {
             inner: self.inner_ref()?.clone(),
         })
+    }
+
+    /// The branch this handle is scoped to, or `null` for the main branch.
+    #[napi]
+    pub fn current_branch(&self) -> napi::Result<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
     }
 
     #[napi(catch_unwind)]
@@ -602,6 +620,43 @@ pub struct IndexConfig {
     /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// `undefined` for remote tables, which do not yet surface this.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `undefined` for remote tables.
+    pub type_url: Option<String>,
+    /// When the index was created.
+    ///
+    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// `undefined` for remote tables.
+    pub num_indexed_rows: Option<i64>,
+    /// The number of rows not yet covered by this index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_unindexed_rows: Option<i64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `undefined` for remote tables or indices without size tracking.
+    pub size_bytes: Option<i64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_segments: Option<i32>,
+    /// The on-disk index format version.
+    ///
+    /// `undefined` for remote tables.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details parsed as a JavaScript object.
+    ///
+    /// Falls back to a raw string if JSON parsing fails. `undefined` for
+    /// remote tables or when details are unavailable.
+    pub index_details: Option<serde_json::Value>,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -611,6 +666,17 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at,
+            num_indexed_rows: value.num_indexed_rows.map(|n| n as i64),
+            num_unindexed_rows: value.num_unindexed_rows.map(|n| n as i64),
+            size_bytes: value.size_bytes.map(|n| n as i64),
+            num_segments: value.num_segments.map(|n| n as i32),
+            index_version: value.index_version,
+            index_details: value
+                .index_details
+                .and_then(|s| serde_json::from_str(&s).ok()),
         }
     }
 }
@@ -669,6 +735,47 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
         Ok(spec
             .with_maintained_indexes(maintained)
             .with_writer_config_defaults(writer_config_defaults))
+    }
+}
+
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(spec: lancedb::table::LsmWriteSpec) -> Self {
+        use lancedb::table::LsmWriteSpec as Native;
+        match spec {
+            Native::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "bucket".to_string(),
+                column: Some(column),
+                num_buckets: Some(num_buckets),
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Identity {
+                column,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "identity".to_string(),
+                column: Some(column),
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "unsharded".to_string(),
+                column: None,
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+        }
     }
 }
 

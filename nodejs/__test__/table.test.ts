@@ -89,8 +89,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ id: 1 }]);
       expect(await table.countRows()).toBe(1);
 
+      expect(table.currentBranch()).toBeNull();
+
       // fork an isolated, writable branch from main
       const branch = await (await table.branches()).create("exp");
+      expect(branch.currentBranch()).toBe("exp");
       expect(await branch.countRows()).toBe(1);
       await branch.add([{ id: 2 }]);
       expect(await branch.countRows()).toBe(2);
@@ -109,6 +112,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       // checkout returns a handle scoped to the branch's latest
       const checkedOut = await (await table.branches()).checkout("exp");
+      expect(checkedOut.currentBranch()).toBe("exp");
       expect(await checkedOut.countRows()).toBe(2);
 
       // delete removes it
@@ -845,11 +849,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfPq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfPq",
+        columns: ["vec"],
+      }),
+    );
     const stats = await tbl.indexStats("vec_idx");
     expect(stats).toBeDefined();
 
@@ -1011,51 +1017,51 @@ describe("When creating an index", () => {
     const indices = await nestedTable.listIndices();
     expect(indices).toEqual(
       expect.arrayContaining([
-        {
+        expect.objectContaining({
           name: "row_id_idx",
           indexType: "BTree",
           columns: ["rowId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "row_dash_id_idx",
           indexType: "BTree",
           columns: ["`row-id`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "top_user_id_idx",
           indexType: "BTree",
           columns: ["userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "nested_user_id_idx",
           indexType: "BTree",
           columns: ["metadata.user_id"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "mixed_case_metadata_user_id_idx",
           indexType: "BTree",
           columns: ["MetaData.userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "escaped_names_idx",
           indexType: "BTree",
           columns: ["`meta-data`.`user-id`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "literal_dot_idx",
           indexType: "BTree",
           columns: ["literal.`a.b`"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "image_embedding_idx",
           indexType: "IvfPq",
           columns: ["image.embedding"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "payload_text_idx",
           indexType: "FTS",
           columns: ["payload.text"],
-        },
+        }),
       ]),
     );
 
@@ -1109,16 +1115,16 @@ describe("When creating an index", () => {
     const indicesAfterOptimize = await nestedTable.listIndices();
     expect(indicesAfterOptimize).toEqual(
       expect.arrayContaining([
-        {
+        expect.objectContaining({
           name: "mixed_case_metadata_user_id_idx",
           indexType: "BTree",
           columns: ["MetaData.userId"],
-        },
-        {
+        }),
+        expect.objectContaining({
           name: "image_embedding_idx",
           indexType: "IvfPq",
           columns: ["image.embedding"],
-        },
+        }),
       ]),
     );
   });
@@ -1254,11 +1260,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfHnswSq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfHnswSq",
+        columns: ["vec"],
+      }),
+    );
 
     // Search without specifying the column
     let rst = await tbl
@@ -1431,6 +1439,20 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create an FM index", async () => {
+    // FM-Index accelerates substring search on a string/binary column.
+    const db = await connect(tmpDir.name);
+    const fmTbl = await db.createTable("fm_table", [
+      { id: 0, text: "hello world" },
+      { id: 1, text: "foo bar" },
+    ]);
+    await fmTbl.createIndex("text", {
+      config: Index.fm(),
+    });
+    const indexDir = path.join(tmpDir.name, "fm_table.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
@@ -1589,6 +1611,35 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
+  });
+
+  it("should expose rich metadata fields on IndexConfig", async () => {
+    await tbl.createIndex("id", { config: Index.btree() });
+    await tbl.createIndex("vec");
+
+    const indicesByName = Object.fromEntries(
+      (await tbl.listIndices()).map((idx) => [idx.name, idx]),
+    );
+
+    const scalarIdx = indicesByName["id_idx"];
+    expect(scalarIdx).toBeDefined();
+    expect(typeof scalarIdx.indexUuid).toBe("string");
+    expect(scalarIdx.numIndexedRows).toBe(300);
+    expect(scalarIdx.numUnindexedRows).toBe(0);
+    expect(scalarIdx.numSegments).toBeGreaterThanOrEqual(1);
+    expect(scalarIdx.sizeBytes).toBeGreaterThan(0);
+    // Use toString check to avoid cross-realm instanceof failures with native Date objects
+    expect(Object.prototype.toString.call(scalarIdx.createdAt)).toBe(
+      "[object Date]",
+    );
+    expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
+    expect(typeof scalarIdx.indexDetails).toBe("object");
+
+    const vectorIdx = indicesByName["vec_idx"];
+    expect(vectorIdx).toBeDefined();
+    expect(typeof vectorIdx.indexUuid).toBe("string");
+    expect(vectorIdx.numIndexedRows).toBe(300);
+    expect(typeof vectorIdx.indexDetails).toBe("object");
   });
 });
 
@@ -2940,6 +2991,56 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
         numBuckets: 4,
       }),
     ).rejects.toThrow();
+  });
+
+  it("reads back the installed spec via getLsmWriteSpec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // Nothing installed yet.
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // A real scalar index is needed to name it as a maintained index.
+    await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await table.createIndex("id");
+    const indexName = (await table.listIndices())[0].name;
+
+    // Bucket spec round-trips, including maintained indexes and writer config
+    // defaults. Lance writer-config keys are canonically snake_case.
+    // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
+    const writerConfigDefaults = { durable_write: "false" };
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+      maintainedIndexes: [indexName],
+      writerConfigDefaults,
+    });
+    const spec = await table.getLsmWriteSpec();
+    expect(spec).toBeDefined();
+    expect(spec?.specType).toBe("bucket");
+    expect(spec?.column).toBe("id");
+    expect(spec?.numBuckets).toBe(4);
+    expect(spec?.maintainedIndexes).toEqual([indexName]);
+    expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
+
+    // After unset, undefined again.
+    await table.unsetLsmWriteSpec();
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // Identity round-trips (column recovered from the schema).
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    const identity = await table.getLsmWriteSpec();
+    expect(identity?.specType).toBe("identity");
+    expect(identity?.column).toBe("id");
+    await table.unsetLsmWriteSpec();
+
+    // Unsharded round-trips (no routing column).
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    const unsharded = await table.getLsmWriteSpec();
+    expect(unsharded?.specType).toBe("unsharded");
+    expect(unsharded?.column).toBeFalsy();
   });
 });
 

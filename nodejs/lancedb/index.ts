@@ -20,6 +20,11 @@ import { HeaderProvider } from "./header";
 // Re-export native header provider for use with connectWithHeaderProvider
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
+// OpenTelemetry metrics bridge. Only the high-level entry point is public; the
+// underlying recorder/catalog/snapshot functions remain internal plumbing that
+// `otel.ts` consumes from the native module.
+export { instrumentLanceDbMetrics } from "./otel";
+
 export {
   AddColumnsSql,
   ConnectionOptions,
@@ -52,6 +57,7 @@ export {
   SplitHashOptions,
   SplitSequentialOptions,
   ShuffleOptions,
+  OAuthConfig as NativeOAuthConfig,
 } from "./native.js";
 
 export {
@@ -129,6 +135,8 @@ export {
   OAuthHeaderProvider,
   TokenResponse,
 } from "./header";
+
+export { OAuthConfig, OAuthFlowType } from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 

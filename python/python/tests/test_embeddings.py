@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+import pickle
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -240,6 +241,49 @@ def test_embedding_with_bad_results(tmp_path):
     assert len(table) == 2
     tbl = table.to_arrow()
     assert tbl["vector"].null_count == 1
+
+
+def test_embedding_with_empty_output_vectors(tmp_path):
+    """Regression test for issue #1672.
+
+    When an embedding function returns an empty list (e.g. for empty-string
+    inputs), _append_vector_columns used to crash because PyArrow cannot cast
+    [] into a fixed-size list element.  The fix replaces wrong-length vectors
+    with None before building the Arrow array so that _handle_bad_vectors can
+    process them normally.
+    """
+
+    @register("empty-vec-embedding")
+    class EmptyVecEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(self, texts: Union[List[str], np.ndarray]) -> list:
+            # Simulate a model that returns an empty list for blank inputs
+            return [
+                [] if text.strip() == "" else np.random.randn(self.ndims()).tolist()
+                for text in texts
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("empty-vec-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = db.create_table("test_empty_vec", schema=Schema, mode="overwrite")
+
+    # Should not crash; the row with the empty string should be dropped
+    table.add(
+        [{"text": "hello world"}, {"text": ""}, {"text": "foo"}],
+        on_bad_vectors="drop",
+    )
+
+    assert len(table) == 2
+    texts = table.to_arrow()["text"].to_pylist()
+    assert "" not in texts
 
 
 def test_with_existing_vectors(tmp_path):
@@ -546,6 +590,22 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_func.call_count == 1
     # Verify that sleep was never called (no retries)
     assert mock_sleep.call_count == 0
+
+
+def test_ollama_embeddings_pickle():
+    """OllamaEmbeddings must pickle even after the cached client is created."""
+    registry = get_registry()
+    model = registry.get("ollama").create(name="nomic-embed-text")
+
+    # Simulate accessing the cached client, which stores it on the instance.
+    model.__dict__["_ollama_client"] = MagicMock()
+
+    pickled = pickle.dumps(model)
+    restored = pickle.loads(pickled)
+
+    assert restored.name == "nomic-embed-text"
+    assert restored.host == "http://localhost:11434"
+    assert "_ollama_client" not in restored.__dict__
 
 
 def test_url_retrieve_downloads_image():

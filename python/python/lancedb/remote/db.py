@@ -124,6 +124,7 @@ class RemoteDBConnection(DBConnection):
                 "request_thread_pool is no longer used and will be removed in "
                 "a future release.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         if connection_timeout is not None:
@@ -132,6 +133,7 @@ class RemoteDBConnection(DBConnection):
                 "release. Please use client_config.timeout_config.connect_timeout "
                 "instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.connect_timeout = timedelta(
                 seconds=connection_timeout
@@ -142,6 +144,7 @@ class RemoteDBConnection(DBConnection):
                 "read_timeout is deprecated and will be removed in a future release. "
                 "Please use client_config.timeout_config.read_timeout instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.read_timeout = timedelta(seconds=read_timeout)
 
@@ -396,24 +399,19 @@ class RemoteDBConnection(DBConnection):
             The namespace to open the table from.
             None or empty list represents root namespace.
         branch: str, optional
-            Branching is not yet supported on remote tables, so only the
-            default branch is accepted (``None`` or ``"main"``); any other
-            value raises ``NotImplementedError``.
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
         version: int, optional
             If provided, open the table pinned to this version, producing a
-            read-only handle. Call ``checkout_latest`` to return to a writable
-            state.
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
         A LanceTable object representing the table.
         """
         from .table import RemoteTable
-
-        # Remote supports version time-travel but not branches: reject a non-main
-        # branch, but allow a version-only open (or "main").
-        if branch is not None and branch != "main":
-            raise NotImplementedError("branching is not yet supported on remote tables")
 
         if namespace_path is None:
             namespace_path = []
@@ -430,7 +428,9 @@ class RemoteDBConnection(DBConnection):
             connection_state=self.serialize,
             namespace_path=namespace_path,
         )
-        if version is not None:
+        if branch is not None:
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
             tbl.checkout(version)
         return tbl
 

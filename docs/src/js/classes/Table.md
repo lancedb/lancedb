@@ -295,6 +295,23 @@ await table.createIndex("my_float_col");
 
 ***
 
+### currentBranch()
+
+```ts
+abstract currentBranch(): null | string
+```
+
+The branch this table handle is scoped to, or `null` for the main branch.
+
+A handle returned by [Branches.create](Branches.md#create) or [Branches.checkout](Branches.md#checkout)
+reports the branch it targets; a handle opened normally reports `null`.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
 ### delete()
 
 ```ts
@@ -378,6 +395,26 @@ Drop an index from the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### getLsmWriteSpec()
+
+```ts
+abstract getLsmWriteSpec(): Promise<undefined | LsmWriteSpec>
+```
+
+Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on this table.
+
+Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
+The returned spec — including its `maintainedIndexes` and
+`writerConfigDefaults` — mirrors what was passed to
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec).
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)&gt;
 
 ***
 

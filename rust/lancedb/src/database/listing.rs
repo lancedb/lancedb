@@ -18,6 +18,7 @@ use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
+use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
@@ -341,6 +342,19 @@ impl ListingDatabase {
         ))
     }
 
+    fn storage_base_uri(uri: &str) -> String {
+        let Ok(mut url) = url::Url::parse(uri) else {
+            return uri.to_string();
+        };
+        url.set_query(None);
+        let Some((storage_scheme, _commit_scheme)) = url.scheme().split_once('+') else {
+            return url.to_string();
+        };
+        let storage_scheme = storage_scheme.to_string();
+        let _ = url.set_scheme(&storage_scheme);
+        url.to_string()
+    }
+
     async fn prepare_namespace_root(
         uri: &str,
         storage_options: &HashMap<String, String>,
@@ -519,6 +533,8 @@ impl ListingDatabase {
                 // will add a trailing '?' to the url
                 url.set_query(None);
 
+                let storage_base_uri = Self::storage_base_uri(url.as_str());
+
                 let table_base_uri = if let Some(store) = engine {
                     static WARN_ONCE: std::sync::Once = std::sync::Once::new();
                     WARN_ONCE.call_once(|| {
@@ -530,8 +546,6 @@ impl ListingDatabase {
                 } else {
                     url.to_string()
                 };
-
-                let plain_uri = url.to_string();
 
                 let session = request
                     .session
@@ -549,13 +563,13 @@ impl ListingDatabase {
                 };
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
-                    &plain_uri,
+                    &storage_base_uri,
                     &os_params,
                 )
                 .await?;
                 if object_store.is_local() {
-                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
-                        path: plain_uri.clone(),
+                    Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
+                        path: storage_base_uri.clone(),
                     })?;
                 }
 
@@ -569,7 +583,7 @@ impl ListingDatabase {
                 };
 
                 let namespace_database = Self::connect_namespace_database(
-                    &table_base_uri,
+                    &storage_base_uri,
                     options.storage_options.clone(),
                     request.namespace_client_properties.clone(),
                     request.read_consistency_interval,
@@ -838,12 +852,15 @@ impl ListingDatabase {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
-        // Apply enable_stable_row_ids: table-level override takes precedence over connection config
-        if let Some(enable_stable_row_ids) =
-            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        let data_schema = request.data.arrow_schema();
+        if let Some(enable_stable_row_ids) = stable_row_ids_override
+            .or(self.new_table_config.enable_stable_row_ids)
+            .or(has_blob_columns(&data_schema).then_some(true))
         {
             write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
+
+        ensure_blob_storage_version(&data_schema, &mut write_params);
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
@@ -1303,6 +1320,60 @@ mod tests {
             .unwrap();
 
         (tempdir, db)
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_root_ops_do_not_create_manifest() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert!(!tempdir.path().join("__manifest").exists());
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.open_table(OpenTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            index_cache_size: None,
+            lance_read_params: None,
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        })
+        .await
+        .unwrap();
+
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+
+        assert_eq!(table_names, vec!["root_table".to_string()]);
+        assert!(!tempdir.path().join("__manifest").exists());
     }
 
     #[tokio::test]
@@ -2277,6 +2348,24 @@ mod tests {
         let captured =
             capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem&foo=bar", ENGINE));
         assert_eq!(captured.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn test_storage_base_uri_strips_commit_engine_scheme() {
+        assert_eq!(
+            ListingDatabase::storage_base_uri("s3+ddb://bucket/prefix?ddbTableName=commit_table"),
+            "s3://bucket/prefix"
+        );
+
+        assert_eq!(
+            ListingDatabase::storage_base_uri("s3://bucket/prefix?foo=bar"),
+            "s3://bucket/prefix"
+        );
+
+        assert_eq!(
+            ListingDatabase::storage_base_uri("/tmp/lancedb"),
+            "/tmp/lancedb"
+        );
     }
 
     /// Regression: connecting via a URL-style URI (which goes through

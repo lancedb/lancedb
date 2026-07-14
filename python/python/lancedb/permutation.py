@@ -11,7 +11,7 @@ import pyarrow as pa
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable, Table
 from .background_loop import LOOP
-from .util import batch_to_tensor, batch_to_tensor_rows
+from .util import batch_to_tensor, batch_to_tensor_dict, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -48,6 +48,14 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
         """
+        if not hasattr(table, "_inner"):
+            raise TypeError(
+                f"PermutationBuilder requires a local LanceTable, "
+                f"got {type(table).__name__}. "
+                "The permutation API is not supported on remote tables. "
+                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
+                "direct access to the underlying Lance dataset needed for permutations."
+            )
         self._async = async_permutation_builder(table)
 
     def split_random(
@@ -57,6 +65,7 @@ class PermutationBuilder:
         counts: Optional[list[int]] = None,
         fixed: Optional[int] = None,
         seed: Optional[int] = None,
+        clump_size: Optional[int] = None,
         split_names: Optional[list[str]] = None,
     ) -> "PermutationBuilder":
         """
@@ -79,6 +88,9 @@ class PermutationBuilder:
         Rows will be randomly assigned to splits.  The optional seed can be provided to
         make the assignment deterministic.
 
+        If clump_size is provided, rows are shuffled as contiguous groups of that size,
+        preserving I/O locality while still randomising the split assignment.
+
         The optional split_names can be provided to name the splits.  If not provided,
         the splits can only be referenced by their index.
         """
@@ -87,6 +99,7 @@ class PermutationBuilder:
             counts=counts,
             fixed=fixed,
             seed=seed,
+            clump_size=clump_size,
             split_names=split_names,
         )
         return self
@@ -933,6 +946,7 @@ class Permutation:
             "pandas",
             "arrow",
             "torch",
+            "torch_row",
             "torch_col",
             "polars",
         ],
@@ -948,15 +962,19 @@ class Permutation:
         - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a list of tensors, one per row
+        - "torch" - the batch will be a list of per-row dicts mapping column
+          name to a 0-D torch tensor. Works with the default
+          ``torch.utils.data.DataLoader`` collate, which stacks the per-row
+          dicts back into a dict of batched tensors.
+        - "torch_row" - the batch will be a list of tensors, one per row
         - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
         - "polars" - the batch will be a polars DataFrame
 
         Conversion may or may not involve a data copy.  Lance uses Arrow internally
         and so it is able to zero-copy to the arrow and polars formats.
 
-        Conversion to torch_col will be zero-copy but will only support a subset of data
-        types (numeric types).
+        Conversion to torch and torch_col will be zero-copy but will only support a
+        subset of data types (numeric types).
 
         Conversion to numpy and/or pandas will typically be zero-copy for numeric
         types.  Conversion of strings, lists, and structs will require creating python
@@ -977,6 +995,8 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
+            return self.with_transform(batch_to_tensor_dict)
+        elif format == "torch_row":
             return self.with_transform(batch_to_tensor_rows)
         elif format == "torch_col":
             return self.with_transform(batch_to_tensor)

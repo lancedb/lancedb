@@ -29,6 +29,14 @@ from urllib.parse import urlparse
 from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
+from ._blob import (
+    BlobFile,
+    _normalize_blob_row_ids,
+    _wrap_blob_files,
+    strip_auto_row_ids,
+    validate_blob_mode,
+)
+from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
@@ -55,11 +63,13 @@ from .index import (
     Bitmap,
     IvfRq,
     LabelList,
+    Fm,
     HnswPq,
     HnswSq,
     HnswFlat,
     FTS,
 )
+from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -86,33 +96,13 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-
-BlobMode = Literal["lazy", "bytes", "descriptions"]
-
-_VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
+from .schema import blob_v2_column_paths, schema_has_blob_field
 
 
 def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
-
-
-def _validate_blob_mode(blob_mode: BlobMode) -> None:
-    if blob_mode not in _VALID_BLOB_MODES:
-        modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
-        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
-
-
-def _field_is_blob(field: pa.Field) -> bool:
-    metadata = field.metadata or {}
-    return metadata.get(b"lance-encoding:blob") == b"true" or (
-        metadata.get("lance-encoding:blob") == "true"
-    )
-
-
-def _schema_has_blob_field(schema: pa.Schema) -> bool:
-    return any(_field_is_blob(field) for field in schema)
 
 
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
@@ -213,6 +203,7 @@ IndexConfigType = Union[
     BTree,
     Bitmap,
     LabelList,
+    Fm,
     FTS,
 ]
 
@@ -240,7 +231,10 @@ def _into_pyarrow_reader(
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
     if isinstance(data, dict):
-        raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+        raise ValueError(
+            "Cannot create or add rows from a single dictionary. "
+            "Use a list of dictionaries instead."
+        )
 
     if isinstance(data, list):
         # Handle empty list case
@@ -645,6 +639,16 @@ def _append_vector_columns(
                     col_data = func.compute_source_embeddings_with_retry(
                         batch[conf.source_column]
                     )
+                    # Replace vectors with wrong length (including empty lists
+                    # returned for inputs like empty strings) with None so that
+                    # _handle_bad_vectors can process them according to the
+                    # on_bad_vectors policy instead of crashing when PyArrow
+                    # tries to cast them into a fixed-size list array.
+                    expected_ndims = conf.function.ndims()
+                    col_data = [
+                        v if v is not None and len(v) == expected_ndims else None
+                        for v in col_data
+                    ]
                     if no_vector_column:
                         batch = batch.append_column(
                             schema.field(vector_column),
@@ -793,6 +797,10 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def current_branch(self) -> Optional[str]:
+        """The branch this table handle is scoped to, or ``None`` for ``main``."""
+        raise NotImplementedError
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -938,7 +946,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, FTS.
+            BTree, Bitmap, LabelList, Fm, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -1504,6 +1512,31 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def blob_columns(self) -> list[str]:
+        """Names of the blob v2 columns declared on this table."""
+
+    @abstractmethod
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        """Materialize full blob bytes for ``column`` at the given rows.
+
+        Convenience for small payloads. For large values use
+        :meth:`fetch_blob_files`.
+        """
+
+    @abstractmethod
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
+
+        Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
+        a ``list[int]`` or query ``pyarrow.Table`` with ``_rowid`` (or stashed
+        row-id metadata). Null rows are ``None``. Local tables only.
+        """
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -1531,7 +1564,7 @@ class Table(ABC):
     ) -> MergeResult: ...
 
     @abstractmethod
-    def delete(self, where: str) -> DeleteResult:
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -1539,10 +1572,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -2012,6 +2045,7 @@ class LanceTable(Table):
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
         _async: AsyncTable = None,
     ):
         if namespace_path is None:
@@ -2021,6 +2055,14 @@ class LanceTable(Table):
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # When the connection built the namespace client natively (e.g. an
+        # enterprise "rest" connection), the underlying Rust table already
+        # executes QueryTable pushdown itself -- and, unlike this Python urllib3
+        # path, it routes through the read-freshness context provider that emits
+        # the ``x-lancedb-min-timestamp`` header. So we must defer pushdown to
+        # Rust instead of calling the Python ``namespace_client.query_table``
+        # directly, or reads silently bypass read-freshness (stale results).
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         if _async is not None:
             self._table = _async
         else:
@@ -2123,12 +2165,19 @@ class LanceTable(Table):
 
         branch = self.current_branch()
         version = None if branch is not None else self.version
-        if self._namespace_client is not None:
+        namespace_client = self._namespace_client
+        if namespace_client is None:
+            conn_uri = getattr(self._conn, "uri", "")
+            if get_uri_scheme(conn_uri) == "namespace":
+                namespace_client = self._conn.namespace_client()
+                self._namespace_client = namespace_client
+
+        if namespace_client is not None:
             table_id = self._namespace_path + [self.name]
             ds = lance.dataset(
                 version=version,
                 storage_options=self._conn.storage_options,
-                namespace_client=self._namespace_client,
+                namespace_client=namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
@@ -2167,6 +2216,19 @@ class LanceTable(Table):
 
     def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+
+    def blob_columns(self) -> list[str]:
+        return LOOP.run(self._table.blob_columns())
+
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blobs(column, row_ids))
+
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
     @property
     def tags(self) -> Tags:
@@ -2219,6 +2281,22 @@ class LanceTable(Table):
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
         return self._table.current_branch()
+
+    def _wrap_branch_handle(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "LanceTable":
+        # version is unused locally: the pin already lives on async_table and a
+        # local handle is not reopened via a serialized connection.
+        return LanceTable(
+            self._conn,
+            async_table.name,
+            namespace_path=self._namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+            location=self._location,
+            _async=async_table,
+        )
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -2347,9 +2425,14 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
-            return self.to_arrow().to_pandas(**kwargs)
+        validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
+            arrow_tbl = self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(
+                    arrow_tbl, blob_v2_column_paths(self.schema)
+                )
+            return arrow_tbl.to_pandas(**kwargs)
 
         if (
             blob_mode == "lazy"
@@ -2357,6 +2440,9 @@ class LanceTable(Table):
             and get_uri_scheme(self._dataset_path) == "memory"
         ):
             return self.to_arrow().to_pandas(**kwargs)
+
+        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+            return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -2366,8 +2452,11 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return self._execute_query(Query()).read_all()
 
@@ -2487,7 +2576,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, FTS.
+            BTree, Bitmap, LabelList, Fm, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
@@ -3319,6 +3408,7 @@ class LanceTable(Table):
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """
         Create a new table.
@@ -3381,21 +3471,24 @@ class LanceTable(Table):
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
         if data_storage_version is not None:
             warnings.warn(
-                "setting data_storage_version directly on create_table is deprecated. ",
+                "setting data_storage_version directly on create_table is deprecated. "
                 "Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
             storage_options["new_table_data_storage_version"] = data_storage_version
         if enable_v2_manifest_paths is not None:
             warnings.warn(
-                "setting enable_v2_manifest_paths directly on create_table is ",
+                "setting enable_v2_manifest_paths directly on create_table is "
                 "deprecated. Use database_options instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             if storage_options is None:
                 storage_options = {}
@@ -3421,8 +3514,9 @@ class LanceTable(Table):
         )
         return self
 
-    def delete(self, where: str) -> DeleteResult:
-        return LOOP.run(self._table.delete(where))
+    def delete(self, where: Union[str, Expr]) -> DeleteResult:
+        predicate = where._inner if isinstance(where, Expr) else where
+        return LOOP.run(self._table.delete(predicate))
 
     def update(
         self,
@@ -3491,6 +3585,7 @@ class LanceTable(Table):
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
+            and not self._route_pushdown_to_rust
             and self.current_branch() is None
         ):
             from lancedb.namespace import _execute_server_side_query
@@ -3697,6 +3792,11 @@ class LanceTable(Table):
         """Remove the LsmWriteSpec. See
         [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
         return LOOP.run(self._table.unset_lsm_write_spec())
+
+    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the installed LsmWriteSpec, or ``None``. See
+        [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
+        return LOOP.run(self._table.get_lsm_write_spec())
 
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
@@ -3969,7 +4069,16 @@ def _handle_bad_vector_column(
         dim = _infer_vector_dim(vec_arr)
         if dim is None:
             return data
-    has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
+
+    is_null = pc.is_null(vec_arr)
+    # pc.list_value_length returns null for null list entries, so
+    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
+    # True OR null = True (Kleene three-valued logic), ensuring null vectors
+    # are counted as wrong-dim.
+    has_wrong_dim = pc.or_kleene(
+        is_null,
+        pc.not_equal(pc.list_value_length(vec_arr), dim),
+    )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
 
@@ -4232,6 +4341,7 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ):
         """Create a new AsyncTable object.
 
@@ -4244,6 +4354,9 @@ class AsyncTable:
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        # See LanceTable.__init__: defer QueryTable pushdown to Rust (which emits
+        # the read-freshness header) for natively-built namespace clients.
+        self._route_pushdown_to_rust = route_pushdown_to_rust
 
     def _set_namespace_context(
         self,
@@ -4251,10 +4364,12 @@ class AsyncTable:
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
+        route_pushdown_to_rust: bool = False,
     ) -> "AsyncTable":
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
+        self._route_pushdown_to_rust = route_pushdown_to_rust
         return self
 
     def __repr__(self):
@@ -4340,6 +4455,17 @@ class AsyncTable:
         is currently set.
         """
         await self._inner.unset_lsm_write_spec()
+
+    async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the LsmWriteSpec currently installed on this table.
+
+        Returns ``None`` when the MemWAL LSM write path is not enabled (no
+        spec has been set, or it was removed with `unset_lsm_write_spec`).
+        The returned spec — including its ``maintained_indexes`` and
+        ``writer_config_defaults`` — mirrors what was passed to
+        `set_lsm_write_spec`.
+        """
+        return await self._inner.get_lsm_write_spec()
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
@@ -4447,14 +4573,18 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(
-            await self.schema()
-        ):
-            return (await self.to_arrow()).to_pandas(**kwargs)
+        validate_blob_mode(blob_mode)
+        schema = await self.schema()
+        if blob_mode == "descriptions" or not schema_has_blob_field(schema):
+            arrow_tbl = await self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(arrow_tbl, blob_v2_column_paths(schema))
+            return arrow_tbl.to_pandas(**kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
+        if blob_mode == "bytes" and blob_v2_column_paths(schema):
+            return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
@@ -4464,8 +4594,11 @@ class AsyncTable:
         -------
         pa.Table
         """
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             return (await self._execute_query(Query())).read_all()
 
@@ -4487,6 +4620,7 @@ class AsyncTable:
                 BTree,
                 Bitmap,
                 LabelList,
+                Fm,
                 FTS,
             ]
         ] = None,
@@ -4539,12 +4673,14 @@ class AsyncTable:
                     BTree,
                     Bitmap,
                     LabelList,
+                    Fm,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, or FTS, but got "
+                    + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -5146,8 +5282,11 @@ class AsyncTable:
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        if _should_push_down_query_table(
-            self._namespace_client, self._pushdown_operations
+        if (
+            _should_push_down_query_table(
+                self._namespace_client, self._pushdown_operations
+            )
+            and not self._route_pushdown_to_rust
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -5209,6 +5348,7 @@ class AsyncTable:
                 when_not_matched_insert_all=merge._when_not_matched_insert_all,
                 when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
                 use_lsm_write=merge._use_lsm_write,
@@ -5216,7 +5356,7 @@ class AsyncTable:
             ),
         )
 
-    async def delete(self, where: str) -> DeleteResult:
+    async def delete(self, where: Union[str, Expr]) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -5224,10 +5364,10 @@ class AsyncTable:
 
         Parameters
         ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition. Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
 
             The filter must not be empty, or it will error.
 
@@ -5266,7 +5406,8 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        return await self._inner.delete(where)
+        predicate = where._inner if isinstance(where, Expr) else where
+        return await self._inner.delete(predicate)
 
     async def update(
         self,
@@ -5544,6 +5685,24 @@ class AsyncTable:
         """
         return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
 
+    async def blob_columns(self) -> list[str]:
+        return await self._inner.blob_columns()
+
+    async def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return await self._inner.fetch_blobs(
+            column, _normalize_blob_row_ids(row_ids, column)
+        )
+
+    async def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        handles = await self._inner.fetch_blob_files(
+            column, _normalize_blob_row_ids(row_ids, column)
+        )
+        return _wrap_blob_files(handles)
+
     @property
     def tags(self) -> AsyncTags:
         """Tag management for the dataset.
@@ -5631,6 +5790,7 @@ class AsyncTable:
                 "The 'retrain' parameter is deprecated and will be removed in a "
                 "future version.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         return await self._inner.optimize(
@@ -5925,7 +6085,7 @@ class Branches:
         name: str,
         from_ref: Optional[str] = None,
         from_version: Optional[int] = None,
-    ) -> "LanceTable":
+    ) -> "Table":
         """Create a branch and return a handle scoped to it.
 
         Parameters
@@ -5942,7 +6102,7 @@ class Branches:
         )
         return self._wrap(async_table)
 
-    def checkout(self, name: str, version: Optional[int] = None) -> "LanceTable":
+    def checkout(self, name: str, version: Optional[int] = None) -> "Table":
         """Check out an existing branch and return a handle scoped to it.
 
         Parameters
@@ -5955,25 +6115,19 @@ class Branches:
             the branch's latest and stays writable.
         """
         async_table = LOOP.run(self._table.branches.checkout(name, version))
-        return self._wrap(async_table)
+        return self._wrap(async_table, version)
 
     def delete(self, name: str) -> None:
         """Delete a branch."""
         LOOP.run(self._table.branches.delete(name))
 
-    def _wrap(self, async_table: "AsyncTable") -> "LanceTable":
-        # Reuse the parent's connection + namespace context; from_inner would drop
-        # it and break identity/query routing for namespace-backed tables.
-        parent = self._parent
-        return LanceTable(
-            parent._conn,
-            async_table.name,
-            namespace_path=parent._namespace_path,
-            namespace_client=parent._namespace_client,
-            pushdown_operations=parent._pushdown_operations,
-            location=parent._location,
-            _async=async_table,
-        )
+    def _wrap(
+        self, async_table: "AsyncTable", version: Optional[int] = None
+    ) -> "Table":
+        # Delegate to the parent so the branch handle keeps its concrete type
+        # (LanceTable / RemoteTable) and connection context; `version` is the
+        # explicit pin so a remote handle can restore branch+version on reopen.
+        return self._parent._wrap_branch_handle(async_table, version)
 
 
 class AsyncTags:

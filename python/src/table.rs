@@ -2,19 +2,22 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use std::{collections::HashMap, sync::Arc};
 
-use crate::runtime::future_into_py;
+use crate::runtime::{block_on, future_into_py};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
+    expr::PyExpr,
     index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
 use arrow::{
+    array::{Array, LargeBinaryArray},
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use lancedb::blob::BlobFile;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
@@ -23,10 +26,16 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
+    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
 };
 
 mod scannable;
+
+#[derive(FromPyObject)]
+enum PredicateArg {
+    Expr(PyExpr),
+    Sql(String),
+}
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all, from_py_object)]
@@ -315,6 +324,12 @@ impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     }
 }
 
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+        Self { inner }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
@@ -396,6 +411,78 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
         Self {
             version: result.version,
         }
+    }
+}
+
+/// Lazy blob handle from ``Table.fetch_blob_files``.
+#[pyclass(name = "BlobFile")]
+pub struct PyBlobFile {
+    inner: Arc<BlobFile>,
+}
+
+#[pymethods]
+impl PyBlobFile {
+    fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+    }
+
+    pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let bytes = inner
+                .read()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
+        })
+    }
+
+    fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.close().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
+    }
+
+    fn is_closed(self_: PyRef<'_, Self>) -> bool {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.is_closed().await })
+    }
+
+    fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.seek(position).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
+    }
+
+    fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.tell().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
+    }
+
+    fn size(self_: PyRef<'_, Self>) -> u64 {
+        self_.inner.size()
+    }
+
+    /// Read a blob-local byte range without moving the cursor.
+    fn read_range(self_: PyRef<'_, Self>, offset: u64, length: usize) -> PyResult<Py<PyBytes>> {
+        let end = offset
+            .checked_add(length as u64)
+            .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read_range(offset..end).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+    }
+
+    fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read_up_to(length).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
     }
 }
 
@@ -561,10 +648,15 @@ impl Table {
         })
     }
 
-    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<Bound<'_, PyAny>> {
+    #[allow(private_interfaces)]
+    pub fn delete(self_: PyRef<'_, Self>, condition: PredicateArg) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.delete(&condition).await.infer_error()?;
+            let result = match &condition {
+                PredicateArg::Expr(e) => inner.delete(&e.0).await,
+                PredicateArg::Sql(s) => inner.delete(s.as_str()).await,
+            }
+            .infer_error()?;
             Ok(DeleteResult::from(result))
         })
     }
@@ -682,13 +774,13 @@ impl Table {
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            Ok(inner
-                .list_indices()
-                .await
-                .infer_error()?
-                .into_iter()
-                .map(IndexConfig::from)
-                .collect::<Vec<_>>())
+            let indices = inner.list_indices().await.infer_error()?;
+            Python::attach(|py| {
+                Ok(indices
+                    .into_iter()
+                    .map(|idx| IndexConfig::from_lancedb(py, idx))
+                    .collect::<Vec<_>>())
+            })
         })
     }
 
@@ -883,6 +975,55 @@ impl Table {
         ))
     }
 
+    /// Names of the blob v2 columns declared on this table, in declaration order.
+    pub fn blob_columns(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.blob_columns().await.infer_error()
+        })
+    }
+
+    /// Read blob bytes for `row_ids` from blob v2 column `column`.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn fetch_blobs(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let blobs: LargeBinaryArray = inner
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn fetch_blob_files(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let handles = inner
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Ok(handles
+                .into_iter()
+                .map(|handle| {
+                    handle.map(|file| PyBlobFile {
+                        inner: Arc::new(file),
+                    })
+                })
+                .collect::<Vec<_>>())
+        })
+    }
+
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
     #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
@@ -959,8 +1100,13 @@ impl Table {
             builder.when_not_matched_insert_all();
         }
         if parameters.when_not_matched_by_source_delete {
-            builder
-                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+            if let Some(e) = parameters.when_not_matched_by_source_condition_expr {
+                builder.when_not_matched_by_source_delete_expr(e.0);
+            } else {
+                builder.when_not_matched_by_source_delete(
+                    parameters.when_not_matched_by_source_condition,
+                );
+            }
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
@@ -1009,6 +1155,14 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let spec = inner.get_lsm_write_spec().await.infer_error()?;
+            Ok(spec.map(LsmWriteSpec::from))
         })
     }
 
@@ -1196,6 +1350,7 @@ pub struct MergeInsertParams {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
+    when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
     use_lsm_write: Option<bool>,

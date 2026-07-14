@@ -586,6 +586,17 @@ export abstract class Table {
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
   /**
+   * Read the {@link LsmWriteSpec} currently installed on this table.
+   *
+   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
+   * The returned spec — including its `maintainedIndexes` and
+   * `writerConfigDefaults` — mirrors what was passed to
+   * {@link Table#setLsmWriteSpec}.
+   * @returns {Promise<LsmWriteSpec | undefined>}
+   */
+  abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
+  /**
    * Drain and close any cached MemWAL shard writers held for this table.
    *
    * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
@@ -662,6 +673,14 @@ export abstract class Table {
    * branch (or version). Writes on a branch do not affect `main`.
    */
   abstract branches(): Promise<Branches>;
+
+  /**
+   * The branch this table handle is scoped to, or `null` for the main branch.
+   *
+   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
+   * reports the branch it targets; a handle opened normally reports `null`.
+   */
+  abstract currentBranch(): string | null;
 
   /**
    * Restore the table to the currently checked out version
@@ -1083,6 +1102,15 @@ export class LocalTable extends Table {
     return await this.inner.unsetLsmWriteSpec();
   }
 
+  async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
+    // The native binding types `specType` as a plain `string`; narrow it back
+    // to the public union. The Rust `From` impl only ever emits one of the
+    // three valid values, so the cast is safe.
+    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
+      | LsmWriteSpec
+      | undefined;
+  }
+
   async closeLsmWriters(): Promise<void> {
     return await this.inner.closeLsmWriters();
   }
@@ -1120,6 +1148,10 @@ export class LocalTable extends Table {
 
   async branches(): Promise<Branches> {
     return new Branches(await this.inner.branches());
+  }
+
+  currentBranch(): string | null {
+    return this.inner.currentBranch() ?? null;
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {

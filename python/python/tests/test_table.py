@@ -22,6 +22,7 @@ import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 from pydantic import BaseModel
@@ -42,6 +43,32 @@ def _blob_test_data():
             ]
         ),
     )
+
+
+def _blob_v2_table(db: DBConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = db.create_table(name, schema=schema)
+    table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+async def _blob_v2_table_async(db: AsyncConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table(name, schema=schema)
+    await table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+def _blob_table(db: DBConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return db.create_table(name, data=_blob_test_data())
+    return _blob_v2_table(db, name)
+
+
+async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return await db.create_table(name, data=_blob_test_data())
+    return await _blob_v2_table_async(db, name)
 
 
 def _assert_lazy_blob(value, expected: bytes):
@@ -106,6 +133,18 @@ def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
         assert not hasattr(first, "readall")
 
 
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+def test_table_to_pandas_blob_bytes(tmp_db: DBConnection, blob_schema):
+    pytest.importorskip("lance")
+    table = _blob_table(tmp_db, f"test_to_pandas_blob_{blob_schema}_bytes", blob_schema)
+
+    df = table.to_pandas(blob_mode="bytes")
+
+    assert list(df.columns) == ["id", "blob"]
+    assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
+
+
 def test_table_to_pandas_kwargs(tmp_db: DBConnection):
     pd = pytest.importorskip("pandas")
     data = pa.table({"id": pa.array([1, 2], pa.int64())})
@@ -117,15 +156,20 @@ def test_table_to_pandas_kwargs(tmp_db: DBConnection):
 
 
 @pytest.mark.asyncio
-async def test_async_table_to_pandas_blob_bytes(tmp_db_async: AsyncConnection):
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+async def test_async_table_to_pandas_blob_bytes(
+    tmp_db_async: AsyncConnection, blob_schema
+):
     pytest.importorskip("lance")
-    table = await tmp_db_async.create_table(
-        "test_async_to_pandas_blob_bytes", data=_blob_test_data()
+    table = await _blob_table_async(
+        tmp_db_async, f"test_async_to_pandas_blob_{blob_schema}_bytes", blob_schema
     )
 
     df = await table.to_pandas(blob_mode="bytes")
 
+    assert list(df.columns) == ["id", "blob"]
     assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
 
 
 @pytest.mark.asyncio
@@ -300,6 +344,16 @@ def test_create_table(mem_db: DBConnection):
         assert expected == tbl
 
 
+def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        mem_db.create_table("test", data=data)
+    assert (
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
+    )
+
+
 def test_empty_table(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -329,8 +383,8 @@ def test_add_dictionary(mem_db: DBConnection):
     with pytest.raises(ValueError) as excep_info:
         tbl.add(data=data)
     assert (
-        str(excep_info.value)
-        == "Cannot add a single dictionary to a table. Use a list."
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
     )
 
 
@@ -1124,6 +1178,16 @@ def test_namespace_open_table_with_branch_version(tmp_path):
     assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
     assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
     assert db.open_table("t", namespace_path=["ns1"], branch="exp").count_rows() == 3
+
+
+def test_namespace_root_table_to_lance_uses_namespace_client(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    table = db.create_table("t", [{"i": 0}])
+
+    assert table._namespace_client is None
+    assert table.to_lance().count_rows() == 1
+    assert table._namespace_client is not None
 
 
 @pytest.mark.asyncio
@@ -1966,6 +2030,38 @@ def test_delete(mem_db: DBConnection):
     assert table.to_arrow()["id"].to_pylist() == [1]
 
 
+def test_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert len(table) == 3
+    delete_res = table.delete(col("id") == lit(0))
+    assert delete_res.version == 2
+    assert len(table) == 2
+    assert sorted(table.to_arrow()["id"].to_pylist()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_delete_expr_async(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert await table.count_rows() == 3
+    await table.delete(col("id") == lit(0))
+    assert await table.count_rows() == 2
+    assert sorted((await table.to_arrow())["id"].to_pylist()) == [1, 2]
+
+
 def test_update(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -2149,6 +2245,50 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a").when_matched_update_all().execute(
             new_data, timeout=timedelta(0)
         )
+
+
+def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 1
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_by_source_delete_expr_async(
+    mem_db_async: AsyncConnection,
+):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await mem_db_async.create_table("some_table", data=data)
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
 
 
 # We vary the data format because there are slight differences in how
@@ -2487,6 +2627,55 @@ def test_create_index_nested_field_paths(mem_db: DBConnection):
     fts_results = table.search("document 44", query_type="fts").limit(1).to_list()
     assert len(fts_results) == 1
     assert fts_results[0]["payload"]["text"] == "document 44"
+
+
+def test_index_config_fields(mem_db: DBConnection):
+    """Test that IndexConfig exposes the new rich metadata fields."""
+    vec_array = pa.array(
+        [[float(i), float(i + 1)] for i in range(300)], pa.list_(pa.float32(), 2)
+    )
+    data = pa.Table.from_pydict({"x": list(range(300)), "vector": vec_array})
+    table = mem_db.create_table("index_config_fields", data=data)
+    table.create_scalar_index("x", index_type="BTREE")
+    table.create_index(
+        vector_column_name="vector",
+        num_partitions=1,
+        num_sub_vectors=1,
+    )
+
+    indices = {idx.name: idx for idx in table.list_indices()}
+
+    scalar_idx = indices["x_idx"]
+    assert scalar_idx.index_uuid is not None
+    assert isinstance(scalar_idx.index_uuid, str)
+    assert scalar_idx.num_indexed_rows is not None
+    assert scalar_idx.num_indexed_rows == 300
+    assert scalar_idx.num_unindexed_rows is not None
+    assert scalar_idx.num_unindexed_rows == 0
+    assert scalar_idx.num_segments is not None
+    assert scalar_idx.num_segments >= 1
+    assert scalar_idx.size_bytes is not None
+    assert scalar_idx.size_bytes > 0
+    assert scalar_idx.created_at is not None
+    from datetime import datetime, timezone
+
+    assert isinstance(scalar_idx.created_at, datetime)
+    assert scalar_idx.created_at.tzinfo == timezone.utc
+
+    # __getitem__ compatibility
+    assert scalar_idx["index_uuid"] == scalar_idx.index_uuid
+    assert scalar_idx["num_indexed_rows"] == scalar_idx.num_indexed_rows
+    assert scalar_idx["created_at"] == scalar_idx.created_at
+
+    # index_details is parsed from JSON into a Python object
+    assert scalar_idx.index_details is not None
+    assert isinstance(scalar_idx.index_details, dict)
+    assert scalar_idx["index_details"] == scalar_idx.index_details
+
+    vector_idx = indices["vector_idx"]
+    assert vector_idx.index_uuid is not None
+    assert vector_idx.num_indexed_rows == 300
+    assert isinstance(vector_idx.index_details, dict)
 
 
 def test_empty_query(mem_db: DBConnection):

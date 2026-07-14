@@ -57,6 +57,10 @@ pub fn expr_cast(expr: Expr, data_type: DataType) -> Expr {
     cast(expr, data_type)
 }
 
+pub fn is_in(expr: Expr, list: Vec<Expr>) -> Expr {
+    expr.in_list(list, false)
+}
+
 lazy_static::lazy_static! {
     static ref FUNC_REGISTRY: std::sync::RwLock<std::collections::HashMap<String, Arc<ScalarUDF>>> = {
         let mut m = std::collections::HashMap::new();
@@ -192,6 +196,13 @@ mod tests {
             .not();
         let sql = expr_to_sql_string(&expr).unwrap();
         assert_eq!(sql, "NOT (data = X'ABCD')");
+    }
+
+    #[test]
+    fn test_is_in() {
+        let expr = is_in(col("id"), vec![lit(1i64), lit(2i64), lit(3i64)]);
+        let sql = expr_to_sql_string(&expr).unwrap();
+        assert!(sql.contains("IN"), "expected IN in: {}", sql);
     }
 
     #[test]

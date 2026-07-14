@@ -54,15 +54,16 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e RUSTFLAGS=${{ inputs.rustflags }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e RUSTFLAGS=${{ inputs.rustflags }}"
         target: x86_64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
-          curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-$(uname -m).zip > /tmp/protoc.zip \
-            && unzip /tmp/protoc.zip -d /usr/local \
-            && rm /tmp/protoc.zip
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-x86_64.zip -o /tmp/protoc.zip
+          unzip /tmp/protoc.zip -d /usr/local
+          rm /tmp/protoc.zip
+          /usr/local/bin/protoc --version
     - name: Build Arm Manylinux Wheel
       if: ${{ inputs.arm-build == 'true' }}
       uses: PyO3/maturin-action@v1
@@ -70,13 +71,14 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e RUSTFLAGS=${{ inputs.rustflags }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e RUSTFLAGS=${{ inputs.rustflags }}"
         target: aarch64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
-          yum install -y clang \
-            && curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-aarch_64.zip > /tmp/protoc.zip \
-            && unzip /tmp/protoc.zip -d /usr/local \
-            && rm /tmp/protoc.zip
+          yum install -y clang
+          curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-aarch_64.zip -o /tmp/protoc.zip
+          unzip /tmp/protoc.zip -d /usr/local
+          rm /tmp/protoc.zip
+          /usr/local/bin/protoc --version

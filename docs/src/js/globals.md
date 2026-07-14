@@ -12,6 +12,7 @@
 ## Enumerations
 
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
+- [OAuthFlowType](enumerations/OAuthFlowType.md)
 - [Occur](enumerations/Occur.md)
 - [Operator](enumerations/Operator.md)
 
@@ -85,6 +86,8 @@
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MergeResult](interfaces/MergeResult.md)
+- [NativeOAuthConfig](interfaces/NativeOAuthConfig.md)
+- [OAuthConfig](interfaces/OAuthConfig.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
@@ -128,6 +131,7 @@
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [connect](functions/connect.md)
 - [connectNamespace](functions/connectNamespace.md)
+- [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)

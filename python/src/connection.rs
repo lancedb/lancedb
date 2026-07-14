@@ -539,7 +539,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -553,6 +553,7 @@ pub fn connect(
     session: Option<crate::session::Session>,
     manifest_enabled: bool,
     namespace_client_properties: Option<HashMap<String, String>>,
+    oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -582,6 +583,11 @@ pub fn connect(
         if let Some(client_config) = client_config {
             builder = builder.client_config(client_config.into());
         }
+        if let Some(oauth_config) = oauth_config {
+            let config: lancedb::remote::oauth::OAuthConfig =
+                oauth_config.try_into().infer_error()?;
+            builder = builder.oauth_config(config);
+        }
         if let Some(session) = session {
             builder = builder.session(session.inner.clone());
         }
@@ -610,29 +616,93 @@ pub fn connect_namespace_client(
     namespace_client_impl: Option<String>,
     namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Connection> {
-    let namespace_client = extract_namespace_arc(py, namespace_client)?;
     let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
-    let ns_impl = namespace_client_impl.unwrap_or_else(|| "python".to_string());
     let ns_properties = namespace_client_properties.unwrap_or_default();
     let storage_options = storage_options.unwrap_or_default();
     let session = session.map(|s| s.inner.clone());
 
-    let database = LanceNamespaceDatabase::from_namespace_client(
-        namespace_client,
-        ns_impl,
-        ns_properties,
-        storage_options,
-        read_consistency_interval,
-        session,
-        namespace_client_pushdown_operations,
-    );
+    // Prefer building the namespace natively from (impl, properties) so the
+    // read-freshness provider installed
+    let database = if build_namespace_natively(namespace_client_impl.as_deref(), &ns_properties) {
+        let ns_impl = namespace_client_impl.expect("impl present per build_namespace_natively");
+        crate::runtime::block_on(LanceNamespaceDatabase::connect(
+            &ns_impl,
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            namespace_client_pushdown_operations,
+        ))
+        .infer_error()?
+    } else {
+        let namespace_client = extract_namespace_arc(py, namespace_client)?;
+        LanceNamespaceDatabase::from_namespace_client(
+            namespace_client,
+            namespace_client_impl.unwrap_or_else(|| "python".to_string()),
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            namespace_client_pushdown_operations,
+        )
+    };
 
     Ok(Connection::new(LanceConnection::new(
         Arc::new(database),
         Arc::new(lancedb::embeddings::MemoryRegistry::new()),
     )))
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    namespace_client_impl,
+    namespace_client_properties,
+    read_consistency_interval=None,
+    storage_options=None,
+    session=None,
+    namespace_client_pushdown_operations=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_namespace(
+    namespace_client_impl: String,
+    namespace_client_properties: HashMap<String, String>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+    namespace_client_pushdown_operations: Option<Vec<String>>,
+) -> PyResult<Connection> {
+    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let namespace_client_pushdown_operations =
+        parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
+
+    let mut builder =
+        lancedb::connect_namespace(&namespace_client_impl, namespace_client_properties)
+            .pushdown_operations(namespace_client_pushdown_operations);
+    if let Some(storage_options) = storage_options {
+        builder = builder.storage_options(storage_options);
+    }
+    if let Some(read_consistency_interval) = read_consistency_interval {
+        builder = builder.read_consistency_interval(read_consistency_interval);
+    }
+    if let Some(session) = session {
+        builder = builder.session(session.inner.clone());
+    }
+
+    Ok(Connection::new(
+        crate::runtime::block_on(builder.execute()).infer_error()?,
+    ))
+}
+
+/// Whether to build the namespace natively (from impl + properties) instead of
+/// wrapping a pre-built client. Native construction is required for the
+/// read-freshness provider to be installed
+fn build_namespace_natively(
+    namespace_client_impl: Option<&str>,
+    namespace_client_properties: &HashMap<String, String>,
+) -> bool {
+    matches!(namespace_client_impl, Some("rest")) && !namespace_client_properties.is_empty()
 }
 
 #[derive(FromPyObject)]
@@ -731,5 +801,38 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             header_provider,
             user_id: value.user_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn native_build_only_for_rest_with_properties() {
+        let rest = props(&[("uri", "http://localhost:10024")]);
+
+        // rest + non-empty properties -> build natively (installs the
+        // read-freshness provider so checkout_latest() busts the server cache).
+        assert!(build_namespace_natively(Some("rest"), &rest));
+
+        // dir is local (no server cache) -> wrap the pre-built client unchanged.
+        assert!(!build_namespace_natively(
+            Some("dir"),
+            &props(&[("root", "/tmp")])
+        ));
+
+        // No impl: only a pre-built client was handed in -> wrap it as-is.
+        assert!(!build_namespace_natively(None, &rest));
+
+        // rest but no properties: nothing to build a connection from -> wrap.
+        assert!(!build_namespace_natively(Some("rest"), &HashMap::new()));
     }
 }
