@@ -4125,18 +4125,32 @@ def _fill_bad_vector_values(
     dim: int,
     fill_value: float,
 ) -> pa.Array:
-    if isinstance(arr, pa.ChunkedArray):
-        arr = arr.combine_chunks()
+    if not isinstance(arr, pa.ChunkedArray):
+        arr = pa.chunked_array([arr])
+    arr = arr.combine_chunks()
 
     # A fixed-size slice truncates long vectors and pads short vectors with nulls.
-    # Build a mask for only those padded positions so existing null values remain
-    # unchanged. Null vectors have a filled length of zero and are padded entirely.
+    # Slice an array marking the original child nulls in parallel so padding nulls
+    # can be distinguished from null values that were already present.
     sliced = pc.list_slice(arr, 0, dim, return_fixed_size_list=True)
-    vector_lengths = pc.fill_null(pc.list_value_length(arr), 0).to_numpy(
-        zero_copy_only=False
+    child_nulls = pc.is_null(arr.values)
+    parent_nulls = pc.is_null(arr)
+    if pa.types.is_list(arr.type):
+        original_child_nulls = pa.ListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    elif pa.types.is_large_list(arr.type):
+        original_child_nulls = pa.LargeListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    else:
+        original_child_nulls = pa.FixedSizeListArray.from_arrays(
+            child_nulls, arr.type.list_size, mask=parent_nulls
+        )
+    sliced_child_nulls = pc.list_slice(
+        original_child_nulls, 0, dim, return_fixed_size_list=True
     )
-    value_positions = np.arange(dim, dtype=vector_lengths.dtype)
-    needs_fill = pa.array((value_positions >= vector_lengths[:, None]).reshape(-1))
+    needs_fill = pc.is_null(sliced_child_nulls.values)
 
     values = sliced.values
     if pa.types.is_floating(values.type):

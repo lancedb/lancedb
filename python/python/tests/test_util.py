@@ -13,6 +13,7 @@ from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from lancedb.table import (
     _append_vector_columns,
     _cast_to_target_schema,
+    _fill_bad_vector_values,
     _handle_bad_vectors,
     _into_pyarrow_reader,
     _infer_target_schema,
@@ -331,6 +332,36 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize(
+    ("vector_type", "vectors", "expected"),
+    [
+        (
+            pa.list_(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.large_list(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.list_(pa.float64(), 2),
+            [[1.0, float("nan")], None, [None, 3.0]],
+            [[1.0, 42.0], [42.0, 42.0], [None, 3.0]],
+        ),
+    ],
+)
+def test_fill_bad_vector_values_arrow_types(vector_type, vectors, expected):
+    arr = pa.array([[0.0, 0.0], *vectors, [9.0, 9.0]], type=vector_type)
+    arr = arr.slice(1, len(vectors))
+
+    actual = _fill_bad_vector_values(arr, dim=2, fill_value=42.0)
+
+    assert actual.type == vector_type
+    assert actual.to_pylist() == expected
 
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
