@@ -1,6 +1,14 @@
 ---
 name: lancedb-branch-ops
-description: Branch management for LanceDB tables via the REST API. Use this skill whenever someone wants to create, delete, list, or switch branches on a LanceDB table — or needs to make sure a write (metadata update, index build, etc.) lands on a specific branch instead of main. Invoke it even without the word "branch" if context makes clear they want an experimental copy of a table, want to isolate changes, or want to confirm a mutation didn't touch main. Covers: branches/list, branches/create, branches/delete, and passing "branch" in describe/update_field_metadata/create_index to target a non-main version.
+description: >-
+  Manage LanceDB table branches through the REST API: list, create, and delete
+  branches; target schema reads, field-metadata updates, and index creation to a
+  named branch; and verify that branch changes remain isolated from main. Use
+  when a task involves branch lifecycle, an experimental or isolated table
+  version, directing an operation to a non-main branch, or confirming that a
+  mutation did not affect main. This skill also explains that LanceDB has no
+  checkout operation; each request selects its target branch in the request
+  body.
 ---
 
 ## Goal
