@@ -23,14 +23,7 @@ inputs:
     required: false
     default: "lancedb"
   rustflags:
-    description: >-
-      RUSTFLAGS for the build container, as a single whitespace-free token
-      (e.g. '-Ctarget-cpu=x86-64-v2') -- docker-options is argv-split, so a
-      value containing spaces would be torn into separate docker arguments.
-      Empty (the default) passes no RUSTFLAGS at all, which is not the same as
-      passing an empty one: cargo treats RUSTFLAGS as an override whenever it is
-      set, so an empty value would discard the per-target rustflags in
-      .cargo/config.toml (including -Ctarget-cpu=haswell).
+    description: "RUSTFLAGS for the build container, as a single whitespace-free token (e.g. '-Ctarget-cpu=x86-64-v2'). Empty leaves RUSTFLAGS unset, keeping the defaults from .cargo/config.toml."
     required: false
     default: ""
 runs:
