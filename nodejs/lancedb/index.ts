@@ -93,6 +93,7 @@ export {
   QueryBase,
   VectorQuery,
   TakeQuery,
+  AnalyzePlanDistributedMetrics,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,

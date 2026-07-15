@@ -36,7 +36,7 @@ use crate::{DistanceType, Error};
 use crate::{
     error::Result,
     index::{IndexBuilder, IndexConfig},
-    query::QueryExecutionOptions,
+    query::{AnalyzePlanDistributedMetrics, QueryExecutionOptions},
     table::{
         AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats, TableDefinition, UpdateBuilder,
         merge::MergeInsertBuilder,
@@ -1993,9 +1993,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn analyze_plan(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: QueryExecutionOptions,
     ) -> Result<String> {
-        let request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
+        let mut request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
+
+        if options.analyze_plan_distributed_metrics != AnalyzePlanDistributedMetrics::Aggregate {
+            request = request.query(&[(
+                "distributed_metrics",
+                options.analyze_plan_distributed_metrics.as_query_param(),
+            )]);
+        }
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -2840,7 +2847,10 @@ mod tests {
     use crate::{
         DistanceType, Error, Table,
         index::{Index, IndexStatistics, IndexType, vector::IvfPqIndexBuilder},
-        query::{ColumnOrdering, ExecutableQuery, QueryBase},
+        query::{
+            AnalyzePlanDistributedMetrics, ColumnOrdering, ExecutableQuery, QueryBase,
+            QueryExecutionOptions,
+        },
         remote::ARROW_FILE_CONTENT_TYPE,
     };
 
@@ -4046,6 +4056,42 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_analyze_plan_distributed_metrics_query_param() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
+            assert_eq!(
+                request
+                    .url()
+                    .query_pairs()
+                    .find(|(k, _)| k == "distributed_metrics"),
+                Some(("distributed_metrics".into(), "per_worker".into()))
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["k"], serde_json::json!(1));
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""analyzed plan""#)
+                .unwrap()
+        });
+
+        let result = table
+            .query()
+            .limit(1)
+            .analyze_plan_with_options(QueryExecutionOptions {
+                analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics::PerWorker,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "analyzed plan");
     }
 
     #[tokio::test]

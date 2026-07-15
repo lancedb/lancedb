@@ -2774,7 +2774,7 @@ describe("when calling analyzePlan", () => {
     queryVec = Array(2)
       .fill(1)
       .map(() => Math.random());
-    const plan = await table.query().nearestTo(queryVec).analyzePlan();
+    const plan = await table.query().nearestTo(queryVec).analyzePlan("full");
     console.log("Query Plan:\n", plan); // <--- Print the plan
     expect(plan).toMatch("AnalyzeExec");
   });

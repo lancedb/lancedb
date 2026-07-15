@@ -79,6 +79,8 @@ export interface QueryExecutionOptions {
   timeoutMs?: number;
 }
 
+export type AnalyzePlanDistributedMetrics = "aggregate" | "per_worker" | "full";
+
 export interface ColumnOrdering {
   columnName: string;
   ascending?: boolean;
@@ -311,13 +313,17 @@ export class QueryBase<
    *        KNNVectorDistance: metric=l2, metrics=[output_rows=1, elapsed_compute=114.333µs, output_batches=1]
    *         LanceScan: uri=/path/to/data, projection=[vector], row_id=true, row_addr=false, ordered=false, metrics=[output_rows=1, elapsed_compute=103.626µs, bytes_read=549, iops=2, requests=2]
    *
+   * @param distributedMetrics - How distributed worker metrics are displayed for remote query plans.
+   * Defaults to `"aggregate"`.
    * @returns A query execution plan with runtime metrics for each step.
    */
-  async analyzePlan(): Promise<string> {
+  async analyzePlan(
+    distributedMetrics: AnalyzePlanDistributedMetrics = "aggregate",
+  ): Promise<string> {
     if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.analyzePlan());
+      return this.inner.then((inner) => inner.analyzePlan(distributedMetrics));
     } else {
-      return this.inner.analyzePlan();
+      return this.inner.analyzePlan(distributedMetrics);
     }
   }
 

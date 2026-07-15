@@ -196,18 +196,26 @@ async def test_analyze_plan(table: AsyncTable):
 def test_hybrid_phrase_query_is_preserved_in_analyze_plan():
     table = mock.Mock()
     analyzed_queries = []
-    table._analyze_plan.side_effect = lambda query: analyzed_queries.append(query) or ""
+    distributed_metric_modes = []
+
+    def capture_query(query, *, distributed_metrics="aggregate"):
+        analyzed_queries.append(query)
+        distributed_metric_modes.append(distributed_metrics)
+        return ""
+
+    table._analyze_plan.side_effect = capture_query
 
     (
         LanceHybridQueryBuilder(table)
         .vector([0.1, 0.2])
         .text("puppy runs")
         .phrase_query()
-        .analyze_plan()
+        .analyze_plan(distributed_metrics="full")
     )
 
     assert len(analyzed_queries) == 2
     assert analyzed_queries[1].full_text_query.query == '"puppy runs"'
+    assert distributed_metric_modes == ["full", "full"]
 
 
 @pytest.fixture

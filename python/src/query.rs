@@ -19,6 +19,7 @@ use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
 };
+use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
@@ -41,6 +42,25 @@ use pyo3::types::{PyDict, PyString};
 use pyo3::{Borrowed, FromPyObject, exceptions::PyRuntimeError};
 use pyo3::{PyErr, pyclass};
 use pyo3::{exceptions::PyValueError, intern};
+
+fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExecutionOptions> {
+    let analyze_plan_distributed_metrics = match distributed_metrics.unwrap_or("aggregate") {
+        "aggregate" => AnalyzePlanDistributedMetrics::Aggregate,
+        "per_worker" => AnalyzePlanDistributedMetrics::PerWorker,
+        "full" => AnalyzePlanDistributedMetrics::Full,
+        mode => {
+            return Err(PyValueError::new_err(format!(
+                "Invalid distributed_metrics value '{}'. Expected one of: \
+                 'aggregate', 'per_worker', 'full'",
+                mode
+            )));
+        }
+    };
+
+    let mut options = QueryExecutionOptions::default();
+    options.analyze_plan_distributed_metrics = analyze_plan_distributed_metrics;
+    Ok(options)
+}
 
 impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
     type Error = PyErr;
@@ -571,11 +591,16 @@ impl Query {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -650,11 +675,16 @@ impl TakeQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -777,14 +807,19 @@ impl FTSQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_
             .inner
             .clone()
             .full_text_search(self_.fts_query.clone());
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -958,11 +993,16 @@ impl VectorQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
