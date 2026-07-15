@@ -216,6 +216,7 @@ impl Shuffler {
         let scan_scheduler = ScanScheduler::new(Arc::new(object_store), scheduler_config);
         let job_id = self.id.clone();
         let rng = Arc::new(Mutex::new(rng));
+        let read_schema = arrow_schema.clone();
 
         // Second pass, read each file as a single batch and shuffle
         let stream = futures::stream::iter(0..num_files)
@@ -224,6 +225,7 @@ impl Shuffler {
                 let rng = rng.clone();
                 let tmp_dir = tmp_dir.clone();
                 let job_id = job_id.clone();
+                let read_schema = read_schema.clone();
                 async move {
                     let path = tmp_dir.join(format!("shuffle_{}_{file_index}.lance", job_id));
                     let path = object_store::path::Path::from_absolute_path(path).unwrap();
@@ -249,7 +251,9 @@ impl Shuffler {
                         .await?
                         .try_collect::<Vec<_>>()
                         .await?;
-                    let batch = concat_batches(&batches[0].schema(), &batches)?;
+                    // An empty file yields no batches; fall back to an empty batch
+                    // with the expected schema so shuffling handles it gracefully.
+                    let batch = concat_batches(&read_schema, &batches)?;
                     let mut rng = rng.lock().unwrap_or_else(|e| e.into_inner());
                     Self::shuffle_batch(&batch, &mut rng, clump_size)
                 }
