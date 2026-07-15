@@ -134,8 +134,11 @@ def test_split_hash_with_discard(mem_db):
     )
 
     permutation_tbl = (
+        # Hash a high-cardinality column: "category" has only two distinct
+        # values, so whether anything is discarded would hinge on where those
+        # two hashes land rather than on the discard weight.
         permutation_builder(tbl)
-        .split_hash(["category"], [1, 1], discard_weight=2)  # Should discard ~50%
+        .split_hash(["id"], [1, 1], discard_weight=2)  # Should discard ~50%
         .execute()
     )
 
