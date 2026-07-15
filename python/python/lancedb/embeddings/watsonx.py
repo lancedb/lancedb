@@ -149,8 +149,7 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         # Explicit field always wins; env var is consulted only when the
         # corresponding field was not set, so passing project_id= never
         # conflicts with a stray WATSONX_SPACE_ID env var and vice-versa.
-        project_id = self.project_id if self.project_id is not None else None
-        space_id = self.space_id if self.space_id is not None else None
+        space_id, project_id = self.space_id, self.project_id
 
         if project_id is None and space_id is None:
             # Neither was passed explicitly — fall back to env vars.
