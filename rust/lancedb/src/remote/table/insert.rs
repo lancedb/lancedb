@@ -3,7 +3,6 @@
 
 //! DataFusion ExecutionPlan for inserting data into remote LanceDB tables.
 
-use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
@@ -235,10 +234,6 @@ impl<S: HttpSend + 'static> DisplayAs for RemoteInsertExec<S> {
 impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
     fn name(&self) -> &str {
         Self::static_name()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
