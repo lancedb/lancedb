@@ -644,6 +644,21 @@ def test_cross_encoder_reranker_return_all(tmp_path):
     assert "_distance" in result.column_names
 
 
+def test_answerdotai_reranker_return_all(tmp_path):
+    pytest.importorskip("rerankers")
+    reranker = AnswerdotaiRerankers(return_score="all")
+    table, schema = get_test_table(tmp_path)
+    query = "single player experience"
+    result = (
+        table.search(query, query_type="hybrid", vector_column_name="vector")
+        .rerank(reranker=reranker)
+        .to_arrow()
+    )
+    assert "_relevance_score" in result.column_names
+    assert "_score" in result.column_names
+    assert "_distance" in result.column_names
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for LinearCombinationReranker scoring bugs (issue #3154)
 # ---------------------------------------------------------------------------

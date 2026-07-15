@@ -23,7 +23,7 @@ class AnswerdotaiRerankers(Reranker):
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
     return_score : str, default "relevance"
-        options are "relevance" or "all". Only "relevance" is supported for now.
+        options are "relevance" or "all".
     **kwargs
         Additional keyword arguments to pass to the model. For example, 'device'.
         See AnswerDotAI/rerankers for more information.
@@ -77,12 +77,13 @@ class AnswerdotaiRerankers(Reranker):
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
-        combined_results = self.merge_results(vector_results, fts_results)
+        if self.score == "all":
+            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
+        else:
+            combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
-        elif self.score == "all":
-            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
         combined_results = combined_results.sort_by(
             [("_relevance_score", "descending")]
         )
