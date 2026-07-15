@@ -27,7 +27,9 @@ Do NOT assume local-only table helpers exist on remote tables. If the user asks 
    - TypeScript patterns: `references/typescript/patterns.md`
    - TypeScript API quick reference: `references/typescript/api_reference.md`
    - TypeScript performance guidance: `references/typescript/performance.md`
-4. Start with `patterns.md` for the selected SDK. Read `api_reference.md` when choosing method names or return collectors. Read `performance.md` when the task involves ingestion, indexing, filtering, query tuning, diagnostics, or large datasets.
+   - Column metadata authoring (both SDKs): `references/column_metadata.md`
+   - Branch operations (both SDKs): `references/branch_ops.md`
+4. Start with `patterns.md` for the selected SDK. Read `api_reference.md` when choosing method names or return collectors. Read `performance.md` when the task involves ingestion, indexing, filtering, query tuning, diagnostics, or large datasets. Read `column_metadata.md` when the task is documenting, tagging, classifying, or grouping table columns (field descriptions, `lancedb:tag:*` tags, logical column families). Read `branch_ops.md` when the task involves branch lifecycle (list/create/delete), writing to a non-main branch, or verifying a change stayed off main.
 5. For Python schemas, favor Pydantic models and validate records before writing. Use PyArrow schemas when Arrow-native, streaming, or highly dynamic data makes them materially better suited.
 6. Prefer `search()` or `query()` builders with explicit `select()` and `limit()` for reads.
 7. Avoid table-level full materialization in remote or portable code. This is the main local-vs-remote read pitfall.

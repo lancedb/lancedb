@@ -69,6 +69,33 @@ console.log(await table.indexStats("vector_idx"));
 
 Use these before changing indexes or search tuning.
 
+## Column (Field) Metadata
+
+```typescript
+const schema = await table.schema();
+const meta = schema.fields.find((f) => f.name === "category")?.metadata; // Map<string, string>
+const res = await table.updateFieldMetadata([
+  { path: "category", metadata: { "lancedb:description": "...", "lancedb:tag:field_type": "label" } },
+]);
+res.version; // new table version
+```
+
+Merges by default; a `null` value deletes that key; `replace: true` swaps the whole map. Nested fields use dot-paths (`"a.b.c"`). See `references/column_metadata.md` for key conventions (`lancedb:description`, `lancedb:tag:<name>`, `lancedb:logical-column`) and the authoring workflow.
+
+## Branches
+
+```typescript
+const branches = await table.branches();       // async manager
+await branches.list();                         // non-main branches; {} = only main
+const exp = await branches.create("exp");      // fork off main -> Table scoped to the branch
+const wip = await branches.checkout("wip");    // existing branch -> scoped Table (version arg pins read-only)
+const wip2 = await db.openTable("t", { branch: "wip" }); // or open scoped directly
+await branches.delete("stale");                // removes only the branch pointer
+table.currentBranch();                         // null = main
+```
+
+There is no global switch — scoping is per table handle: any read/write on a branch handle lands on that branch; the original handle keeps targeting main. See `references/branch_ops.md` for the model and isolation checks.
+
 ## Maintenance
 
 ```typescript

@@ -96,6 +96,32 @@ print(table.index_stats("vector_idx"))
 
 Use these before changing indexes or search tuning.
 
+## Column (Field) Metadata
+
+```python
+schema = table.schema                       # sync property; async: await table.schema()
+meta = schema.field("category").metadata    # dict[bytes, bytes] — Arrow metadata is bytes-keyed
+res = table.update_field_metadata(          # varargs: one dict per field; works local + remote
+    {"path": "category", "metadata": {"lancedb:description": "...", "lancedb:tag:field_type": "label"}}
+)
+res.version  # new table version
+```
+
+Merges by default; a `None` value deletes that key; `"replace": True` swaps the whole map. Nested fields use dot-paths (`"a.b.c"`). `replace_field_metadata` is deprecated. See `references/column_metadata.md` for key conventions (`lancedb:description`, `lancedb:tag:<name>`, `lancedb:logical-column`) and the authoring workflow.
+
+## Branches
+
+```python
+table.branches.list()                          # non-main branches; {} = only main
+exp = table.branches.create("exp")             # fork off main -> handle scoped to the branch
+wip = table.branches.checkout("wip")           # existing branch -> scoped handle (version= pins read-only)
+wip = db.open_table("t", branch="wip")         # or open scoped directly
+table.branches.delete("stale")                 # removes only the branch pointer
+table.current_branch()                         # None = main
+```
+
+There is no global switch — scoping is per table handle: any read/write on a branch handle lands on that branch; the original handle keeps targeting main. See `references/branch_ops.md` for the model and isolation checks.
+
 ## Maintenance
 
 ```python
