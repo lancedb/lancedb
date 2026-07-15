@@ -137,8 +137,7 @@ mod tests {
             };
 
             // Downcast to BaseTableAdapter and apply FTS query
-            let base_adapter = table_provider
-                .as_any()
+            let base_adapter = (table_provider.as_ref() as &dyn std::any::Any)
                 .downcast_ref::<BaseTableAdapter>()
                 .ok_or_else(|| {
                     DataFusionError::Internal(

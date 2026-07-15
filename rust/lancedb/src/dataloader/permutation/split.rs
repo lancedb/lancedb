@@ -8,7 +8,7 @@ use std::sync::{
 
 use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion_common::hash_utils::create_hashes;
+use datafusion_common::hash_utils::{RandomState, create_hashes};
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
 
@@ -234,7 +234,7 @@ impl Splitter {
             .cloned()
             .collect::<Vec<_>>();
         let mut hashes = vec![0; batch.num_rows()];
-        let random_state = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let random_state = RandomState::with_seed(0);
         create_hashes(&arrays, &random_state, &mut hashes).unwrap();
         // As an example, let's assume the weights are 1, 2.  Our total weight is 3.
         //
