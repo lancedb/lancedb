@@ -103,8 +103,8 @@ class WatsonxReranker(Reranker):
         # Explicit field always wins; env vars are consulted only when neither
         # was passed explicitly, so a stray WATSONX_SPACE_ID never overrides an
         # explicit project_id and vice-versa.
-        project_id = self.project_id if self.project_id is not None else None
-        space_id = self.space_id if self.space_id is not None else None
+        project_id = self.project_id
+        space_id = self.space_id
 
         if project_id is None and space_id is None:
             # Neither was passed explicitly — fall back to env vars.
