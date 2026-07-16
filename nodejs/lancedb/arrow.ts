@@ -715,6 +715,23 @@ class PathTree<V> {
   }
 }
 
+/** Look up the value at `path` within a single row, treating a missing key the same as `null`. */
+function getValueAtPath(datum: unknown, path: string[]): unknown {
+  let current = datum;
+  for (const key of path) {
+    if (current == null) {
+      return null;
+    }
+
+    if (isObject(current) && (Object.hasOwn(current, key) || key in current)) {
+      current = current[key];
+    } else {
+      return null;
+    }
+  }
+  return current;
+}
+
 function transposeData(
   data: Record<string, unknown>[],
   field: Field,
@@ -726,31 +743,36 @@ function transposeData(
     const childVectors = childFields.map((child) => {
       return transposeData(data, child, fullPath);
     });
+
+    // A struct's own validity is determined by whether *this* field's value
+    // is null/missing in the source row -- not by whether its children are
+    // null. Those are distinct: e.g. `{outer: {inner: null}}` is a present
+    // struct with a null child, while `{outer: null}` is a null struct. If we
+    // don't set this validity bitmap at all, arrow silently assumes every row
+    // is valid, which conflicts with any non-nullable child field that ends
+    // up null (e.g. because the struct itself is missing for that row).
+    let nullCount = 0;
+    const nullBitmap = new Uint8Array(Math.ceil(data.length / 8)).fill(0xff);
+    data.forEach((datum, i) => {
+      if (getValueAtPath(datum, fullPath) == null) {
+        nullCount++;
+        nullBitmap[i >> 3] &= ~(1 << (i % 8));
+      }
+    });
+
     const structData = makeData({
       type: field.type,
-      children: childVectors as unknown as ArrowData<DataType>[],
+      length: data.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? nullBitmap : undefined,
+      children: childVectors.map(
+        (vector) => vector.data[0],
+      ) as unknown as ArrowData<DataType>[],
     });
     return arrowMakeVector(structData);
   } else {
     const valuesPath = [...path, field.name];
-    const values = data.map((datum) => {
-      let current: unknown = datum;
-      for (const key of valuesPath) {
-        if (current == null) {
-          return null;
-        }
-
-        if (
-          isObject(current) &&
-          (Object.hasOwn(current, key) || key in current)
-        ) {
-          current = current[key];
-        } else {
-          return null;
-        }
-      }
-      return current;
-    });
+    const values = data.map((datum) => getValueAtPath(datum, valuesPath));
     return makeVector(values, field.type, undefined, field.nullable);
   }
 }
