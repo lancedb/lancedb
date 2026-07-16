@@ -1983,7 +1983,7 @@ requires-dist = [
     { name = "pyarrow-stubs", marker = "extra == 'tests'", specifier = ">=16.0" },
     { name = "pydantic", specifier = ">=1.10" },
     { name = "pylance", marker = "extra == 'pylance'", specifier = ">=5.0.0b5" },
-    { name = "pylance", marker = "extra == 'tests'", specifier = ">=5.0.0b5" },
+    { name = "pylance", marker = "extra == 'tests'", specifier = ">=7,<8" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.350" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'tests'", specifier = ">=0.21" },
