@@ -3,7 +3,6 @@
 
 //! DataFusion ExecutionPlan for inserting data into LanceDB tables.
 
-use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -144,10 +143,6 @@ impl DisplayAs for InsertExec {
 impl ExecutionPlan for InsertExec {
     fn name(&self) -> &str {
         Self::static_name()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

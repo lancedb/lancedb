@@ -982,10 +982,10 @@ mod tests {
         use crate::table::query::create_plan;
 
         fn find_ann_approx_mode(plan: &dyn ExecutionPlan) -> Option<ApproxMode> {
-            if let Some(ann) = plan.as_any().downcast_ref::<ANNIvfSubIndexExec>() {
+            if let Some(ann) = (plan as &dyn std::any::Any).downcast_ref::<ANNIvfSubIndexExec>() {
                 return Some(ann.query().approx_mode);
             }
-            if let Some(ann) = plan.as_any().downcast_ref::<ANNIvfPartitionExec>() {
+            if let Some(ann) = (plan as &dyn std::any::Any).downcast_ref::<ANNIvfPartitionExec>() {
                 return Some(ann.query.approx_mode);
             }
             plan.children()

@@ -66,10 +66,6 @@ impl ExecutionPlan for ScannableExec {
         "ScannableExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
@@ -121,14 +117,14 @@ impl ExecutionPlan for ScannableExec {
         )))
     }
 
-    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
-        Ok(Statistics {
+    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Arc<Statistics>> {
+        Ok(Arc::new(Statistics {
             num_rows: self
                 .num_rows
                 .map(Precision::Exact)
                 .unwrap_or(Precision::Absent),
             total_byte_size: Precision::Absent,
             column_statistics: vec![],
-        })
+        }))
     }
 }

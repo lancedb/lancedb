@@ -8,7 +8,7 @@ use std::sync::{
 
 use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
-use datafusion_common::hash_utils::create_hashes;
+use datafusion_common::hash_utils::{RandomState, create_hashes};
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
 
@@ -234,7 +234,7 @@ impl Splitter {
             .cloned()
             .collect::<Vec<_>>();
         let mut hashes = vec![0; batch.num_rows()];
-        let random_state = ahash::RandomState::with_seeds(0, 0, 0, 0);
+        let random_state = RandomState::with_seed(0);
         create_hashes(&arrays, &random_state, &mut hashes).unwrap();
         // As an example, let's assume the weights are 1, 2.  Our total weight is 3.
         //
@@ -796,15 +796,15 @@ mod tests {
         // These assertions are all based on fixed seed in data generation but they match
         // up roughly to what we expect (25% discarded, 25% in split 0, 50% in split 1)
 
-        // 14 rows (28%) are discarded because discard_weight is 1
-        assert_eq!(split_batch.num_rows(), 36);
+        // 8 rows (16%) are discarded because discard_weight is 1
+        assert_eq!(split_batch.num_rows(), 42);
         assert_eq!(split_batch.num_columns(), 2);
 
         let split_ids = split_batch.column(1).as_primitive::<UInt64Type>().values();
         let num_in_split_0 = split_ids.iter().filter(|v| **v == 0).count();
         let num_in_split_1 = split_ids.iter().filter(|v| **v == 1).count();
 
-        assert_eq!(num_in_split_0, 11); // 22%
-        assert_eq!(num_in_split_1, 25); // 50%
+        assert_eq!(num_in_split_0, 12); // 24%
+        assert_eq!(num_in_split_1, 30); // 60%
     }
 }

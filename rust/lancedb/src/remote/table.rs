@@ -1250,8 +1250,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
             match result {
                 Ok(_) => {
-                    let add_result = insert
-                        .as_any()
+                    let add_result = (insert.as_ref() as &dyn std::any::Any)
                         .downcast_ref::<RemoteInsertExec<S>>()
                         .and_then(|i| i.add_result())
                         .unwrap_or(AddResult { version: 0 });
