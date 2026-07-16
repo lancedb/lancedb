@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   linux:
-    name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
+    name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
     timeout-minutes: 60
     strategy:
       matrix:
@@ -31,11 +31,28 @@ jobs:
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
             runner: ubuntu-22.04
+            package_name: "lancedb"
+            rustflags: ""
           # For successful fat LTO builds, we need a large runner to avoid OOM errors.
           - platform: aarch64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
             runner: ubuntu-2404-8x-arm64
+            package_name: "lancedb"
+            rustflags: ""
+          # `lancedb-compat`: pre-Haswell-friendly variant for x86_64 hosts
+          # without AVX2 (Sandy Bridge / Ivy Bridge / Westmere on Intel,
+          # Bulldozer / Piledriver / Steamroller on AMD). Compiled at the
+          # `x86-64-v2` baseline; runtime SIMD dispatch in lance-linalg
+          # picks the appropriate tier (scalar / AVX / AVX+FMA / AVX2+FMA
+          # / AVX-512) at load time. Same import as `lancedb` -- conflicts
+          # at install time, so users pick one.
+          - platform: x86_64
+            manylinux: "2_28"
+            extra_args: ""
+            runner: ubuntu-22.04
+            package_name: "lancedb-compat"
+            rustflags: "-Ctarget-cpu=x86-64-v2"
     runs-on: ${{ matrix.config.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -52,11 +69,13 @@ jobs:
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
+          package-name: ${{ matrix.config.package_name }}
+          rustflags: ${{ matrix.config.rustflags }}
       - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          name: wheels-linux-${{ matrix.config.platform }}-${{ matrix.config.manylinux }}
-          path: target/wheels/lancedb-*.whl
+          name: wheels-linux-${{ matrix.config.package_name }}-${{ matrix.config.platform }}-${{ matrix.config.manylinux }}
+          path: target/wheels/*.whl
           if-no-files-found: error
   mac:
     timeout-minutes: 90
@@ -145,7 +164,7 @@ jobs:
           FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
         run: |
           shopt -s nullglob
-          WHEELS=(target/wheels/lancedb-*.whl)
+          WHEELS=(target/wheels/*.whl)
           if [[ ${#WHEELS[@]} -eq 0 ]]; then
             echo "No wheels found in target/wheels/" >&2
             exit 1

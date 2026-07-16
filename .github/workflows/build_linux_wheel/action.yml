@@ -18,6 +18,14 @@ inputs:
     description: "The manylinux version to build for"
     required: false
     default: "2_17"
+  package-name:
+    description: "Override [project] name in python/pyproject.toml (e.g. 'lancedb-compat'). Default keeps 'lancedb'."
+    required: false
+    default: "lancedb"
+  rustflags:
+    description: "RUSTFLAGS for the build container, as a single whitespace-free token (e.g. '-Ctarget-cpu=x86-64-v2'). Empty leaves RUSTFLAGS unset, keeping the defaults from .cargo/config.toml."
+    required: false
+    default: ""
 runs:
   using: "composite"
   steps:
@@ -27,6 +35,18 @@ runs:
         ARM_BUILD: ${{ inputs.arm-build }}
       run: |
         echo "ARM BUILD: $ARM_BUILD"
+    - name: Patch package name for variant build
+      if: ${{ inputs.package-name != 'lancedb' }}
+      shell: bash
+      env:
+        PACKAGE_NAME: ${{ inputs.package-name }}
+      run: |
+        # Swap the [project] name so this build produces e.g. lancedb-compat
+        # wheels. The package still installs files under the lancedb/
+        # namespace -- import lancedb still works after pip install.
+        sed -i.bak 's/^name = "lancedb"$/name = "'"$PACKAGE_NAME"'"/' python/pyproject.toml
+        rm -f python/pyproject.toml.bak
+        grep '^name = ' python/pyproject.toml
     - name: Build x86_64 Manylinux wheel
       if: ${{ inputs.arm-build == 'false' }}
       uses: PyO3/maturin-action@v1
@@ -34,7 +54,7 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
         target: x86_64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
@@ -51,7 +71,7 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
         target: aarch64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
