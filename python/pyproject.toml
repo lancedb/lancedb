@@ -65,7 +65,7 @@ tests = [
     "pyarrow-stubs>=16.0",
     "pylance>=5.0.0b5",
     "requests>=2.31.0",
-    "datafusion>=52,<53",
+    "datafusion>=53,<54",
     "opentelemetry-sdk>=1.30.0",
 ]
 dev = [
