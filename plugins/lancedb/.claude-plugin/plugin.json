@@ -5,6 +5,7 @@
   "author": {
     "name": "LanceDB"
   },
+  "homepage": "https://www.lancedb.com",
   "keywords": [
     "lancedb",
     "vector-search",

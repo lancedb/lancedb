@@ -20,10 +20,14 @@
     "shortDescription": "Build LanceDB pipelines in Python and TypeScript.",
     "longDescription": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables, with idiomatic query/search patterns and performance defaults for ingestion, indexing, filtering, and diagnostics.",
     "developerName": "LanceDB",
+    "websiteURL": "https://www.lancedb.com",
     "category": "Developer Tools",
     "capabilities": [
       "Developer Tools"
     ],
-    "defaultPrompt": "Use the LanceDB skill when writing, reviewing, debugging, or documenting LanceDB pipelines."
+    "defaultPrompt": "Create a LanceDB table, embed sample text, and run a vector search.",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png",
+    "logoDark": "./assets/logo-dark.png"
   }
 }

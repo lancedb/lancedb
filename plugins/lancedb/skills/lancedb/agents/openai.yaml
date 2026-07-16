@@ -1,4 +1,6 @@
 interface:
   display_name: "LanceDB"
   short_description: "Build LanceDB pipelines in Python and TypeScript"
-  default_prompt: "Use $lancedb to write, review, debug, or document LanceDB pipelines that work across local OSS and remote Enterprise/Cloud tables."
+  default_prompt: "Use $lancedb to create a table, embed sample text, and run a vector search."
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.png"
