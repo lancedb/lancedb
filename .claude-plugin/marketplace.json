@@ -1,0 +1,19 @@
+{
+  "name": "lancedb",
+  "owner": {
+    "name": "LanceDB"
+  },
+  "description": "LanceDB plugins for Claude Code.",
+  "plugins": [
+    {
+      "name": "lancedb",
+      "source": "./plugins/lancedb",
+      "description": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables.",
+      "version": "0.1.0",
+      "author": {
+        "name": "LanceDB"
+      },
+      "category": "development"
+    }
+  ]
+}
