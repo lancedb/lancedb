@@ -149,8 +149,3 @@ hours old (this matches the heuristic the Geneva console UI applies on read).
 - To wait for async work (a backfill, an index build), poll `describe` until
   `job_state` leaves `IN_PROGRESS`; on `FAILED`, pull `status` and `query_events` for
   the failure detail.
-- Older server versions expose only `/admin/job/{describe,cancel,list}` (GET for
-  describe/list, POST for cancel; no `query_events`). If `/v1/jobs/*` returns `404`,
-  fall back to those.
-- The `lancedb` CLI has equivalents for the first three: `lancedb job list`,
-  `lancedb job describe --job-id <id>`, `lancedb job cancel --job-id <id>`.
