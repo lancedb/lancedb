@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 
 
 @runtime_checkable
@@ -1372,7 +1373,9 @@ class LanceQueryBuilder(ABC):
         self._order_by = ordering
         return self
 
-    def analyze_plan(self) -> str:
+    def analyze_plan(
+        self, distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate"
+    ) -> str:
         """
         Run the query and return its execution plan with runtime metrics.
 
@@ -1410,12 +1413,22 @@ class LanceQueryBuilder(ABC):
                       fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
                       bytes_read=..., iops=..., requests=..., task_wait_time=...]
 
+        Parameters
+        ----------
+        distributed_metrics : Literal["aggregate", "per_worker", "full"]
+            Defaults to "aggregate".
+            How distributed worker metrics are displayed for remote query plans.
+            "aggregate" preserves the legacy summary, "per_worker" shows each
+            worker separately, and "full" includes both.
+
         Returns
         -------
         plan : str
             The physical query execution plan with runtime metrics.
         """
-        return self._table._analyze_plan(self.to_query_object())
+        return self._table._analyze_plan(
+            self.to_query_object(), distributed_metrics=distributed_metrics
+        )
 
     def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.
@@ -2581,8 +2594,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
         return f"{reranker_label}\n  {indented_vector}\n  {indented_fts}"
 
-    def analyze_plan(self):
+    def analyze_plan(
+        self, distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate"
+    ) -> str:
         """Execute the query and display with runtime metrics.
+
+        Parameters
+        ----------
+        distributed_metrics : Literal["aggregate", "per_worker", "full"]
+            Defaults to "aggregate".
+            How distributed worker metrics are displayed for remote query plans.
 
         Returns
         -------
@@ -2591,9 +2612,19 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._create_query_builders()
 
         results = ["Vector Search Plan:"]
-        results.append(self._table._analyze_plan(self._vector_query.to_query_object()))
+        results.append(
+            self._table._analyze_plan(
+                self._vector_query.to_query_object(),
+                distributed_metrics=distributed_metrics,
+            )
+        )
         results.append("FTS Search Plan:")
-        results.append(self._table._analyze_plan(self._fts_query.to_query_object()))
+        results.append(
+            self._table._analyze_plan(
+                self._fts_query.to_query_object(),
+                distributed_metrics=distributed_metrics,
+            )
+        )
         return "\n".join(results)
 
     def _create_query_builders(self):
@@ -3080,14 +3111,22 @@ class AsyncQueryBase(object):
         """  # noqa: E501
         return await self._inner.explain_plan(verbose)
 
-    async def analyze_plan(self):
+    async def analyze_plan(
+        self, distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate"
+    ) -> str:
         """Execute the query and display with runtime metrics.
+
+        Parameters
+        ----------
+        distributed_metrics : Literal["aggregate", "per_worker", "full"]
+            Defaults to "aggregate".
+            How distributed worker metrics are displayed for remote query plans.
 
         Returns
         -------
         plan : str
         """
-        return await self._inner.analyze_plan()
+        return await self._inner.analyze_plan(distributed_metrics)
 
 
 class AsyncStandardQuery(AsyncQueryBase):
@@ -3866,7 +3905,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
         return f"{self._reranker}\n  {indented_vector}\n  {indented_fts}"
 
-    async def analyze_plan(self):
+    async def analyze_plan(
+        self, distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate"
+    ) -> str:
         """
         Execute the query and return the physical execution plan with runtime metrics.
 
@@ -3875,14 +3916,24 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         elapsed time, I/O stats, and more. It’s useful for debugging and
         performance analysis.
 
+        Parameters
+        ----------
+        distributed_metrics : Literal["aggregate", "per_worker", "full"]
+            Defaults to "aggregate".
+            How distributed worker metrics are displayed for remote query plans.
+
         Returns
         -------
         plan : str
         """
         results = ["Vector Search Query:"]
-        results.append(await self._inner.to_vector_query().analyze_plan())
+        results.append(
+            await self._inner.to_vector_query().analyze_plan(distributed_metrics)
+        )
         results.append("FTS Search Query:")
-        results.append(await self._inner.to_fts_query().analyze_plan())
+        results.append(
+            await self._inner.to_fts_query().analyze_plan(distributed_metrics)
+        )
 
         return "\n".join(results)
 
@@ -4166,14 +4217,22 @@ class BaseQueryBuilder(object):
         """  # noqa: E501
         return LOOP.run(self._inner.explain_plan(verbose))
 
-    def analyze_plan(self):
+    def analyze_plan(
+        self, distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate"
+    ) -> str:
         """Execute the query and display with runtime metrics.
+
+        Parameters
+        ----------
+        distributed_metrics : Literal["aggregate", "per_worker", "full"]
+            Defaults to "aggregate".
+            How distributed worker metrics are displayed for remote query plans.
 
         Returns
         -------
         plan : str
         """
-        return LOOP.run(self._inner.analyze_plan())
+        return LOOP.run(self._inner.analyze_plan(distributed_metrics))
 
 
 class LanceTakeQueryBuilder(BaseQueryBuilder):

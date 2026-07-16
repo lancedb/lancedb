@@ -73,6 +73,7 @@ from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
     AsyncHybridQuery,
     AsyncQuery,
@@ -1552,7 +1553,12 @@ class Table(ABC):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
 
     @abstractmethod
-    def _analyze_plan(self, query: Query) -> str: ...
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str: ...
 
     @abstractmethod
     def _output_schema(self, query: Query) -> pa.Schema: ...
@@ -3630,8 +3636,15 @@ class LanceTable(Table):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
-    def _analyze_plan(self, query: Query) -> str:
-        return LOOP.run(self._table._analyze_plan(query))
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
+        return LOOP.run(
+            self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
+        )
 
     def _output_schema(self, query: Query) -> pa.Schema:
         return LOOP.run(self._table._output_schema(query))
@@ -5390,10 +5403,15 @@ class AsyncTable:
         async_query = self._sync_query_to_async(query)
         return await async_query.explain_plan(verbose)
 
-    async def _analyze_plan(self, query: Query) -> str:
+    async def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
-        return await async_query.analyze_plan()
+        return await async_query.analyze_plan(distributed_metrics)
 
     async def _output_schema(self, query: Query) -> pa.Schema:
         async_query = self._sync_query_to_async(query)

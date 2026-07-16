@@ -5391,6 +5391,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-sql",
  "futures",
+ "goosefs-sdk",
  "half",
  "hf-hub",
  "http 1.4.2",

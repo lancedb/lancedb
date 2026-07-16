@@ -118,6 +118,7 @@
 
 ## Type Aliases
 
+- [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)

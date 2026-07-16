@@ -56,7 +56,12 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
-from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
+from ..query import (
+    AnalyzePlanDistributedMetrics,
+    LanceQueryBuilder,
+    LanceTakeQueryBuilder,
+    LanceVectorQueryBuilder,
+)
 from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
 from ..types import BaseTokenizerType
 
@@ -718,8 +723,15 @@ class RemoteTable(Table):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
-    def _analyze_plan(self, query: Query) -> str:
-        return LOOP.run(self._table._analyze_plan(query))
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
+        return LOOP.run(
+            self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
+        )
 
     def _output_schema(self, query: Query) -> pa.Schema:
         return LOOP.run(self._table._output_schema(query))

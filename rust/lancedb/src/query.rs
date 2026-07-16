@@ -614,6 +614,12 @@ pub struct QueryExecutionOptions {
     pub max_batch_length: u32,
     /// Max duration to wait for the query to execute before timing out.
     pub timeout: Option<Duration>,
+    /// How distributed worker metrics should be displayed by
+    /// [`ExecutableQuery::analyze_plan`].
+    ///
+    /// This only affects remote distributed query plans. Local query execution
+    /// ignores this option.
+    pub analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics,
 }
 
 impl Default for QueryExecutionOptions {
@@ -621,6 +627,7 @@ impl Default for QueryExecutionOptions {
         Self {
             max_batch_length: 1024,
             timeout: None,
+            analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics::Aggregate,
         }
     }
 }
@@ -630,6 +637,29 @@ impl QueryExecutionOptions {
         let mut options = self.clone();
         options.max_batch_length = 0;
         options
+    }
+}
+
+/// How distributed worker metrics are displayed in analyzed query plans.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnalyzePlanDistributedMetrics {
+    /// Preserve the legacy output: aggregate worker metrics into one synthetic tree.
+    #[default]
+    Aggregate,
+    /// Render one raw worker-side tree per distributed worker.
+    PerWorker,
+    /// Render the aggregate tree followed by the raw per-worker trees.
+    Full,
+}
+
+impl AnalyzePlanDistributedMetrics {
+    pub(crate) fn as_query_param(self) -> &'static str {
+        match self {
+            Self::Aggregate => "aggregate",
+            Self::PerWorker => "per_worker",
+            Self::Full => "full",
+        }
     }
 }
 
