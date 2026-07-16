@@ -1865,25 +1865,33 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
-        let num_partitions = if let Some(parallelism) = add.write_parallelism {
-            if parallelism > 1 && self.server_version.support_multipart_write() {
-                parallelism
-            } else {
-                1
-            }
-        } else if self.server_version.support_multipart_write() {
-            // Peek at the first batch to estimate write partitions, same as NativeTable.
+        let num_partitions = if self.server_version.support_multipart_write() {
+            // Peek at the first batch to estimate write partitions (same as
+            // NativeTable) and, regardless of `write_parallelism`, to detect a
+            // fully empty input. A multipart write creates its upload session
+            // before any partition executes; if the input turns out to have no
+            // batches at all, no partition ever stages a part (see
+            // `send_multipart_chunked`), so completing the write has nothing to
+            // commit and e.g. `mode=overwrite` would be silently dropped. Route
+            // empty input through the single-request path instead, which always
+            // sends one schema-only request.
             let mut peeked = PeekedScannable::new(add.data);
-            let n = if let Some(first_batch) = peeked.peek().await {
-                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
-                estimate_write_partitions(
-                    first_batch.get_array_memory_size(),
-                    first_batch.num_rows(),
-                    peeked.num_rows(),
-                    max_partitions,
-                )
-            } else {
-                1
+            let n = match peeked.peek().await {
+                Some(first_batch) => match add.write_parallelism {
+                    Some(parallelism) if parallelism > 1 => parallelism,
+                    Some(_) => 1,
+                    None => {
+                        let max_partitions =
+                            lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                        estimate_write_partitions(
+                            first_batch.get_array_memory_size(),
+                            first_batch.num_rows(),
+                            peeked.num_rows(),
+                            max_partitions,
+                        )
+                    }
+                },
+                None => 1,
             };
             add.data = Box::new(peeked);
             n
@@ -7165,6 +7173,76 @@ mod tests {
 
         assert_eq!(result.version, 2);
         assert_eq!(create_count.load(Ordering::SeqCst), 0);
+        assert_eq!(insert_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_empty_overwrite_uses_single_partition() {
+        // A multipart write creates its upload session before any partition
+        // executes. If the input has no batches at all, every partition would
+        // stage nothing (see `send_multipart_chunked`), so completing the write
+        // would have nothing to commit and `mode=overwrite` would be silently
+        // dropped. An explicit `write_parallelism` must not force the multipart
+        // path for empty input; it should fall back to the single-request path,
+        // which always sends one schema-only request and carries `mode=overwrite`.
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let multipart_count = Arc::new(AtomicUsize::new(0));
+
+        let insert_count_c = insert_count.clone();
+        let multipart_count_c = multipart_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path.contains("multipart_write") {
+                    multipart_count_c.fetch_add(1, Ordering::SeqCst);
+                    panic!("Should not use multipart write endpoints for empty input");
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        !query.contains("upload_id"),
+                        "Should not have upload_id for empty input"
+                    );
+                    assert!(
+                        query.contains("mode=overwrite"),
+                        "Should carry mode=overwrite, got query: {}",
+                        query
+                    );
+                    insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let empty_batches: Vec<std::result::Result<RecordBatch, arrow_schema::ArrowError>> =
+            Vec::new();
+        let data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(empty_batches, schema));
+        let result = table
+            .add(data)
+            .mode(AddDataMode::Overwrite)
+            .write_parallelism(4)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 2);
+        assert_eq!(multipart_count.load(Ordering::SeqCst), 0);
         assert_eq!(insert_count.load(Ordering::SeqCst), 1);
     }
 
