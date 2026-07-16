@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.pydantic import LanceModel, Vector
 
 
@@ -953,6 +954,47 @@ def test_local_namespace_operations(tmp_path):
     # Drop namespace
     db.drop_namespace(["child"])
     assert db.list_namespaces().namespaces == []
+
+
+def test_local_sync_namespace_uses_rust_without_python_client(tmp_path, monkeypatch):
+    """Sync local namespace operations should avoid the Python namespace client."""
+    db = lancedb.connect(tmp_path)
+
+    def fail_namespace_client():
+        raise AssertionError("Python namespace client should not be constructed")
+
+    monkeypatch.setattr(db, "namespace_client", fail_namespace_client)
+
+    db.create_namespace(["child"])
+    assert "child" in db.list_namespaces().namespaces
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = db.create_table("tbl", schema=schema, namespace_path=["child"])
+    assert table.namespace == ["child"]
+    assert "tbl" in db.table_names(namespace_path=["child"])
+    assert db.list_tables(namespace_path=["child"]).tables == ["tbl"]
+
+    opened = db.open_table("tbl", namespace_path=["child"])
+    assert opened.namespace == ["child"]
+
+    db.drop_table("tbl", namespace_path=["child"])
+    assert db.list_tables(namespace_path=["child"]).tables == []
+    db.drop_namespace(["child"])
+    assert db.list_namespaces().namespaces == []
+
+
+def test_local_sync_namespace_preserves_public_errors(tmp_path):
+    db = lancedb.connect(tmp_path)
+    db.create_namespace(["child"])
+    db.create_table(
+        "tbl", schema=pa.schema([pa.field("id", pa.int64())]), namespace_path=["child"]
+    )
+
+    with pytest.raises(TableNotFoundError, match="child\\$missing"):
+        db.open_table("missing", namespace_path=["child"])
+
+    with pytest.raises(NamespaceNotEmptyError):
+        db.drop_namespace(["child"])
 
 
 def test_create_namespace_invalid_mode_raises(tmp_path):
