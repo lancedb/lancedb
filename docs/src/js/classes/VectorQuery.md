@@ -51,13 +51,19 @@ addQueryVector(vector): VectorQuery
 ### analyzePlan()
 
 ```ts
-analyzePlan(): Promise<string>
+analyzePlan(distributedMetrics): Promise<string>
 ```
 
 Executes the query and returns the physical query plan annotated with runtime metrics.
 
 This is useful for debugging and performance analysis, as it shows how the query was executed
 and includes metrics such as elapsed time, rows processed, and I/O statistics.
+
+#### Parameters
+
+* **distributedMetrics**: [`AnalyzePlanDistributedMetrics`](../type-aliases/AnalyzePlanDistributedMetrics.md) = `"aggregate"`
+    How distributed worker metrics are displayed for remote query plans.
+    Defaults to `"aggregate"`.
 
 #### Returns
 

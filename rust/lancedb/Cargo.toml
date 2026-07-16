@@ -50,6 +50,8 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
+# Pin the transitive GooseFS SDK until the 0.1.6 compile break is fixed upstream.
+goosefs-sdk = { version = "=0.1.5", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -132,6 +134,7 @@ azure = [
 ]
 cos = ["lance/tencent", "lance-io/tencent"]
 goosefs = [
+    "dep:goosefs-sdk",
     "lance/goosefs",
     "lance-io/goosefs",
     "lance-namespace-impls/dir-goosefs",
