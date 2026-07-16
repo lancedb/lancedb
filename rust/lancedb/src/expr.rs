@@ -61,29 +61,29 @@ pub fn is_in(expr: Expr, list: Vec<Expr>) -> Expr {
     expr.in_list(list, false)
 }
 
-lazy_static::lazy_static! {
-    static ref FUNC_REGISTRY: std::sync::RwLock<std::collections::HashMap<String, Arc<ScalarUDF>>> = {
+static FUNC_REGISTRY: std::sync::LazyLock<std::collections::HashMap<String, Arc<ScalarUDF>>> =
+    std::sync::LazyLock::new(|| {
         let mut m = std::collections::HashMap::new();
         m.insert("lower".to_string(), datafusion_functions::string::lower());
         m.insert("upper".to_string(), datafusion_functions::string::upper());
-        m.insert("contains".to_string(), datafusion_functions::string::contains());
+        m.insert(
+            "contains".to_string(),
+            datafusion_functions::string::contains(),
+        );
         m.insert("btrim".to_string(), datafusion_functions::string::btrim());
         m.insert("ltrim".to_string(), datafusion_functions::string::ltrim());
         m.insert("rtrim".to_string(), datafusion_functions::string::rtrim());
         m.insert("concat".to_string(), datafusion_functions::string::concat());
-        m.insert("octet_length".to_string(), datafusion_functions::string::octet_length());
-        std::sync::RwLock::new(m)
-    };
-}
+        m.insert(
+            "octet_length".to_string(),
+            datafusion_functions::string::octet_length(),
+        );
+        m
+    });
 
 pub fn func(name: impl AsRef<str>, args: Vec<Expr>) -> crate::Result<Expr> {
     let name = name.as_ref();
-    let registry = FUNC_REGISTRY
-        .read()
-        .map_err(|e| crate::Error::InvalidInput {
-            message: format!("lock poisoned: {}", e),
-        })?;
-    let udf = registry
+    let udf = FUNC_REGISTRY
         .get(name)
         .ok_or_else(|| crate::Error::InvalidInput {
             message: format!("unknown function: {}", name),

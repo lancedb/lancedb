@@ -5410,7 +5410,6 @@ dependencies = [
  "lance-namespace-impls",
  "lance-table",
  "lance-testing",
- "lazy_static",
  "log",
  "metrics",
  "metrics-util",
