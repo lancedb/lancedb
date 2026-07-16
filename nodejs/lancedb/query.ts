@@ -318,12 +318,15 @@ export class QueryBase<
    * @returns A query execution plan with runtime metrics for each step.
    */
   async analyzePlan(
-    distributedMetrics: AnalyzePlanDistributedMetrics = "aggregate",
+    distributedMetrics?: AnalyzePlanDistributedMetrics,
   ): Promise<string> {
+    const distributedMetricsMode = distributedMetrics ?? "aggregate";
     if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.analyzePlan(distributedMetrics));
+      return this.inner.then((inner) =>
+        inner.analyzePlan(distributedMetricsMode),
+      );
     } else {
-      return this.inner.analyzePlan(distributedMetrics);
+      return this.inner.analyzePlan(distributedMetricsMode);
     }
   }
 
