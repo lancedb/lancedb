@@ -62,6 +62,7 @@ use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 mod add_data;
+pub mod branch_merge;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -77,6 +78,10 @@ use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
+pub use branch_merge::{
+    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
+    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -707,6 +712,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
     /// Delete a branch.
     async fn delete_branch(&self, name: &str) -> Result<()>;
+    /// Diff a branch against main. Remote only.
+    async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
+        Err(Error::NotSupported {
+            message: "diff_branch is only supported on remote tables".into(),
+        })
+    }
+    /// Merge a branch into main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
+    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+        Err(Error::NotSupported {
+            message: "merge_branch is only supported on remote tables".into(),
+        })
+    }
     /// The branch this handle is scoped to, or `None` for `main`.
     fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
@@ -1951,6 +1969,21 @@ impl Table {
     /// Delete a branch.
     pub async fn delete_branch(&self, name: &str) -> Result<()> {
         self.inner.delete_branch(name).await
+    }
+
+    /// Diff a branch against main. Remote only.
+    pub async fn diff_branch(&self, from_branch: &str) -> Result<BranchDiff> {
+        self.inner.diff_branch(from_branch).await
+    }
+
+    /// Merge a branch into main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
+    pub async fn merge_branch(
+        &self,
+        from_branch: &str,
+        dry_run: bool,
+    ) -> Result<MergeBranchResult> {
+        self.inner.merge_branch(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
