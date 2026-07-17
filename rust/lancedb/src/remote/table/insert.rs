@@ -708,7 +708,6 @@ mod tests {
     use datafusion_physical_expr::EquivalenceProperties;
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-    use std::any::Any;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -979,9 +978,6 @@ mod tests {
     impl ExecutionPlan for ErroringExec {
         fn name(&self) -> &str {
             "ErroringExec"
-        }
-        fn as_any(&self) -> &dyn Any {
-            self
         }
         fn properties(&self) -> &Arc<PlanProperties> {
             &self.properties
