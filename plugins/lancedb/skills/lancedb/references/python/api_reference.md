@@ -4,12 +4,19 @@ Quick method reference for Python LanceDB code. Cross-check source for non-trivi
 
 ## Connect
 
+If you're connecting to a remote database, use this:
 ```python
 import lancedb
 
-db = lancedb.connect("./camelot-db")         # local/OSS
-db = lancedb.connect("db://my-db", api_key=api_key, region=region)  # remote
+db = lancedb.connect("db://my-db", api_key=api_key, host_override=host_override) # remote
 ```
+(values may be found in LANCEDB_API_KEY and LANCEDB_HOST_OVERRIDE, either in env vars or a .env file)
+
+If you're connecting to a local table using OSS LanceDB, use this:
+```python
+db = lancedb.connect("./camelot-db") # local/OSS
+```
+If you're not sure which, or if you can't find the api_key or host_override params, ask the user.
 
 **Place the local database directory next to the script/entrypoint that opens it** (i.e. resolve the path relative to the script, `Path(__file__).parent / "camelot-db"`), not buried under a shared `data/` folder. The Lance dataset is the database, not a data file — keeping it beside its code makes ownership obvious and paths stable regardless of the working directory the script is launched from.
 
