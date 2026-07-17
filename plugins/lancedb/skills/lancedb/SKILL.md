@@ -1,6 +1,6 @@
 ---
 name: lancedb
-description: Use when writing, reviewing, debugging, or documenting LanceDB pipelines in Python or TypeScript, especially code that should work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables. Helps avoid non-portable full-table materialization, choose idiomatic query/search patterns, and apply LanceDB performance defaults for ingestion, indexing, filtering, and diagnostics.
+description: Use when writing, reviewing, debugging, or documenting LanceDB pipelines in Python or TypeScript, especially code that should work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables. Helps avoid non-portable full-table materialization, choose idiomatic query/search patterns, apply LanceDB performance defaults for ingestion, indexing, filtering, and diagnostics, and resolve connections to the remote server for Enterprise-only operations such as jobs.
 ---
 
 # Building LanceDB Pipelines
@@ -19,7 +19,7 @@ Do NOT assume local-only table helpers exist on remote tables. If the user asks 
 ## Workflow
 
 1. Identify the SDK: Python, TypeScript, or both.
-2. Identify the table mode: local/embedded OSS, remote Enterprise/Cloud, or portable across both. If the user says "LanceDB Enterprise", choose the remote table path.
+2. Identify the table mode: local/embedded OSS, remote Enterprise/Cloud, or portable across both. If the user says "LanceDB Enterprise", choose the remote table path. If the task involves jobs in any way (listing, inspecting, creating, or canceling jobs), it is always the remote path and requires a remote server connection — see "Connecting to the LanceDB remote server" below before doing anything else.
 3. Read the matching language branch before writing or changing code:
    - Python patterns: `references/python/patterns.md`
    - Python API quick reference: `references/python/api_reference.md`
@@ -29,7 +29,9 @@ Do NOT assume local-only table helpers exist on remote tables. If the user asks 
    - TypeScript performance guidance: `references/typescript/performance.md`
    - Column metadata authoring (both SDKs): `references/column_metadata.md`
    - Branch operations (both SDKs): `references/branch_ops.md`
-4. Start with `patterns.md` for the selected SDK. Read `api_reference.md` when choosing method names or return collectors. Read `performance.md` when the task involves ingestion, indexing, filtering, query tuning, diagnostics, or large datasets. Read `column_metadata.md` when the task is documenting, tagging, classifying, or grouping table columns (field descriptions, `lancedb:tag:*` tags, logical column families). Read `branch_ops.md` when the task involves branch lifecycle (list/create/delete), writing to a non-main branch, or verifying a change stayed off main.
+   - Remote server connection resolution (jobs, raw REST): `references/remote_connect.md`
+   - Job operations REST API (list/describe/cancel/query_events): `references/remote_jobs.md`
+4. Start with `patterns.md` for the selected SDK. Read `api_reference.md` when choosing method names or return collectors. Read `performance.md` when the task involves ingestion, indexing, filtering, query tuning, diagnostics, or large datasets. Read `column_metadata.md` when the task is documenting, tagging, classifying, or grouping table columns (field descriptions, `lancedb:tag:*` tags, logical column families). Read `branch_ops.md` when the task involves branch lifecycle (list/create/delete), writing to a non-main branch, or verifying a change stayed off main. Read `remote_connect.md` when the task involves jobs or direct REST access to an Enterprise deployment, and `remote_jobs.md` for the job REST methods themselves (list, describe, cancel, query_events).
 5. For Python schemas, favor Pydantic models and validate records before writing. Use PyArrow schemas when Arrow-native, streaming, or highly dynamic data makes them materially better suited.
 6. Prefer `search()` or `query()` builders with explicit `select()` and `limit()` for reads.
 7. Avoid table-level full materialization in remote or portable code. This is the main local-vs-remote read pitfall.
@@ -69,6 +71,10 @@ Rules for portable Enterprise ingestion:
 5. When you hand a table name back to a human, tell them which step still needs the propagation wait (usually: "the old `t` was dropped; run the rename in ~5 minutes").
 
 This is Enterprise/Cloud-specific. Local/OSS tables have no separate data plane, so `mode="overwrite"` and immediate same-name reuse are fine there.
+
+## Connecting to the LanceDB remote server
+
+LanceDB Enterprise/Cloud deployments are served by a server implementing the lance-namespace OpenAPI spec (<https://github.com/lance-format/lance-namespace/blob/main/docs/src/spec.yaml>). Every remote (`db://...`) connection talks to such a server, and some operations exist only there. In particular, **all operations around jobs (listing, inspecting, creating, or canceling jobs) run server-side** — there is no local/OSS equivalent. Before any job work, or any direct REST call to an Enterprise deployment, read `references/remote_connect.md` to resolve the base URL, credentials, and database header and to validate the connection. Then use the four job REST methods documented in `references/remote_jobs.md` (list, describe, cancel, query_events).
 
 ## Script
 
