@@ -1329,6 +1329,76 @@ export interface FieldMetadataUpdate {
   replace?: boolean;
 }
 
+/** Summary of a column in a branch diff. */
+export interface BranchColumnSummary {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+}
+
+/** A column whose definition differs between main and the branch. */
+export interface BranchColumnChange {
+  name: string;
+  main: BranchColumnSummary;
+  branch: BranchColumnSummary;
+}
+
+/** Summary of an index in a branch diff. */
+export interface BranchIndexSummary {
+  indexName: string;
+  columns: string[];
+  indexType?: string;
+  status: string;
+}
+
+/** Row-level comparison between main and the branch. */
+export interface BranchRowCountSummary {
+  unchanged: number;
+  newOnBase: number;
+  newOnBranch: number;
+  staleRecompute: number;
+  inputsChanged: number;
+  deltaAvailable: boolean;
+}
+
+/** A reason why a branch cannot currently be merged. */
+export interface MergeBlocker {
+  code: string;
+  message: string;
+}
+
+/** Read-only comparison of a branch against main. */
+export interface BranchDiff {
+  fromBranch: string;
+  parentVersion: number;
+  mainVersion: number;
+  branchVersion: number;
+  baseMoved: boolean;
+  rowCountMain: number;
+  rowCountBranch: number;
+  rowSummary: BranchRowCountSummary;
+  addedColumns: BranchColumnSummary[];
+  removedColumns: BranchColumnSummary[];
+  changedColumns: BranchColumnChange[];
+  addedIndexes: BranchIndexSummary[];
+  removedIndexes: BranchIndexSummary[];
+  mergeable: boolean;
+  mergeBlockers: MergeBlocker[];
+}
+
+/** Changes that would be, or were, promoted by a branch merge. */
+export interface MergePreview {
+  promotedColumns: string[];
+}
+
+/** Result of previewing or attempting a branch merge. */
+export interface MergeBranchResult {
+  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+  diff: BranchDiff;
+  preview: MergePreview;
+  mainVersionAfter?: number;
+}
+
 /**
  * Branch manager for a {@link Table}.
  *
@@ -1380,5 +1450,29 @@ export class Branches {
   /** Delete a branch. */
   async delete(name: string): Promise<void> {
     return await this.#inner.delete(name);
+  }
+
+  /** Compare a branch against main without modifying either branch. */
+  async diff(fromBranch: string): Promise<BranchDiff> {
+    return (await this.#inner.diff(fromBranch)) as unknown as BranchDiff;
+  }
+
+  /**
+   * Merge a branch into main.
+   *
+   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
+   * with `status: "rejected"` instead of throwing.
+   *
+   * @param fromBranch Branch to merge from.
+   * @param dryRun When true, only preview the merge. Defaults to false.
+   */
+  async merge(
+    fromBranch: string,
+    dryRun: boolean = false,
+  ): Promise<MergeBranchResult> {
+    return (await this.#inner.merge(
+      fromBranch,
+      dryRun,
+    )) as unknown as MergeBranchResult;
   }
 }

@@ -1602,7 +1602,7 @@ impl Branches {
         })
     }
 
-    #[pyo3(signature = (from_branch, dry_run=true))]
+    #[pyo3(signature = (from_branch, dry_run=false))]
     pub fn merge(
         self_: PyRef<'_, Self>,
         from_branch: String,

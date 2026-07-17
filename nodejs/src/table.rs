@@ -1355,4 +1355,28 @@ impl Branches {
     pub async fn delete(&self, name: String) -> napi::Result<()> {
         self.inner.delete_branch(&name).await.default_error()
     }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn diff(&self, from_branch: String) -> napi::Result<serde_json::Value> {
+        let diff = self.inner.diff_branch(&from_branch).await.default_error()?;
+        serde_json::to_value(diff).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize branch diff: {err}"))
+        })
+    }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn merge(
+        &self,
+        from_branch: String,
+        dry_run: Option<bool>,
+    ) -> napi::Result<serde_json::Value> {
+        let result = self
+            .inner
+            .merge_branch(&from_branch, dry_run.unwrap_or(false))
+            .await
+            .default_error()?;
+        serde_json::to_value(result).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize branch merge result: {err}"))
+        })
+    }
 }

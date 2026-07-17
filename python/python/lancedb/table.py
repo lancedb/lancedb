@@ -6271,14 +6271,14 @@ class Branches:
         """Diff a branch against main."""
         return LOOP.run(self._table.branches.diff(from_branch))
 
-    def merge(self, from_branch: str, dry_run: bool = True) -> Dict[str, Any]:
+    def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
         """Merge a branch into main, or dry-run.
 
         Parameters
         ----------
         from_branch: str
             Branch to merge from.
-        dry_run: bool, default True
+        dry_run: bool, default False
             When True, only preview. When False, attempt the merge.
 
         A rejected merge returns ``status="rejected"`` instead of raising.
@@ -6419,7 +6419,7 @@ class AsyncBranches:
         """Diff a branch against main."""
         return await self._table.branches.diff(from_branch)
 
-    async def merge(self, from_branch: str, dry_run: bool = True) -> Dict[str, Any]:
+    async def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
         """Merge a branch into main, or dry-run.
 
         A rejected merge returns ``status="rejected"`` instead of raising.
