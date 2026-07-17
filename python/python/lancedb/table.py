@@ -1536,8 +1536,10 @@ class Table(ABC):
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
-        a ``list[int]`` or query ``pyarrow.Table`` with ``_rowid`` (or stashed
-        row-id metadata). Null rows are ``None``. Local tables only.
+        a ``list[int]`` or a query ``pyarrow.Table`` carrying row identity via
+        ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
+        rows are ``None``. Unsupported on LanceDB Cloud; use
+        :meth:`fetch_blobs` there.
         """
 
     @abstractmethod
