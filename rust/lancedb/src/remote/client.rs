@@ -47,6 +47,20 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
     async fn get_headers(&self) -> Result<HashMap<String, String>>;
 }
 
+/// Default maximum bytes per insert request (8 GiB).
+///
+/// Sized so a multipart part can hold at least one full Lance data file (the
+/// default is 1M rows / 90 GB per file), which keeps fragments from being split
+/// into undersized files across parts. The time-based cut
+/// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
+/// uploads, so a large byte budget does not risk the read timeout.
+const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
+
+/// The default max request duration is the read timeout divided by this, leaving
+/// headroom for the server to finalize and acknowledge a part before the read
+/// timeout (which also covers the request-body upload) fires.
+const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
+
 /// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Clone)]
 pub struct ClientConfig {
@@ -71,6 +85,33 @@ pub struct ClientConfig {
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.
     pub user_id: Option<String>,
+    /// Maximum number of bytes to send in a single insert HTTP request.
+    ///
+    /// During a multipart write, each partition's data is split into one or more
+    /// parts of at most this many (Arrow IPC, compressed) bytes, each uploaded as
+    /// a separate request under the shared upload id. This bounds how long any
+    /// one request stays open, so large bulk ingests do not exceed the client
+    /// read timeout while the server streams the part to object storage.
+    ///
+    /// The request body is still streamed (not buffered), so this does not
+    /// increase peak memory. Set to `Some(0)` to disable splitting (one request
+    /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
+    /// environment variable. Defaults to 8 GiB.
+    pub max_bytes_per_request: Option<u64>,
+    /// Maximum wall-clock time to spend uploading a single insert HTTP request.
+    ///
+    /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
+    /// part is cut when it reaches either the byte budget or this duration,
+    /// whichever comes first. The client read timeout also covers the
+    /// request-body upload, so a slow or throttled upload of a large part can
+    /// hit that timeout before the byte budget is reached; cutting by time keeps
+    /// each request short enough that it completes (and the server acknowledges
+    /// the part) within the read timeout.
+    ///
+    /// Set to `Some(Duration::ZERO)` to disable the time-based cut. You can also
+    /// set the `LANCE_CLIENT_MAX_REQUEST_DURATION` environment variable (integer
+    /// seconds). Defaults to half the resolved read timeout.
+    pub max_request_duration: Option<Duration>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -87,6 +128,8 @@ impl std::fmt::Debug for ClientConfig {
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
             .field("user_id", &self.user_id)
+            .field("max_bytes_per_request", &self.max_bytes_per_request)
+            .field("max_request_duration", &self.max_request_duration)
             .finish()
     }
 }
@@ -102,6 +145,8 @@ impl Default for ClientConfig {
             tls_config: None,
             header_provider: None,
             user_id: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         }
     }
 }
@@ -248,6 +293,16 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     /// Connection-level read consistency interval. Drives the
     /// `x-lancedb-min-timestamp` freshness header sent on read requests.
     pub(crate) read_consistency_interval: Option<Duration>,
+    // Note the `Option` here means the opposite of the same-named
+    // `ClientConfig` fields: those are pre-resolution, where `None` means "fall
+    // back to env var / default". These are post-resolution (see
+    // `resolve_max_bytes_per_request` / `resolve_max_request_duration`), where a
+    // default has already been applied and `None` means the feature is disabled.
+    /// Maximum bytes per insert request. `None` disables request splitting.
+    pub(crate) max_bytes_per_request: Option<u64>,
+    /// Maximum wall-clock time per insert request. `None` disables the
+    /// time-based part cut.
+    pub(crate) max_request_duration: Option<Duration>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -429,6 +484,10 @@ impl RestfulLanceDbClient<Sender> {
         };
         debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.clone().try_into()?;
+        let max_bytes_per_request =
+            Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
+        let max_request_duration =
+            Self::resolve_max_request_duration(client_config.max_request_duration, read_timeout)?;
         Ok(Self {
             client,
             host,
@@ -440,13 +499,69 @@ impl RestfulLanceDbClient<Sender> {
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
             read_consistency_interval,
+            max_bytes_per_request,
+            max_request_duration,
         })
+    }
+
+    /// Resolve the max bytes per insert request from config, environment, or the
+    /// default. A value of `0` (from either source) disables request splitting.
+    fn resolve_max_bytes_per_request(passed: Option<u64>) -> Result<Option<u64>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST") {
+            env.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_BYTES_PER_REQUEST must be a non-negative integer, got '{}'",
+                    env
+                ),
+            })?
+        } else {
+            DEFAULT_MAX_BYTES_PER_REQUEST
+        };
+        Ok((value > 0).then_some(value))
+    }
+
+    /// Resolve the max request duration from config, environment, or a default
+    /// derived from the read timeout. A zero duration (from either source)
+    /// disables the time-based cut.
+    fn resolve_max_request_duration(
+        passed: Option<Duration>,
+        read_timeout: Duration,
+    ) -> Result<Option<Duration>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_REQUEST_DURATION") {
+            let secs = env.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_REQUEST_DURATION must be a non-negative integer \
+                     number of seconds, got '{}'",
+                    env
+                ),
+            })?;
+            Duration::from_secs(secs)
+        } else {
+            read_timeout / DEFAULT_MAX_REQUEST_DURATION_DIVISOR
+        };
+        Ok((!value.is_zero()).then_some(value))
     }
 }
 
 impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    /// Maximum bytes per insert request, or `None` if request splitting is
+    /// disabled.
+    pub(crate) fn max_bytes_per_request(&self) -> Option<u64> {
+        self.max_bytes_per_request
+    }
+
+    /// Maximum wall-clock time per insert request, or `None` if the time-based
+    /// cut is disabled.
+    pub(crate) fn max_request_duration(&self) -> Option<Duration> {
+        self.max_request_duration
     }
 
     pub fn default_headers(
@@ -875,6 +990,8 @@ pub mod test_utils {
             id_delimiter: "$".to_string(),
             header_provider: None,
             read_consistency_interval,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         }
     }
 
@@ -900,6 +1017,12 @@ pub mod test_utils {
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
             read_consistency_interval: None,
+            max_bytes_per_request: config
+                .max_bytes_per_request
+                .and_then(|v| (v > 0).then_some(v)),
+            max_request_duration: config
+                .max_request_duration
+                .and_then(|v| (!v.is_zero()).then_some(v)),
         }
     }
 }
@@ -1103,6 +1226,8 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Apply dynamic headers
@@ -1139,6 +1264,8 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Apply dynamic headers
@@ -1177,6 +1304,8 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         };
 
         // Header provider errors should fail the request
@@ -1287,5 +1416,194 @@ mod tests {
         unsafe {
             std::env::remove_var("LANCEDB_USER_ID");
         }
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_passed_value_wins() {
+        // An explicit config value is used verbatim; env/default are not consulted.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_zero_disables() {
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(0)).unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_default_when_unset() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        assert_eq!(resolved, Some(DEFAULT_MAX_BYTES_PER_REQUEST));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_from_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(4096));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_config_overrides_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        // A config value takes precedence over the environment variable.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "not-a-number");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_passed_value_wins() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::from_secs(42)),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_zero_disables() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::ZERO),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_default_is_half_read_timeout() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(150)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_from_env_seconds() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "30");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "12.5");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
     }
 }
