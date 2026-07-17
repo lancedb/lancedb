@@ -219,6 +219,7 @@ class Table:
         data: pa.RecordBatchReader,
         mode: Literal["append", "overwrite"],
         progress: Optional[Any] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

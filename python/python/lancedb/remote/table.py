@@ -574,6 +574,7 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -599,6 +600,12 @@ class RemoteTable(Table):
         progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -614,6 +621,7 @@ class RemoteTable(Table):
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
                     progress=progress,
+                    write_parallelism=write_parallelism,
                 )
             )
         finally:

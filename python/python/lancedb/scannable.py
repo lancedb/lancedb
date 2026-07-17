@@ -7,9 +7,157 @@ import sys
 from typing import Callable, Iterator, Optional
 from lancedb.arrow import to_arrow
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from .pydantic import LanceModel
+
+# pyarrow's default scanner settings are tuned for narrow rows. For wide rows
+# (e.g. embedding columns) they buffer a huge read-ahead window in host memory
+# and can OOM the client during bulk ingestion. We size the scanner so the
+# estimated in-flight memory stays within a budget, while leaving narrow
+# datasets on pyarrow's defaults (no throughput regression).
+_SCAN_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024  # ~1 GiB in-flight target
+_TARGET_BATCH_BYTES = 16 * 1024 * 1024  # ~16 MiB per batch
+_MIN_BATCH_ROWS = 512
+# pyarrow defaults (see arrow/dataset ScanOptions); we never exceed these.
+_PA_DEFAULT_BATCH_ROWS = 131_072
+_PA_DEFAULT_BATCH_READAHEAD = 16
+_PA_DEFAULT_FRAGMENT_READAHEAD = 4
+# Read-ahead used for wide rows. pyarrow reads a whole parquet row group at a
+# time and keeps `batch_readahead` of them resident, so read-ahead depth (not
+# batch size) dominates peak memory for wide data; keep both small but leave a
+# little prefetch for throughput. Tuned empirically against embedding datasets.
+_WIDE_BATCH_READAHEAD = 2
+_WIDE_FRAGMENT_READAHEAD = 1
+# Estimate for variable-width columns (string/binary/list) whose true width is
+# unknown from the schema alone. Only needs to be large enough to flag "wide".
+_VARIABLE_WIDTH_ESTIMATE = 128
+# Rows peeked from a rescannable source to refine the list-length guess for
+# variable-length list columns (e.g. embeddings stored as `list<float32>`
+# instead of `list<float32, N>`), whose per-row width the schema can't tell us.
+_SAMPLE_ROWS = 10
+
+
+def _observed_list_length(sample: pa.ChunkedArray) -> Optional[int]:
+    """Average element count per row observed in a list/large_list sample."""
+    if len(sample) == 0:
+        return None
+    mean = pc.mean(pc.list_value_length(sample)).as_py()
+    return None if mean is None else max(1, round(mean))
+
+
+def _estimate_field_width(
+    dtype: pa.DataType, sample: Optional[pa.ChunkedArray] = None
+) -> int:
+    if pa.types.is_fixed_size_list(dtype):
+        return dtype.list_size * _estimate_field_width(dtype.value_type)
+    if pa.types.is_struct(dtype):
+        return sum(
+            _estimate_field_width(
+                dtype.field(i).type,
+                pc.struct_field(sample, [i]) if sample is not None else None,
+            )
+            for i in range(dtype.num_fields)
+        )
+    if pa.types.is_dictionary(dtype):
+        return _estimate_field_width(dtype.value_type)
+    if pa.types.is_fixed_size_binary(dtype):
+        return dtype.byte_width
+    if pa.types.is_boolean(dtype):
+        return 1
+    if (pa.types.is_list(dtype) or pa.types.is_large_list(dtype)) and (
+        sample is not None
+    ):
+        observed_length = _observed_list_length(sample)
+        if observed_length is not None:
+            return observed_length * _estimate_field_width(dtype.value_type)
+    # Fixed-width scalars (ints, floats, temporal, decimal) expose bit_width;
+    # variable-width types (string, binary, list, map, ...) raise ValueError.
+    try:
+        return max(1, dtype.bit_width // 8)
+    except (ValueError, AttributeError):
+        return _VARIABLE_WIDTH_ESTIMATE
+
+
+def _estimate_bytes_per_row(
+    schema: pa.Schema, sample: Optional[pa.Table] = None
+) -> int:
+    return max(
+        1,
+        sum(
+            _estimate_field_width(
+                field.type, sample.column(field.name) if sample is not None else None
+            )
+            for field in schema
+        ),
+    )
+
+
+def _sample_head(head: Callable[..., pa.Table]) -> Optional[pa.Table]:
+    """Best-effort peek at a few rows to refine the bytes-per-row estimate.
+
+    Uses a tight batch size and no read-ahead so the peek itself can't trigger
+    the wide-row memory blowup this module exists to avoid. Returns None (fall
+    back to the schema-only estimate) if sampling isn't possible for any
+    reason, e.g. an empty dataset.
+    """
+    try:
+        sample = head(
+            _SAMPLE_ROWS,
+            batch_size=_SAMPLE_ROWS,
+            batch_readahead=1,
+            fragment_readahead=1,
+        )
+    except Exception:
+        return None
+    return sample if sample.num_rows > 0 else None
+
+
+def _bounded_scanner_kwargs(
+    schema: pa.Schema, sample: Optional[pa.Table] = None
+) -> dict:
+    """Scanner kwargs that cap in-flight memory for wide rows.
+
+    Narrow datasets keep pyarrow's defaults unchanged (no throughput
+    regression). For wide rows (e.g. embedding columns) pyarrow's default
+    read-ahead buffers many large batches/row-groups at once, which can OOM the
+    client during bulk ingestion, so we shrink the batch size and read-ahead to
+    keep the estimated in-flight memory near the budget.
+
+    Read-ahead (not just batch size) has to drop: pyarrow reads a whole parquet
+    row group at a time and keeps `batch_readahead`/`fragment_readahead` of them
+    resident, so a small batch size alone still pins large row-group buffers.
+
+    `sample`, if given, is a small (see `_SAMPLE_ROWS`) table of rows from the
+    source used to refine the estimate for variable-length list columns (e.g.
+    embeddings stored without a fixed size), whose width the schema alone
+    can't tell us.
+    """
+    bytes_per_row = _estimate_bytes_per_row(schema, sample)
+
+    # If pyarrow's defaults already stay within budget, leave them alone so
+    # narrow datasets keep their throughput. A "unit" of in-flight memory is one
+    # default-sized batch, held `batch_readahead + fragment_readahead` deep.
+    default_in_flight = (
+        _PA_DEFAULT_BATCH_ROWS
+        * bytes_per_row
+        * (_PA_DEFAULT_BATCH_READAHEAD + _PA_DEFAULT_FRAGMENT_READAHEAD)
+    )
+    if default_in_flight <= _SCAN_MEMORY_BUDGET_BYTES:
+        return {}
+
+    # Wide rows: cap batch bytes and pull read-ahead down so only a couple of
+    # large row-group buffers are resident at once.
+    batch_size = min(
+        _PA_DEFAULT_BATCH_ROWS,
+        max(_MIN_BATCH_ROWS, _TARGET_BATCH_BYTES // bytes_per_row),
+    )
+    return {
+        "batch_size": batch_size,
+        "batch_readahead": _WIDE_BATCH_READAHEAD,
+        "fragment_readahead": _WIDE_FRAGMENT_READAHEAD,
+    }
 
 
 @dataclass
@@ -56,10 +204,12 @@ def _from_table(data: pa.Table) -> Scannable:
 
 @to_scannable.register(ds.Dataset)
 def _from_dataset(data: ds.Dataset) -> Scannable:
+    sample = _sample_head(data.head)
+    scanner_kwargs = _bounded_scanner_kwargs(data.schema, sample)
     return Scannable(
         schema=data.schema,
         num_rows=data.count_rows(),
-        reader=lambda: data.scanner().to_reader(),
+        reader=lambda: data.scanner(**scanner_kwargs).to_reader(),
     )
 
 
@@ -206,10 +356,12 @@ def _register_optional_converters():
 
         @to_scannable.register(lance.LanceDataset)
         def _from_lance(data: lance.LanceDataset) -> Scannable:
+            sample = _sample_head(data.head)
+            scanner_kwargs = _bounded_scanner_kwargs(data.schema, sample)
             return Scannable(
                 schema=data.schema,
                 num_rows=data.count_rows(),
-                reader=lambda: data.scanner().to_reader(),
+                reader=lambda: data.scanner(**scanner_kwargs).to_reader(),
             )
 
 
