@@ -83,6 +83,24 @@ Delete a branch.
 
 ***
 
+### diff()
+
+```ts
+diff(fromBranch): Promise<BranchDiff>
+```
+
+Compare a branch against main without modifying either branch.
+
+#### Parameters
+
+* **fromBranch**: `string`
+
+#### Returns
+
+`Promise`&lt;[`BranchDiff`](../interfaces/BranchDiff.md)&gt;
+
+***
+
 ### list()
 
 ```ts
@@ -94,3 +112,28 @@ List all branches, mapping name to branch metadata.
 #### Returns
 
 `Promise`&lt;`Record`&lt;`string`, [`BranchContents`](BranchContents.md)&gt;&gt;
+
+***
+
+### merge()
+
+```ts
+merge(fromBranch, dryRun): Promise<MergeBranchResult>
+```
+
+Merge a branch into main.
+
+Set `dryRun` to `true` to preview the merge. A rejected merge resolves
+with `status: "rejected"` instead of throwing.
+
+#### Parameters
+
+* **fromBranch**: `string`
+    Branch to merge from.
+
+* **dryRun**: `boolean` = `false`
+    When true, only preview the merge. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;[`MergeBranchResult`](../interfaces/MergeBranchResult.md)&gt;

@@ -1593,4 +1593,40 @@ impl Branches {
             Ok(())
         })
     }
+
+    pub fn diff(self_: PyRef<'_, Self>, from_branch: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let diff = inner.diff_branch(&from_branch).await.infer_error()?;
+            Python::attach(|py| struct_to_wire_py(py, &diff))
+        })
+    }
+
+    #[pyo3(signature = (from_branch, dry_run=false))]
+    pub fn merge(
+        self_: PyRef<'_, Self>,
+        from_branch: String,
+        dry_run: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .merge_branch(&from_branch, dry_run)
+                .await
+                .infer_error()?;
+            Python::attach(|py| struct_to_wire_py(py, &result))
+        })
+    }
+}
+
+/// Decode a serde value as the wire JSON object (camelCase keys).
+fn struct_to_wire_py(py: Python<'_>, value: &impl serde::Serialize) -> PyResult<Py<PyAny>> {
+    let json = py.import("json")?;
+    Ok(json
+        .call_method1(
+            "loads",
+            (serde_json::to_string(value)
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize json: {e}")))?,),
+        )?
+        .unbind())
 }
