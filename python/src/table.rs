@@ -21,8 +21,8 @@ use lancedb::blob::BlobFile;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    LoadColumnsRequest,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    LoadColumnsRequest, NewColumnTransform, OptimizeAction, OptimizeOptions, Ref,
+    Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
