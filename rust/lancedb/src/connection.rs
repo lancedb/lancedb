@@ -25,8 +25,8 @@ use crate::database::listing::ListingDatabase;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, Database,
     DatabaseOptions, FunctionInfo, JobErrorInfo, JobHistoryInfo, JobInfo, MaterializedViewInfo,
-    MvRefreshPlan, OpenTableRequest, ReadConsistency, RefreshMaterializedViewRequest,
-    TableLineageRequest, TableNamesRequest,
+    MvRefreshPlan, OpenTableRequest, PlatformJobDescription, ReadConsistency,
+    RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -571,6 +571,33 @@ impl Connection {
     /// matching inflight job was flagged for cancellation.
     pub async fn cancel_job(&self, job_id: &str) -> Result<bool> {
         self.internal.cancel_job(job_id).await
+    }
+
+    /// Describe a platform job (`POST /v1/jobs/describe`): registry-backed
+    /// lifecycle state plus the owner-written status payload. `None` when the
+    /// registry has no such job.
+    pub async fn describe_platform_job(
+        &self,
+        platform_job_id: &str,
+    ) -> Result<Option<PlatformJobDescription>> {
+        self.internal.describe_platform_job(platform_job_id).await
+    }
+
+    /// Resolve a submission (manifest) job id to its platform job id. `None`
+    /// until the job has registered (dispatch is async).
+    pub async fn resolve_platform_job_id(
+        &self,
+        manifest_job_id: &str,
+        table_hint: Option<&str>,
+    ) -> Result<Option<String>> {
+        self.internal
+            .resolve_platform_job_id(manifest_job_id, table_hint)
+            .await
+    }
+
+    /// Cancel a platform job. Idempotent on already-terminal jobs.
+    pub async fn cancel_platform_job(&self, platform_job_id: &str) -> Result<()> {
+        self.internal.cancel_platform_job(platform_job_id).await
     }
 
     /// Look up a single server-side job by id -- the `wait()`/status poll path.

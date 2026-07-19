@@ -158,6 +158,30 @@ struct RemoteJobEntry {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RemoteDescribePlatformJobResponse {
+    job_id: String,
+    job_type: String,
+    #[serde(default)]
+    job_subtype: String,
+    job_state: String,
+    #[serde(default)]
+    creation_ms: i64,
+    #[serde(default)]
+    status: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct RemoteListPlatformJobsResponse {
+    #[serde(default)]
+    jobs: Vec<RemotePlatformJobRow>,
+}
+
+#[derive(Deserialize)]
+struct RemotePlatformJobRow {
+    job_id: String,
+}
+
 #[derive(serde::Deserialize)]
 struct RemoteListJobsResponse {
     jobs: Vec<RemoteJobEntry>,
@@ -1072,6 +1096,56 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let body: RemoteGetJobResponse = rsp.json().await.err_to_http(request_id)?;
         Ok(body.job.map(JobInfo::from))
+    }
+
+    async fn describe_platform_job(
+        &self,
+        platform_job_id: &str,
+    ) -> Result<Option<PlatformJobDescription>> {
+        let req = self
+            .client
+            .post("/v1/jobs/describe")
+            .json(&serde_json::json!({ "job_id": platform_job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        if rsp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteDescribePlatformJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(Some(PlatformJobDescription {
+            job_id: body.job_id,
+            job_type: body.job_type,
+            job_subtype: body.job_subtype,
+            job_state: body.job_state,
+            creation_ms: body.creation_ms,
+            status: body.status,
+        }))
+    }
+
+    async fn resolve_platform_job_id(
+        &self,
+        manifest_job_id: &str,
+        table_hint: Option<&str>,
+    ) -> Result<Option<String>> {
+        let req = self.client.post("/v1/jobs/list").json(&serde_json::json!({
+            "manifest_job_id": manifest_job_id,
+            "table_name": table_hint,
+            "job_type": "indexer",
+        }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListPlatformJobsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.jobs.into_iter().next().map(|row| row.job_id))
+    }
+
+    async fn cancel_platform_job(&self, platform_job_id: &str) -> Result<()> {
+        let req = self
+            .client
+            .post("/v1/jobs/cancel")
+            .json(&serde_json::json!({ "job_id": platform_job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
     }
 
     async fn cancel_job(&self, job_id: &str) -> Result<bool> {

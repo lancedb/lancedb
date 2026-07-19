@@ -321,6 +321,23 @@ pub struct MaterializedViewInfo {
     pub auto_refresh: bool,
 }
 
+/// A described platform job (`POST /v1/jobs/describe`): the job registry's
+/// lifecycle state plus the owner-written status payload.
+#[derive(Debug, Clone)]
+pub struct PlatformJobDescription {
+    /// The platform (registry) job id -- what describe/cancel accept.
+    pub job_id: String,
+    pub job_type: String,
+    pub job_subtype: String,
+    /// "IN_PROGRESS" | "CANCELLED" | "FAILED" | "DONE".
+    pub job_state: String,
+    pub creation_ms: i64,
+    /// The owner-written status payload -- `units_done` / `units_total` /
+    /// `rows_committed` / `error` when present. Records whose owner has not
+    /// written a payload yet carry the raw status-store URI string instead.
+    pub status: serde_json::Value,
+}
+
 /// A row from `list_jobs`: one inflight server-side job (index build,
 /// compaction, column refresh, view refresh, ...).
 #[derive(Debug, Clone)]
@@ -509,6 +526,33 @@ pub trait Database:
     /// List inflight server-side jobs across the database's tables.
     async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
         not_supported("list_jobs")
+    }
+
+    /// Describe a platform job (`POST /v1/jobs/describe`): registry-backed
+    /// lifecycle state plus the owner-written status payload. `None` when the
+    /// registry has no such job.
+    async fn describe_platform_job(
+        &self,
+        _platform_job_id: &str,
+    ) -> Result<Option<PlatformJobDescription>> {
+        not_supported("describe_platform_job")
+    }
+
+    /// Resolve a submission (manifest) job id to its platform job id via the
+    /// registry's manifest-id filter (`POST /v1/jobs/list`). `None` until the
+    /// job has registered (dispatch is async).
+    async fn resolve_platform_job_id(
+        &self,
+        _manifest_job_id: &str,
+        _table_hint: Option<&str>,
+    ) -> Result<Option<String>> {
+        not_supported("resolve_platform_job_id")
+    }
+
+    /// Cancel a platform job (`POST /v1/jobs/cancel`). Idempotent: cancelling
+    /// an already-terminal job is a no-op success.
+    async fn cancel_platform_job(&self, _platform_job_id: &str) -> Result<()> {
+        not_supported("cancel_platform_job")
     }
     /// Cancel an inflight server-side job by id. Returns true if a
     /// matching inflight job was found and flagged for cancellation,
