@@ -582,7 +582,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
-    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    ///
+    /// Returns the server-minted job id when the build was deferred to a
+    /// background job (remote tables only); `None` for synchronous builds.
+    async fn create_index(&self, index: IndexBuilder) -> Result<Option<String>>;
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -3031,7 +3034,7 @@ impl BaseTable for NativeTable {
         Ok(AddResult { version })
     }
 
-    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+    async fn create_index(&self, opts: IndexBuilder) -> Result<Option<String>> {
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
@@ -3054,7 +3057,8 @@ impl BaseTable for NativeTable {
         }
         builder.await?;
         self.dataset.update(dataset);
-        Ok(())
+        // Native builds are synchronous -- there is never a background job.
+        Ok(None)
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {

@@ -794,8 +794,8 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            op.execute().await.infer_error()?;
-            Ok(())
+            let job_id = op.execute().await.infer_error()?;
+            Ok(job_id)
         })
     }
 

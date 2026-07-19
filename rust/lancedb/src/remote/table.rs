@@ -2109,7 +2109,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(delete_response)
     }
 
-    async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
+    async fn create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
         self.check_mutable().await?;
         let request = self
             .client
@@ -2202,14 +2202,28 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send(request, true).await?;
 
-        self.check_table_response(&request_id, response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+
+        // The server returns a job id only when the build was deferred to a
+        // background job (pending vector index). Older servers return an
+        // empty body; treat anything unparseable as "no job".
+        #[derive(serde::Deserialize)]
+        struct CreateIndexResponse {
+            job_id: Option<String>,
+        }
+        let job_id = response
+            .text()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<CreateIndexResponse>(&body).ok())
+            .and_then(|r| r.job_id);
 
         if let Some(wait_timeout) = index.wait_timeout {
             let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
             self.wait_for_index(&[&index_name], wait_timeout).await?;
         }
 
-        Ok(())
+        Ok(job_id)
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -4637,6 +4651,42 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_returns_deferred_job_id() {
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new(
+                        "vector",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, true)),
+                            128,
+                        ),
+                        false,
+                    )]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "0a1b2c3d-4e5f-6789-abcd-ef0123456789"}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job_id = table
+            .create_index(&["vector"], Index::IvfPq(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            job_id.as_deref(),
+            Some("0a1b2c3d-4e5f-6789-abcd-ef0123456789")
+        );
     }
 
     #[tokio::test]

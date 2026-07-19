@@ -283,7 +283,10 @@ impl IndexBuilder {
         self
     }
 
-    pub async fn execute(self) -> Result<()> {
+    /// Returns the server-minted job id when the index build was deferred to
+    /// a background job (remote tables only); `None` when the build completed
+    /// synchronously within this call.
+    pub async fn execute(self) -> Result<Option<String>> {
         self.parent.clone().create_index(self).await
     }
 }

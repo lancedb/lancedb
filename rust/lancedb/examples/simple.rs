@@ -118,8 +118,12 @@ async fn create_empty_table(db: &Connection) -> Result<LanceDbTable> {
 
 async fn create_index(table: &LanceDbTable) -> Result<()> {
     // --8<-- [start:create_index]
-    table.create_index(&["vector"], Index::Auto).execute().await
+    table
+        .create_index(&["vector"], Index::Auto)
+        .execute()
+        .await?;
     // --8<-- [end:create_index]
+    Ok(())
 }
 
 async fn search(table: &LanceDbTable) -> Result<Vec<RecordBatch>> {

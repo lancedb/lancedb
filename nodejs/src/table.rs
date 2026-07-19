@@ -165,7 +165,7 @@ impl Table {
         if let Some(train) = train {
             builder = builder.train(train);
         }
-        builder.execute().await.default_error()
+        builder.execute().await.default_error().map(|_| ())
     }
 
     #[napi(catch_unwind)]
