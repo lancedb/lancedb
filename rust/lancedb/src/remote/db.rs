@@ -19,8 +19,10 @@ use lance_namespace::models::{
 
 use crate::Error;
 use crate::database::{
-    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobErrorInfo, JobHistoryInfo,
+    JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest, PlatformJobDescription,
+    ReadConsistency, RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -32,6 +34,210 @@ use super::client::{
 };
 use super::table::RemoteTable;
 use super::util::parse_server_version;
+
+// Wire types for the derived-compute routes (functions, materialized
+// views, jobs). Field shapes mirror the server's REST contract.
+#[derive(serde::Serialize)]
+struct RemoteCreateFunctionRequest {
+    language: String,
+    return_type: String,
+    body: String,
+    options: std::collections::HashMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteFunctionEntry {
+    name: String,
+    language: String,
+    return_type: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListFunctionsResponse {
+    functions: Vec<RemoteFunctionEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteCreateMaterializedViewRequest {
+    query: String,
+    auto_refresh: bool,
+    with_no_data: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition_by: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteCreateMaterializedViewResponse {
+    #[serde(default)]
+    job_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteRefreshMaterializedViewRequest {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    full: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_workers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_workers: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteRefreshMaterializedViewResponse {
+    job_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteExplainRefreshRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    full: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    src_version: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteExplainRefreshResponse {
+    table_name: String,
+    has_work: bool,
+    source_version: u64,
+    last_refreshed_version: Option<u64>,
+    full_refresh: bool,
+    rebuild: bool,
+    units_total: u64,
+}
+
+#[derive(serde::Serialize)]
+struct RemoteAlterMaterializedViewRequest {
+    auto_refresh: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteMaterializedViewEntry {
+    name: String,
+    source_table: String,
+    #[serde(default)]
+    projection: Vec<String>,
+    #[serde(default)]
+    udf_columns: Vec<String>,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    auto_refresh: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListMaterializedViewsResponse {
+    views: Vec<RemoteMaterializedViewEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteDescribePlatformJobResponse {
+    job_id: String,
+    job_type: String,
+    #[serde(default)]
+    job_subtype: String,
+    job_state: String,
+    #[serde(default)]
+    creation_ms: i64,
+    #[serde(default)]
+    status: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListPlatformJobsResponse {
+    #[serde(default)]
+    jobs: Vec<RemotePlatformJobRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemotePlatformJobRow {
+    job_id: String,
+    #[serde(default)]
+    table: String,
+    #[serde(default)]
+    job_subtype: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    created_at_millis: i64,
+    #[serde(default)]
+    status: serde_json::Value,
+}
+
+/// Platform list-row state -> the client's job vocabulary.
+fn platform_state_to_client(state: &str) -> String {
+    match state {
+        "in_progress" => "running",
+        "done" => "finished",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Describe job_state -> the client's job vocabulary.
+fn describe_state_to_client(state: &str) -> String {
+    match state {
+        "IN_PROGRESS" => "running",
+        "DONE" => "finished",
+        "FAILED" => "failed",
+        "CANCELLED" => "cancelled",
+        other => other,
+    }
+    .to_string()
+}
+
+fn payload_i64(status: &serde_json::Value, key: &str) -> Option<i64> {
+    status.get(key).and_then(serde_json::Value::as_i64)
+}
+
+fn payload_error(status: &serde_json::Value) -> Option<String> {
+    status
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteErrorEntry {
+    job_id: String,
+    table: String,
+    column: String,
+    error_type: String,
+    error_message: String,
+    #[serde(default)]
+    fragment_id: Option<i64>,
+    #[serde(default)]
+    source_row_id: Option<i64>,
+    #[serde(default)]
+    table_version: Option<i64>,
+    #[serde(default)]
+    age_seconds: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteErrorsResponse {
+    errors: Vec<RemoteErrorEntry>,
+}
+
+impl From<RemoteErrorEntry> for JobErrorInfo {
+    fn from(e: RemoteErrorEntry) -> Self {
+        Self {
+            job_id: e.job_id,
+            table: e.table,
+            column: e.column,
+            error_type: e.error_type,
+            error_message: e.error_message,
+            fragment_id: e.fragment_id,
+            source_row_id: e.source_row_id,
+            table_version: e.table_version,
+            age_seconds: e.age_seconds,
+        }
+    }
+}
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -639,6 +845,423 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
+    }
+
+    async fn create_function(&self, request: CreateFunctionRequest) -> Result<()> {
+        let body = RemoteCreateFunctionRequest {
+            language: request.language,
+            return_type: request.return_type,
+            body: request.body,
+            options: request.options,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/function/{}/create", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn list_functions(&self) -> Result<Vec<FunctionInfo>> {
+        let req = self.client.get("/v1/function/list");
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListFunctionsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body
+            .functions
+            .into_iter()
+            .map(|f| FunctionInfo {
+                name: f.name,
+                language: f.language,
+                return_type: f.return_type,
+                description: f.description,
+            })
+            .collect())
+    }
+
+    async fn drop_function(&self, name: &str) -> Result<()> {
+        let req = self.client.post(&format!("/v1/function/{}/drop", name));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn create_materialized_view(
+        &self,
+        request: CreateMaterializedViewRequest,
+    ) -> Result<Option<String>> {
+        let body = RemoteCreateMaterializedViewRequest {
+            query: request.query,
+            auto_refresh: request.auto_refresh,
+            with_no_data: request.with_no_data,
+            partition_by: request.partition_by,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/create", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteCreateMaterializedViewResponse =
+            rsp.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
+    async fn refresh_materialized_view(
+        &self,
+        request: RefreshMaterializedViewRequest,
+    ) -> Result<String> {
+        let body = RemoteRefreshMaterializedViewRequest {
+            full: request.full,
+            src_version: request.src_version,
+            num_workers: request.num_workers,
+            max_workers: request.max_workers,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/refresh", request.name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteRefreshMaterializedViewResponse =
+            rsp.json().await.err_to_http(request_id)?;
+        Ok(body.job_id)
+    }
+
+    async fn table_lineage(&self, request: TableLineageRequest) -> Result<String> {
+        let mut req = self
+            .client
+            .get(&format!("/v1/table/{}/lineage", request.name));
+        if let Some(column) = &request.column {
+            req = req.query(&[("column", column)]);
+        }
+        if let Some(direction) = &request.direction {
+            req = req.query(&[("direction", direction)]);
+        }
+        if let Some(depth) = request.depth {
+            req = req.query(&[("depth", depth.to_string())]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        // Server-defined lineage JSON, returned opaque (the client does not
+        // model the lineage schema; the Python layer deserializes it).
+        rsp.text().await.err_to_http(request_id)
+    }
+
+    async fn explain_refresh_materialized_view(
+        &self,
+        name: &str,
+        full: bool,
+        src_version: Option<u64>,
+    ) -> Result<MvRefreshPlan> {
+        let body = RemoteExplainRefreshRequest {
+            full: Some(full),
+            src_version,
+        };
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/explain_refresh", name))
+            .json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteExplainRefreshResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(MvRefreshPlan {
+            table_name: body.table_name,
+            has_work: body.has_work,
+            source_version: body.source_version,
+            last_refreshed_version: body.last_refreshed_version,
+            full_refresh: body.full_refresh,
+            rebuild: body.rebuild,
+            units_total: body.units_total,
+        })
+    }
+
+    async fn alter_materialized_view(&self, name: &str, auto_refresh: bool) -> Result<()> {
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/alter", name))
+            .json(&RemoteAlterMaterializedViewRequest { auto_refresh });
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn drop_materialized_view(&self, name: &str) -> Result<()> {
+        let req = self
+            .client
+            .post(&format!("/v1/materialized_view/{}/drop", name));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewInfo>> {
+        let req = self.client.get("/v1/materialized_view/list");
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListMaterializedViewsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body
+            .views
+            .into_iter()
+            .map(|v| MaterializedViewInfo {
+                name: v.name,
+                source_table: v.source_table,
+                projection: v.projection,
+                udf_columns: v.udf_columns,
+                filter: v.filter,
+                auto_refresh: v.auto_refresh,
+            })
+            .collect())
+    }
+
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        let req = self
+            .client
+            .post("/v1/jobs/list")
+            .json(&serde_json::json!({ "include_status": true }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListPlatformJobsResponse = rsp.json().await.err_to_http(request_id)?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Ok(body
+            .jobs
+            .into_iter()
+            .map(|row| JobInfo {
+                table: row.table,
+                job_id: row.job_id,
+                // The platform job_type is always "indexer"; the subtype
+                // (udf / mv_refresh / compaction / ...) is the useful label.
+                job_type: row.job_subtype,
+                state: platform_state_to_client(&row.state),
+                column: None,
+                age_seconds: (row.created_at_millis > 0)
+                    .then(|| (now_ms - row.created_at_millis) / 1000),
+                command: None,
+                units_done: payload_i64(&row.status, "units_done"),
+                units_total: payload_i64(&row.status, "units_total"),
+                committed: row.state == "done",
+                rows_skipped: payload_i64(&row.status, "rows_skipped").unwrap_or(0) as u64,
+                error: payload_error(&row.status),
+            })
+            .collect())
+    }
+
+    async fn get_job(&self, job_id: &str, table: Option<&str>) -> Result<Option<JobInfo>> {
+        // A point snapshot from the platform API: resolve the submission id,
+        // then describe. The snapshot keeps the caller's id.
+        let Some(platform_id) = self.resolve_platform_job_id(job_id, table).await? else {
+            return Ok(None);
+        };
+        let Some(described) = self.describe_platform_job(&platform_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(JobInfo {
+            table: table.unwrap_or_default().to_string(),
+            job_id: job_id.to_string(),
+            job_type: described.job_subtype,
+            state: describe_state_to_client(&described.job_state),
+            column: None,
+            age_seconds: None,
+            command: None,
+            units_done: payload_i64(&described.status, "units_done"),
+            units_total: payload_i64(&described.status, "units_total"),
+            committed: described.job_state == "DONE",
+            rows_skipped: payload_i64(&described.status, "rows_skipped").unwrap_or(0) as u64,
+            error: payload_error(&described.status),
+        }))
+    }
+
+    async fn describe_platform_job(
+        &self,
+        platform_job_id: &str,
+    ) -> Result<Option<PlatformJobDescription>> {
+        let req = self
+            .client
+            .post("/v1/jobs/describe")
+            .json(&serde_json::json!({ "job_id": platform_job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        if rsp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteDescribePlatformJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(Some(PlatformJobDescription {
+            job_id: body.job_id,
+            job_type: body.job_type,
+            job_subtype: body.job_subtype,
+            job_state: body.job_state,
+            creation_ms: body.creation_ms,
+            status: body.status,
+        }))
+    }
+
+    async fn resolve_platform_job_id(
+        &self,
+        manifest_job_id: &str,
+        table_hint: Option<&str>,
+    ) -> Result<Option<String>> {
+        let req = self.client.post("/v1/jobs/list").json(&serde_json::json!({
+            "manifest_job_id": manifest_job_id,
+            "table_name": table_hint,
+            "job_type": "indexer",
+        }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteListPlatformJobsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.jobs.into_iter().next().map(|row| row.job_id))
+    }
+
+    async fn cancel_platform_job(&self, platform_job_id: &str) -> Result<()> {
+        let req = self
+            .client
+            .post("/v1/jobs/cancel")
+            .json(&serde_json::json!({ "job_id": platform_job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, rsp).await?;
+        Ok(())
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<bool> {
+        // Resolve the submission id and cancel through the platform API.
+        // False when no matching job has registered (the legacy best-effort
+        // contract).
+        let Some(platform_id) = self.resolve_platform_job_id(job_id, None).await? else {
+            return Ok(false);
+        };
+        self.cancel_platform_job(&platform_id).await?;
+        Ok(true)
+    }
+
+    async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<JobHistoryInfo>> {
+        // One job: describe (identity) plus query_events (timeline). No id:
+        // a registry listing, timeline-free -- pass an id for the event log.
+        let Some(caller_id) = job_id else {
+            let rows = self.list_jobs().await?;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            return Ok(rows
+                .into_iter()
+                .map(|j| JobHistoryInfo {
+                    table: j.table,
+                    job_id: j.job_id,
+                    job_type: j.job_type,
+                    state: j.state,
+                    column: j.column,
+                    created_ms: j.age_seconds.map(|a| now_ms - a * 1000).unwrap_or_default(),
+                    updated_ms: 0,
+                    completed_ms: None,
+                    rows_processed: None,
+                    rows_skipped: j.rows_skipped.try_into().ok(),
+                    error: j.error,
+                    events: None,
+                })
+                .collect());
+        };
+        // Accept either a platform id or a submission id.
+        let platform_id = match self.describe_platform_job(caller_id).await? {
+            Some(_) => caller_id.to_string(),
+            None => match self.resolve_platform_job_id(caller_id, None).await? {
+                Some(id) => id,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let Some(described) = self.describe_platform_job(&platform_id).await? else {
+            return Ok(Vec::new());
+        };
+        let req = self
+            .client
+            .post("/v1/jobs/query_events")
+            .json(&serde_json::json!({ "job_id": platform_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body = rsp.bytes().await.err_to_http(request_id.clone())?;
+        let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None)
+            .map_err(|e| Error::Http {
+                source: format!("failed to read job-events IPC stream: {e}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+
+        let mut created_ms = i64::MAX;
+        let mut updated_ms = 0i64;
+        let mut completed_ms = None;
+        let mut last_error = None;
+        let mut events = Vec::new();
+        for batch in reader {
+            let batch = batch.map_err(|e| Error::Http {
+                source: format!("failed to decode job-events batch: {e}").into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?;
+            let states = batch
+                .column_by_name("state")
+                .and_then(|c| c.as_any().downcast_ref::<arrow_array::StringArray>());
+            let times = batch
+                .column_by_name("updated_at_millis")
+                .and_then(|c| c.as_any().downcast_ref::<arrow_array::Int64Array>());
+            let payloads = batch
+                .column_by_name("payload")
+                .and_then(|c| c.as_any().downcast_ref::<arrow_array::StringArray>());
+            let (Some(states), Some(times)) = (states, times) else {
+                continue;
+            };
+            for i in 0..batch.num_rows() {
+                let state = states.value(i);
+                let ts = times.value(i);
+                created_ms = created_ms.min(ts);
+                updated_ms = updated_ms.max(ts);
+                if matches!(state, "succeeded" | "failed" | "timed_out" | "canceled") {
+                    completed_ms = Some(ts);
+                }
+                if let Some(payloads) = payloads
+                    && !arrow_array::Array::is_null(payloads, i)
+                    && let Ok(payload) =
+                        serde_json::from_str::<serde_json::Value>(payloads.value(i))
+                    && let Some(e) = payload_error(&payload)
+                {
+                    last_error = Some(e);
+                }
+                events.push(format!("{state} {ts}"));
+            }
+        }
+        Ok(vec![JobHistoryInfo {
+            table: String::new(),
+            job_id: caller_id.to_string(),
+            job_type: described.job_subtype,
+            state: describe_state_to_client(&described.job_state),
+            column: None,
+            created_ms: if created_ms == i64::MAX {
+                described.creation_ms
+            } else {
+                created_ms
+            },
+            updated_ms,
+            completed_ms,
+            rows_processed: payload_i64(&described.status, "rows_committed"),
+            rows_skipped: payload_i64(&described.status, "rows_skipped"),
+            error: last_error.or_else(|| payload_error(&described.status)),
+            events: (!events.is_empty()).then(|| events.join("\n")),
+        }])
+    }
+
+    async fn errors(&self, job_id: Option<&str>, table: Option<&str>) -> Result<Vec<JobErrorInfo>> {
+        let mut req = self.client.get("/v1/errors");
+        if let Some(j) = job_id {
+            req = req.query(&[("job", j)]);
+        }
+        if let Some(t) = table {
+            req = req.query(&[("table", t)]);
+        }
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let body: RemoteErrorsResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(body.errors.into_iter().map(JobErrorInfo::from).collect())
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -1578,6 +2201,227 @@ mod tests {
             }
             _ => panic!("Expected Runtime error from header provider"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_derived_compute_routes() {
+        // create_function
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/embed/create");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["language"], "python");
+            assert_eq!(body["return_type"], "FLOAT[4]");
+            assert_eq!(body["body"], "def embed(x): ...");
+            assert_eq!(body["options"]["pip"], "torch");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"embed","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.create_function(crate::database::CreateFunctionRequest {
+            name: "embed".into(),
+            language: "python".into(),
+            return_type: "FLOAT[4]".into(),
+            body: "def embed(x): ...".into(),
+            options: [("pip".to_string(), "torch".to_string())].into(),
+        })
+        .await
+        .unwrap();
+
+        // list_functions
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/function/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"functions":[{"name":"embed","language":"python","return_type":"Float32","description":""}]}"#,
+                )
+                .unwrap()
+        });
+        let functions = conn.list_functions().await.unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "embed");
+
+        // drop_function
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/embed/drop");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"embed","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.drop_function("embed").await.unwrap();
+
+        // create_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/create");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["query"], "SELECT id, embed(body) AS vec FROM docs");
+            assert_eq!(body["auto_refresh"], true);
+            assert_eq!(body["with_no_data"], false);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","job_id":"j-1"}"#)
+                .unwrap()
+        });
+        let mut request = crate::database::CreateMaterializedViewRequest::new(
+            "mv1",
+            "SELECT id, embed(body) AS vec FROM docs",
+        );
+        request.auto_refresh = true;
+        let job_id = conn.create_materialized_view(request).await.unwrap();
+        assert_eq!(job_id.as_deref(), Some("j-1"));
+
+        // refresh_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/refresh");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["num_workers"], 2);
+            assert!(body.get("src_version").is_none());
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j-2"}"#)
+                .unwrap()
+        });
+        let mut request = crate::database::RefreshMaterializedViewRequest::new("mv1");
+        request.num_workers = Some(2);
+        let job_id = conn.refresh_materialized_view(request).await.unwrap();
+        assert_eq!(job_id, "j-2");
+
+        // alter_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/alter");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["auto_refresh"], false);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.alter_materialized_view("mv1", false).await.unwrap();
+
+        // drop_materialized_view
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/materialized_view/mv1/drop");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"name":"mv1","status":"OK"}"#)
+                .unwrap()
+        });
+        conn.drop_materialized_view("mv1").await.unwrap();
+
+        // list_materialized_views
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/materialized_view/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"views":[{"name":"mv1","source_table":"docs","projection":["id"],"udf_columns":["vec=embed(body)"],"filter":null,"auto_refresh":true}]}"#,
+                )
+                .unwrap()
+        });
+        let views = conn.list_materialized_views().await.unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].source_table, "docs");
+        assert!(views[0].auto_refresh);
+
+        // list_jobs: platform listing with status payloads
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"jobs":[{"job_id":"plat-3","table":"docs","job_type":"indexer","job_subtype":"udf","state":"in_progress","created_at_millis":1000,"status":{"units_done":1,"units_total":2}}]}"#,
+                )
+                .unwrap()
+        });
+        let jobs = conn.list_jobs().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].state, "running");
+        assert_eq!(jobs[0].job_type, "udf");
+        assert_eq!(jobs[0].units_total, Some(2));
+
+        // cancel_job: resolve via the manifest-id list filter, then cancel
+        let conn = Connection::new_with_handler(|request| match request.url().path() {
+            "/v1/jobs/list" => http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs":[{"job_id":"plat-3","state":"in_progress"}]}"#)
+                .unwrap(),
+            "/v1/jobs/cancel" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id":"plat-3"}"#)
+                    .unwrap()
+            }
+            other => panic!("unexpected path {other}"),
+        });
+        assert!(conn.cancel_job("j-3").await.unwrap());
+
+        // cancel_job: never registered -> false, and no cancel request
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/list");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs":[]}"#)
+                .unwrap()
+        });
+        assert!(!conn.cancel_job("gone").await.unwrap());
+
+        // job_history(None): a registry listing, timeline-free
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/list");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"jobs":[{"job_id":"plat-1","table":"docs","job_type":"indexer","job_subtype":"udf","state":"done","created_at_millis":1000,"status":{"rows_skipped":3}}]}"#,
+                )
+                .unwrap()
+        });
+        let hist = conn.job_history(None).await.unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].state, "finished");
+        assert_eq!(hist[0].rows_skipped, Some(3));
+
+        // job_history(id): unknown everywhere -> empty
+        let conn = Connection::new_with_handler(|request| match request.url().path() {
+            "/v1/jobs/describe" => http::Response::builder().status(404).body("").unwrap(),
+            "/v1/jobs/list" => http::Response::builder()
+                .status(200)
+                .body(r#"{"jobs":[]}"#)
+                .unwrap(),
+            other => panic!("unexpected path {other}"),
+        });
+        assert!(conn.job_history(Some("j-1")).await.unwrap().is_empty());
+
+        // errors: GET /v1/errors with job + table filters
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/errors");
+            assert_eq!(request.url().query(), Some("job=j-1&table=docs"));
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"errors":[{"job_id":"j-1","table":"docs","column":"vec","error_type":"ValueError","error_message":"boom","fragment_id":0,"source_row_id":42,"table_version":7,"age_seconds":5}]}"#,
+                )
+                .unwrap()
+        });
+        let errs = conn.errors(Some("j-1"), Some("docs")).await.unwrap();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].error_type, "ValueError");
+        assert_eq!(errs[0].source_row_id, Some(42));
     }
 
     #[tokio::test]

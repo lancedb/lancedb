@@ -13,10 +13,14 @@ from typing import (
     Iterable,
     List,
     Optional,
+    TYPE_CHECKING,
     Union,
     Literal,
     overload,
 )
+
+if TYPE_CHECKING:
+    from ..udf import Job
 import warnings
 
 from lancedb import __version__
@@ -922,8 +926,142 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def add_columns(self, transforms: Dict[str, str]) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+    def add_columns(
+        self,
+        transforms: Optional[Dict[str, str]] = None,
+        *,
+        computed: Optional[Dict[str, tuple]] = None,
+    ) -> Optional[AddColumnsResult]:
+        result = None
+        if transforms is not None:
+            result = LOOP.run(self._table.add_columns(transforms))
+        if computed:
+            LOOP.run(self._table.add_columns(computed=computed))
+        return result
+
+    def refresh_column(
+        self,
+        columns,
+        *,
+        where: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> "Job":
+        """Trigger recompute of computed columns (REFRESH COLUMN).
+
+        The expression is resolved server-side from each column's stored
+        binding; columns bound to the same struct-returning function
+        refresh together. Returns a `Job` to wait on, poll, or cancel
+        (``tbl.refresh_column("c").wait()``). Server-backed feature
+        (LanceDB Enterprise / Cloud).
+
+        num_workers / max_workers / batch_size / priority are per-refresh
+        scheduling knobs (how to run THIS refresh) and override any default
+        the function carries. `priority` is a Kueue tier
+        (training | interactive | backfill).
+        """
+        from ..udf import Job
+
+        if isinstance(columns, str):
+            columns = [columns]
+        job_id = LOOP.run(
+            self._table.refresh_column(
+                list(columns),
+                where=where,
+                num_workers=num_workers,
+                max_workers=max_workers,
+                batch_size=batch_size,
+                priority=priority,
+            )
+        )
+        return Job(self._job_conn(), job_id)
+
+    def lineage(self, column=None, *, direction=None, depth=None):
+        """Derived-compute lineage of this table, or one of its columns:
+        upstream sources, downstream dependents, and the function version +
+        location that produced each derived column (with a drift flag). Returns
+        a `Lineage`. See `Connection.lineage`."""
+        return self._job_conn().lineage(
+            self._name, column, direction=direction, depth=depth
+        )
+
+    def _job_conn(self):
+        """A client connection for polling jobs this table spawns. Built lazily
+        from the table's serialized connection state and cached (not pickled --
+        a forked/unpickled table rebuilds it on next use)."""
+        from lancedb import deserialize_conn
+
+        conn = getattr(self, "_job_conn_cache", None)
+        if conn is None:
+            conn = deserialize_conn(self._serialized_connection_state())
+            self._job_conn_cache = conn
+        return conn
+
+    def load_columns(
+        self,
+        source: Union[str, Iterable[str]],
+        pk: str,
+        columns: Union[Iterable[str], Dict[str, str]],
+        *,
+        source_format: str = "parquet",
+        source_pk: Optional[str] = None,
+        on_missing: str = "carry",
+        source_storage_options: Optional[Dict[str, str]] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        commit_granularity: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> str:
+        """Fill existing columns from an external source by primary-key join.
+
+        The distributed-job equivalent of Geneva's ``Table.load_columns()``:
+        imports precomputed values (e.g. embeddings) from Parquet/Lance/IPC into
+        this table, matching on a primary key. Returns the load job id.
+        Server-backed feature (LanceDB Enterprise / Cloud).
+
+        Parameters
+        ----------
+        source: str | list[str]
+            One source URI or a list of URIs.
+        pk: str
+            Destination primary-key column. Also the source key unless
+            ``source_pk`` is given.
+        columns: list[str] | dict[str, str]
+            Value columns to load. A list loads same-named columns; a dict maps
+            ``{target: source}``.
+        source_format: str
+            ``"parquet"`` (default), ``"lance"``, or ``"ipc"``.
+        source_pk: str, optional
+            Source primary-key column when it differs from ``pk``.
+        on_missing: str
+            Behavior for destination rows with no source match:
+            ``"carry"`` (default, keep existing), ``"null"``, or ``"error"``.
+        """
+        if isinstance(source, str):
+            source = [source]
+        if isinstance(columns, dict):
+            mappings = [(target, src) for target, src in columns.items()]
+        else:
+            mappings = [(c, None) for c in columns]
+        return LOOP.run(
+            self._table.load_columns(
+                list(source),
+                source_format,
+                pk,
+                mappings,
+                source_key=source_pk,
+                source_storage_options=source_storage_options,
+                on_missing=on_missing,
+                num_workers=num_workers,
+                max_workers=max_workers,
+                batch_size=batch_size,
+                commit_granularity=commit_granularity,
+                priority=priority,
+            )
+        )
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]

@@ -507,6 +507,33 @@ pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToke
         .collect())
 }
 
+/// Request to fill existing table columns from an external source by
+/// primary-key join (Geneva `Table.load_columns()` parity). Server-backed
+/// feature (LanceDB Enterprise / Cloud).
+#[derive(Debug, Clone)]
+pub struct LoadColumnsRequest {
+    /// External source URIs.
+    pub source_uris: Vec<String>,
+    /// Source format: "parquet" | "lance" | "ipc".
+    pub source_format: String,
+    /// Source-only storage options (e.g. cloud credentials).
+    pub source_storage_options: Option<HashMap<String, String>>,
+    /// Destination primary-key column.
+    pub target_key: String,
+    /// Source primary-key column. Defaults to `target_key` when None.
+    pub source_key: Option<String>,
+    /// Value column mappings as `(target, source)`; a None source defaults to
+    /// the target name.
+    pub columns: Vec<(String, Option<String>)>,
+    /// Missing-row policy: "carry" (default) | "null" | "error".
+    pub on_missing: Option<String>,
+    pub num_workers: Option<u32>,
+    pub max_workers: Option<u32>,
+    pub batch_size: Option<u32>,
+    pub commit_granularity: Option<u32>,
+    pub priority: Option<String>,
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -666,6 +693,47 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns bound to a registered function: each
+    /// `(name, sql_type)` is added all-null with the expression stored
+    /// as its binding; no compute happens here (the server's lazy
+    /// detector or refresh_column fills them). Several columns map a
+    /// struct-returning function's fields positionally. Server-backed
+    /// feature; the default returns NotSupported.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+        _expression: &str,
+    ) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported by this table".into(),
+        })
+    }
+    /// Trigger recompute of computed columns. The expression is
+    /// resolved server-side from each column's stored binding; columns
+    /// bound to the same struct-returning function refresh together.
+    /// Returns the refresh job id. Server-backed feature (LanceDB
+    /// Enterprise / Cloud); the default returns NotSupported.
+    async fn refresh_column(
+        &self,
+        _columns: &[String],
+        _where_clause: Option<String>,
+        _num_workers: Option<u32>,
+        _max_workers: Option<u32>,
+        _batch_size: Option<u32>,
+        _priority: Option<String>,
+    ) -> Result<String> {
+        Err(Error::NotSupported {
+            message: "refresh_column is not supported by this table".into(),
+        })
+    }
+    /// Fill existing columns from an external source by primary-key join
+    /// (Geneva `load_columns`). Returns the load job id. Server-backed feature;
+    /// the default returns NotSupported.
+    async fn load_columns(&self, _request: LoadColumnsRequest) -> Result<String> {
+        Err(Error::NotSupported {
+            message: "load_columns is not supported by this table".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -1518,6 +1586,48 @@ impl Table {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.inner.add_columns(transforms, read_columns).await
+    }
+
+    /// Declare computed columns bound to a registered function
+    /// (`(name, sql_type)` pairs + a `f(args)` expression). No compute
+    /// happens here. Server-backed feature.
+    pub async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        expression: &str,
+    ) -> Result<()> {
+        self.inner.add_computed_columns(columns, expression).await
+    }
+
+    /// Trigger recompute of computed columns (REFRESH COLUMN). The
+    /// expression comes from each column's stored binding; columns
+    /// bound to the same struct-returning function refresh together.
+    /// Returns the refresh job id. Server-backed feature.
+    pub async fn refresh_column(
+        &self,
+        columns: &[String],
+        where_clause: Option<String>,
+        num_workers: Option<u32>,
+        max_workers: Option<u32>,
+        batch_size: Option<u32>,
+        priority: Option<String>,
+    ) -> Result<String> {
+        self.inner
+            .refresh_column(
+                columns,
+                where_clause,
+                num_workers,
+                max_workers,
+                batch_size,
+                priority,
+            )
+            .await
+    }
+
+    /// Fill existing columns from an external Parquet/Lance/IPC source by
+    /// primary-key join (Geneva `Table.load_columns()`). Returns the job id.
+    pub async fn load_columns(&self, request: LoadColumnsRequest) -> Result<String> {
+        self.inner.load_columns(request).await
     }
 
     /// Change a column's name or nullability.

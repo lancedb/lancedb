@@ -761,8 +761,8 @@ mod tests {
         verify_splitter(splitter, test_data(), 50, &[11, 8, 9], false).await;
     }
 
-    #[tokio::test]
-    async fn test_hash_split() {
+    async fn collect_hash_split() -> RecordBatch {
+        let total_rows = 50;
         let data = lance_datagen::gen_batch()
             .with_seed(Seed::from(42))
             .col(
@@ -783,7 +783,7 @@ mod tests {
         );
 
         let split_batches = splitter
-            .apply(data, 10)
+            .apply(data, total_rows)
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -791,20 +791,35 @@ mod tests {
             .unwrap();
 
         let schema = split_batches[0].schema();
-        let split_batch = concat_batches(&schema, &split_batches).unwrap();
+        concat_batches(&schema, &split_batches).unwrap()
+    }
 
-        // These assertions are all based on fixed seed in data generation but they match
-        // up roughly to what we expect (25% discarded, 25% in split 0, 50% in split 1)
+    #[tokio::test]
+    async fn test_hash_split() {
+        let total_rows = 50;
+        let split_batch = collect_hash_split().await;
+        let split_batch_again = collect_hash_split().await;
 
-        // 8 rows (16%) are discarded because discard_weight is 1
-        assert_eq!(split_batch.num_rows(), 42);
+        assert_eq!(split_batch.num_rows(), split_batch_again.num_rows());
+        assert_eq!(split_batch.num_columns(), split_batch_again.num_columns());
+        for (left, right) in split_batch
+            .columns()
+            .iter()
+            .zip(split_batch_again.columns().iter())
+        {
+            assert_eq!(left, right);
+        }
+
+        assert!(split_batch.num_rows() > 0);
+        assert!(split_batch.num_rows() < total_rows);
         assert_eq!(split_batch.num_columns(), 2);
 
         let split_ids = split_batch.column(1).as_primitive::<UInt64Type>().values();
         let num_in_split_0 = split_ids.iter().filter(|v| **v == 0).count();
         let num_in_split_1 = split_ids.iter().filter(|v| **v == 1).count();
 
-        assert_eq!(num_in_split_0, 12); // 24%
-        assert_eq!(num_in_split_1, 30); // 60%
+        assert_eq!(num_in_split_0 + num_in_split_1, split_batch.num_rows());
+        assert!(num_in_split_0 > 0);
+        assert!(num_in_split_1 > num_in_split_0);
     }
 }

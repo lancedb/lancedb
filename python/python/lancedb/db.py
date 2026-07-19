@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
+    from .udf import MaterializedView, AsyncMaterializedView
 
 from .namespace_utils import (
     _normalize_create_namespace_mode,
@@ -562,6 +563,275 @@ class DBConnection(EnforceOverrides):
             Serialized representation of this connection.
         """
         raise NotImplementedError("serialize is not supported for this connection type")
+
+    # -- Derived compute: functions, materialized views, jobs -------------
+    # Server-backed features (LanceDB Enterprise / Cloud); local
+    # connections raise NotImplementedError for now.
+
+    def create_function(
+        self,
+        name,
+        language: str = "python",
+        return_type: Optional[str] = None,
+        body: Optional[str] = None,
+        options: Optional[Dict[str, str]] = None,
+        *,
+        replace: bool = False,
+    ):
+        """Register a UDF (CREATE FUNCTION).
+
+        Pass a ``@udf`` / ``@table_udf``-decorated function (preferred):
+
+            db.create_function(embed)
+
+        or the explicit fields:
+
+        Parameters
+        ----------
+        name: str or Udf
+            A decorated UDF object, or the function name.
+        language: str
+            Implementation language (currently "python").
+        return_type: str
+            SQL return type, e.g. "FLOAT", "FLOAT[1536]",
+            "STRUCT(a FLOAT, b VARCHAR)", "TABLE(chunk VARCHAR, idx INT)".
+        body: str
+            Function body: source text, or base64 cloudpickle bytes when
+            options["body_format"] == "cloudpickle".
+        options: dict, optional
+            input_columns, pip, num_gpus, batch_size, timeout,
+            error_policy, docker_image, body_format, ...
+        replace: bool
+            Drop an existing function of the same name first.
+        """
+        from .udf import Udf
+
+        if isinstance(name, Udf):
+            req = name.create_request()
+            name, language, return_type, body, options = (
+                req["name"],
+                req["language"],
+                req["return_type"],
+                req["body"],
+                req["options"],
+            )
+        if replace:
+            try:
+                self.drop_function(name)
+            except Exception:
+                pass
+        LOOP.run(self._conn.create_function(name, language, return_type, body, options))
+
+    def list_functions(self):
+        """List registered functions (SHOW FUNCTIONS)."""
+        return LOOP.run(self._conn.list_functions())
+
+    def drop_function(self, name: str):
+        """Drop a registered function (DROP FUNCTION)."""
+        LOOP.run(self._conn.drop_function(name))
+
+    def create_materialized_view(
+        self,
+        name: str,
+        source=None,
+        select=None,
+        *,
+        query: Optional[str] = None,
+        where: Optional[str] = None,
+        auto_refresh: bool = False,
+        with_no_data: bool = False,
+        replace: bool = False,
+        partition_by: Optional[str] = None,
+    ) -> "MaterializedView":
+        """Create a materialized view (CREATE MATERIALIZED VIEW); returns a
+        `MaterializedView` handle (``.wait()`` blocks until it is populated).
+
+        Two ways to specify the view body:
+
+        - ergonomic: pass ``source`` (a table name or table) and ``select``
+          items -- column names, expression strings ("embed(body)"),
+          (alias, expression) tuples, or ``@udf`` / ``@table_udf`` objects.
+          The SELECT is assembled and parsed server-side (one parser, shared
+          with SQL).
+        - raw: pass ``query=`` with a full SELECT, e.g.
+          "SELECT id, embed(body) AS vec FROM articles WHERE id > 1".
+
+        `partition_by` partitions the view's (single) table function on a source
+        column. If that column has an IVF vector index the server partitions by
+        its index clusters (image-dedup style); otherwise it groups by distinct
+        value. (Geneva's `partition_by` and `partition_by_indexed_column` unify
+        here -- the engine picks the strategy from the column.)
+        """
+        from .udf import build_view_query, MaterializedView
+
+        if query is None:
+            if source is None or select is None:
+                raise ValueError(
+                    "create_materialized_view needs either query= or both "
+                    "source and select"
+                )
+            query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            self._drop_view_if_exists(name)
+        job_id = LOOP.run(
+            self._conn.create_materialized_view(
+                name,
+                query=query,
+                auto_refresh=auto_refresh,
+                with_no_data=with_no_data,
+                partition_by=partition_by,
+            )
+        )
+        return MaterializedView(self, name, job_id=job_id)
+
+    def _drop_view_if_exists(self, name: str) -> None:
+        # `replace=True` is "drop if present"; only a not-found error is
+        # benign here. Anything else (perms, server fault) must surface rather
+        # than be masked by a later create failure.
+        try:
+            self.drop_materialized_view(name)
+        except Exception as e:
+            msg = str(e).lower()
+            if "not found" not in msg and "does not exist" not in msg:
+                raise
+
+    def job(self, job_id: str):
+        """A `Job` for reconnecting to an inflight job by id -- e.g. an
+        id you stored, or one returned from the SQL / REST surface. Submit
+        methods (`refresh_column`, `MaterializedView.refresh`) already return a
+        handle directly, so you do not need this to wait on a fresh submission."""
+        from .udf import Job
+
+        return Job(self, job_id)
+
+    def lineage(
+        self,
+        table: str,
+        column: Optional[str] = None,
+        *,
+        direction: Optional[str] = None,
+        depth: Optional[int] = None,
+    ):
+        """Derived-compute lineage of a table/view, or one of its columns:
+        upstream sources, downstream dependents, and the function version +
+        location that produced each derived column (with a drift flag). Returns
+        a `Lineage`. `direction` is "upstream" | "downstream" | "both" (server
+        default both); `depth` limits column-hops (transitive when omitted)."""
+        # `self._conn` is the AsyncConnection; drive its async `lineage`
+        # (which parses the JSON) on the loop, mirroring create_materialized_view.
+        return LOOP.run(
+            self._conn.lineage(table, column, direction=direction, depth=depth)
+        )
+
+    def _refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Internal: submit a materialized-view refresh, return the job id.
+        The public surface is ``MaterializedView.refresh()`` (which returns a
+        `Job`); this stays private so refresh is only reached through the
+        handle.
+
+        ``full=True`` forces a full rebuild (recompute and replace every row)
+        instead of the default incremental refresh.
+        """
+        return LOOP.run(
+            self._conn._refresh_materialized_view(
+                name,
+                full=full,
+                src_version=src_version,
+                num_workers=num_workers,
+                max_workers=max_workers,
+            )
+        )
+
+    def explain_refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+    ):
+        """Plan a refresh without running it (EXPLAIN REFRESH). Returns a
+        plan with .has_work / .source_version / .last_refreshed_version /
+        .full_refresh / .rebuild / .units_total. `full=True` plans a full
+        rebuild (incremental planning needs stable row IDs on the source)."""
+        return LOOP.run(
+            self._conn.explain_refresh_materialized_view(
+                name, full=full, src_version=src_version
+            )
+        )
+
+    def alter_materialized_view(self, name: str, *, auto_refresh: bool):
+        """Update a materialized view's options (ALTER MATERIALIZED VIEW)."""
+        LOOP.run(self._conn.alter_materialized_view(name, auto_refresh=auto_refresh))
+
+    def drop_materialized_view(self, name: str):
+        """Drop a materialized view definition (DROP MATERIALIZED VIEW)."""
+        LOOP.run(self._conn.drop_materialized_view(name))
+
+    def list_materialized_views(self):
+        """List registered materialized view definitions."""
+        return LOOP.run(self._conn.list_materialized_views())
+
+    def list_jobs(self):
+        """List inflight server-side jobs across the database's tables."""
+        return LOOP.run(self._conn.list_jobs())
+
+    def get_job(self, job_id: str, table: "str | None" = None):
+        """Look up one server-side job by id (the wait()/status poll path).
+
+        Passing ``table`` (the job's table) lets the server answer with an O(1)
+        single-node read instead of scanning the database's active jobs.
+        Returns the job's status, or None if it's unknown or no longer active.
+        """
+        return LOOP.run(self._conn.get_job(job_id, table))
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel an inflight server-side job by id (CANCEL JOB).
+
+        Returns True if a matching inflight job was found and flagged for
+        cancellation, False if none was inflight (already finished or
+        unknown id) -- cancellation is best-effort.
+        """
+        return LOOP.run(self._conn.cancel_job(job_id))
+
+    def describe_platform_job(self, platform_job_id: str):
+        """Describe a platform job (POST /v1/jobs/describe): registry-backed
+        lifecycle state plus the owner-written status payload. None when the
+        registry has no such job."""
+        return LOOP.run(self._conn.describe_platform_job(platform_job_id))
+
+    def resolve_platform_job_id(self, manifest_job_id: str, table: "str | None" = None):
+        """Resolve a submission (manifest) job id to its platform job id.
+        None until the job has registered (dispatch is async)."""
+        return LOOP.run(self._conn.resolve_platform_job_id(manifest_job_id, table))
+
+    def cancel_platform_job(self, platform_job_id: str) -> None:
+        """Cancel a platform job (POST /v1/jobs/cancel). Idempotent on
+        already-terminal jobs."""
+        return LOOP.run(self._conn.cancel_platform_job(platform_job_id))
+
+    def job_history(self, job_id: "str | None" = None):
+        """Durable history of completed server-side jobs (SHOW JOB HISTORY).
+
+        Pass ``job_id`` to narrow to a single job. Unlike :meth:`list_jobs`
+        (live, inflight) these are the terminal records.
+        """
+        return LOOP.run(self._conn.job_history(job_id))
+
+    def errors(self, job_id: "str | None" = None, table: "str | None" = None):
+        """Per-row UDF errors recorded by ``error_policy=skip`` (SHOW ERRORS),
+        optionally filtered by ``job_id`` and/or ``table``.
+        """
+        return LOOP.run(self._conn.errors(job_id, table))
 
 
 class LanceDBConnection(DBConnection):
@@ -1762,6 +2032,217 @@ class AsyncConnection(object):
             is_shallow=is_shallow,
         )
         return AsyncTable(table)
+
+    # -- Derived compute: functions, materialized views, jobs -------------
+    # Server-backed features (LanceDB Enterprise / Cloud); local
+    # connections raise NotImplementedError for now.
+
+    async def create_function(
+        self,
+        name,
+        language: str = "python",
+        return_type: Optional[str] = None,
+        body: Optional[str] = None,
+        options: Optional[Dict[str, str]] = None,
+        *,
+        replace: bool = False,
+    ):
+        """Register a UDF (CREATE FUNCTION). Accepts a ``@udf``/``@table_udf``
+        object (preferred) or the explicit (name, language, return_type, body,
+        options)."""
+        from .udf import Udf
+
+        if isinstance(name, Udf):
+            req = name.create_request()
+            name, language, return_type, body, options = (
+                req["name"],
+                req["language"],
+                req["return_type"],
+                req["body"],
+                req["options"],
+            )
+        if replace:
+            try:
+                await self.drop_function(name)
+            except Exception:
+                pass
+        await self._inner.create_function(name, language, return_type, body, options)
+
+    async def list_functions(self):
+        """List registered functions (SHOW FUNCTIONS)."""
+        return await self._inner.list_functions()
+
+    async def drop_function(self, name: str):
+        """Drop a registered function (DROP FUNCTION)."""
+        await self._inner.drop_function(name)
+
+    async def create_materialized_view(
+        self,
+        name: str,
+        source=None,
+        select=None,
+        *,
+        query: Optional[str] = None,
+        where: Optional[str] = None,
+        auto_refresh: bool = False,
+        with_no_data: bool = False,
+        replace: bool = False,
+        partition_by: Optional[str] = None,
+    ) -> "AsyncMaterializedView":
+        """Create a materialized view; returns an `AsyncMaterializedView`
+        handle (``.wait()`` blocks until populated). Pass either ``query=`` (a
+        full SELECT) or ``source`` + ``select`` items; `partition_by`
+        partitions the view's table function on a source column (index-cluster
+        if the column is IVF-indexed, else distinct-value). See the sync
+        method for the select grammar."""
+        from .udf import build_view_query, AsyncMaterializedView
+
+        if query is None:
+            if source is None or select is None:
+                raise ValueError(
+                    "create_materialized_view needs either query= or both "
+                    "source and select"
+                )
+            query = build_view_query(source, select)
+        if where:
+            query += f" WHERE {where}"
+        if replace:
+            try:
+                await self.drop_materialized_view(name)
+            except Exception as e:
+                msg = str(e).lower()
+                if "not found" not in msg and "does not exist" not in msg:
+                    raise
+        job_id = await self._inner.create_materialized_view(
+            name,
+            query,
+            auto_refresh=auto_refresh,
+            with_no_data=with_no_data,
+            partition_by=partition_by,
+        )
+        return AsyncMaterializedView(self, name, job_id=job_id)
+
+    def job(self, job_id: str):
+        """An `AsyncJob` for reconnecting to an inflight job by id (a
+        stored id, or one from the SQL / REST surface). Submit methods already
+        return a handle, so this is only needed to re-attach to an existing
+        job."""
+        from .udf import AsyncJob
+
+        return AsyncJob(self, job_id)
+
+    async def lineage(
+        self,
+        table: str,
+        column: Optional[str] = None,
+        *,
+        direction: Optional[str] = None,
+        depth: Optional[int] = None,
+    ):
+        """Derived-compute lineage of a table/view (or column). See the sync
+        `Connection.lineage`. Returns a `Lineage`."""
+        from .lineage import Lineage
+
+        raw = await self._inner.table_lineage(table, column, direction, depth)
+        return Lineage.from_json(raw)
+
+    async def _refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+    ) -> str:
+        """Internal: submit a refresh, return the job id. The public surface is
+        ``AsyncMaterializedView.refresh()`` (returns an `AsyncJob`).
+
+        ``full=True`` forces a full rebuild (recompute and replace every row)
+        instead of the default incremental refresh.
+        """
+        return await self._inner.refresh_materialized_view(
+            name,
+            full=full,
+            src_version=src_version,
+            num_workers=num_workers,
+            max_workers=max_workers,
+        )
+
+    async def explain_refresh_materialized_view(
+        self,
+        name: str,
+        *,
+        full: bool = False,
+        src_version: Optional[int] = None,
+    ):
+        """Plan a refresh without running it (EXPLAIN REFRESH)."""
+        return await self._inner.explain_refresh_materialized_view(
+            name, full=full, src_version=src_version
+        )
+
+    async def alter_materialized_view(self, name: str, *, auto_refresh: bool):
+        """Update a materialized view's options."""
+        await self._inner.alter_materialized_view(name, auto_refresh)
+
+    async def drop_materialized_view(self, name: str):
+        """Drop a materialized view definition."""
+        await self._inner.drop_materialized_view(name)
+
+    async def list_materialized_views(self):
+        """List registered materialized view definitions."""
+        return await self._inner.list_materialized_views()
+
+    async def list_jobs(self):
+        """List inflight server-side jobs across the database's tables."""
+        return await self._inner.list_jobs()
+
+    async def get_job(self, job_id: str, table: "str | None" = None):
+        """Look up one server-side job by id (the wait()/status poll path).
+        ``table`` (the job's table) enables an O(1) server-side lookup.
+        Returns the job's status, or None if unknown / no longer active."""
+        return await self._inner.get_job(job_id, table)
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an inflight server-side job by id (CANCEL JOB).
+
+        Returns True if a matching inflight job was found and flagged for
+        cancellation, False otherwise (best-effort).
+        """
+        return await self._inner.cancel_job(job_id)
+
+    async def describe_platform_job(self, platform_job_id: str):
+        """Describe a platform job: registry-backed lifecycle state plus the
+        owner-written status payload. None when the registry has no such
+        job."""
+        return await self._inner.describe_platform_job(platform_job_id)
+
+    async def resolve_platform_job_id(
+        self, manifest_job_id: str, table: "str | None" = None
+    ):
+        """Resolve a submission (manifest) job id to its platform job id.
+        None until the job has registered (dispatch is async)."""
+        return await self._inner.resolve_platform_job_id(manifest_job_id, table)
+
+    async def cancel_platform_job(self, platform_job_id: str) -> None:
+        """Cancel a platform job. Idempotent on already-terminal jobs."""
+        return await self._inner.cancel_platform_job(platform_job_id)
+
+    async def job_history(self, job_id: "str | None" = None):
+        """Durable history of completed server-side jobs (SHOW JOB HISTORY).
+
+        Reads each table's durable job-history store. Pass ``job_id`` to narrow
+        to a single job. Unlike :meth:`list_jobs` (live, inflight) these are the
+        terminal records, with created/updated/completed timestamps.
+        """
+        return await self._inner.job_history(job_id)
+
+    async def errors(self, job_id: "str | None" = None, table: "str | None" = None):
+        """Per-row UDF errors recorded by ``error_policy=skip`` (SHOW ERRORS).
+
+        Optionally filtered by ``job_id`` and/or ``table``.
+        """
+        return await self._inner.errors(job_id, table)
 
     async def rename_table(
         self,

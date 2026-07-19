@@ -19,6 +19,17 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
+from .udf import (
+    udf,
+    table_udf,
+    Udf,
+    Job,
+    JobFailedError,
+    MaterializedView,
+    AsyncJob,
+    AsyncMaterializedView,
+)
+from .lineage import Lineage, Node, Edge, FunctionRef
 from .schema import blob, vector, BlobType
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
@@ -491,6 +502,18 @@ async def connect_async(
 
 
 __all__ = [
+    "udf",
+    "table_udf",
+    "Udf",
+    "Job",
+    "JobFailedError",
+    "MaterializedView",
+    "AsyncJob",
+    "AsyncMaterializedView",
+    "Lineage",
+    "Node",
+    "Edge",
+    "FunctionRef",
     "connect",
     "connect_async",
     "tokenize",

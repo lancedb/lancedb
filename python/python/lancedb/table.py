@@ -99,6 +99,9 @@ from .util import (
 from .index import lang_mapping
 from .schema import blob_v2_column_paths, schema_has_blob_field
 
+if TYPE_CHECKING:
+    from .udf import Job
+
 
 def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
@@ -702,6 +705,24 @@ def _normalize_progress(progress):
     return progress, False
 
 
+def _computed_groups(computed):
+    """Group computed columns by expression, preserving declaration order
+    (struct-returning functions need their columns adjacent so schema order
+    matches field order). Accepts the ergonomic forms -- `fn("col")` values
+    and tuple keys for struct fan-out -- via `_normalize_computed`."""
+    from .udf import _normalize_computed
+
+    groups = []
+    for name, (sql_type, expression) in _normalize_computed(computed).items():
+        for expr, cols in groups:
+            if expr == expression:
+                cols.append((name, sql_type))
+                break
+        else:
+            groups.append((expression, [(name, sql_type)]))
+    return groups
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -806,6 +827,59 @@ class Table(ABC):
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
+
+    def add_computed_column(
+        self,
+        columns,
+        fn,
+        args: Optional[List[str]] = None,
+        types=None,
+    ) -> None:
+        """Declare computed column(s) bound to a UDF -- no compute happens
+        here (the agent fills them lazily, or refresh_column() triggers a run).
+
+        .. deprecated::
+            A computed column is an expression over a registered function, so
+            bind it as one: ``add_columns(computed={"vec": embed("data")})``.
+            ``embed("data")`` applies the function to the `data` column and
+            infers the type from the function's return signature -- the
+            function never couples to a particular column. Prefer that form.
+        """
+        import warnings
+
+        warnings.warn(
+            "add_computed_column is deprecated; use add_columns(computed="
+            '{"vec": embed("data")}).',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from .udf import Udf, struct_field_types
+
+        multi = isinstance(columns, (tuple, list))
+        if isinstance(fn, Udf):
+            expr = fn.expression(*(args or []))
+            if types is None:
+                if multi:
+                    if not fn.returns.upper().startswith("STRUCT"):
+                        raise ValueError(
+                            "several columns need a STRUCT-returning function"
+                        )
+                    types = struct_field_types(fn.returns)
+                else:
+                    types = fn.returns
+        else:
+            if types is None:
+                raise ValueError("pass types= when fn is a name string")
+            expr = f"{fn}({', '.join(args or [])})"
+        if multi:
+            if len(types) != len(columns):
+                raise ValueError(
+                    f"{len(columns)} columns but {len(types)} output types"
+                )
+            computed = {c: (t, expr) for c, t in zip(columns, types)}
+        else:
+            computed = {columns: (types, expr)}
+        self.add_columns(computed=computed)
 
     @property
     @abstractmethod
@@ -3831,9 +3905,68 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+        self,
+        transforms: Dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Optional[Dict] = None,
+    ) -> Optional[AddColumnsResult]:
+        result = None
+        if transforms is not None:
+            result = LOOP.run(self._table.add_columns(transforms))
+        if computed:
+            # computed binds an expression over a registered function to a
+            # column: {col: fn("input_col")} -- fn("input_col") yields the
+            # expression and carries the inferred type; a tuple key fans a
+            # STRUCT return out to several columns. Declares the binding only;
+            # the server fills the values (server-backed). The legacy
+            # {col: (sql_type, expression)} tuple form is still accepted.
+            result_unused = LOOP.run(self._table.add_columns(computed=computed))
+            del result_unused
+        return result
+
+    def refresh_column(
+        self,
+        columns,
+        *,
+        where: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> "Job":
+        """Trigger recompute of computed columns (REFRESH COLUMN).
+
+        The expression is resolved server-side from each column's stored
+        binding; columns bound to the same struct-returning function
+        refresh together. Returns a `Job` to wait on, poll, or cancel
+        (``tbl.refresh_column("col").wait()``) -- mirrors
+        `MaterializedView.refresh()`. Server-backed feature (LanceDB
+        Enterprise / Cloud).
+
+        num_workers / max_workers / batch_size / priority are per-refresh
+        scheduling knobs (how to run THIS refresh) and override any default
+        the function carries. `priority` is a Kueue tier
+        (training | interactive | backfill).
+        """
+        from .udf import Job
+
+        if isinstance(columns, str):
+            columns = [columns]
+        job_id = LOOP.run(
+            self._table.refresh_column(
+                list(columns),
+                where=where,
+                num_workers=num_workers,
+                max_workers=max_workers,
+                batch_size=batch_size,
+                priority=priority,
+            )
+        )
+        return Job(self._conn, job_id, table=self.name)
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -5598,9 +5731,44 @@ class AsyncTable:
 
         return await self._inner.update(updates_sql, where)
 
+    async def refresh_column(
+        self,
+        columns,
+        *,
+        where: Optional[str] = None,
+        num_workers: Optional[int] = None,
+        max_workers: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        priority: Optional[str] = None,
+    ) -> str:
+        """Trigger recompute of computed columns (REFRESH COLUMN).
+        Returns the refresh job id. Server-backed feature.
+
+        num_workers / max_workers / batch_size / priority are per-refresh
+        scheduling knobs (how to run THIS refresh); they override any default
+        the function carries. `priority` is a Kueue tier
+        (training | interactive | backfill)."""
+        if isinstance(columns, str):
+            columns = [columns]
+        return await self._inner.refresh_column(
+            list(columns),
+            where_clause=where,
+            num_workers=num_workers,
+            max_workers=max_workers,
+            batch_size=batch_size,
+            priority=priority,
+        )
+
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ) -> AddColumnsResult:
+        self,
+        transforms: dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Optional[Dict] = None,
+    ) -> Optional[AddColumnsResult]:
         """
         Add new columns with defined values.
 
@@ -5619,6 +5787,7 @@ class AsyncTable:
             version: the new version number of the table after adding columns.
 
         """
+        result = None
         if isinstance(transforms, pa.Field):
             transforms = [transforms]
         if isinstance(transforms, list) and all(
@@ -5626,9 +5795,69 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if isinstance(transforms, pa.Schema):
-            return await self._inner.add_columns_with_schema(transforms)
+            result = await self._inner.add_columns_with_schema(transforms)
+        elif transforms is not None:
+            result = await self._inner.add_columns(list(transforms.items()))
+        if computed:
+            # computed binds an expression over a registered function to a
+            # column: {col: fn("input_col")} -- fn("input_col") yields the
+            # expression and carries the inferred type; a tuple key fans a
+            # STRUCT return out to several columns. Declares the binding only;
+            # the server fills the values (server-backed). The legacy
+            # {col: (sql_type, expression)} tuple form is still accepted.
+            for expression, cols in _computed_groups(computed):
+                await self._inner.add_computed_columns(cols, expression)
+        return result
+
+    async def add_computed_column(
+        self,
+        columns,
+        fn,
+        args: Optional[List[str]] = None,
+        types=None,
+    ) -> None:
+        """Declare computed column(s) bound to a UDF (async).
+
+        .. deprecated::
+            Use ``add_columns(computed={"col": fn("input_col")})`` -- a computed
+            column is an expression over a registered function, so bind it that
+            way instead of coupling the UDF to the column here.
+        """
+        import warnings
+
+        warnings.warn(
+            "add_computed_column is deprecated; use add_columns(computed="
+            '{"col": fn("input_col")}).',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from .udf import Udf, struct_field_types
+
+        multi = isinstance(columns, (tuple, list))
+        if isinstance(fn, Udf):
+            expr = fn.expression(*(args or []))
+            if types is None:
+                if multi:
+                    if not fn.returns.upper().startswith("STRUCT"):
+                        raise ValueError(
+                            "several columns need a STRUCT-returning function"
+                        )
+                    types = struct_field_types(fn.returns)
+                else:
+                    types = fn.returns
         else:
-            return await self._inner.add_columns(list(transforms.items()))
+            if types is None:
+                raise ValueError("pass types= when fn is a name string")
+            expr = f"{fn}({', '.join(args or [])})"
+        if multi:
+            if len(types) != len(columns):
+                raise ValueError(
+                    f"{len(columns)} columns but {len(types)} output types"
+                )
+            computed = {c: (t, expr) for c, t in zip(columns, types)}
+        else:
+            computed = {columns: (types, expr)}
+        await self.add_columns(computed=computed)
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

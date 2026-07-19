@@ -27,7 +27,7 @@ use lance_namespace::models::{
 };
 
 use crate::data::scannable::Scannable;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -200,6 +200,222 @@ pub enum ReadConsistency {
     Strong,
 }
 
+/// A request to register a UDF (CREATE FUNCTION).
+///
+/// Functions are first-class database objects, decoupled from any
+/// column; computed columns and materialized views reference them by
+/// name. Server-backed feature (LanceDB Enterprise / Cloud).
+#[derive(Debug, Clone)]
+pub struct CreateFunctionRequest {
+    /// Function name.
+    pub name: String,
+    /// Implementation language (currently "python").
+    pub language: String,
+    /// SQL return type, e.g. `FLOAT`, `FLOAT[1536]`,
+    /// `STRUCT(a FLOAT, b VARCHAR)`, `TABLE(chunk VARCHAR, idx INT)`.
+    pub return_type: String,
+    /// Function body: source text, or base64 cloudpickle bytes when
+    /// `options["body_format"] = "cloudpickle"`.
+    pub body: String,
+    /// Options: input_columns, pip, num_gpus, batch_size, timeout,
+    /// error_policy, docker_image, body_format, ...
+    pub options: HashMap<String, String>,
+}
+
+/// A registered function, as returned by `list_functions`.
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub language: String,
+    pub return_type: String,
+    pub description: String,
+}
+
+/// A request to create a materialized view (CREATE MATERIALIZED VIEW).
+#[derive(Debug, Clone)]
+pub struct CreateMaterializedViewRequest {
+    /// View name.
+    pub name: String,
+    /// The view's SELECT statement, e.g.
+    /// `SELECT id, embed(body) AS vec FROM articles WHERE id > 1`.
+    /// Bare columns project through; function-call columns compute via
+    /// registered UDFs (a RETURNS TABLE function makes a row-expanding
+    /// chunker view).
+    pub query: String,
+    /// Refresh automatically when the source table changes.
+    pub auto_refresh: bool,
+    /// Register the definition only; skip the initial population.
+    pub with_no_data: bool,
+    /// Optional source column to partition the view's table function on. If the
+    /// column has an IVF vector index the server partitions by its clusters
+    /// (image-dedup style); otherwise it groups by distinct value.
+    pub partition_by: Option<String>,
+}
+
+impl CreateMaterializedViewRequest {
+    pub fn new(name: impl Into<String>, query: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            query: query.into(),
+            auto_refresh: false,
+            with_no_data: false,
+            partition_by: None,
+        }
+    }
+}
+
+/// A request to refresh a materialized view.
+#[derive(Debug, Clone)]
+pub struct RefreshMaterializedViewRequest {
+    /// View name.
+    pub name: String,
+    /// Force a full rebuild (recompute and replace every row) instead of the
+    /// default incremental refresh.
+    pub full: bool,
+    /// Pin the refresh to a source-table version; latest when absent.
+    pub src_version: Option<u64>,
+    /// Initial worker count.
+    pub num_workers: Option<u32>,
+    /// Elastic worker ceiling.
+    pub max_workers: Option<u32>,
+}
+
+/// A request for the derived-compute lineage of a table/view (or one of its
+/// columns). The response is server-defined lineage JSON, returned opaque so
+/// this client need not model the server's lineage schema.
+#[derive(Debug, Clone, Default)]
+pub struct TableLineageRequest {
+    /// Table or view name.
+    pub name: String,
+    /// Column for column-level lineage; whole table/view when absent.
+    pub column: Option<String>,
+    /// "upstream" | "downstream" | "both" (server default when absent).
+    pub direction: Option<String>,
+    /// Column-hops to walk; transitive when absent.
+    pub depth: Option<u32>,
+}
+
+impl RefreshMaterializedViewRequest {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            full: false,
+            src_version: None,
+            num_workers: None,
+            max_workers: None,
+        }
+    }
+}
+
+/// A registered materialized view definition, as returned by
+/// `list_materialized_views`.
+#[derive(Debug, Clone)]
+pub struct MaterializedViewInfo {
+    pub name: String,
+    pub source_table: String,
+    /// Source columns projected through.
+    pub projection: Vec<String>,
+    /// `alias=expression` per UDF-computed column.
+    pub udf_columns: Vec<String>,
+    pub filter: Option<String>,
+    pub auto_refresh: bool,
+}
+
+/// A described platform job (`POST /v1/jobs/describe`): the job registry's
+/// lifecycle state plus the owner-written status payload.
+#[derive(Debug, Clone)]
+pub struct PlatformJobDescription {
+    /// The platform (registry) job id -- what describe/cancel accept.
+    pub job_id: String,
+    pub job_type: String,
+    pub job_subtype: String,
+    /// "IN_PROGRESS" | "CANCELLED" | "FAILED" | "DONE".
+    pub job_state: String,
+    pub creation_ms: i64,
+    /// The owner-written status payload -- `units_done` / `units_total` /
+    /// `rows_committed` / `error` when present. Records whose owner has not
+    /// written a payload yet carry the raw status-store URI string instead.
+    pub status: serde_json::Value,
+}
+
+/// A row from `list_jobs`: one inflight server-side job (index build,
+/// compaction, column refresh, view refresh, ...).
+#[derive(Debug, Clone)]
+pub struct JobInfo {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "cancelling", or "stale".
+    pub state: String,
+    pub column: Option<String>,
+    pub age_seconds: Option<i64>,
+    pub command: Option<String>,
+    pub units_done: Option<i64>,
+    pub units_total: Option<i64>,
+    /// Whether the job's final commit has completed (output visible).
+    pub committed: bool,
+    pub rows_skipped: u64,
+    pub error: Option<String>,
+}
+
+/// A row from `job_history`: one durable, completed/terminal server-side job
+/// record (SHOW JOB HISTORY), read from a table's `_job_history` store. Unlike
+/// `JobInfo` (live, inflight jobs) this carries created/updated/completed
+/// timestamps and the lifecycle event log.
+#[derive(Debug, Clone)]
+pub struct JobHistoryInfo {
+    pub table: String,
+    pub job_id: String,
+    pub job_type: String,
+    pub state: String,
+    pub column: Option<String>,
+    pub created_ms: i64,
+    pub updated_ms: i64,
+    pub completed_ms: Option<i64>,
+    pub rows_processed: Option<i64>,
+    pub rows_skipped: Option<i64>,
+    pub error: Option<String>,
+    /// Newline-joined lifecycle event log, oldest first.
+    pub events: Option<String>,
+}
+
+/// A row from `errors`: one per-row UDF failure recorded by `error_policy=skip`
+/// (SHOW ERRORS).
+#[derive(Debug, Clone)]
+pub struct JobErrorInfo {
+    pub job_id: String,
+    pub table: String,
+    pub column: String,
+    pub error_type: String,
+    pub error_message: String,
+    pub fragment_id: Option<i64>,
+    pub source_row_id: Option<i64>,
+    pub table_version: Option<i64>,
+    pub age_seconds: Option<i64>,
+}
+
+/// The plan a `REFRESH MATERIALIZED VIEW` would execute, as returned by
+/// `explain_refresh_materialized_view` (EXPLAIN REFRESH). No work is run.
+#[derive(Debug, Clone)]
+pub struct MvRefreshPlan {
+    pub table_name: String,
+    /// Whether a refresh would do anything (rebuild or non-empty units).
+    pub has_work: bool,
+    pub source_version: u64,
+    pub last_refreshed_version: Option<u64>,
+    pub full_refresh: bool,
+    /// Source changed non-append-only since the last refresh -> rebuild.
+    pub rebuild: bool,
+    /// Number of row-range work units the refresh would process.
+    pub units_total: u64,
+}
+
+fn not_supported<T>(what: &str) -> Result<T> {
+    Err(Error::NotSupported {
+        message: format!("{} is not supported by this database", what),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -245,6 +461,126 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
+
+    // -- Derived compute: functions, materialized views, jobs -------------
+    //
+    // Server-backed features (LanceDB Enterprise / Cloud). The defaults
+    // return NotSupported; the remote database overrides them. Local
+    // single-node implementations are planned.
+
+    /// Register a UDF (CREATE FUNCTION).
+    async fn create_function(&self, _request: CreateFunctionRequest) -> Result<()> {
+        not_supported("create_function")
+    }
+    /// List registered functions (SHOW FUNCTIONS).
+    async fn list_functions(&self) -> Result<Vec<FunctionInfo>> {
+        not_supported("list_functions")
+    }
+    /// Drop a registered function (DROP FUNCTION).
+    async fn drop_function(&self, _name: &str) -> Result<()> {
+        not_supported("drop_function")
+    }
+    /// Create a materialized view (CREATE MATERIALIZED VIEW). Returns
+    /// the initial-population job id, absent when `with_no_data`.
+    async fn create_materialized_view(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Option<String>> {
+        not_supported("create_materialized_view")
+    }
+    /// Refresh a materialized view; returns the refresh job id.
+    async fn refresh_materialized_view(
+        &self,
+        _request: RefreshMaterializedViewRequest,
+    ) -> Result<String> {
+        not_supported("refresh_materialized_view")
+    }
+    /// Derived-compute lineage of a table/view (or column), as server-defined
+    /// JSON. Read-only.
+    async fn table_lineage(&self, _request: TableLineageRequest) -> Result<String> {
+        not_supported("table_lineage")
+    }
+    /// Plan a materialized-view refresh without submitting work
+    /// (EXPLAIN REFRESH). `full` plans a full rebuild (incremental
+    /// planning requires stable row IDs on the source).
+    async fn explain_refresh_materialized_view(
+        &self,
+        _name: &str,
+        _full: bool,
+        _src_version: Option<u64>,
+    ) -> Result<MvRefreshPlan> {
+        not_supported("explain_refresh_materialized_view")
+    }
+    /// Update a materialized view's options (ALTER MATERIALIZED VIEW).
+    async fn alter_materialized_view(&self, _name: &str, _auto_refresh: bool) -> Result<()> {
+        not_supported("alter_materialized_view")
+    }
+    /// Drop a materialized view definition (DROP MATERIALIZED VIEW).
+    async fn drop_materialized_view(&self, _name: &str) -> Result<()> {
+        not_supported("drop_materialized_view")
+    }
+    /// List registered materialized view definitions.
+    async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewInfo>> {
+        not_supported("list_materialized_views")
+    }
+    /// List inflight server-side jobs across the database's tables.
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        not_supported("list_jobs")
+    }
+
+    /// Describe a platform job (`POST /v1/jobs/describe`): registry-backed
+    /// lifecycle state plus the owner-written status payload. `None` when the
+    /// registry has no such job.
+    async fn describe_platform_job(
+        &self,
+        _platform_job_id: &str,
+    ) -> Result<Option<PlatformJobDescription>> {
+        not_supported("describe_platform_job")
+    }
+
+    /// Resolve a submission (manifest) job id to its platform job id via the
+    /// registry's manifest-id filter (`POST /v1/jobs/list`). `None` until the
+    /// job has registered (dispatch is async).
+    async fn resolve_platform_job_id(
+        &self,
+        _manifest_job_id: &str,
+        _table_hint: Option<&str>,
+    ) -> Result<Option<String>> {
+        not_supported("resolve_platform_job_id")
+    }
+
+    /// Cancel a platform job (`POST /v1/jobs/cancel`). Idempotent: cancelling
+    /// an already-terminal job is a no-op success.
+    async fn cancel_platform_job(&self, _platform_job_id: &str) -> Result<()> {
+        not_supported("cancel_platform_job")
+    }
+    /// Cancel an inflight server-side job by id. Returns true if a
+    /// matching inflight job was found and flagged for cancellation,
+    /// false if none was inflight (best-effort, like SQL `CANCEL JOB`).
+    async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
+        not_supported("cancel_job")
+    }
+    /// Point-access for a single job by id -- the `wait()`/status poll path.
+    /// `table_hint` (the job's table, which `wait()` callers know) enables an
+    /// O(1) server-side lookup. `None` if the job is unknown or not active.
+    async fn get_job(&self, _job_id: &str, _table_hint: Option<&str>) -> Result<Option<JobInfo>> {
+        not_supported("get_job")
+    }
+    /// Durable job history (SHOW JOB HISTORY) across the database's tables,
+    /// optionally narrowed to a single `job_id`.
+    async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<JobHistoryInfo>> {
+        not_supported("job_history")
+    }
+    /// Per-row UDF errors (SHOW ERRORS) recorded by `error_policy=skip` across
+    /// the database's tables, optionally filtered by `job_id` and/or `table`.
+    async fn errors(
+        &self,
+        _job_id: Option<&str>,
+        _table: Option<&str>,
+    ) -> Result<Vec<JobErrorInfo>> {
+        not_supported("errors")
+    }
+
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
