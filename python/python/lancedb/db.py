@@ -1927,7 +1927,7 @@ class AsyncConnection(object):
                 namespace_client=namespace_client,
             )
 
-        return AsyncTable(new_table)
+        return AsyncTable(new_table, conn=self)
 
     async def open_table(
         self,
@@ -2000,7 +2000,7 @@ class AsyncConnection(object):
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
         )
-        tbl = AsyncTable(table)
+        tbl = AsyncTable(table, conn=self)
         # "main" is the default branch, so treat it as no branch: remote rejects
         # every branch checkout (even "main"), and the version still applies.
         if branch is not None and branch != "main":
@@ -2057,7 +2057,7 @@ class AsyncConnection(object):
             source_tag=source_tag,
             is_shallow=is_shallow,
         )
-        return AsyncTable(table)
+        return AsyncTable(table, conn=self)
 
     # -- Derived compute: functions, materialized views, jobs -------------
     # Server-backed features (LanceDB Enterprise / Cloud); local

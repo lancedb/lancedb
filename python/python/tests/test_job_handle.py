@@ -180,3 +180,30 @@ def test_async_wait_returns_finished():
         assert await job.wait(timeout=30, poll=0.01) == "finished"
 
     asyncio.run(run())
+
+
+def test_completed_job_is_finished_without_conn():
+    job = Job._completed(table="t")
+    assert job.status() == "finished"
+    assert job.wait(timeout=0.01) == "finished"
+    assert job.progress() is None
+    job.cancel()  # no-op, must not touch a connection
+
+
+def test_completed_job_ignores_registry():
+    conn = FakeConn([FakeDescription("IN_PROGRESS")])
+    job = Job._completed(conn, table="t")
+    assert job.wait(timeout=0.01) == "finished"
+    assert conn.resolve_calls == 0
+    assert conn.describe_calls == 0
+
+
+def test_completed_async_job_is_finished():
+    async def run():
+        job = AsyncJob._completed(table="t")
+        assert await job.status() == "finished"
+        assert await job.wait(timeout=0.01) == "finished"
+        assert await job.progress() is None
+        await job.cancel()
+
+    asyncio.run(run())

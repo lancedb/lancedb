@@ -612,6 +612,16 @@ class Job:
         self.table = table
         self._platform_id: "str | None" = None
         self._created = time.monotonic()
+        self._finished = False
+
+    @classmethod
+    def _completed(cls, conn=None, table: "str | None" = None) -> "Job":
+        """A job for work that completed synchronously within the call that
+        returned it (native tables, scalar/FTS builds). ``status``/``wait``
+        report ``finished`` immediately and ``cancel`` is a no-op."""
+        job = cls(conn, "", table)
+        job._finished = True
+        return job
 
     def _resolve(self) -> "str | None":
         if self._platform_id is None:
@@ -637,6 +647,8 @@ class Job:
     def status(self) -> str:
         """pending / running / finished / failed / cancelled (or unknown
         when the job never appeared in the registry)."""
+        if self._finished:
+            return "finished"
         described = self._describe()
         if described is not None:
             return self._STATES.get(described.job_state, described.job_state)
@@ -646,6 +658,8 @@ class Job:
 
     def progress(self) -> "tuple[int, int] | None":
         """(units_done, units_total) once workers have published progress."""
+        if self._finished:
+            return None
         described = self._describe()
         if described is None:
             return None
@@ -655,6 +669,8 @@ class Job:
         return None
 
     def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
+        if self._finished:
+            return "finished"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             described = self._describe()
@@ -680,6 +696,8 @@ class Job:
     def cancel(self) -> None:
         """Request cancellation. Workers drain cooperatively; poll ``status``
         for the terminal ``cancelled``."""
+        if self._finished:
+            return
         deadline = time.monotonic() + 5.0
         while (platform_id := self._resolve()) is None:
             if time.monotonic() > deadline:
@@ -749,6 +767,14 @@ class AsyncJob:
         self.table = table
         self._platform_id: "str | None" = None
         self._created = time.monotonic()
+        self._finished = False
+
+    @classmethod
+    def _completed(cls, conn=None, table: "str | None" = None) -> "AsyncJob":
+        """See ``Job._completed``."""
+        job = cls(conn, "", table)
+        job._finished = True
+        return job
 
     async def _resolve(self) -> "str | None":
         if self._platform_id is None:
@@ -764,6 +790,8 @@ class AsyncJob:
         return await self.conn.describe_platform_job(platform_id)
 
     async def status(self) -> str:
+        if self._finished:
+            return "finished"
         described = await self._describe()
         if described is not None:
             return self._STATES.get(described.job_state, described.job_state)
@@ -772,6 +800,8 @@ class AsyncJob:
         return "unknown"
 
     async def progress(self) -> "tuple[int, int] | None":
+        if self._finished:
+            return None
         described = await self._describe()
         if described is None:
             return None
@@ -781,6 +811,8 @@ class AsyncJob:
         return None
 
     async def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
+        if self._finished:
+            return "finished"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             described = await self._describe()
@@ -802,6 +834,8 @@ class AsyncJob:
         raise TimeoutError(f"job {self.id} still {await self.status()} after {timeout}s")
 
     async def cancel(self) -> None:
+        if self._finished:
+            return
         deadline = time.monotonic() + 5.0
         while (platform_id := await self._resolve()) is None:
             if time.monotonic() > deadline:

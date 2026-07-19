@@ -162,6 +162,7 @@ def _maybe_add_fts_error_note(
 
 if TYPE_CHECKING:
     from .db import LanceDBConnection
+    from .udf import Job
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -954,7 +955,7 @@ class Table(ABC):
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> "Job": ...
 
     # Legacy API overload (deprecated)
     @overload
@@ -978,7 +979,7 @@ class Table(ABC):
         name: Optional[str] = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
-    ) -> None: ...
+    ) -> "Job": ...
 
     def create_index(
         self,
@@ -1028,6 +1029,14 @@ class Table(ABC):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Returns
+        -------
+        Job
+            A handle on the index build. When the server defers the build to a
+            background job, ``job.wait()`` blocks until it completes; when the
+            build finished within this call, the job is already ``finished``.
+            Prefer ``job.wait()`` over the deprecated ``wait_timeout``.
 
         Examples
         --------
@@ -2196,8 +2205,8 @@ class LanceTable(Table):
     def from_inner(cls, tbl: LanceDBTable):
         from .db import LanceDBConnection
 
-        async_tbl = AsyncTable(tbl)
         conn = LanceDBConnection.from_inner(tbl.database())
+        async_tbl = AsyncTable(tbl, conn=conn._conn)
         return cls(
             conn,
             async_tbl.name,
@@ -2599,7 +2608,7 @@ class LanceTable(Table):
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> "Job": ...
 
     # Legacy API overload (deprecated)
     @overload
@@ -2625,7 +2634,7 @@ class LanceTable(Table):
         name: Optional[str] = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
-    ) -> None: ...
+    ) -> "Job": ...
 
     def create_index(
         self,
@@ -2683,6 +2692,14 @@ class LanceTable(Table):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Returns
+        -------
+        Job
+            A handle on the index build. When the server defers the build to a
+            background job, ``job.wait()`` blocks until it completes; when the
+            build finished within this call, the job is already ``finished``.
+            Prefer ``job.wait()`` over the deprecated ``wait_timeout``.
 
         Examples
         --------
@@ -2759,7 +2776,7 @@ class LanceTable(Table):
                     target_partition_size=target_partition_size,
                 )
                 self.checkout_latest()
-                return
+                return self._sync_job(None)
         else:
             # New API: metric is the column name
             column = metric
@@ -2796,18 +2813,29 @@ class LanceTable(Table):
                         ),
                     )
                     self.checkout_latest()
-                    return
+                    return self._sync_job(None)
 
-        return LOOP.run(
-            self._table.create_index(
-                column,
-                replace=replace,
-                config=config,
-                wait_timeout=wait_timeout,
-                name=name,
-                train=train,
+        return self._sync_job(
+            LOOP.run(
+                self._table.create_index(
+                    column,
+                    replace=replace,
+                    config=config,
+                    wait_timeout=wait_timeout,
+                    name=name,
+                    train=train,
+                )
             )
         )
+
+    def _sync_job(self, ajob) -> "Job":
+        """Convert an AsyncJob (or None for work done in-process) into a sync
+        Job bound to this table's connection."""
+        from .udf import Job
+
+        if ajob is not None and ajob.id:
+            return Job(self._conn, ajob.id, table=self.name)
+        return Job._completed(self._conn, table=self.name)
 
     def _is_legacy_create_index_call(
         self,
@@ -3059,8 +3087,12 @@ class LanceTable(Table):
             config = LabelList()
         else:
             raise ValueError(f"Unknown index type {index_type}")
-        return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config, name=name)
+        return self._sync_job(
+            LOOP.run(
+                self._table.create_index(
+                    column, replace=replace, config=config, name=name
+                )
+            )
         )
 
     @deprecation.deprecated(
@@ -3143,7 +3175,7 @@ class LanceTable(Table):
         )
 
         try:
-            LOOP.run(
+            ajob = LOOP.run(
                 self._table.create_index(
                     field_names,
                     replace=replace,
@@ -3158,6 +3190,7 @@ class LanceTable(Table):
                 language=config.language,
             )
             raise e
+        return self._sync_job(ajob)
 
     @staticmethod
     def infer_tokenizer_configs(tokenizer_name: str) -> dict:
@@ -4563,6 +4596,7 @@ class AsyncTable:
         self,
         table: LanceDBTable,
         *,
+        conn: Optional[Any] = None,
         namespace_path: Optional[List[str]] = None,
         namespace_client: Optional[Any] = None,
         pushdown_operations: Optional[set] = None,
@@ -4576,6 +4610,9 @@ class AsyncTable:
         [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
         Table objects."""
         self._inner = table
+        #: The owning AsyncConnection, when known -- lets index/refresh calls
+        #: hand back AsyncJob handles that can reach the platform jobs API.
+        self._conn = conn
         self._namespace_path = namespace_path or []
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
@@ -4883,6 +4920,14 @@ class AsyncTable:
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
+
+        Returns
+        -------
+        AsyncJob
+            A handle on the index build. When the server defers the build to a
+            background job, ``await job.wait()`` blocks until it completes;
+            when the build finished within this call, the job is already
+            ``finished``. Prefer ``await job.wait()`` over ``wait_timeout``.
         """
         if config is not None:
             if not isinstance(
@@ -4908,7 +4953,7 @@ class AsyncTable:
                     + str(type(config))
                 )
         try:
-            await self._inner.create_index(
+            job_id = await self._inner.create_index(
                 column,
                 index=config,
                 replace=replace,
@@ -4924,6 +4969,12 @@ class AsyncTable:
                     language=config.language,
                 )
             raise e
+
+        from .udf import AsyncJob
+
+        if job_id:
+            return AsyncJob(self._conn, job_id, table=self.name)
+        return AsyncJob._completed(self._conn, table=self.name)
 
     async def drop_index(self, name: str) -> None:
         """
@@ -6575,7 +6626,7 @@ class AsyncBranches:
         if from_ref == "main":
             from_ref = None
         inner = await self._table.branches.create(name, from_ref, from_version)
-        return AsyncTable(inner)
+        return AsyncTable(inner, conn=self._table._conn)
 
     async def checkout(self, name: str, version: Optional[int] = None) -> "AsyncTable":
         """Check out an existing branch and return a handle scoped to it.
@@ -6589,7 +6640,10 @@ class AsyncBranches:
             handle is a read-only view of that version; when omitted it tracks
             the branch's latest and stays writable.
         """
-        return AsyncTable(await self._table.branches.checkout(name, version))
+        return AsyncTable(
+            await self._table.branches.checkout(name, version),
+            conn=self._table._conn,
+        )
 
     async def delete(self, name: str) -> None:
         """Delete a branch."""
