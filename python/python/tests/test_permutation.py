@@ -128,9 +128,16 @@ def test_split_hash(mem_db):
 
 def test_split_hash_with_discard(mem_db):
     """Test hash-based splitting with discard weight."""
+    total_rows = 1000
     tbl = mem_db.create_table(
         "test_table",
-        pa.table({"id": range(100), "category": ["A", "B"] * 50, "value": range(100)}),
+        pa.table(
+            {
+                "id": range(total_rows),
+                "category": [f"category-{i}" for i in range(total_rows)],
+                "value": range(total_rows),
+            }
+        ),
     )
 
     permutation_tbl = (
@@ -142,10 +149,12 @@ def test_split_hash_with_discard(mem_db):
         .execute()
     )
 
-    # Should have fewer than 100 rows due to discard
+    # Should have fewer rows due to discard, but should not be empty.
     row_count = permutation_tbl.count_rows()
-    assert row_count < 100
-    assert row_count > 0  # But not empty
+    assert 0 < row_count < total_rows
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    assert set(data["split_id"]) == {0, 1}
 
 
 def test_split_sequential(mem_db):
