@@ -70,6 +70,21 @@ pub struct JobInfo {
     pub error: Option<String>,
 }
 
+/// A described platform job (POST /v1/jobs/describe).
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct PlatformJobDescription {
+    pub job_id: String,
+    pub job_type: String,
+    pub job_subtype: String,
+    /// "IN_PROGRESS" | "CANCELLED" | "FAILED" | "DONE".
+    pub job_state: String,
+    pub creation_ms: i64,
+    /// The owner-written status payload as a JSON string (units_done /
+    /// units_total / rows_committed / error when present).
+    pub status_json: String,
+}
+
 /// One durable, completed/terminal server-side job record (SHOW JOB HISTORY).
 #[pyclass(get_all)]
 #[derive(Clone)]
@@ -612,6 +627,55 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.cancel_job(&job_id).await.infer_error()
+        })
+    }
+
+    pub fn describe_platform_job(
+        self_: PyRef<'_, Self>,
+        platform_job_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let described = inner
+                .describe_platform_job(&platform_job_id)
+                .await
+                .infer_error()?;
+            Ok(described.map(|d| PlatformJobDescription {
+                job_id: d.job_id,
+                job_type: d.job_type,
+                job_subtype: d.job_subtype,
+                job_state: d.job_state,
+                creation_ms: d.creation_ms,
+                status_json: d.status.to_string(),
+            }))
+        })
+    }
+
+    #[pyo3(signature = (manifest_job_id, table=None))]
+    pub fn resolve_platform_job_id(
+        self_: PyRef<'_, Self>,
+        manifest_job_id: String,
+        table: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .resolve_platform_job_id(&manifest_job_id, table.as_deref())
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn cancel_platform_job(
+        self_: PyRef<'_, Self>,
+        platform_job_id: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .cancel_platform_job(&platform_job_id)
+                .await
+                .infer_error()
         })
     }
 
