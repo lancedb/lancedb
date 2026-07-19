@@ -21,8 +21,8 @@ use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateFunctionRequest, CreateMaterializedViewRequest, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, FunctionInfo, JobErrorInfo, JobHistoryInfo,
-    JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest, ReadConsistency,
-    RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
+    JobInfo, MaterializedViewInfo, MvRefreshPlan, OpenTableRequest, PlatformJobDescription,
+    ReadConsistency, RefreshMaterializedViewRequest, TableLineageRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -158,7 +158,7 @@ struct RemoteJobEntry {
     error: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RemoteDescribePlatformJobResponse {
     job_id: String,
     job_type: String,
@@ -171,13 +171,13 @@ struct RemoteDescribePlatformJobResponse {
     status: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RemoteListPlatformJobsResponse {
     #[serde(default)]
     jobs: Vec<RemotePlatformJobRow>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RemotePlatformJobRow {
     job_id: String,
 }

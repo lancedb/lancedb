@@ -20,7 +20,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from ..udf import JobHandle
+    from ..udf import Job
 import warnings
 
 from lancedb import __version__
@@ -940,12 +940,12 @@ class RemoteTable(Table):
         max_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         priority: Optional[str] = None,
-    ) -> "JobHandle":
+    ) -> "Job":
         """Trigger recompute of computed columns (REFRESH COLUMN).
 
         The expression is resolved server-side from each column's stored
         binding; columns bound to the same struct-returning function
-        refresh together. Returns a `JobHandle` to wait on, poll, or cancel
+        refresh together. Returns a `Job` to wait on, poll, or cancel
         (``tbl.refresh_column("c").wait()``). Server-backed feature
         (LanceDB Enterprise / Cloud).
 
@@ -954,7 +954,7 @@ class RemoteTable(Table):
         the function carries. `priority` is a Kueue tier
         (training | interactive | backfill).
         """
-        from ..udf import JobHandle
+        from ..udf import Job
 
         if isinstance(columns, str):
             columns = [columns]
@@ -968,7 +968,7 @@ class RemoteTable(Table):
                 priority=priority,
             )
         )
-        return JobHandle(self._job_conn(), job_id)
+        return Job(self._job_conn(), job_id)
 
     def lineage(self, column=None, *, direction=None, depth=None):
         """Derived-compute lineage of this table, or one of its columns:

@@ -19,7 +19,7 @@ Register and use them through the existing connection/table API:
     db.create_function(embed)                 # CREATE FUNCTION (once)
     tbl = db.open_table("docs")
     tbl.add_columns(computed={"vec": embed("text")})  # bind embed(text) -> vec
-    tbl.refresh_column("vec").wait()          # materialize (returns a JobHandle)
+    tbl.refresh_column("vec").wait()          # materialize (returns a Job)
     view = db.create_materialized_view("chunks", tbl, ["id", chunk_fn])
 
 `embed("text")` applies the registered function to the `text` column and yields
@@ -41,6 +41,7 @@ import inspect
 import re
 import sys
 import textwrap
+import json
 import time
 import typing
 
@@ -510,12 +511,12 @@ class MaterializedView:
         A no-op when the view was created with no data."""
         if self.job_id is None:
             return "finished"
-        return JobHandle(self.conn, self.job_id, table=self.name).wait(
+        return Job(self.conn, self.job_id, table=self.name).wait(
             timeout=timeout, poll=poll
         )
 
-    def refresh(self, full: bool = False) -> "JobHandle":
-        """Refresh the materialized view; returns a `JobHandle` to wait on,
+    def refresh(self, full: bool = False) -> "Job":
+        """Refresh the materialized view; returns a `Job` to wait on,
         poll, or cancel (``view.refresh().wait()``).
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
@@ -523,7 +524,7 @@ class MaterializedView:
         the view's indexes -- they are reindexed by the distributed indexer.
         """
         job_id = self.conn._refresh_materialized_view(self.name, full=full)
-        return JobHandle(self.conn, job_id, table=self.name)
+        return Job(self.conn, job_id, table=self.name)
 
     def explain_refresh(self, full: bool = False):
         """Plan a refresh without running it (EXPLAIN REFRESH)."""
@@ -570,7 +571,7 @@ _PROGRESS = re.compile(r"(\d+)/(\d+)")
 
 
 class JobFailedError(RuntimeError):
-    """Raised by ``JobHandle.wait()`` when the server reports the job ``failed``.
+    """Raised by ``Job.wait()`` when the server reports the job ``failed``.
 
     Carries the server-side error so a doomed backfill (e.g. a multi-column
     ``REFRESH COLUMN`` of a scalar UDF) surfaces its real cause promptly,
@@ -583,71 +584,110 @@ class JobFailedError(RuntimeError):
         super().__init__(f"job {job_id} failed: {error or 'unknown error'}")
 
 
-class JobHandle:
-    """A reference to an inflight server-side job, with polling helpers."""
+class Job:
+    """A reference to a server-side job, backed by the platform jobs API.
 
-    #: How long an unseen job is treated as still materializing (submission
-    #: -> agent cycle -> manifest write is async).
+    Holds the submission (manifest) id and resolves the platform job id
+    lazily; ``status``/``progress``/``wait`` read the registry-backed
+    describe endpoint, so terminal states and errors are first-class.
+    """
+
+    #: How long an unresolved job is treated as still materializing
+    #: (submission -> dispatch -> registry record is async).
     GRACE_SECONDS = 20.0
+
+    #: Platform lifecycle state -> the user-facing vocabulary.
+    _STATES = {
+        "IN_PROGRESS": "running",
+        "DONE": "finished",
+        "FAILED": "failed",
+        "CANCELLED": "cancelled",
+    }
 
     def __init__(self, conn, job_id: str, table: "str | None" = None):
         self.conn = conn
+        #: The submission (manifest) id the launching call handed out.
         self.id = job_id
-        #: The job's table, when known (refresh_column / MV refresh). Lets the
-        #: server resolve this job with an O(1) single-node read; without it the
-        #: lookup scans the database's active jobs (still correct).
+        #: The job's table, when known -- narrows platform-id resolution.
         self.table = table
+        self._platform_id: "str | None" = None
         self._created = time.monotonic()
-        self._seen = False
 
-    def _job(self):
-        # Poll by id (one job), not list_jobs (every active job): the server
-        # matches the submission/manifest id and reads just this table's node.
-        return self.conn.get_job(self.id, self.table)
+    def _resolve(self) -> "str | None":
+        if self._platform_id is None:
+            self._platform_id = self.conn.resolve_platform_job_id(self.id, self.table)
+        return self._platform_id
+
+    def _describe(self):
+        platform_id = self._resolve()
+        if platform_id is None:
+            return None
+        return self.conn.describe_platform_job(platform_id)
+
+    @staticmethod
+    def _payload(described) -> dict:
+        # Older records carry the status-store URI string instead of a
+        # payload; anything non-dict means "no structured status".
+        try:
+            payload = json.loads(described.status_json)
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def status(self) -> str:
-        """pending / running / cancelling / stale, or 'finished' once the
-        job has left the inflight listing."""
-        job = self._job()
-        if job is not None:
-            self._seen = True
-            return job.state
-        if not self._seen and time.monotonic() - self._created < self.GRACE_SECONDS:
+        """pending / running / finished / failed / cancelled (or unknown
+        when the job never appeared in the registry)."""
+        described = self._describe()
+        if described is not None:
+            return self._STATES.get(described.job_state, described.job_state)
+        if time.monotonic() - self._created < self.GRACE_SECONDS:
             return "pending"
-        return "finished"
+        return "unknown"
 
     def progress(self) -> "tuple[int, int] | None":
-        """(units_done, units_total) while running, else None."""
-        job = self._job()
-        if job is not None and job.units_total is not None:
-            return job.units_done or 0, job.units_total
+        """(units_done, units_total) once workers have published progress."""
+        described = self._describe()
+        if described is None:
+            return None
+        payload = self._payload(described)
+        if payload.get("units_total") is not None:
+            return payload.get("units_done") or 0, payload["units_total"]
         return None
 
     def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            state = self.status()
-            if state in ("finished", "stale"):
-                return state
-            if state == "failed":
-                # Terminal failure -- surface the server error now, don't block
-                # until `timeout`. `finalize` wrote it to the job's status node.
-                job = self._job()
-                raise JobFailedError(self.id, job.error if job is not None else None)
-            if state == "pending":
+            described = self._describe()
+            if described is None:
+                if time.monotonic() - self._created > self.GRACE_SECONDS:
+                    raise JobFailedError(
+                        self.id,
+                        "job did not appear in the job registry within the "
+                        "grace period",
+                    )
                 time.sleep(min(poll, 0.5))
                 continue
-            job = self._job()
-            if job is not None and job.committed:
-                return "finished"
+            state = self._STATES.get(described.job_state, described.job_state)
+            if state == "finished":
+                return state
+            if state == "cancelled":
+                return state
+            if state == "failed":
+                raise JobFailedError(self.id, self._payload(described).get("error"))
             time.sleep(poll)
         raise TimeoutError(f"job {self.id} still {self.status()} after {timeout}s")
 
     def cancel(self) -> None:
-        # Cancel by the canonical manifest id (what cancel matches), found
-        # via the submission prefix; fall back to the raw id.
-        job = self._job()
-        self.conn.cancel_job(job.job_id if job is not None else self.id)
+        """Request cancellation. Workers drain cooperatively; poll ``status``
+        for the terminal ``cancelled``."""
+        deadline = time.monotonic() + 5.0
+        while (platform_id := self._resolve()) is None:
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"job {self.id} has not registered yet; retry cancel shortly"
+                )
+            time.sleep(0.5)
+        self.conn.cancel_platform_job(platform_id)
 
 
 class AsyncMaterializedView:
@@ -664,19 +704,19 @@ class AsyncMaterializedView:
         A no-op when the view was created with no data."""
         if self.job_id is None:
             return "finished"
-        return await AsyncJobHandle(self.conn, self.job_id, table=self.name).wait(
+        return await AsyncJob(self.conn, self.job_id, table=self.name).wait(
             timeout=timeout, poll=poll
         )
 
-    async def refresh(self, full: bool = False) -> "AsyncJobHandle":
-        """Refresh the materialized view; returns an `AsyncJobHandle` to wait
+    async def refresh(self, full: bool = False) -> "AsyncJob":
+        """Refresh the materialized view; returns an `AsyncJob` to wait
         on, poll, or cancel.
 
         ``full=True`` forces a full rebuild instead of an incremental refresh
         (indexes are preserved and reindexed by the distributed indexer).
         """
         job_id = await self.conn._refresh_materialized_view(self.name, full=full)
-        return AsyncJobHandle(self.conn, job_id, table=self.name)
+        return AsyncJob(self.conn, job_id, table=self.name)
 
     async def explain_refresh(self, full: bool = False):
         return await self.conn.explain_refresh_materialized_view(self.name, full=full)
@@ -694,60 +734,80 @@ class AsyncMaterializedView:
         )
 
 
-class AsyncJobHandle:
-    """Async reference to an inflight server-side job, with polling helpers."""
+class AsyncJob:
+    """Async reference to a server-side job, backed by the platform jobs API.
+
+    Same contract as `Job` with awaitable methods.
+    """
 
     GRACE_SECONDS = 20.0
+    _STATES = Job._STATES
 
     def __init__(self, conn, job_id: str, table: "str | None" = None):
         self.conn = conn
         self.id = job_id
-        #: See JobHandle.table -- enables an O(1) by-id lookup when known.
         self.table = table
+        self._platform_id: "str | None" = None
         self._created = time.monotonic()
-        self._seen = False
 
-    async def _job(self):
-        # Poll by id, not list_jobs (see JobHandle._job).
-        return await self.conn.get_job(self.id, self.table)
+    async def _resolve(self) -> "str | None":
+        if self._platform_id is None:
+            self._platform_id = await self.conn.resolve_platform_job_id(
+                self.id, self.table
+            )
+        return self._platform_id
+
+    async def _describe(self):
+        platform_id = await self._resolve()
+        if platform_id is None:
+            return None
+        return await self.conn.describe_platform_job(platform_id)
 
     async def status(self) -> str:
-        job = await self._job()
-        if job is not None:
-            self._seen = True
-            return job.state
-        if not self._seen and time.monotonic() - self._created < self.GRACE_SECONDS:
+        described = await self._describe()
+        if described is not None:
+            return self._STATES.get(described.job_state, described.job_state)
+        if time.monotonic() - self._created < self.GRACE_SECONDS:
             return "pending"
-        return "finished"
+        return "unknown"
 
     async def progress(self) -> "tuple[int, int] | None":
-        job = await self._job()
-        if job is not None and job.units_total is not None:
-            return job.units_done or 0, job.units_total
+        described = await self._describe()
+        if described is None:
+            return None
+        payload = Job._payload(described)
+        if payload.get("units_total") is not None:
+            return payload.get("units_done") or 0, payload["units_total"]
         return None
 
     async def wait(self, timeout: float = 3600.0, poll: float = 2.0) -> str:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            state = await self.status()
-            if state in ("finished", "stale"):
-                return state
-            if state == "failed":
-                # Terminal failure -- surface the server error now, don't block
-                # until `timeout`. `finalize` wrote it to the job's status node.
-                job = await self._job()
-                raise JobFailedError(self.id, job.error if job is not None else None)
-            if state == "pending":
+            described = await self._describe()
+            if described is None:
+                if time.monotonic() - self._created > self.GRACE_SECONDS:
+                    raise JobFailedError(
+                        self.id,
+                        "job did not appear in the job registry within the "
+                        "grace period",
+                    )
                 await asyncio.sleep(min(poll, 0.5))
                 continue
-            job = await self._job()
-            if job is not None and job.committed:
-                return "finished"
+            state = self._STATES.get(described.job_state, described.job_state)
+            if state in ("finished", "cancelled"):
+                return state
+            if state == "failed":
+                raise JobFailedError(self.id, Job._payload(described).get("error"))
             await asyncio.sleep(poll)
-        raise TimeoutError(
-            f"job {self.id} still {await self.status()} after {timeout}s"
-        )
+        raise TimeoutError(f"job {self.id} still {await self.status()} after {timeout}s")
 
     async def cancel(self) -> None:
-        job = await self._job()
-        await self.conn.cancel_job(job.job_id if job is not None else self.id)
+        deadline = time.monotonic() + 5.0
+        while (platform_id := await self._resolve()) is None:
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"job {self.id} has not registered yet; retry cancel shortly"
+                )
+            await asyncio.sleep(0.5)
+        await self.conn.cancel_platform_job(platform_id)
+

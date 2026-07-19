@@ -697,13 +697,13 @@ class DBConnection(EnforceOverrides):
                 raise
 
     def job(self, job_id: str):
-        """A `JobHandle` for reconnecting to an inflight job by id -- e.g. an
+        """A `Job` for reconnecting to an inflight job by id -- e.g. an
         id you stored, or one returned from the SQL / REST surface. Submit
         methods (`refresh_column`, `MaterializedView.refresh`) already return a
         handle directly, so you do not need this to wait on a fresh submission."""
-        from .udf import JobHandle
+        from .udf import Job
 
-        return JobHandle(self, job_id)
+        return Job(self, job_id)
 
     def lineage(
         self,
@@ -735,7 +735,7 @@ class DBConnection(EnforceOverrides):
     ) -> str:
         """Internal: submit a materialized-view refresh, return the job id.
         The public surface is ``MaterializedView.refresh()`` (which returns a
-        `JobHandle`); this stays private so refresh is only reached through the
+        `Job`); this stays private so refresh is only reached through the
         handle.
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
@@ -801,6 +801,24 @@ class DBConnection(EnforceOverrides):
         unknown id) -- cancellation is best-effort.
         """
         return LOOP.run(self._conn.cancel_job(job_id))
+
+    def describe_platform_job(self, platform_job_id: str):
+        """Describe a platform job (POST /v1/jobs/describe): registry-backed
+        lifecycle state plus the owner-written status payload. None when the
+        registry has no such job."""
+        return LOOP.run(self._conn.describe_platform_job(platform_job_id))
+
+    def resolve_platform_job_id(
+        self, manifest_job_id: str, table: "str | None" = None
+    ):
+        """Resolve a submission (manifest) job id to its platform job id.
+        None until the job has registered (dispatch is async)."""
+        return LOOP.run(self._conn.resolve_platform_job_id(manifest_job_id, table))
+
+    def cancel_platform_job(self, platform_job_id: str) -> None:
+        """Cancel a platform job (POST /v1/jobs/cancel). Idempotent on
+        already-terminal jobs."""
+        return LOOP.run(self._conn.cancel_platform_job(platform_job_id))
 
     def job_history(self, job_id: "str | None" = None):
         """Durable history of completed server-side jobs (SHOW JOB HISTORY).
@@ -2131,13 +2149,13 @@ class AsyncConnection(object):
         return AsyncMaterializedView(self, name, job_id=job_id)
 
     def job(self, job_id: str):
-        """An `AsyncJobHandle` for reconnecting to an inflight job by id (a
+        """An `AsyncJob` for reconnecting to an inflight job by id (a
         stored id, or one from the SQL / REST surface). Submit methods already
         return a handle, so this is only needed to re-attach to an existing
         job."""
-        from .udf import AsyncJobHandle
+        from .udf import AsyncJob
 
-        return AsyncJobHandle(self, job_id)
+        return AsyncJob(self, job_id)
 
     async def lineage(
         self,
@@ -2164,7 +2182,7 @@ class AsyncConnection(object):
         max_workers: Optional[int] = None,
     ) -> str:
         """Internal: submit a refresh, return the job id. The public surface is
-        ``AsyncMaterializedView.refresh()`` (returns an `AsyncJobHandle`).
+        ``AsyncMaterializedView.refresh()`` (returns an `AsyncJob`).
 
         ``full=True`` forces a full rebuild (recompute and replace every row)
         instead of the default incremental refresh.
@@ -2218,6 +2236,23 @@ class AsyncConnection(object):
         cancellation, False otherwise (best-effort).
         """
         return await self._inner.cancel_job(job_id)
+
+    async def describe_platform_job(self, platform_job_id: str):
+        """Describe a platform job: registry-backed lifecycle state plus the
+        owner-written status payload. None when the registry has no such
+        job."""
+        return await self._inner.describe_platform_job(platform_job_id)
+
+    async def resolve_platform_job_id(
+        self, manifest_job_id: str, table: "str | None" = None
+    ):
+        """Resolve a submission (manifest) job id to its platform job id.
+        None until the job has registered (dispatch is async)."""
+        return await self._inner.resolve_platform_job_id(manifest_job_id, table)
+
+    async def cancel_platform_job(self, platform_job_id: str) -> None:
+        """Cancel a platform job. Idempotent on already-terminal jobs."""
+        return await self._inner.cancel_platform_job(platform_job_id)
 
     async def job_history(self, job_id: "str | None" = None):
         """Durable history of completed server-side jobs (SHOW JOB HISTORY).
