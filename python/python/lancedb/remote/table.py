@@ -344,6 +344,7 @@ class RemoteTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        block_size: int = 128,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -364,6 +365,7 @@ class RemoteTable(Table):
             ngram_min_length=ngram_min_length,
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
+            block_size=block_size,
         )
         LOOP.run(
             self._table.create_index(
