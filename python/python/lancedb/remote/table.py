@@ -28,6 +28,7 @@ from lancedb._lancedb import (
     UpdateFieldMetadataResult,
     DeleteResult,
     DropColumnsResult,
+    FtsToken,
     IndexConfig,
     LsmWriteSpec,
     MergeResult,
@@ -55,7 +56,12 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
 
-from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
+from ..query import (
+    AnalyzePlanDistributedMetrics,
+    LanceQueryBuilder,
+    LanceTakeQueryBuilder,
+    LanceVectorQueryBuilder,
+)
 from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
 from ..types import BaseTokenizerType
 
@@ -243,6 +249,23 @@ class RemoteTable(Table):
     def list_indices(self) -> Iterable[IndexConfig]:
         """List all the indices on the table"""
         return LOOP.run(self._table.list_indices())
+
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """Tokenize a query using the tokenizer configured on an FTS index.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata, so the same tokenizer
+        model files must exist locally.
+        """
+        return LOOP.run(
+            self._table.tokenize(query, column=column, index_name=index_name)
+        )
 
     def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:
         """List all the stats of a specified index"""
@@ -551,6 +574,7 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -576,6 +600,12 @@ class RemoteTable(Table):
         progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -591,6 +621,7 @@ class RemoteTable(Table):
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
                     progress=progress,
+                    write_parallelism=write_parallelism,
                 )
             )
         finally:
@@ -700,8 +731,15 @@ class RemoteTable(Table):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
-    def _analyze_plan(self, query: Query) -> str:
-        return LOOP.run(self._table._analyze_plan(query))
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
+        return LOOP.run(
+            self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
+        )
 
     def _output_schema(self, query: Query) -> pa.Schema:
         return LOOP.run(self._table._output_schema(query))
@@ -912,6 +950,10 @@ class RemoteTable(Table):
         """Not supported on LanceDB Cloud."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
+    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the installed LsmWriteSpec, or ``None``."""
+        return LOOP.run(self._table.get_lsm_write_spec())
+
     def close_lsm_writers(self) -> None:
         """No-op on LanceDB Cloud (no local shard writers)."""
         return LOOP.run(self._table.close_lsm_writers())
@@ -988,6 +1030,19 @@ class RemoteTable(Table):
     def migrate_v2_manifest_paths(self):
         raise NotImplementedError(
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
+        )
+
+    def blob_columns(self) -> list[str]:
+        raise NotImplementedError(
+            "blob_columns() is not yet supported on the LanceDB Cloud"
+        )
+
+    def fetch_blobs(self, column: str, row_ids) -> pa.LargeBinaryArray:
+        raise NotImplementedError("fetch_blobs() is not supported on LanceDB Cloud")
+
+    def fetch_blob_files(self, column: str, row_ids):
+        raise NotImplementedError(
+            "fetch_blob_files() is not supported on LanceDB Cloud"
         )
 
     def head(self, n=5) -> pa.Table:

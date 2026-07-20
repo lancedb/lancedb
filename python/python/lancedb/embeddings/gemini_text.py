@@ -4,7 +4,7 @@
 
 import os
 from functools import cached_property
-from typing import List, Union
+from typing import List, Optional, Union
 
 import numpy as np
 
@@ -14,6 +14,8 @@ from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT, api_key_not_found_help
+
+EMBEDDING_BATCH_SIZE = 100
 
 
 @register("gemini-text")
@@ -81,6 +83,7 @@ class GeminiText(TextEmbeddingFunction):
     """
 
     name: str = "gemini-embedding-001"
+    dim: Optional[int] = None
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
@@ -93,6 +96,8 @@ class GeminiText(TextEmbeddingFunction):
         model_config["ignored_types"] = (cached_property,)
 
     def ndims(self):
+        if self.dim:
+            return self.dim
         # TODO: fix hardcoding
         return 768
 
@@ -133,22 +138,22 @@ class GeminiText(TextEmbeddingFunction):
                 contents.append({"parts": [{"text": text}]})
 
         # Build config
-        config_kwargs = {}
+        config_kwargs = {"output_dimensionality": self.ndims()}
         if task_type:
             config_kwargs["task_type"] = task_type.upper()  # API expects uppercase
 
-        # Call embed_content for each content
+        config = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
+
+        # Call embed_content in groups of at most EMBEDDING_BATCH_SIZE docs at a time
         embeddings = []
-        for content in contents:
-            config = (
-                types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
-            )
+        for i in range(0, len(contents), EMBEDDING_BATCH_SIZE):
+            chunk = contents[i : i + EMBEDDING_BATCH_SIZE]
             response = self.client.models.embed_content(
                 model=self.name,
-                contents=content,
+                contents=chunk,
                 config=config,
             )
-            embeddings.append(response.embeddings[0].values)
+            embeddings.extend([np.array(e.values) for e in response.embeddings])
 
         return embeddings
 
@@ -160,5 +165,13 @@ class GeminiText(TextEmbeddingFunction):
             api_key_not_found_help("google")
 
         from google import genai as genai_module
+        from lancedb import __version__
 
-        return genai_module.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+        return genai_module.Client(
+            api_key=os.environ.get("GOOGLE_API_KEY"),
+            http_options={
+                "headers": {
+                    "x-goog-api-client": f"lancedb/{__version__}",
+                }
+            },
+        )

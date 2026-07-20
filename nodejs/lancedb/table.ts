@@ -158,6 +158,26 @@ export interface Version {
   metadata: Record<string, string>;
 }
 
+/** Token produced by the tokenizer configured on a full-text search index. */
+export interface FtsToken {
+  /** Token text after tokenizer filters have been applied. */
+  text: string;
+  /** Token position used by full-text query matching. */
+  position: number;
+}
+
+export type TokenizeTableOptions =
+  | {
+      /** FTS-indexed column whose tokenizer should be used. */
+      column: string;
+      indexName?: never;
+    }
+  | {
+      /** Name of the FTS index whose tokenizer should be used. */
+      indexName: string;
+      column?: never;
+    };
+
 /**
  * Specification selecting Lance's MemWAL LSM-style write path for
  * `mergeInsert`.
@@ -586,6 +606,17 @@ export abstract class Table {
    */
   abstract unsetLsmWriteSpec(): Promise<void>;
   /**
+   * Read the {@link LsmWriteSpec} currently installed on this table.
+   *
+   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
+   * The returned spec — including its `maintainedIndexes` and
+   * `writerConfigDefaults` — mirrors what was passed to
+   * {@link Table#setLsmWriteSpec}.
+   * @returns {Promise<LsmWriteSpec | undefined>}
+   */
+  abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
+  /**
    * Drain and close any cached MemWAL shard writers held for this table.
    *
    * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
@@ -705,6 +736,19 @@ export abstract class Table {
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /** List all indices that have been created with {@link Table.createIndex} */
   abstract listIndices(): Promise<IndexConfig[]>;
+  /**
+   * Tokenize a full-text search query using the tokenizer configured on an FTS index.
+   *
+   * Specify exactly one of `column` or `indexName`.
+   *
+   * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+   * the client process from index metadata. For remote tables, this means the
+   * same tokenizer model files must also exist locally.
+   */
+  abstract tokenize(
+    query: string,
+    options: TokenizeTableOptions,
+  ): Promise<FtsToken[]>;
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
@@ -1091,6 +1135,15 @@ export class LocalTable extends Table {
     return await this.inner.unsetLsmWriteSpec();
   }
 
+  async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
+    // The native binding types `specType` as a plain `string`; narrow it back
+    // to the public union. The Rust `From` impl only ever emits one of the
+    // three valid values, so the cast is safe.
+    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
+      | LsmWriteSpec
+      | undefined;
+  }
+
   async closeLsmWriters(): Promise<void> {
     return await this.inner.closeLsmWriters();
   }
@@ -1151,6 +1204,17 @@ export class LocalTable extends Table {
 
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
+  }
+
+  async tokenize(
+    query: string,
+    options: TokenizeTableOptions,
+  ): Promise<FtsToken[]> {
+    return await this.inner.tokenize(
+      query,
+      options?.column,
+      options?.indexName,
+    );
   }
 
   async toArrow(): Promise<ArrowTable> {
@@ -1265,6 +1329,76 @@ export interface FieldMetadataUpdate {
   replace?: boolean;
 }
 
+/** Summary of a column in a branch diff. */
+export interface BranchColumnSummary {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+}
+
+/** A column whose definition differs between main and the branch. */
+export interface BranchColumnChange {
+  name: string;
+  main: BranchColumnSummary;
+  branch: BranchColumnSummary;
+}
+
+/** Summary of an index in a branch diff. */
+export interface BranchIndexSummary {
+  indexName: string;
+  columns: string[];
+  indexType?: string;
+  status: string;
+}
+
+/** Row-level comparison between main and the branch. */
+export interface BranchRowCountSummary {
+  unchanged: number;
+  newOnBase: number;
+  newOnBranch: number;
+  staleRecompute: number;
+  inputsChanged: number;
+  deltaAvailable: boolean;
+}
+
+/** A reason why a branch cannot currently be merged. */
+export interface MergeBlocker {
+  code: string;
+  message: string;
+}
+
+/** Read-only comparison of a branch against main. */
+export interface BranchDiff {
+  fromBranch: string;
+  parentVersion: number;
+  mainVersion: number;
+  branchVersion: number;
+  baseMoved: boolean;
+  rowCountMain: number;
+  rowCountBranch: number;
+  rowSummary: BranchRowCountSummary;
+  addedColumns: BranchColumnSummary[];
+  removedColumns: BranchColumnSummary[];
+  changedColumns: BranchColumnChange[];
+  addedIndexes: BranchIndexSummary[];
+  removedIndexes: BranchIndexSummary[];
+  mergeable: boolean;
+  mergeBlockers: MergeBlocker[];
+}
+
+/** Changes that would be, or were, promoted by a branch merge. */
+export interface MergePreview {
+  promotedColumns: string[];
+}
+
+/** Result of previewing or attempting a branch merge. */
+export interface MergeBranchResult {
+  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+  diff: BranchDiff;
+  preview: MergePreview;
+  mainVersionAfter?: number;
+}
+
 /**
  * Branch manager for a {@link Table}.
  *
@@ -1316,5 +1450,29 @@ export class Branches {
   /** Delete a branch. */
   async delete(name: string): Promise<void> {
     return await this.#inner.delete(name);
+  }
+
+  /** Compare a branch against main without modifying either branch. */
+  async diff(fromBranch: string): Promise<BranchDiff> {
+    return (await this.#inner.diff(fromBranch)) as unknown as BranchDiff;
+  }
+
+  /**
+   * Merge a branch into main.
+   *
+   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
+   * with `status: "rejected"` instead of throwing.
+   *
+   * @param fromBranch Branch to merge from.
+   * @param dryRun When true, only preview the merge. Defaults to false.
+   */
+  async merge(
+    fromBranch: string,
+    dryRun: boolean = false,
+  ): Promise<MergeBranchResult> {
+    return (await this.#inner.merge(
+      fromBranch,
+      dryRun,
+    )) as unknown as MergeBranchResult;
   }
 }

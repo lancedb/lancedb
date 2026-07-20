@@ -87,7 +87,7 @@ jobs:
           bash ci/update_lockfiles.sh --amend
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@881a6320fdb16eb5318c5054f31c218aec2b324c # v1.3.0
         with:
           # Need to use PAT here too to trigger next workflow. See comment above.
           github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}

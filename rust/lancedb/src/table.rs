@@ -23,10 +23,13 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_index::IndexCriteria;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
+use lance_index::scalar::InvertedIndexParams;
+use lance_index::scalar::inverted::query::collect_query_tokens;
 use lance_namespace::LanceNamespace;
 use lance_namespace::error::NamespaceError;
 use lance_namespace::models::DescribeTableRequest;
@@ -42,6 +45,7 @@ use std::sync::Arc;
 
 use crate::connection::NamespaceClientPushdownOperation;
 
+use crate::DistanceType;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
@@ -49,15 +53,16 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
-use crate::index::{IndexConfig, IndexStatisticsImpl};
+use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam};
+use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 mod add_data;
+pub mod branch_merge;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -73,6 +78,10 @@ use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
+pub use branch_merge::{
+    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
+    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -471,6 +480,33 @@ impl LsmWriteSpec {
     }
 }
 
+/// A token produced by the tokenizer configured on a full-text search index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsToken {
+    /// The token text after the index tokenizer has applied its filters.
+    pub text: String,
+    /// The token position used by full-text query matching.
+    pub position: u32,
+}
+
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. Use
+/// [`crate::index::scalar::FtsIndexBuilder`] to supply the same tokenizer
+/// options used when creating an FTS index.
+pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToken>> {
+    let mut tokenizer = params.build().map_err(|err| Error::InvalidInput {
+        message: format!("Failed to build tokenizer: {}", err),
+    })?;
+    let tokens = collect_query_tokens(query, &mut tokenizer);
+    Ok((0..tokens.len())
+        .map(|idx| FtsToken {
+            text: tokens.get_token(idx).to_string(),
+            position: tokens.position(idx),
+        })
+        .collect())
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -581,6 +617,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "unset_lsm_write_spec is not supported on this table type".into(),
         })
     }
+    /// Read the [`LsmWriteSpec`] currently installed on this table, returning
+    /// `None` when the MemWAL LSM write path is not enabled.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations that
+    /// support the MemWAL LSM write path must override this.
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        Err(Error::NotSupported {
+            message: "get_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
     /// Drain and close any cached MemWAL shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
@@ -666,6 +712,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
     /// Delete a branch.
     async fn delete_branch(&self, name: &str) -> Result<()>;
+    /// Diff a branch against main. Remote only.
+    async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
+        Err(Error::NotSupported {
+            message: "diff_branch is only supported on remote tables".into(),
+        })
+    }
+    /// Merge a branch into main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
+    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+        Err(Error::NotSupported {
+            message: "merge_branch is only supported on remote tables".into(),
+        })
+    }
     /// The branch this handle is scoped to, or `None` for `main`.
     fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
@@ -1538,6 +1597,29 @@ impl Table {
         self.inner.unset_lsm_write_spec().await
     }
 
+    /// Read the [`LsmWriteSpec`] currently installed on this table.
+    ///
+    /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
+    /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
+    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
+    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
+    /// [`Table::set_lsm_write_spec`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use lancedb::table::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// if let Some(spec) = table.get_lsm_write_spec().await? {
+    ///     println!("LSM write path enabled: {:?}", spec);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        self.inner.get_lsm_write_spec().await
+    }
+
     /// Drain and close any cached MemWAL shard writers held for this table.
     ///
     /// When an [`LsmWriteSpec`] is installed, `merge_insert` opens MemWAL shard
@@ -1624,6 +1706,111 @@ impl Table {
     /// List all indices that have been created with [`Self::create_index`]
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
+    }
+
+    /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
+    ///
+    /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+    /// the client process from index metadata. For remote tables, this means the
+    /// same tokenizer model files must also exist locally.
+    pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| idx.name == index_name)
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("No index named '{}'", index_name),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!("Index name '{}' is ambiguous", index_name),
+                });
+            }
+        };
+        if index.index_type != IndexType::FTS {
+            return Err(Error::InvalidInput {
+                message: format!("Index '{}' is not a full text search index", index_name),
+            });
+        }
+        self.tokenize_with_index(query, index, index_name)
+    }
+
+    /// Tokenize a full-text search query using the tokenizer configured on the
+    /// FTS index for a column.
+    ///
+    /// The column must have exactly one FTS index. Model-backed tokenizers such
+    /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
+    /// index metadata. For remote tables, this means the same tokenizer model
+    /// files must also exist locally.
+    pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
+        let schema = self.inner.schema().await?;
+        let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
+        let indices = self.inner.list_indices().await?;
+        let matches = indices
+            .iter()
+            .filter(|idx| {
+                idx.index_type == IndexType::FTS
+                    && idx.columns.len() == 1
+                    && idx.columns[0] == column
+            })
+            .collect::<Vec<_>>();
+        let index = match matches.as_slice() {
+            [index] => *index,
+            [] => {
+                return Err(Error::InvalidInput {
+                    message: format!("Column '{}' does not have a full text search index", column),
+                });
+            }
+            _ => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Column '{}' has multiple full text search indexes; tokenization by column is ambiguous",
+                        column
+                    ),
+                });
+            }
+        };
+        self.tokenize(query, &index.name).await
+    }
+
+    fn tokenize_with_index(
+        &self,
+        query: &str,
+        index: &IndexConfig,
+        index_name: &str,
+    ) -> Result<Vec<FtsToken>> {
+        let selector_description = format!("index name '{}'", index_name);
+        let details = index
+            .index_details
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!(
+                    "Full text search index '{}' for {} does not include tokenizer details",
+                    index.name, selector_description
+                ),
+            })?;
+        let params = serde_json::from_str::<InvertedIndexParams>(details).map_err(|err| {
+            Error::InvalidInput {
+                message: format!(
+                    "Failed to parse tokenizer details for full text search index '{}' for {}: {}",
+                    index.name, selector_description, err
+                ),
+            }
+        })?;
+        tokenize(query, &params).map_err(|err| match err {
+            Error::InvalidInput { message } => Error::InvalidInput {
+                message: format!(
+                    "{} for full text search index '{}' for {}",
+                    message, index.name, selector_description
+                ),
+            },
+            err => err,
+        })
     }
 
     /// Get the table URI (storage location)
@@ -1782,6 +1969,21 @@ impl Table {
     /// Delete a branch.
     pub async fn delete_branch(&self, name: &str) -> Result<()> {
         self.inner.delete_branch(name).await
+    }
+
+    /// Diff a branch against main. Remote only.
+    pub async fn diff_branch(&self, from_branch: &str) -> Result<BranchDiff> {
+        self.inner.diff_branch(from_branch).await
+    }
+
+    /// Merge a branch into main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
+    pub async fn merge_branch(
+        &self,
+        from_branch: &str,
+        dry_run: bool,
+    ) -> Result<MergeBranchResult> {
+        self.inner.merge_branch(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -2850,6 +3052,10 @@ impl BaseTable for NativeTable {
         merge::lsm::unset_lsm_write_spec(self).await
     }
 
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        merge::lsm::get_lsm_write_spec(self).await
+    }
+
     async fn close_lsm_writers(&self) -> Result<()> {
         merge::lsm::close_lsm_writers(self).await
     }
@@ -2930,17 +3136,21 @@ impl BaseTable for NativeTable {
             .await?
             .into_iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = match idx_desc.index_type().parse() {
-                    Ok(index_type) => index_type,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to parse index type for index {}: {}",
-                            idx_desc.name(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+                let index_type: crate::index::IndexType = idx_desc
+                    .index_type()
+                    .parse()
+                    .unwrap_or(crate::index::IndexType::Unknown);
+                if index_type == crate::index::IndexType::Unknown {
+                    // Internal or future index types that this version doesn't recognize
+                    // (e.g. Lance's internal FragReuseIndex) are silently excluded from
+                    // the user-visible index listing.
+                    log::debug!(
+                        "Skipping unrecognized index '{}' (type '{}') in list_indices",
+                        idx_desc.name(),
+                        idx_desc.index_type(),
+                    );
+                    return None;
+                }
 
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
@@ -3007,40 +3217,83 @@ impl BaseTable for NativeTable {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
-        let stats = match self
-            .dataset
-            .get()
-            .await?
-            .index_statistics(index_name.as_ref())
-            .await
-        {
-            Ok(stats) => stats,
-            Err(lance_core::Error::IndexNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(Error::from(e)),
+        // describe_indices() reads only manifest-level metadata (no index file I/O).
+        // VectorIndexDetails in the manifest carries distance_type for indices written
+        // by recent Lance versions. For older datasets that didn't write those details
+        // we fall back to index_statistics() for vector index types.
+        let dataset = self.dataset.get().await?;
+
+        let mut descriptions = dataset
+            .describe_indices(Some(IndexCriteria::default().with_name(index_name)))
+            .await?;
+        let Some(description) = descriptions.pop() else {
+            return Ok(None);
         };
 
-        let mut stats: IndexStatisticsImpl =
-            serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-                message: format!("error deserializing index statistics: {}", e),
-            })?;
+        let index_type: crate::index::IndexType = description
+            .index_type()
+            .parse()
+            .unwrap_or(crate::index::IndexType::Unknown);
 
-        let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
-            message: "index statistics is empty".to_string(),
-        })?;
-        // Index type should be present at one of the levels.
-        let index_type =
-            stats
-                .index_type
-                .or(first_index.index_type)
-                .ok_or_else(|| Error::InvalidInput {
-                    message: "index statistics was missing index type".to_string(),
-                })?;
-        Ok(Some(IndexStatistics {
-            num_indexed_rows: stats.num_indexed_rows,
-            num_unindexed_rows: stats.num_unindexed_rows,
+        let is_vector = matches!(
             index_type,
-            distance_type: first_index.metric_type,
-            num_indices: stats.num_indices,
+            crate::index::IndexType::IvfFlat
+                | crate::index::IndexType::IvfSq
+                | crate::index::IndexType::IvfPq
+                | crate::index::IndexType::IvfRq
+                | crate::index::IndexType::IvfHnswPq
+                | crate::index::IndexType::IvfHnswSq
+                | crate::index::IndexType::IvfHnswFlat
+        );
+
+        // details() serializes VectorIndexDetails to JSON with an uppercase "metric_type"
+        // field (e.g. "L2", "COSINE"). Parse it with a case-insensitive match.
+        let distance_type = description.details().ok().and_then(|json| {
+            #[derive(serde::Deserialize)]
+            struct Details {
+                metric_type: Option<String>,
+            }
+            serde_json::from_str::<Details>(&json)
+                .ok()
+                .and_then(|d| d.metric_type)
+                .and_then(|m| match m.to_uppercase().as_str() {
+                    "L2" => Some(DistanceType::L2),
+                    "COSINE" => Some(DistanceType::Cosine),
+                    "DOT" => Some(DistanceType::Dot),
+                    "HAMMING" => Some(DistanceType::Hamming),
+                    _ => None,
+                })
+        });
+
+        // Older Lance datasets didn't write VectorIndexDetails, so distance_type won't
+        // be in the manifest. Fall back to index_statistics() only in that case.
+        if is_vector && distance_type.is_none() {
+            let stats = dataset.index_statistics(index_name).await?;
+            let mut stats: IndexStatisticsImpl =
+                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                    message: format!("error deserializing index statistics: {}", e),
+                })?;
+            let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+                message: "index statistics is empty".to_string(),
+            })?;
+            return Ok(Some(IndexStatistics {
+                num_indexed_rows: stats.num_indexed_rows,
+                num_unindexed_rows: stats.num_unindexed_rows,
+                index_type,
+                distance_type: first_index.metric_type,
+                num_indices: stats.num_indices,
+            }));
+        }
+
+        let num_indexed_rows = description.rows_indexed() as usize;
+        let total_rows = dataset.count_rows(None).await?;
+        let num_unindexed_rows = total_rows.saturating_sub(num_indexed_rows);
+        Ok(Some(IndexStatistics {
+            num_indexed_rows,
+            num_unindexed_rows,
+            index_type,
+            distance_type,
+            num_indices: Some(description.metadata().len() as u32),
         }))
     }
 
@@ -3196,6 +3449,27 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+
+    #[test]
+    fn test_tokenize_uses_explicit_simple_tokenizer() {
+        let params =
+            crate::index::scalar::FtsIndexBuilder::default().base_tokenizer("simple".to_string());
+        let tokens = crate::tokenize("Running in cafés", &params).unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "run".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "cafe".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn test_open() {
@@ -4409,6 +4683,67 @@ mod tests {
             let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
             assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("region", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        // No spec installed yet.
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // A real scalar index is needed to name it as a maintained index.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let idx_name = table.list_indices().await.unwrap()[0].name.clone();
+
+        // Bucket spec round-trips exactly, including the routing column (recovered
+        // from its field id), maintained indexes, and writer config defaults.
+        let spec = LsmWriteSpec::bucket("id", 4)
+            .with_maintained_indexes([idx_name])
+            .with_writer_config_defaults([("durable_write", "false")]);
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+
+        // After unset, no spec is reported.
+        table.unset_lsm_write_spec().await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // Identity sharding round-trips (column recovered from the schema).
+        let spec = LsmWriteSpec::identity("region");
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        table.unset_lsm_write_spec().await.unwrap();
+
+        // Unsharded round-trips (no routing column).
+        let spec = LsmWriteSpec::unsharded();
+        table.set_lsm_write_spec(spec.clone()).await.unwrap();
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
     }
 
     #[tokio::test]

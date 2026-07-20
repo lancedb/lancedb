@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from unittest import mock
+
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
@@ -139,6 +141,20 @@ def test_hybrid_query_distance_range(sync_table: Table):
             assert 0.2 <= dist.as_py() <= 0.5
 
 
+def test_hybrid_query_applies_zero_upper_distance_bound(sync_table: Table):
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("elephant")
+        .distance_range(upper_bound=0.0)
+        .rerank(RRFReranker(return_score="all"))
+        .limit(4)
+        .to_arrow()
+    )
+
+    assert len(result) == 0
+
+
 @pytest.mark.asyncio
 async def test_hybrid_query_distance_range_async(table: AsyncTable):
     reranker = RRFReranker(return_score="all")
@@ -175,6 +191,31 @@ async def test_analyze_plan(table: AsyncTable):
 
     assert "AnalyzeExec" in res
     assert "metrics=" in res
+
+
+def test_hybrid_phrase_query_is_preserved_in_analyze_plan():
+    table = mock.Mock()
+    analyzed_queries = []
+    distributed_metric_modes = []
+
+    def capture_query(query, *, distributed_metrics="aggregate"):
+        analyzed_queries.append(query)
+        distributed_metric_modes.append(distributed_metrics)
+        return ""
+
+    table._analyze_plan.side_effect = capture_query
+
+    (
+        LanceHybridQueryBuilder(table)
+        .vector([0.1, 0.2])
+        .text("puppy runs")
+        .phrase_query()
+        .analyze_plan(distributed_metrics="full")
+    )
+
+    assert len(analyzed_queries) == 2
+    assert analyzed_queries[1].full_text_query.query == '"puppy runs"'
+    assert distributed_metric_modes == ["full", "full"]
 
 
 @pytest.fixture

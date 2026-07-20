@@ -15,8 +15,8 @@ use pyo3::{
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
-    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, LsmWriteSpec,
-    MergeResult, Table, UpdateFieldMetadataResult, UpdateResult,
+    AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
+    LsmWriteSpec, MergeResult, PyBlobFile, Table, UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
@@ -27,6 +27,7 @@ pub mod header;
 pub mod index;
 pub mod namespace;
 pub mod oauth;
+pub mod otel;
 pub mod permutation;
 pub mod query;
 pub mod runtime;
@@ -43,6 +44,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<PyBlobFile>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;
     m.add_class::<FTSQuery>()?;
@@ -58,12 +60,23 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
+    m.add_class::<FtsToken>()?;
     m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_class::<PyPermutationReader>()?;
     m.add_class::<PyExpr>()?;
+    // OpenTelemetry metrics bridge
+    m.add_class::<otel::PyMetricPoint>()?;
+    m.add_class::<otel::PyMetricDescription>()?;
+    m.add_function(wrap_pyfunction!(
+        otel::register_lancedb_metrics_recorder,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(otel::lancedb_metrics_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(otel::snapshot_lancedb_metrics, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace_client, m)?)?;
+    m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;

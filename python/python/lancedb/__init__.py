@@ -6,19 +6,22 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List
+from typing import Dict, Optional, Union, Any, List, Iterable
 
 __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
+from ._lancedb import FtsToken
+from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import vector
+from .schema import blob, vector, BlobType
 from .table import AsyncTable, Table
+from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
     connect_namespace,
@@ -149,8 +152,14 @@ def connect(
 
     For object storage, use a URI prefix:
 
-    >>> db = lancedb.connect("s3://my-bucket/lancedb",
-    ...                      storage_options={"aws_access_key_id": "***"})
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "s3://my-bucket/lancedb",
+    ...     storage_options={
+    ...         "aws_access_key_id": "***",
+    ...         "aws_secret_access_key": "***",
+    ...         "aws_region": "us-east-1",
+    ...     },
+    ... )
 
     For tests and temporary data, use an in-memory database:
 
@@ -237,6 +246,40 @@ def connect(
         session=session,
         manifest_enabled=manifest_enabled,
         namespace_client_properties=namespace_client_properties,
+    )
+
+
+def tokenize(
+    query: str,
+    *,
+    base_tokenizer: BaseTokenizerType = "simple",
+    language: str = "English",
+    max_token_length: Optional[int] = 40,
+    lower_case: bool = True,
+    stem: bool = True,
+    remove_stop_words: bool = True,
+    ascii_folding: bool = True,
+    ngram_min_length: int = 3,
+    ngram_max_length: int = 3,
+    prefix_only: bool = False,
+) -> Iterable[FtsToken]:
+    """Tokenize a full-text search query using an explicit tokenizer.
+
+    This does not require a table or FTS index. The tokenizer options match
+    :class:`lancedb.index.FTS`.
+    """
+    return _tokenize(
+        query,
+        base_tokenizer=base_tokenizer,
+        language=language,
+        max_token_length=max_token_length,
+        lower_case=lower_case,
+        stem=stem,
+        remove_stop_words=remove_stop_words,
+        ascii_folding=ascii_folding,
+        ngram_min_length=ngram_min_length,
+        ngram_max_length=ngram_max_length,
+        prefix_only=prefix_only,
     )
 
 
@@ -450,17 +493,21 @@ async def connect_async(
 __all__ = [
     "connect",
     "connect_async",
+    "tokenize",
     "connect_namespace",
     "connect_namespace_async",
     "AsyncConnection",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "FtsToken",
     "col",
     "Expr",
     "func",
     "lit",
     "URI",
     "sanitize_uri",
+    "blob",
+    "BlobType",
     "vector",
     "DBConnection",
     "LanceDBConnection",

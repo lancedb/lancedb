@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
-    FieldMetadataUpdate as LanceFieldMetadataUpdate, NewColumnTransform, OptimizeAction,
-    OptimizeOptions, Ref, Table as LanceDbTable,
+    FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -412,6 +412,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn get_lsm_write_spec(&self) -> napi::Result<Option<LsmWriteSpec>> {
+        let spec = self
+            .inner_ref()?
+            .get_lsm_write_spec()
+            .await
+            .default_error()?;
+        Ok(spec.map(LsmWriteSpec::from))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn close_lsm_writers(&self) -> napi::Result<()> {
         self.inner_ref()?.close_lsm_writers().await.default_error()
     }
@@ -565,6 +575,27 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn tokenize(
+        &self,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> napi::Result<Vec<FtsToken>> {
+        let table = self.inner_ref()?;
+        let tokens = match (column.as_deref(), index_name.as_deref()) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(napi::Error::from_reason(
+                    "Specify exactly one of 'column' or 'indexName'",
+                ));
+            }
+            (Some(column), None) => table.tokenize_with_column(&query, column).await,
+            (None, Some(index_name)) => table.tokenize(&query, index_name).await,
+        }
+        .default_error()?;
+        Ok(tokens.into_iter().map(FtsToken::from).collect())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
         let tbl = self.inner_ref()?;
         let stats = tbl.index_stats(&index_name).await.default_error()?;
@@ -671,6 +702,24 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
     }
 }
 
+#[napi(object)]
+/// A token produced by the tokenizer configured on a full-text search index.
+pub struct FtsToken {
+    /// The token text after the index tokenizer has applied its filters.
+    pub text: String,
+    /// The token position used by full-text query matching.
+    pub position: u32,
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
+        }
+    }
+}
+
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `mergeInsert`.
 ///
@@ -725,6 +774,47 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
         Ok(spec
             .with_maintained_indexes(maintained)
             .with_writer_config_defaults(writer_config_defaults))
+    }
+}
+
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(spec: lancedb::table::LsmWriteSpec) -> Self {
+        use lancedb::table::LsmWriteSpec as Native;
+        match spec {
+            Native::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "bucket".to_string(),
+                column: Some(column),
+                num_buckets: Some(num_buckets),
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Identity {
+                column,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "identity".to_string(),
+                column: Some(column),
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "unsharded".to_string(),
+                column: None,
+                num_buckets: None,
+                maintained_indexes: Some(maintained_indexes),
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+        }
     }
 }
 
@@ -1264,5 +1354,29 @@ impl Branches {
     #[napi]
     pub async fn delete(&self, name: String) -> napi::Result<()> {
         self.inner.delete_branch(&name).await.default_error()
+    }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn diff(&self, from_branch: String) -> napi::Result<serde_json::Value> {
+        let diff = self.inner.diff_branch(&from_branch).await.default_error()?;
+        serde_json::to_value(diff).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize branch diff: {err}"))
+        })
+    }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn merge(
+        &self,
+        from_branch: String,
+        dry_run: Option<bool>,
+    ) -> napi::Result<serde_json::Value> {
+        let result = self
+            .inner
+            .merge_branch(&from_branch, dry_run.unwrap_or(false))
+            .await
+            .default_error()?;
+        serde_json::to_value(result).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize branch merge result: {err}"))
+        })
     }
 }

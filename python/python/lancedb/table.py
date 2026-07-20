@@ -29,6 +29,14 @@ from urllib.parse import urlparse
 from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
+from ._blob import (
+    BlobFile,
+    _normalize_blob_row_ids,
+    _wrap_blob_files,
+    strip_auto_row_ids,
+    validate_blob_mode,
+)
+from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
 from .dependencies import (
@@ -65,6 +73,7 @@ from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
     AsyncHybridQuery,
     AsyncQuery,
@@ -88,33 +97,13 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-
-BlobMode = Literal["lazy", "bytes", "descriptions"]
-
-_VALID_BLOB_MODES = ("lazy", "bytes", "descriptions")
+from .schema import blob_v2_column_paths, schema_has_blob_field
 
 
 def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
-
-
-def _validate_blob_mode(blob_mode: BlobMode) -> None:
-    if blob_mode not in _VALID_BLOB_MODES:
-        modes = ", ".join(repr(mode) for mode in _VALID_BLOB_MODES)
-        raise ValueError(f"blob_mode must be one of {modes}, got {blob_mode!r}")
-
-
-def _field_is_blob(field: pa.Field) -> bool:
-    metadata = field.metadata or {}
-    return metadata.get(b"lance-encoding:blob") == b"true" or (
-        metadata.get("lance-encoding:blob") == "true"
-    )
-
-
-def _schema_has_blob_field(schema: pa.Schema) -> bool:
-    return any(_field_is_blob(field) for field in schema)
 
 
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
@@ -185,6 +174,7 @@ if TYPE_CHECKING:
         UpdateFieldMetadataResult,
         DeleteResult,
         DropColumnsResult,
+        FtsToken,
         LsmWriteSpec,
         MergeResult,
         UpdateResult,
@@ -1159,6 +1149,8 @@ class Table(ABC):
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
             - "ngram": N-Gram tokenizer.
+            - "icu": ICU dictionary-based word segmentation.
+            - "icu/split": ICU segmentation with simple-style delimiter splitting.
             - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
             - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
         language : str, default "English"
@@ -1207,6 +1199,7 @@ class Table(ABC):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -1251,6 +1244,13 @@ class Table(ABC):
 
                 with tqdm() as pbar:
                     table.add(data, progress=pbar)
+
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -1524,6 +1524,31 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def blob_columns(self) -> list[str]:
+        """Names of the blob v2 columns declared on this table."""
+
+    @abstractmethod
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        """Materialize full blob bytes for ``column`` at the given rows.
+
+        Convenience for small payloads. For large values use
+        :meth:`fetch_blob_files`.
+        """
+
+    @abstractmethod
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
+
+        Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
+        a ``list[int]`` or query ``pyarrow.Table`` with ``_rowid`` (or stashed
+        row-id metadata). Null rows are ``None``. Local tables only.
+        """
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -1536,7 +1561,12 @@ class Table(ABC):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
 
     @abstractmethod
-    def _analyze_plan(self, query: Query) -> str: ...
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str: ...
 
     @abstractmethod
     def _output_schema(self, query: Query) -> pa.Schema: ...
@@ -1784,6 +1814,24 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+        """
+
+    @abstractmethod
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
         """
 
     @abstractmethod
@@ -2155,7 +2203,7 @@ class LanceTable(Table):
         namespace_client = self._namespace_client
         if namespace_client is None:
             conn_uri = getattr(self._conn, "uri", "")
-            if get_uri_scheme(conn_uri) == "namespace":
+            if get_uri_scheme(conn_uri) == "namespace" or self._namespace_path:
                 namespace_client = self._conn.namespace_client()
                 self._namespace_client = namespace_client
 
@@ -2203,6 +2251,19 @@ class LanceTable(Table):
 
     def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+
+    def blob_columns(self) -> list[str]:
+        return LOOP.run(self._table.blob_columns())
+
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blobs(column, row_ids))
+
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
     @property
     def tags(self) -> Tags:
@@ -2399,9 +2460,14 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
-            return self.to_arrow().to_pandas(**kwargs)
+        validate_blob_mode(blob_mode)
+        if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
+            arrow_tbl = self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(
+                    arrow_tbl, blob_v2_column_paths(self.schema)
+                )
+            return arrow_tbl.to_pandas(**kwargs)
 
         if (
             blob_mode == "lazy"
@@ -2409,6 +2475,9 @@ class LanceTable(Table):
             and get_uri_scheme(self._dataset_path) == "memory"
         ):
             return self.to_arrow().to_pandas(**kwargs)
+
+        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+            return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -3097,6 +3166,7 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -3118,6 +3188,12 @@ class LanceTable(Table):
         progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         Returns
         -------
@@ -3133,6 +3209,7 @@ class LanceTable(Table):
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
                     progress=progress,
+                    write_parallelism=write_parallelism,
                 )
             )
         finally:
@@ -3575,8 +3652,15 @@ class LanceTable(Table):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
-    def _analyze_plan(self, query: Query) -> str:
-        return LOOP.run(self._table._analyze_plan(query))
+    def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
+        return LOOP.run(
+            self._table._analyze_plan(query, distributed_metrics=distributed_metrics)
+        )
 
     def _output_schema(self, query: Query) -> pa.Schema:
         return LOOP.run(self._table._output_schema(query))
@@ -3710,6 +3794,26 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.list_indices())
 
+    def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
+        """
+        return LOOP.run(
+            self._table.tokenize(query, column=column, index_name=index_name)
+        )
+
     def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """
         Retrieve statistics about an index
@@ -3758,6 +3862,11 @@ class LanceTable(Table):
         """Remove the LsmWriteSpec. See
         [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
         return LOOP.run(self._table.unset_lsm_write_spec())
+
+    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the installed LsmWriteSpec, or ``None``. See
+        [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
+        return LOOP.run(self._table.get_lsm_write_spec())
 
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
@@ -4074,15 +4183,56 @@ def _handle_bad_vector_column(
                 raise ValueError(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
-            vec_arr = pc.if_else(
-                is_bad,
-                pa.scalar([fill_value] * dim, type=vec_arr.type),
-                vec_arr,
-            )
+            vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
     return data.set_column(position, vector_column_name, vec_arr)
+
+
+def _fill_bad_vector_values(
+    arr: Union[pa.Array, pa.ChunkedArray],
+    dim: int,
+    fill_value: float,
+) -> pa.Array:
+    if not isinstance(arr, pa.ChunkedArray):
+        arr = pa.chunked_array([arr])
+    arr = arr.combine_chunks()
+
+    # A fixed-size slice truncates long vectors and pads short vectors with nulls.
+    # Slice an array marking the original child nulls in parallel so padding nulls
+    # can be distinguished from null values that were already present.
+    sliced = pc.list_slice(arr, 0, dim, return_fixed_size_list=True)
+    child_nulls = pc.is_null(arr.values)
+    parent_nulls = pc.is_null(arr)
+    if pa.types.is_list(arr.type):
+        original_child_nulls = pa.ListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    elif pa.types.is_large_list(arr.type):
+        original_child_nulls = pa.LargeListArray.from_arrays(
+            arr.offsets, child_nulls, mask=parent_nulls
+        )
+    else:
+        original_child_nulls = pa.FixedSizeListArray.from_arrays(
+            child_nulls, arr.type.list_size, mask=parent_nulls
+        )
+    sliced_child_nulls = pc.list_slice(
+        original_child_nulls, 0, dim, return_fixed_size_list=True
+    )
+    needs_fill = pc.is_null(sliced_child_nulls.values)
+
+    values = sliced.values
+    if pa.types.is_floating(values.type):
+        values_for_nan_check = (
+            values.cast(pa.float32()) if pa.types.is_float16(values.type) else values
+        )
+        needs_fill = pc.or_kleene(needs_fill, pc.is_nan(values_for_nan_check))
+
+    fill_scalar = pa.scalar(fill_value).cast(values.type)
+    filled_values = pc.if_else(needs_fill, fill_scalar, values)
+    filled = pa.FixedSizeListArray.from_arrays(filled_values, dim)
+    return filled.cast(arr.type)
 
 
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
@@ -4417,6 +4567,17 @@ class AsyncTable:
         """
         await self._inner.unset_lsm_write_spec()
 
+    async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
+        """Read the LsmWriteSpec currently installed on this table.
+
+        Returns ``None`` when the MemWAL LSM write path is not enabled (no
+        spec has been set, or it was removed with `unset_lsm_write_spec`).
+        The returned spec — including its ``maintained_indexes`` and
+        ``writer_config_defaults`` — mirrors what was passed to
+        `set_lsm_write_spec`.
+        """
+        return await self._inner.get_lsm_write_spec()
+
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
 
@@ -4523,14 +4684,18 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        _validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not _schema_has_blob_field(
-            await self.schema()
-        ):
-            return (await self.to_arrow()).to_pandas(**kwargs)
+        validate_blob_mode(blob_mode)
+        schema = await self.schema()
+        if blob_mode == "descriptions" or not schema_has_blob_field(schema):
+            arrow_tbl = await self.to_arrow()
+            if blob_mode == "descriptions":
+                arrow_tbl = strip_auto_row_ids(arrow_tbl, blob_v2_column_paths(schema))
+            return arrow_tbl.to_pandas(**kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
+        if blob_mode == "bytes" and blob_v2_column_paths(schema):
+            return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
@@ -4787,6 +4952,7 @@ class AsyncTable:
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
         progress: Optional[Union[bool, Callable, Any]] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -4811,6 +4977,12 @@ class AsyncTable:
         progress: callable or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
+        write_parallelism: int, optional
+            Number of partitions to write in parallel. Higher values increase
+            throughput but also peak memory use, since each partition buffers
+            data in flight. Defaults to an estimate based on the data size,
+            capped at the number of CPU cores. Lower this if bulk ingestion is
+            using too much memory.
 
         """
         schema = await self.schema()
@@ -4842,7 +5014,12 @@ class AsyncTable:
         data = to_scannable(data)
         progress, owns = _normalize_progress(progress)
         try:
-            return await self._inner.add(data, mode or "append", progress=progress)
+            return await self._inner.add(
+                data,
+                mode or "append",
+                progress=progress,
+                write_parallelism=write_parallelism,
+            )
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)
@@ -5254,10 +5431,15 @@ class AsyncTable:
         async_query = self._sync_query_to_async(query)
         return await async_query.explain_plan(verbose)
 
-    async def _analyze_plan(self, query: Query) -> str:
+    async def _analyze_plan(
+        self,
+        query: Query,
+        *,
+        distributed_metrics: AnalyzePlanDistributedMetrics = "aggregate",
+    ) -> str:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
-        return await async_query.analyze_plan()
+        return await async_query.analyze_plan(distributed_metrics)
 
     async def _output_schema(self, query: Query) -> pa.Schema:
         async_query = self._sync_query_to_async(query)
@@ -5631,6 +5813,24 @@ class AsyncTable:
         """
         return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
 
+    async def blob_columns(self) -> list[str]:
+        return await self._inner.blob_columns()
+
+    async def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return await self._inner.fetch_blobs(
+            column, _normalize_blob_row_ids(row_ids, column)
+        )
+
+    async def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        handles = await self._inner.fetch_blob_files(
+            column, _normalize_blob_row_ids(row_ids, column)
+        )
+        return _wrap_blob_files(handles)
+
     @property
     def tags(self) -> AsyncTags:
         """Tag management for the dataset.
@@ -5731,6 +5931,24 @@ class AsyncTable:
         List all indices that have been created with Self::create_index
         """
         return await self._inner.list_indices()
+
+    async def tokenize(
+        self,
+        query: str,
+        *,
+        column: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Iterable[FtsToken]:
+        """
+        Tokenize a query using the tokenizer configured on an FTS index.
+
+        Specify exactly one of ``column`` or ``index_name``.
+
+        Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally.
+        """
+        return await self._inner.tokenize(query, column=column, index_name=index_name)
 
     async def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
         """
@@ -6049,6 +6267,24 @@ class Branches:
         """Delete a branch."""
         LOOP.run(self._table.branches.delete(name))
 
+    def diff(self, from_branch: str) -> Dict[str, Any]:
+        """Diff a branch against main."""
+        return LOOP.run(self._table.branches.diff(from_branch))
+
+    def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+        """Merge a branch into main, or dry-run.
+
+        Parameters
+        ----------
+        from_branch: str
+            Branch to merge from.
+        dry_run: bool, default False
+            When True, only preview. When False, attempt the merge.
+
+        A rejected merge returns ``status="rejected"`` instead of raising.
+        """
+        return LOOP.run(self._table.branches.merge(from_branch, dry_run))
+
     def _wrap(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "Table":
@@ -6178,3 +6414,14 @@ class AsyncBranches:
     async def delete(self, name: str) -> None:
         """Delete a branch."""
         await self._table.branches.delete(name)
+
+    async def diff(self, from_branch: str) -> Dict[str, Any]:
+        """Diff a branch against main."""
+        return await self._table.branches.diff(from_branch)
+
+    async def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+        """Merge a branch into main, or dry-run.
+
+        A rejected merge returns ``status="rejected"`` instead of raising.
+        """
+        return await self._table.branches.merge(from_branch, dry_run)

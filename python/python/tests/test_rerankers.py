@@ -23,6 +23,7 @@ from lancedb.rerankers import (
     AnswerdotaiRerankers,
     VoyageAIReranker,
     MRRReranker,
+    WatsonxReranker,
 )
 from lancedb.table import LanceTable
 
@@ -727,3 +728,19 @@ def test_linear_combination_missing_fts_is_penalised():
         f"Document with FTS score (rowid 0, {scores[0]:.4f}) should beat "
         f"document with no FTS match (rowid 1, {scores[1]:.4f})"
     )
+
+
+@pytest.mark.skipif(
+    os.environ.get("WATSONX_API_KEY") is None
+    or (
+        os.environ.get("WATSONX_PROJECT_ID") is None
+        and os.environ.get("WATSONX_SPACE_ID") is None
+    ),
+    reason="WATSONX_API_KEY and one of WATSONX_PROJECT_ID / "
+    "WATSONX_SPACE_ID must be set",
+)
+def test_watsonx_reranker(tmp_path):
+    pytest.importorskip("ibm_watsonx_ai")
+    table, schema = get_test_table(tmp_path)
+    reranker = WatsonxReranker()
+    _run_test_reranker(reranker, table, "single player experience", None, schema)

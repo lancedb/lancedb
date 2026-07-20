@@ -800,6 +800,10 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             tls_config: value.tls_config.map(Into::into),
             header_provider,
             user_id: value.user_id,
+            // Resolved from LANCE_CLIENT_MAX_BYTES_PER_REQUEST or the default.
+            max_bytes_per_request: None,
+            // Resolved from LANCE_CLIENT_MAX_REQUEST_DURATION or the read timeout.
+            max_request_duration: None,
         }
     }
 }

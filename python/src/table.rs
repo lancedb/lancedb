@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use std::{collections::HashMap, sync::Arc};
 
-use crate::runtime::future_into_py;
+use crate::runtime::{block_on, future_into_py};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -12,19 +12,23 @@ use crate::{
     table::scannable::PyScannable,
 };
 use arrow::{
+    array::{Array, LargeBinaryArray},
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use lancedb::blob::BlobFile;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
+    pyclass, pyfunction, pymethods,
+    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
 };
 
 mod scannable;
@@ -322,6 +326,12 @@ impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     }
 }
 
+impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
+    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+        Self { inner }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
@@ -406,6 +416,150 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
     }
 }
 
+/// Lazy blob handle from ``Table.fetch_blob_files``.
+#[pyclass(name = "BlobFile")]
+pub struct PyBlobFile {
+    inner: Arc<BlobFile>,
+}
+
+#[pymethods]
+impl PyBlobFile {
+    fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+    }
+
+    pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let bytes = inner
+                .read()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
+        })
+    }
+
+    fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.close().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
+    }
+
+    fn is_closed(self_: PyRef<'_, Self>) -> bool {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.is_closed().await })
+    }
+
+    fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.seek(position).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
+    }
+
+    fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
+        let inner = self_.inner.clone();
+        block_on(async move { inner.tell().await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
+    }
+
+    fn size(self_: PyRef<'_, Self>) -> u64 {
+        self_.inner.size()
+    }
+
+    /// Read a blob-local byte range without moving the cursor.
+    fn read_range(self_: PyRef<'_, Self>, offset: u64, length: usize) -> PyResult<Py<PyBytes>> {
+        let end = offset
+            .checked_add(length as u64)
+            .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read_range(offset..end).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+    }
+
+    fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
+        let inner = self_.inner.clone();
+        let bytes = block_on(async move { inner.read_up_to(length).await })
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+    }
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FtsToken {
+    pub text: String,
+    pub position: u32,
+}
+
+#[pymethods]
+impl FtsToken {
+    pub fn __repr__(&self) -> String {
+        format!("FtsToken(text={:?}, position={})", self.text, self.position)
+    }
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
+        }
+    }
+}
+
+#[pyfunction(signature = (
+    query,
+    *,
+    base_tokenizer = "simple".to_string(),
+    language = "English".to_string(),
+    max_token_length = Some(40),
+    lower_case = true,
+    stem = true,
+    remove_stop_words = true,
+    ascii_folding = true,
+    ngram_min_length = 3,
+    ngram_max_length = 3,
+    prefix_only = false
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn tokenize(
+    query: String,
+    base_tokenizer: String,
+    language: String,
+    max_token_length: Option<u32>,
+    lower_case: bool,
+    stem: bool,
+    remove_stop_words: bool,
+    ascii_folding: bool,
+    ngram_min_length: u32,
+    ngram_max_length: u32,
+    prefix_only: bool,
+) -> PyResult<Vec<FtsToken>> {
+    let params = FtsIndexBuilder::default()
+        .base_tokenizer(base_tokenizer)
+        .language(&language)
+        .map_err(|_| {
+            PyValueError::new_err(format!(
+                "LanceDB does not support the requested language: '{}'",
+                language
+            ))
+        })?
+        .max_token_length(max_token_length.map(|value| value as usize))
+        .lower_case(lower_case)
+        .stem(stem)
+        .remove_stop_words(remove_stop_words)
+        .ascii_folding(ascii_folding)
+        .ngram_min_length(ngram_min_length)
+        .ngram_max_length(ngram_max_length)
+        .ngram_prefix_only(prefix_only);
+    let tokens = lancedb_tokenize(&query, &params).infer_error()?;
+    Ok(tokens.into_iter().map(FtsToken::from).collect())
+}
+
 #[pyclass]
 pub struct Table {
     // We keep a copy of the name to use if the inner table is dropped
@@ -471,12 +625,13 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
         progress: Option<Py<PyAny>>,
+        write_parallelism: Option<usize>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -485,6 +640,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(write_parallelism) = write_parallelism {
+            op = op.write_parallelism(write_parallelism);
         }
         if let Some(progress_obj) = progress {
             let is_callable = Python::attach(|py| progress_obj.bind(py).is_callable());
@@ -704,6 +862,29 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (query, *, column=None, index_name=None))]
+    pub fn tokenize(
+        self_: PyRef<'_, Self>,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let tokens = match (column.as_deref(), index_name.as_deref()) {
+                (Some(_), Some(_)) | (None, None) => {
+                    return Err(PyValueError::new_err(
+                        "Specify exactly one of 'column' or 'index_name'",
+                    ));
+                }
+                (Some(column), None) => inner.tokenize_with_column(&query, column).await,
+                (None, Some(index_name)) => inner.tokenize(&query, index_name).await,
+            }
+            .infer_error()?;
+            Ok(tokens.into_iter().map(FtsToken::from).collect::<Vec<_>>())
+        })
+    }
+
     pub fn index_stats(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -895,6 +1076,55 @@ impl Table {
         ))
     }
 
+    /// Names of the blob v2 columns declared on this table, in declaration order.
+    pub fn blob_columns(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.blob_columns().await.infer_error()
+        })
+    }
+
+    /// Read blob bytes for `row_ids` from blob v2 column `column`.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn fetch_blobs(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let blobs: LargeBinaryArray = inner
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
+    #[pyo3(signature = (column, row_ids))]
+    pub fn fetch_blob_files(
+        self_: PyRef<'_, Self>,
+        column: String,
+        row_ids: Vec<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let handles = inner
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Ok(handles
+                .into_iter()
+                .map(|handle| {
+                    handle.map(|file| PyBlobFile {
+                        inner: Arc::new(file),
+                    })
+                })
+                .collect::<Vec<_>>())
+        })
+    }
+
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
     #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
@@ -1026,6 +1256,14 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.unset_lsm_write_spec().await.infer_error()
+        })
+    }
+
+    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let spec = inner.get_lsm_write_spec().await.infer_error()?;
+            Ok(spec.map(LsmWriteSpec::from))
         })
     }
 
@@ -1355,4 +1593,40 @@ impl Branches {
             Ok(())
         })
     }
+
+    pub fn diff(self_: PyRef<'_, Self>, from_branch: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let diff = inner.diff_branch(&from_branch).await.infer_error()?;
+            Python::attach(|py| struct_to_wire_py(py, &diff))
+        })
+    }
+
+    #[pyo3(signature = (from_branch, dry_run=false))]
+    pub fn merge(
+        self_: PyRef<'_, Self>,
+        from_branch: String,
+        dry_run: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .merge_branch(&from_branch, dry_run)
+                .await
+                .infer_error()?;
+            Python::attach(|py| struct_to_wire_py(py, &result))
+        })
+    }
+}
+
+/// Decode a serde value as the wire JSON object (camelCase keys).
+fn struct_to_wire_py(py: Python<'_>, value: &impl serde::Serialize) -> PyResult<Py<PyAny>> {
+    let json = py.import("json")?;
+    Ok(json
+        .call_method1(
+            "loads",
+            (serde_json::to_string(value)
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to serialize json: {e}")))?,),
+        )?
+        .unbind())
 }

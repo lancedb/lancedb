@@ -125,10 +125,26 @@ jobs:
       - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          swapfile=/swapfile
+          min_swap_bytes=$((15 * 1024 * 1024 * 1024))
+          active_swap_bytes="$(sudo swapon --show=NAME,SIZE --bytes --noheadings | awk '$1 == "/swapfile" { print $2 }')"
+          if [ -n "$active_swap_bytes" ]; then
+            if [ "$active_swap_bytes" -ge "$min_swap_bytes" ]; then
+              echo "/swapfile is already active with enough space; skipping swap creation"
+              exit 0
+            fi
+            echo "/swapfile is already active but smaller than 16G; using /mnt/lancedb-swapfile"
+            swapfile=/mnt/lancedb-swapfile
+          fi
+          if sudo swapon --show=NAME --noheadings | grep -Fxq "$swapfile"; then
+            echo "$swapfile is already active; skipping swap creation"
+            exit 0
+          fi
+          sudo rm -f "$swapfile"
+          sudo fallocate -l 16G "$swapfile"
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
       - name: Build
         run: cargo build --profile ci --all-features --tests --locked --examples
       - name: Run feature tests

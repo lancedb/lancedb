@@ -134,8 +134,11 @@ def test_split_hash_with_discard(mem_db):
     )
 
     permutation_tbl = (
+        # Hash a high-cardinality column: "category" has only two distinct
+        # values, so whether anything is discarded would hinge on where those
+        # two hashes land rather than on the discard weight.
         permutation_builder(tbl)
-        .split_hash(["category"], [1, 1], discard_weight=2)  # Should discard ~50%
+        .split_hash(["id"], [1, 1], discard_weight=2)  # Should discard ~50%
         .execute()
     )
 
@@ -935,14 +938,41 @@ def test_transform_fn(mem_db):
     try:
         import torch
 
-        torch_result = list(
-            permutation.with_format("torch").iter(10, skip_last_batch=False)
+        # "torch" returns a list of per-row dicts. Default DataLoader collate
+        # stacks the per-row dicts back into a dict of batched tensors.
+        torch_perm = permutation.with_format("torch")
+        torch_batch = list(torch_perm.iter(10, skip_last_batch=False))[0]
+        assert isinstance(torch_batch, list)
+        assert len(torch_batch) == 10
+        assert isinstance(torch_batch[0], dict)
+        assert set(torch_batch[0].keys()) == {"id", "value"}
+        assert isinstance(torch_batch[0]["id"], torch.Tensor)
+        assert torch_batch[0]["id"].dtype == torch.int64
+
+        rows = torch_perm.__getitems__([0, 1, 2])
+        assert isinstance(rows, list)
+        assert len(rows) == 3
+        assert isinstance(rows[0], dict)
+        assert set(rows[0].keys()) == {"id", "value"}
+        assert isinstance(rows[0]["id"], torch.Tensor)
+
+        # "torch_row" returns a list of tensors, one per row.
+        torch_rows = list(
+            permutation.with_format("torch_row").iter(10, skip_last_batch=False)
         )[0]
-        assert isinstance(torch_result, list)
-        assert len(torch_result) == 10
-        assert isinstance(torch_result[0], torch.Tensor)
-        assert torch_result[0].shape == (2,)
-        assert torch_result[0].dtype == torch.int64
+        assert isinstance(torch_rows, list)
+        assert len(torch_rows) == 10
+        assert isinstance(torch_rows[0], torch.Tensor)
+        assert torch_rows[0].shape == (2,)
+        assert torch_rows[0].dtype == torch.int64
+
+        # "torch_col" stacks columns into a single 2D tensor.
+        torch_col = list(
+            permutation.with_format("torch_col").iter(10, skip_last_batch=False)
+        )[0]
+        assert isinstance(torch_col, torch.Tensor)
+        assert torch_col.shape == (2, 10)
+        assert torch_col.dtype == torch.int64
     except ImportError:
         # Skip check if torch is not installed
         pass

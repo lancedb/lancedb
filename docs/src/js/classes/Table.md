@@ -398,6 +398,26 @@ Drop an index from the table.
 
 ***
 
+### getLsmWriteSpec()
+
+```ts
+abstract getLsmWriteSpec(): Promise<undefined | LsmWriteSpec>
+```
+
+Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on this table.
+
+Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
+spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
+The returned spec — including its `maintainedIndexes` and
+`writerConfigDefaults` — mirrors what was passed to
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec).
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`LsmWriteSpec`](../interfaces/LsmWriteSpec.md)&gt;
+
+***
+
 ### indexStats()
 
 ```ts
@@ -911,6 +931,32 @@ Return the table as an arrow table
 #### Returns
 
 `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### tokenize()
+
+```ts
+abstract tokenize(query, options): Promise<FtsToken[]>
+```
+
+Tokenize a full-text search query using the tokenizer configured on an FTS index.
+
+Specify exactly one of `column` or `indexName`.
+
+Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+the client process from index metadata. For remote tables, this means the
+same tokenizer model files must also exist locally.
+
+#### Parameters
+
+* **query**: `string`
+
+* **options**: [`TokenizeTableOptions`](../type-aliases/TokenizeTableOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FtsToken`](../interfaces/FtsToken.md)[]&gt;
 
 ***
 

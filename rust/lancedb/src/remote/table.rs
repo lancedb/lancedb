@@ -18,8 +18,11 @@ use crate::index::waiter::wait_for_index;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
+use crate::table::BranchDiff;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
+use crate::table::LsmWriteSpec;
+use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
@@ -35,7 +38,7 @@ use crate::{DistanceType, Error};
 use crate::{
     error::Result,
     index::{IndexBuilder, IndexConfig},
-    query::QueryExecutionOptions,
+    query::{AnalyzePlanDistributedMetrics, QueryExecutionOptions},
     table::{
         AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats, TableDefinition, UpdateBuilder,
         merge::MergeInsertBuilder,
@@ -1249,8 +1252,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
             match result {
                 Ok(_) => {
-                    let add_result = insert
-                        .as_any()
+                    let add_result = (insert.as_ref() as &dyn std::any::Any)
                         .downcast_ref::<RemoteInsertExec<S>>()
                         .and_then(|i| i.add_result())
                         .unwrap_or(AddResult { version: 0 });
@@ -1361,6 +1363,8 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             upload_id.to_string(),
             output.tracker.clone(),
             self.branch.clone(),
+            self.client.max_bytes_per_request(),
+            self.client.max_request_duration(),
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
@@ -1815,6 +1819,79 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
+    async fn diff_branch(&self, from_branch: &str) -> Result<BranchDiff> {
+        if from_branch.trim().is_empty() {
+            return Err(Error::InvalidInput {
+                message: "from_branch must be a non-empty string".into(),
+            });
+        }
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/branches/diff/", self.identifier))
+            .json(&serde_json::json!({ "from_branch": from_branch }));
+        let (request_id, response) = self.send(request, true).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: format!("{} (branch: {})", self.name, from_branch),
+                source: format!("branch '{}' does not exist", from_branch).into(),
+            });
+        }
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|err| Error::Http {
+            source: format!(
+                "Failed to parse diff_branch response: {}, body: {}",
+                err, body
+            )
+            .into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
+    async fn merge_branch(&self, from_branch: &str, dry_run: bool) -> Result<MergeBranchResult> {
+        if from_branch.trim().is_empty() {
+            return Err(Error::InvalidInput {
+                message: "from_branch must be a non-empty string".into(),
+            });
+        }
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/branches/merge/", self.identifier))
+            .json(&serde_json::json!({
+                "from_branch": from_branch,
+                "dry_run": dry_run,
+            }));
+        // No retry. 409 rejected merge is final and carries a body.
+        let (request_id, response) = self.send(request, false).await?;
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: format!("{} (branch: {})", self.name, from_branch),
+                source: format!("branch '{}' does not exist", from_branch).into(),
+            });
+        }
+        // 200 and 409 both carry MergeBranchResult.
+        if status != StatusCode::OK && status != StatusCode::CONFLICT {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::Http {
+                source: format!("unexpected status {status} from merge_branch: {body}").into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|err| Error::Http {
+            source: format!(
+                "Failed to parse merge_branch response: {}, body: {}",
+                err, body
+            )
+            .into(),
+            request_id,
+            status_code: Some(status),
+        })
+    }
+
     fn current_branch(&self) -> Option<String> {
         self.branch.clone()
     }
@@ -1863,25 +1940,33 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
-        let num_partitions = if let Some(parallelism) = add.write_parallelism {
-            if parallelism > 1 && self.server_version.support_multipart_write() {
-                parallelism
-            } else {
-                1
-            }
-        } else if self.server_version.support_multipart_write() {
-            // Peek at the first batch to estimate write partitions, same as NativeTable.
+        let num_partitions = if self.server_version.support_multipart_write() {
+            // Peek at the first batch to estimate write partitions (same as
+            // NativeTable) and, regardless of `write_parallelism`, to detect a
+            // fully empty input. A multipart write creates its upload session
+            // before any partition executes; if the input turns out to have no
+            // batches at all, no partition ever stages a part (see
+            // `send_multipart_chunked`), so completing the write has nothing to
+            // commit and e.g. `mode=overwrite` would be silently dropped. Route
+            // empty input through the single-request path instead, which always
+            // sends one schema-only request.
             let mut peeked = PeekedScannable::new(add.data);
-            let n = if let Some(first_batch) = peeked.peek().await {
-                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
-                estimate_write_partitions(
-                    first_batch.get_array_memory_size(),
-                    first_batch.num_rows(),
-                    peeked.num_rows(),
-                    max_partitions,
-                )
-            } else {
-                1
+            let n = match peeked.peek().await {
+                Some(first_batch) => match add.write_parallelism {
+                    Some(parallelism) if parallelism > 1 => parallelism,
+                    Some(_) => 1,
+                    None => {
+                        let max_partitions =
+                            lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                        estimate_write_partitions(
+                            first_batch.get_array_memory_size(),
+                            first_batch.num_rows(),
+                            peeked.num_rows(),
+                            max_partitions,
+                        )
+                    }
+                },
+                None => 1,
             };
             add.data = Box::new(peeked);
             n
@@ -1992,9 +2077,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn analyze_plan(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: QueryExecutionOptions,
     ) -> Result<String> {
-        let request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
+        let mut request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
+
+        if options.analyze_plan_distributed_metrics != AnalyzePlanDistributedMetrics::Aggregate {
+            request = request.query(&[(
+                "distributed_metrics",
+                options.analyze_plan_distributed_metrics.as_query_param(),
+            )]);
+        }
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -2269,8 +2361,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
-    async fn set_lsm_write_spec(&self, spec: crate::table::LsmWriteSpec) -> Result<()> {
-        use crate::table::LsmWriteSpec;
+    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
@@ -2320,6 +2411,69 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
+    }
+
+    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+        // Read counterpart to set/unset, resolved server-side against HEAD. The
+        // server reads the spec from the `__lance_mem_wal` system index (shard
+        // column mapped from its Lance field id against the current schema) and
+        // re-encodes it into the same sophon-owned shape the set endpoint
+        // accepts — no lance/lancedb types cross the wire. `lsm_write_spec` is
+        // null when the LSM write path is not enabled for the table.
+        let request = self.post_read(&format!(
+            "/v1/table/{}/get_lsm_write_spec/",
+            self.identifier
+        ));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        // Mirror of sophon's `Sharding` (internally tagged on `mode`) and
+        // `LsmWriteSpecBody` / `GetLsmWriteSpecResponse`.
+        #[derive(Deserialize)]
+        #[serde(tag = "mode", rename_all = "snake_case")]
+        enum Sharding {
+            Unsharded,
+            Bucket { column: String, num_buckets: u32 },
+            Identity { column: String },
+        }
+        #[derive(Deserialize)]
+        struct LsmWriteSpecBody {
+            sharding: Sharding,
+            #[serde(default)]
+            maintained_indexes: Vec<String>,
+            #[serde(default)]
+            writer_config_defaults: std::collections::HashMap<String, String>,
+        }
+        #[derive(Deserialize)]
+        struct GetLsmWriteSpecResponse {
+            lsm_write_spec: Option<LsmWriteSpecBody>,
+        }
+
+        let parsed: GetLsmWriteSpecResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse get_lsm_write_spec response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        let Some(body) = parsed.lsm_write_spec else {
+            // The LSM write path is not enabled for this table.
+            return Ok(None);
+        };
+
+        let spec = match body.sharding {
+            Sharding::Bucket {
+                column,
+                num_buckets,
+            } => LsmWriteSpec::bucket(column, num_buckets),
+            Sharding::Identity { column } => LsmWriteSpec::identity(column),
+            Sharding::Unsharded => LsmWriteSpec::unsharded(),
+        }
+        .with_maintained_indexes(body.maintained_indexes)
+        .with_writer_config_defaults(body.writer_config_defaults);
+
+        Ok(Some(spec))
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -2754,8 +2908,7 @@ mod tests {
     use super::*;
 
     use crate::remote::client::{ClientConfig, RetryConfig};
-    use crate::table::AddDataMode;
-    use crate::table::FieldMetadataUpdate;
+    use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
@@ -2778,7 +2931,10 @@ mod tests {
     use crate::{
         DistanceType, Error, Table,
         index::{Index, IndexStatistics, IndexType, vector::IvfPqIndexBuilder},
-        query::{ColumnOrdering, ExecutableQuery, QueryBase},
+        query::{
+            AnalyzePlanDistributedMetrics, ColumnOrdering, ExecutableQuery, QueryBase,
+            QueryExecutionOptions,
+        },
         remote::ARROW_FILE_CONTENT_TYPE,
     };
 
@@ -3987,6 +4143,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_analyze_plan_distributed_metrics_query_param() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
+            assert_eq!(
+                request
+                    .url()
+                    .query_pairs()
+                    .find(|(k, _)| k == "distributed_metrics"),
+                Some(("distributed_metrics".into(), "per_worker".into()))
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["k"], serde_json::json!(1));
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""analyzed plan""#)
+                .unwrap()
+        });
+
+        let result = table
+            .query()
+            .limit(1)
+            .analyze_plan_with_options(QueryExecutionOptions {
+                analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics::PerWorker,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "analyzed plan");
+    }
+
+    #[tokio::test]
     async fn test_query_structured_fts() {
         let table =
             Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
@@ -4825,6 +5017,141 @@ mod tests {
         assert_eq!(text_idx.created_at, None);
     }
 
+    #[tokio::test]
+    async fn test_tokenize_uses_remote_index_details() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let index_details = serde_json::json!({
+            "base_tokenizer": "icu",
+            "language": "English",
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": false,
+            "ascii_folding": true,
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_details": index_details,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let tokens = table
+            .tokenize("Hello, こんにちは世界!", "text_idx")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "hello".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "こんにちは".to_string(),
+                    position: 1,
+                },
+                FtsToken {
+                    text: "世界".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_requires_existing_index_name() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let table = Table::new_with_handler("my_table", move |request| -> http::Response<String> {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({ "indexes": [] });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let err = table.tokenize("hello", "text_idx").await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("No index named 'text_idx'")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_with_column_remote_requires_index_details() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let err = table
+            .tokenize_with_column("hello", "text")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message.contains("does not include tokenizer details")
+        ));
+    }
+
     #[test]
     fn test_deserialize_created_at() {
         #[derive(Deserialize)]
@@ -5359,6 +5686,74 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.unset_lsm_write_spec().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/get_lsm_write_spec/"
+            );
+
+            // The server resolves the spec and re-encodes it into the same
+            // sophon-owned shape the set endpoint accepts (`Sharding` internally
+            // tagged on `mode`, wrapped in `lsm_write_spec`).
+            let response = serde_json::json!({
+                "lsm_write_spec": {
+                    "sharding": { "mode": "bucket", "column": "id", "num_buckets": 4 },
+                    "maintained_indexes": ["id_idx"],
+                    "writer_config_defaults": { "durable_write": "false" },
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let spec = table
+            .get_lsm_write_spec()
+            .await
+            .unwrap()
+            .expect("a spec should be reported");
+        match spec {
+            crate::table::LsmWriteSpec::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => {
+                assert_eq!(column, "id");
+                assert_eq!(num_buckets, 4);
+                assert_eq!(maintained_indexes, vec!["id_idx".to_string()]);
+                assert_eq!(
+                    writer_config_defaults
+                        .get("durable_write")
+                        .map(String::as_str),
+                    Some("false")
+                );
+            }
+            other => panic!("expected a bucket spec, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_write_spec_absent() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/get_lsm_write_spec/"
+            );
+            // Null spec → the LSM write path is not enabled.
+            let response = serde_json::json!({ "lsm_write_spec": null });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -6857,6 +7252,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_multipart_write_empty_overwrite_uses_single_partition() {
+        // A multipart write creates its upload session before any partition
+        // executes. If the input has no batches at all, every partition would
+        // stage nothing (see `send_multipart_chunked`), so completing the write
+        // would have nothing to commit and `mode=overwrite` would be silently
+        // dropped. An explicit `write_parallelism` must not force the multipart
+        // path for empty input; it should fall back to the single-request path,
+        // which always sends one schema-only request and carries `mode=overwrite`.
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let multipart_count = Arc::new(AtomicUsize::new(0));
+
+        let insert_count_c = insert_count.clone();
+        let multipart_count_c = multipart_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path.contains("multipart_write") {
+                    multipart_count_c.fetch_add(1, Ordering::SeqCst);
+                    panic!("Should not use multipart write endpoints for empty input");
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        !query.contains("upload_id"),
+                        "Should not have upload_id for empty input"
+                    );
+                    assert!(
+                        query.contains("mode=overwrite"),
+                        "Should carry mode=overwrite, got query: {}",
+                        query
+                    );
+                    insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let empty_batches: Vec<std::result::Result<RecordBatch, arrow_schema::ArrowError>> =
+            Vec::new();
+        let data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(empty_batches, schema));
+        let result = table
+            .add(data)
+            .mode(AddDataMode::Overwrite)
+            .write_parallelism(4)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 2);
+        assert_eq!(multipart_count.load(Ordering::SeqCst), 0);
+        assert_eq!(insert_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn test_multipart_write_abort_on_insert_failure() {
         let create_count = Arc::new(AtomicUsize::new(0));
         let insert_count = Arc::new(AtomicUsize::new(0));
@@ -7819,6 +8284,147 @@ mod tests {
         });
         let err = table.delete_branch("ghost").await.unwrap_err();
         assert!(matches!(err, Error::TableNotFound { .. }), "got {err:?}");
+    }
+
+    fn sample_branch_diff_json() -> &'static str {
+        r#"{
+            "fromBranch":"exp",
+            "parentVersion":1,
+            "mainVersion":1,
+            "branchVersion":2,
+            "baseMoved":false,
+            "rowCountMain":3,
+            "rowCountBranch":3,
+            "rowSummary":{
+                "unchanged":3,
+                "newOnBase":0,
+                "newOnBranch":0,
+                "staleRecompute":0,
+                "inputsChanged":0,
+                "deltaAvailable":false
+            },
+            "addedColumns":[{"name":"tag","dataType":"utf8","nullable":true}],
+            "removedColumns":[],
+            "changedColumns":[],
+            "addedIndexes":[],
+            "removedIndexes":[],
+            "mergeable":true,
+            "mergeBlockers":[]
+        }"#
+    }
+
+    #[tokio::test]
+    async fn test_diff_branch() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/branches/diff/");
+            let body = request_body_json(&request);
+            assert_eq!(body["from_branch"], "exp");
+            http::Response::builder()
+                .status(200)
+                .body(sample_branch_diff_json())
+                .unwrap()
+        });
+        let diff = table.diff_branch("exp").await.unwrap();
+        assert_eq!(diff.from_branch, "exp");
+        assert!(diff.mergeable);
+        assert_eq!(diff.added_columns.len(), 1);
+        assert_eq!(diff.added_columns[0].name, "tag");
+    }
+
+    #[tokio::test]
+    async fn test_merge_branch_dry_run() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/branches/merge/");
+            let body = request_body_json(&request);
+            assert_eq!(body["from_branch"], "exp");
+            assert_eq!(body["dry_run"], true);
+            let resp = format!(
+                r#"{{"status":"ready","diff":{},"preview":{{"promotedColumns":["tag"]}}}}"#,
+                sample_branch_diff_json()
+            );
+            http::Response::builder().status(200).body(resp).unwrap()
+        });
+        let result = table.merge_branch("exp", true).await.unwrap();
+        assert_eq!(result.status, crate::table::MergeBranchStatus::Ready);
+        assert_eq!(result.preview.promoted_columns, vec!["tag".to_string()]);
+        assert!(result.main_version_after.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_merge_branch_rejected_returns_ok_with_body() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/branches/merge/");
+            let body = request_body_json(&request);
+            assert_eq!(body["dry_run"], false);
+            let mut diff: serde_json::Value =
+                serde_json::from_str(sample_branch_diff_json()).unwrap();
+            diff["mergeable"] = serde_json::json!(false);
+            diff["mergeBlockers"] = serde_json::json!([{
+                "code": "baseMoved",
+                "message": "main has advanced"
+            }]);
+            let resp = serde_json::json!({
+                "status": "rejected",
+                "diff": diff,
+                "preview": { "promotedColumns": [] }
+            });
+            http::Response::builder()
+                .status(409)
+                .body(resp.to_string())
+                .unwrap()
+        });
+        let result = table.merge_branch("exp", false).await.unwrap();
+        assert_eq!(result.status, crate::table::MergeBranchStatus::Rejected);
+        assert!(!result.diff.mergeable);
+        assert_eq!(result.diff.merge_blockers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_merge_branch_unknown_blocker_code_parses() {
+        let table = Table::new_with_handler("my_table", |_| {
+            let mut diff: serde_json::Value =
+                serde_json::from_str(sample_branch_diff_json()).unwrap();
+            diff["mergeable"] = serde_json::json!(false);
+            diff["mergeBlockers"] = serde_json::json!([{
+                "code": "multipleCommits",
+                "message": "branch has more than one data commit"
+            }]);
+            let resp = serde_json::json!({
+                "status": "rejected",
+                "diff": diff,
+                "preview": { "operation": "append", "rowsAdded": 2 }
+            });
+            http::Response::builder()
+                .status(409)
+                .body(resp.to_string())
+                .unwrap()
+        });
+        let result = table.merge_branch("exp", false).await.unwrap();
+        assert_eq!(result.status, crate::table::MergeBranchStatus::Rejected);
+        assert_eq!(
+            result.diff.merge_blockers[0].code,
+            crate::table::MergeBlockerCode::Unknown
+        );
+        assert!(result.preview.promoted_columns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_merge_branch_unexpected_2xx_is_error() {
+        let table = Table::new_with_handler("my_table", |_| {
+            http::Response::builder()
+                .status(204)
+                .body(String::new())
+                .unwrap()
+        });
+        let err = table.merge_branch("exp", false).await.unwrap_err();
+        match err {
+            Error::Http {
+                status_code: Some(code),
+                ..
+            } => assert_eq!(code, reqwest::StatusCode::NO_CONTENT),
+            other => panic!("expected Http error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

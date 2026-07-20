@@ -33,6 +33,11 @@
 //! - `remote` - Enable remote client to connect to LanceDB cloud.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
+//! - `metrics` - Publish LanceDB's internal metrics through the
+//!   [`metrics`](https://docs.rs/metrics) crate facade and re-export that crate.
+//!   Install any `metrics`-compatible recorder to collect them.
+//! - `metrics-otel` - Add a pull-based adapter (the `metrics_otel` module) over
+//!   the `metrics` facade for bridging metrics into OpenTelemetry or similar.
 //!
 //! ### Quick Start
 //!
@@ -174,6 +179,8 @@ pub mod expr;
 pub mod index;
 pub mod io;
 pub mod ipc;
+#[cfg(feature = "metrics-otel")]
+pub mod metrics_otel;
 #[cfg(feature = "polars")]
 mod polars_arrow_convertors;
 pub mod query;
@@ -194,7 +201,21 @@ pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
-pub use table::Table;
+/// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
+/// the `metrics` feature to publish LanceDB's internal metrics; install any
+/// `metrics`-compatible recorder to collect them. See also [`metrics_otel`] for
+/// a built-in pull-based adapter.
+#[cfg(feature = "metrics")]
+pub use metrics;
+pub use table::{FtsToken, Table};
+
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. The tokenizer options are the
+/// same [`index::scalar::FtsIndexBuilder`] values used when creating an FTS index.
+pub fn tokenize(query: &str, params: &index::scalar::FtsIndexBuilder) -> Result<Vec<FtsToken>> {
+    table::tokenize(query, params)
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[non_exhaustive]

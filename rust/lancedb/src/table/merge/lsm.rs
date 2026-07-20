@@ -32,7 +32,7 @@ use lance::dataset::mem_wal::{
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
-use lance_index::mem_wal::{MemWalIndexDetails, ShardingSpec};
+use lance_index::mem_wal::{MemWalIndexDetails, ShardingField, ShardingSpec};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -146,6 +146,97 @@ pub(crate) async fn unset_lsm_write_spec(table: &NativeTable) -> Result<()> {
         .await?;
     table.dataset.update(dataset);
     Ok(())
+}
+
+// =============================================================================
+// get_lsm_write_spec
+// =============================================================================
+
+/// Read the [`LsmWriteSpec`] currently installed on the table, if any.
+///
+/// Reconstructs the spec from the MemWAL index's stored details — the same
+/// metadata [`set_lsm_write_spec`] writes — read directly via
+/// [`mem_wal_index_details`](DatasetMemWalExt::mem_wal_index_details) (the raw
+/// manifest record, not the `describe_indices` enrichment path, so it is
+/// unaffected by system-index filtering there). Returns `Ok(None)` when no
+/// MemWAL index is installed.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn get_lsm_write_spec(table: &NativeTable) -> Result<Option<LsmWriteSpec>> {
+    let dataset = table.dataset.get().await?;
+    let Some(details) = dataset.mem_wal_index_details().await? else {
+        return Ok(None);
+    };
+    let spec = lsm_write_spec_from_details(&details, dataset.schema())?;
+    Ok(Some(spec))
+}
+
+/// Reconstruct the public [`LsmWriteSpec`] from stored MemWAL index details.
+///
+/// The sharding transform and its parameters recover the mode; the routing
+/// column is resolved from the sharding field's source id back to its schema
+/// name (only bucket / identity carry a column). `maintained_indexes` and
+/// `writer_config_defaults` are copied verbatim, so the result round-trips
+/// what `set_lsm_write_spec` installed.
+fn lsm_write_spec_from_details(
+    details: &MemWalIndexDetails,
+    schema: &LanceSchema,
+) -> Result<LsmWriteSpec> {
+    let spec = details
+        .sharding_specs
+        .first()
+        .ok_or_else(|| Error::Runtime {
+            message: "get_lsm_write_spec: MemWAL index has no sharding spec".to_string(),
+        })?;
+    let field = spec.fields.first().ok_or_else(|| Error::Runtime {
+        message: "get_lsm_write_spec: MemWAL index has an empty sharding spec".to_string(),
+    })?;
+
+    let base = match field.transform.as_deref() {
+        Some(BUCKET_TRANSFORM) => {
+            let num_buckets = field
+                .parameters
+                .get(NUM_BUCKETS_PARAM)
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|n| *n > 0)
+                .ok_or_else(|| Error::Runtime {
+                    message: "get_lsm_write_spec: MemWAL bucket spec has a missing or invalid num_buckets parameter".to_string(),
+                })?;
+            LsmWriteSpec::bucket(sharding_column(field, schema)?, num_buckets)
+        }
+        Some(IDENTITY_TRANSFORM) => LsmWriteSpec::identity(sharding_column(field, schema)?),
+        Some(UNSHARDED_TRANSFORM) => LsmWriteSpec::unsharded(),
+        other => {
+            return Err(Error::Runtime {
+                message: format!(
+                    "get_lsm_write_spec: MemWAL index has an unsupported sharding transform {:?}",
+                    other
+                ),
+            });
+        }
+    };
+
+    Ok(base
+        .with_maintained_indexes(details.maintained_indexes.clone())
+        .with_writer_config_defaults(details.writer_config_defaults.clone()))
+}
+
+/// Resolve the single routing column name from a sharding field's source id.
+///
+/// `set_lsm_write_spec` records the shard column by its Lance field id, so the
+/// name is recovered by looking that id up in the current schema.
+fn sharding_column(field: &ShardingField, schema: &LanceSchema) -> Result<String> {
+    let source_id = *field.source_ids.first().ok_or_else(|| Error::Runtime {
+        message: "get_lsm_write_spec: sharding field has no source column".to_string(),
+    })?;
+    schema
+        .field_by_id(source_id)
+        .map(|f| f.name.clone())
+        .ok_or_else(|| Error::Runtime {
+            message: format!(
+                "get_lsm_write_spec: sharding source field id {} not found in schema",
+                source_id
+            ),
+        })
 }
 
 // =============================================================================

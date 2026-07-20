@@ -3,7 +3,6 @@
 
 //! A DataFusion projection that rejects vectors containing NaN values.
 
-use std::any::Any;
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{Array, FixedSizeListArray};
@@ -86,10 +85,6 @@ impl RejectNanUdf {
 }
 
 impl ScalarUDFImpl for RejectNanUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "reject_nan"
     }

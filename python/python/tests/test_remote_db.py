@@ -236,6 +236,65 @@ def test_remote_table_branches_sync():
         table.branches.delete("exp")
 
 
+def test_remote_table_branch_merge_defaults_to_execute():
+    merge_bodies = []
+    diff = {
+        "fromBranch": "exp",
+        "parentVersion": 1,
+        "mainVersion": 2,
+        "branchVersion": 3,
+        "baseMoved": False,
+        "rowCountMain": 3,
+        "rowCountBranch": 3,
+        "rowSummary": {
+            "unchanged": 3,
+            "newOnBase": 0,
+            "newOnBranch": 0,
+            "staleRecompute": 0,
+            "inputsChanged": 0,
+            "deltaAvailable": False,
+        },
+        "addedColumns": [],
+        "removedColumns": [],
+        "changedColumns": [],
+        "addedIndexes": [],
+        "removedIndexes": [],
+        "mergeable": True,
+        "mergeBlockers": [],
+    }
+
+    def handler(request):
+        if request.path.endswith("/describe/"):
+            status = 200
+            body = {"version": 2, "schema": {"fields": []}}
+        else:
+            content_len = int(request.headers.get("Content-Length"))
+            request_body = json.loads(request.rfile.read(content_len))
+            merge_bodies.append(request_body)
+            dry_run = request_body["dry_run"]
+            status = 200 if dry_run else 409
+            body = {
+                "status": "ready" if dry_run else "rejected",
+                "diff": diff,
+                "preview": {"promotedColumns": []},
+            }
+
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(body).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        branches = db.open_table("test").branches
+        assert branches.merge("exp")["status"] == "rejected"
+        assert branches.merge("exp", dry_run=True)["status"] == "ready"
+
+    assert merge_bodies == [
+        {"from_branch": "exp", "dry_run": False},
+        {"from_branch": "exp", "dry_run": True},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_async_remote_open_table_branch_and_version():
     async with mock_lancedb_connection_async(_branch_open_handler) as db:

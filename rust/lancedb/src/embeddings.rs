@@ -198,28 +198,36 @@ fn compute_embedding_arrays(
     batch: &RecordBatch,
     embeddings: &[(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)],
 ) -> Result<Vec<Arc<dyn Array>>> {
-    if embeddings.len() == 1 {
-        let (fld, func) = &embeddings[0];
-        let src_column =
-            batch
-                .column_by_name(&fld.source_column)
-                .ok_or_else(|| Error::InvalidInput {
-                    message: format!("Source column '{}' not found", fld.source_column),
-                })?;
+    let input_columns = embeddings
+        .iter()
+        .map(|(fld, func)| {
+            let src_column =
+                batch
+                    .column_by_name(&fld.source_column)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: format!("Source column '{}' not found", fld.source_column),
+                    })?;
+            Ok((src_column.clone(), func))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if batch.num_rows() == 0 {
+        return input_columns
+            .iter()
+            .map(|(_, func)| Ok(arrow_array::new_empty_array(func.dest_type()?.as_ref())))
+            .collect();
+    }
+
+    if input_columns.len() == 1 {
+        let (src_column, func) = &input_columns[0];
         return Ok(vec![func.compute_source_embeddings(src_column.clone())?]);
     }
 
     // Parallel path: multiple embeddings
     std::thread::scope(|s| {
-        let handles: Vec<_> = embeddings
+        let handles: Vec<_> = input_columns
             .iter()
-            .map(|(fld, func)| {
-                let src_column = batch.column_by_name(&fld.source_column).ok_or_else(|| {
-                    Error::InvalidInput {
-                        message: format!("Source column '{}' not found", fld.source_column),
-                    }
-                })?;
-
+            .map(|(src_column, func)| {
                 let handle = s.spawn(move || func.compute_source_embeddings(src_column.clone()));
 
                 Ok(handle)
@@ -390,5 +398,106 @@ impl<R: RecordBatchReader> RecordBatchReader for WithEmbeddings<R> {
         self.table_definition()
             .expect("table definition should be infallible at this point")
             .into_rich_schema()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch, StringArray};
+    use arrow_schema::DataType;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct FailingEmbedding {
+        calls: AtomicUsize,
+    }
+
+    impl EmbeddingFunction for FailingEmbedding {
+        fn name(&self) -> &str {
+            "failing"
+        }
+
+        fn source_type(&self) -> Result<Cow<'_, DataType>> {
+            Ok(Cow::Owned(DataType::Utf8))
+        }
+
+        fn dest_type(&self) -> Result<Cow<'_, DataType>> {
+            Ok(Cow::Owned(DataType::new_fixed_size_list(
+                DataType::Float32,
+                3,
+                false,
+            )))
+        }
+
+        fn compute_source_embeddings(&self, _source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Runtime {
+                message: "embedding function must not receive an empty batch".to_string(),
+            })
+        }
+
+        fn compute_query_embeddings(&self, _input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+            unreachable!("query embeddings are not exercised by this test")
+        }
+    }
+
+    #[test]
+    fn empty_batch_skips_embedding_functions() {
+        let embedding_function = Arc::new(FailingEmbedding {
+            calls: AtomicUsize::new(0),
+        });
+        let source: ArrayRef = Arc::new(StringArray::from(Vec::<&str>::new()));
+        let batch = RecordBatch::try_from_iter([("text", source)]).unwrap();
+        let embeddings = vec![(
+            EmbeddingDefinition::new("text", "failing", Some("text_embedding")),
+            embedding_function.clone() as Arc<dyn EmbeddingFunction>,
+        )];
+
+        let result = compute_embeddings_for_batch(batch, &embeddings).unwrap();
+
+        assert_eq!(embedding_function.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(result.num_rows(), 0);
+
+        let embedding = result.column_by_name("text_embedding").unwrap();
+        assert_eq!(
+            embedding.data_type(),
+            &DataType::new_fixed_size_list(DataType::Float32, 3, false)
+        );
+        assert_eq!(embedding.null_count(), 0);
+
+        let embedding = embedding
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap();
+        assert_eq!(embedding.len(), 0);
+        assert_eq!(embedding.value_length(), 3);
+        assert_eq!(embedding.values().len(), 0);
+    }
+
+    #[test]
+    fn empty_batch_still_validates_source_column() {
+        let embedding_function = Arc::new(FailingEmbedding {
+            calls: AtomicUsize::new(0),
+        });
+        let source: ArrayRef = Arc::new(StringArray::from(Vec::<&str>::new()));
+        let batch = RecordBatch::try_from_iter([("text", source)]).unwrap();
+        let embeddings = vec![(
+            EmbeddingDefinition::new("missing_column", "failing", Some("text_embedding")),
+            embedding_function.clone() as Arc<dyn EmbeddingFunction>,
+        )];
+
+        let result = compute_embeddings_for_batch(batch, &embeddings);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), Error::InvalidInput { .. }),
+            "expected InvalidInput error when source column is missing"
+        );
+        assert_eq!(embedding_function.calls.load(Ordering::SeqCst), 0);
     }
 }

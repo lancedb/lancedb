@@ -225,6 +225,113 @@ describe("remote connection", () => {
     );
   });
 
+  it("diffs and merges remote branches", async () => {
+    const sampleDiff = {
+      fromBranch: "exp",
+      parentVersion: 1,
+      mainVersion: 2,
+      branchVersion: 3,
+      baseMoved: false,
+      rowCountMain: 3,
+      rowCountBranch: 3,
+      rowSummary: {
+        unchanged: 3,
+        newOnBase: 0,
+        newOnBranch: 0,
+        staleRecompute: 0,
+        inputsChanged: 0,
+        deltaAvailable: false,
+      },
+      addedColumns: [{ name: "tag", dataType: "utf8", nullable: true }],
+      removedColumns: [],
+      changedColumns: [],
+      addedIndexes: [],
+      removedIndexes: [],
+      mergeable: true,
+      mergeBlockers: [],
+    };
+    const mergeBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          if (path.endsWith("/branches/diff/")) {
+            // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+            expect(body).toEqual({ from_branch: "exp" });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify(sampleDiff));
+            return;
+          }
+          if (path.endsWith("/branches/merge/")) {
+            mergeBodies.push(body);
+            const dryRun = body["dry_run"] === true;
+            const response = {
+              status: dryRun ? "ready" : "rejected",
+              diff: dryRun
+                ? sampleDiff
+                : {
+                    ...sampleDiff,
+                    mergeable: false,
+                    mergeBlockers: [
+                      { code: "baseMoved", message: "main has advanced" },
+                    ],
+                  },
+              preview: { promotedColumns: dryRun ? ["tag"] : [] },
+            };
+            res
+              .writeHead(dryRun ? 200 : 409, {
+                "Content-Type": "application/json",
+              })
+              .end(JSON.stringify(response));
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        const branches = await table.branches();
+
+        await expect(branches.diff("exp")).resolves.toEqual(sampleDiff);
+
+        const rejected = await branches.merge("exp");
+        expect(rejected.status).toBe("rejected");
+        expect(rejected.diff.mergeBlockers).toEqual([
+          { code: "baseMoved", message: "main has advanced" },
+        ]);
+
+        const preview = await branches.merge("exp", true);
+        expect(preview.status).toBe("ready");
+        expect(preview.preview.promotedColumns).toEqual(["tag"]);
+      },
+    );
+
+    expect(mergeBodies).toEqual([
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      { from_branch: "exp", dry_run: false },
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      { from_branch: "exp", dry_run: true },
+    ]);
+  });
+
   describe("TlsConfig", () => {
     it("should create TlsConfig with all fields", () => {
       const tlsConfig: TlsConfig = {

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from functools import cached_property
-from typing import TYPE_CHECKING, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -55,6 +55,16 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         # TODO retry, rate limit, token limit
         embeddings = self._compute_embedding(texts)
         return list(embeddings)
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = super().__getstate__()
+        state["__dict__"] = {
+            k: v for k, v in state["__dict__"].items() if k != "_ollama_client"
+        }
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
 
     @cached_property
     def _ollama_client(self) -> "ollama.Client":

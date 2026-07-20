@@ -16,6 +16,7 @@ import {
   PhraseQuery,
   Table,
   connect,
+  tokenize,
 } from "../lancedb";
 import {
   Table as ArrowTable,
@@ -2307,6 +2308,75 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
+    test("tokenizes FTS queries by column or index name", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        {
+          text: "Running in cafés",
+          japanese: "Hello, こんにちは世界!",
+          vector: [0.1, 0.2, 0.3],
+        },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "simple" }),
+      });
+      await table.createIndex("japanese", {
+        config: Index.fts({
+          baseTokenizer: "icu",
+          stem: false,
+          removeStopWords: false,
+        }),
+        name: "japanese_icu_idx",
+      });
+
+      await expect(table.tokenize("hello", {} as never)).rejects.toThrow(
+        "Specify exactly one",
+      );
+      await expect(
+        table.tokenize("hello", {
+          column: "text",
+          indexName: "text_idx",
+        } as never),
+      ).rejects.toThrow("Specify exactly one");
+
+      const simpleTokens = await table.tokenize("Running in cafés", {
+        column: "text",
+      });
+      expect(simpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const icuTokens = await table.tokenize("Hello, こんにちは世界!", {
+        indexName: "japanese_icu_idx",
+      });
+      expect(icuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+
+      const directSimpleTokens = await tokenize("Running in cafés", {
+        baseTokenizer: "simple",
+      });
+      expect(directSimpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const directIcuTokens = await tokenize("Hello, こんにちは世界!", {
+        baseTokenizer: "icu",
+        stem: false,
+        removeStopWords: false,
+      });
+      expect(directIcuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+    });
+
     test("full text search fast search", async () => {
       const db = await connect(tmpDir.name);
       const data = [{ text: "hello world", vector: [0.1, 0.2, 0.3], id: 1 }];
@@ -2705,8 +2775,13 @@ describe("when calling analyzePlan", () => {
       .fill(1)
       .map(() => Math.random());
     const plan = await table.query().nearestTo(queryVec).analyzePlan();
-    console.log("Query Plan:\n", plan); // <--- Print the plan
     expect(plan).toMatch("AnalyzeExec");
+
+    const fullPlan = await table
+      .query()
+      .nearestTo(queryVec)
+      .analyzePlan("full");
+    expect(fullPlan).toMatch("AnalyzeExec");
   });
 });
 
@@ -2991,6 +3066,56 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
         numBuckets: 4,
       }),
     ).rejects.toThrow();
+  });
+
+  it("reads back the installed spec via getLsmWriteSpec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // Nothing installed yet.
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // A real scalar index is needed to name it as a maintained index.
+    await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await table.createIndex("id");
+    const indexName = (await table.listIndices())[0].name;
+
+    // Bucket spec round-trips, including maintained indexes and writer config
+    // defaults. Lance writer-config keys are canonically snake_case.
+    // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
+    const writerConfigDefaults = { durable_write: "false" };
+    await table.setLsmWriteSpec({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+      maintainedIndexes: [indexName],
+      writerConfigDefaults,
+    });
+    const spec = await table.getLsmWriteSpec();
+    expect(spec).toBeDefined();
+    expect(spec?.specType).toBe("bucket");
+    expect(spec?.column).toBe("id");
+    expect(spec?.numBuckets).toBe(4);
+    expect(spec?.maintainedIndexes).toEqual([indexName]);
+    expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
+
+    // After unset, undefined again.
+    await table.unsetLsmWriteSpec();
+    expect(await table.getLsmWriteSpec()).toBeUndefined();
+
+    // Identity round-trips (column recovered from the schema).
+    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
+    const identity = await table.getLsmWriteSpec();
+    expect(identity?.specType).toBe("identity");
+    expect(identity?.column).toBe("id");
+    await table.unsetLsmWriteSpec();
+
+    // Unsharded round-trips (no routing column).
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    const unsharded = await table.getLsmWriteSpec();
+    expect(unsharded?.specType).toBe("unsharded");
+    expect(unsharded?.column).toBeFalsy();
   });
 });
 

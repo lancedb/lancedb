@@ -13,6 +13,7 @@ from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from lancedb.table import (
     _append_vector_columns,
     _cast_to_target_schema,
+    _fill_bad_vector_values,
     _handle_bad_vectors,
     _into_pyarrow_reader,
     _infer_target_schema,
@@ -25,8 +26,40 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
 from utils import exception_output
+
+
+def _struct_table() -> pa.Table:
+    return pa.table(
+        {
+            "id": [1, 2],
+            "nested": pa.array([{"a": 1, "b": 2}, {"a": 3, "b": 4}]),
+        }
+    )
+
+
+def test_flatten_columns():
+    tbl = _struct_table()
+
+    # None / False mean "do not flatten": the struct column is preserved.
+    # `False` is a regression guard: because bool is a subclass of int it used
+    # to fall into the integer branch and raise ValueError (see issue).
+    for no_flatten in (None, False):
+        result = flatten_columns(tbl, no_flatten)
+        assert result.column_names == ["id", "nested"]
+
+    # True flattens all nested levels.
+    flattened = flatten_columns(tbl, True)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # A positive integer flattens up to that depth.
+    flattened = flatten_columns(tbl, 1)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # Non-positive integers are still rejected.
+    with pytest.raises(ValueError):
+        flatten_columns(tbl, 0)
 
 
 def test_normalize_uri():
@@ -255,7 +288,9 @@ def test_append_vector_columns():
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
 def test_handle_bad_vectors_jagged(on_bad_vectors):
-    vector = pa.array([[1.0, 2.0], [3.0], [4.0, 5.0]])
+    vector = pa.array(
+        [[1.0, 2.0], [3.0], [4.0, 5.0], [6.0, 7.0, 8.0], [None, 9.0], None]
+    )
     schema = pa.schema({"vector": pa.list_(pa.float64())})
     data = pa.table({"vector": vector}, schema=schema)
 
@@ -281,13 +316,52 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         ).read_all()
 
     if on_bad_vectors == "drop":
-        expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], [4.0, 5.0], [None, 9.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[1.0, 2.0], [42.0, 42.0], [4.0, 5.0]])
+        expected = pa.array(
+            [
+                [1.0, 2.0],
+                [3.0, 42.0],
+                [4.0, 5.0],
+                [6.0, 7.0],
+                [None, 9.0],
+                [42.0, 42.0],
+            ]
+        )
     elif on_bad_vectors == "null":
-        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize(
+    ("vector_type", "vectors", "expected"),
+    [
+        (
+            pa.list_(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.large_list(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.list_(pa.float64(), 2),
+            [[1.0, float("nan")], None, [None, 3.0]],
+            [[1.0, 42.0], [42.0, 42.0], [None, 3.0]],
+        ),
+    ],
+)
+def test_fill_bad_vector_values_arrow_types(vector_type, vectors, expected):
+    arr = pa.array([[0.0, 0.0], *vectors, [9.0, 9.0]], type=vector_type)
+    arr = arr.slice(1, len(vectors))
+
+    actual = _fill_bad_vector_values(arr, dim=2, fill_value=42.0)
+
+    assert actual.type == vector_type
+    assert actual.to_pylist() == expected
 
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
@@ -319,7 +393,7 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
     if on_bad_vectors == "drop":
         expected = pa.array([[3.0, 4.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[42.0, 42.0], [3.0, 4.0]])
+        expected = pa.array([[1.0, 42.0], [3.0, 4.0]])
     elif on_bad_vectors == "null":
         expected = pa.array([None, [3.0, 4.0]])
 
@@ -850,3 +924,23 @@ def test_sanitize_data_stream():
 
     with pytest.raises(ValueError):
         next(output)
+
+
+def test_infer_vector_column_raises_clear_error(tmp_path):
+    """Regression: querying a table with no inferable vector column should raise
+    a clear ValueError, not a cryptic TypeError (issue #1653).
+
+    Previously, inf_vector_column_query silently returned None which then caused
+    a confusing TypeError deep in schema lookup. The fix adds a ValueError guard
+    so the user gets a direct, actionable error message.
+    """
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "no_vec",
+        data=[{"id": 1, "text": "hello"}, {"id": 2, "text": "world"}],
+    )
+
+    with pytest.raises(ValueError, match="vector"):
+        # Plain vector search on a table with no vector column should raise
+        # a clear ValueError, not a cryptic TypeError.
+        table.search([1.0, 2.0]).to_list()

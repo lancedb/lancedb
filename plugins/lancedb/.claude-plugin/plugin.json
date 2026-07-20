@@ -1,0 +1,21 @@
+{
+  "name": "lancedb",
+  "description": "Write, review, debug, and document LanceDB pipelines in Python and TypeScript that work across local LanceDB OSS tables and remote LanceDB Enterprise/Cloud tables, with idiomatic query/search patterns and performance defaults for ingestion, indexing, filtering, and diagnostics.",
+  "version": "0.1.0",
+  "author": {
+    "name": "LanceDB"
+  },
+  "homepage": "https://www.lancedb.com",
+  "keywords": [
+    "lancedb",
+    "vector-search",
+    "full-text-search",
+    "hybrid-search",
+    "python",
+    "typescript",
+    "pipelines",
+    "ingestion",
+    "indexing",
+    "performance"
+  ]
+}

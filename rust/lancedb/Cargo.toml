@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.31.0-beta.6"
+version = "0.32.0-beta.2"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -44,11 +44,14 @@ lance-io = { workspace = true }
 lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lindera"] }
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
-lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
 lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
+metrics = { workspace = true, optional = true }
+metrics-util = { workspace = true, optional = true }
+# Pin the transitive GooseFS SDK until the 0.1.6 compile break is fixed upstream.
+goosefs-sdk = { version = "=0.1.5", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -93,6 +96,7 @@ semver = { workspace = true }
 
 [dev-dependencies]
 anyhow = "1"
+lance-testing = { workspace = true }
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
 tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
@@ -128,6 +132,13 @@ azure = [
     "lance-namespace-impls/dir-azure",
     "lance-namespace-impls/credential-vendor-azure",
 ]
+cos = ["lance/tencent", "lance-io/tencent"]
+goosefs = [
+    "dep:goosefs-sdk",
+    "lance/goosefs",
+    "lance-io/goosefs",
+    "lance-namespace-impls/dir-goosefs",
+]
 huggingface = [
     "lance/huggingface",
     "lance-io/huggingface",
@@ -141,6 +152,15 @@ remote = [
     "lance-namespace-impls/rest",
     "lance-namespace-impls/rest-adapter",
 ]
+# Publish LanceDB's internal metrics (currently object store request counts,
+# bytes, latency, errors, and throttles) through the `metrics` crate facade,
+# and re-export the `metrics` crate as `lancedb::metrics`. Install any
+# `metrics`-compatible recorder to collect them.
+metrics = ["dep:metrics", "lance/metrics", "lance-io/metrics"]
+# Additional adapter on top of `metrics` that installs a process-global recorder
+# and exposes a pull-based snapshot/catalog API (see `lancedb::metrics_otel`)
+# for bridging metrics into OpenTelemetry or other pull-based exporters.
+metrics-otel = ["metrics", "dep:metrics-util"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]

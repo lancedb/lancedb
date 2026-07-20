@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.31.0-beta.6",
+  "version": "0.32.0-beta.2",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -44,6 +44,7 @@
     "@biomejs/biome": "^1.7.3",
     "@jest/globals": "^29.7.0",
     "@napi-rs/cli": "3.7.0",
+    "@opentelemetry/sdk-metrics": "^1.30.0",
     "@types/axios": "^0.14.0",
     "@types/jest": "^29.1.2",
     "@types/node": "22.7.4",
@@ -92,6 +93,7 @@
     "version": "napi version"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "reflect-metadata": "^0.2.2"
   },
   "optionalDependencies": {

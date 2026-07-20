@@ -52,6 +52,11 @@
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [AddResult](interfaces/AddResult.md)
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
+- [BranchColumnChange](interfaces/BranchColumnChange.md)
+- [BranchColumnSummary](interfaces/BranchColumnSummary.md)
+- [BranchDiff](interfaces/BranchDiff.md)
+- [BranchIndexSummary](interfaces/BranchIndexSummary.md)
+- [BranchRowCountSummary](interfaces/BranchRowCountSummary.md)
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [ColumnOrdering](interfaces/ColumnOrdering.md)
@@ -72,6 +77,7 @@
 - [FragmentStatistics](interfaces/FragmentStatistics.md)
 - [FragmentSummaryStats](interfaces/FragmentSummaryStats.md)
 - [FtsOptions](interfaces/FtsOptions.md)
+- [FtsToken](interfaces/FtsToken.md)
 - [FullTextQuery](interfaces/FullTextQuery.md)
 - [FullTextSearchOptions](interfaces/FullTextSearchOptions.md)
 - [HnswPqOptions](interfaces/HnswPqOptions.md)
@@ -85,6 +91,9 @@
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
+- [MergeBlocker](interfaces/MergeBlocker.md)
+- [MergeBranchResult](interfaces/MergeBranchResult.md)
+- [MergePreview](interfaces/MergePreview.md)
 - [MergeResult](interfaces/MergeResult.md)
 - [NativeOAuthConfig](interfaces/NativeOAuthConfig.md)
 - [OAuthConfig](interfaces/OAuthConfig.md)
@@ -107,6 +116,7 @@
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [TlsConfig](interfaces/TlsConfig.md)
 - [TokenResponse](interfaces/TokenResponse.md)
+- [TokenizeOptions](interfaces/TokenizeOptions.md)
 - [UpdateFieldMetadataResult](interfaces/UpdateFieldMetadataResult.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
@@ -116,6 +126,8 @@
 
 ## Type Aliases
 
+- [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
+- [BaseTokenizer](type-aliases/BaseTokenizer.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
@@ -125,12 +137,15 @@
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
+- [TokenizeTableOptions](type-aliases/TokenizeTableOptions.md)
 
 ## Functions
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [connect](functions/connect.md)
 - [connectNamespace](functions/connectNamespace.md)
+- [instrumentLanceDbMetrics](functions/instrumentLanceDbMetrics.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)
 - [permutationBuilder](functions/permutationBuilder.md)
+- [tokenize](functions/tokenize.md)

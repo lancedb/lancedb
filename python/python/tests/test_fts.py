@@ -786,6 +786,97 @@ def test_language(mem_db: DBConnection):
     assert len(results) == 0
 
 
+def test_tokenize_uses_simple_index_tokenizer(mem_db: DBConnection):
+    data = pa.table({"text": ["Running in cafés"], "other": ["Running in cafés"]})
+    table = mem_db.create_table("test_tokenize", data=data)
+    table.create_index("text", config=FTS(base_tokenizer="simple"))
+
+    tokens = table.tokenize("Running in cafés", column="text")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_icu_index_tokenizer_by_name(mem_db: DBConnection):
+    data = pa.table({"text": ["Hello, こんにちは世界!"]})
+    table = mem_db.create_table("test_tokenize_icu", data=data)
+    table.create_index(
+        "text",
+        config=FTS(
+            base_tokenizer="icu",
+            stem=False,
+            remove_stop_words=False,
+        ),
+        name="text_icu_idx",
+    )
+
+    tokens = table.tokenize("Hello, こんにちは世界!", index_name="text_icu_idx")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("hello", 0),
+        ("こんにちは", 1),
+        ("世界", 2),
+    ]
+
+
+def test_tokenize_requires_one_selector(mem_db: DBConnection):
+    data = pa.table({"text": ["hello world"]})
+    table = mem_db.create_table("test_tokenize_selector", data=data)
+    table.create_index("text", config=FTS(), name="text_idx")
+
+    with pytest.raises(ValueError, match="Specify exactly one"):
+        table.tokenize("hello")
+
+    with pytest.raises(ValueError, match="Specify exactly one"):
+        table.tokenize("hello", column="text", index_name="text_idx")
+
+
+def test_tokenize_requires_fts_index(mem_db: DBConnection):
+    data = pa.table({"text": ["hello world"]})
+    table = mem_db.create_table("test_tokenize_no_index", data=data)
+
+    with pytest.raises(ValueError, match="does not have a full text search index"):
+        table.tokenize("hello", column="text")
+
+
+@pytest.mark.asyncio
+async def test_tokenize_async(async_table):
+    await async_table.create_index("text", config=FTS())
+
+    tokens = await async_table.tokenize("Running in cafés", column="text")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_explicit_simple_tokenizer():
+    tokens = ldb.tokenize("Running in cafés", base_tokenizer="simple")
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("run", 0),
+        ("cafe", 2),
+    ]
+
+
+def test_tokenize_uses_explicit_icu_tokenizer():
+    tokens = ldb.tokenize(
+        "Hello, こんにちは世界!",
+        base_tokenizer="icu",
+        stem=False,
+        remove_stop_words=False,
+    )
+
+    assert [(token.text, token.position) for token in tokens] == [
+        ("hello", 0),
+        ("こんにちは", 1),
+        ("世界", 2),
+    ]
+
+
 def test_fts_on_list(mem_db: DBConnection):
     data = pa.table(
         {
@@ -1082,6 +1173,84 @@ def test_fts_query_to_json():
         '"must_not":[]}}'
     )
     assert json_str == expected
+
+
+def test_fts_phrase_query_is_preserved_in_query_object():
+    query = LanceFtsQueryBuilder(mock.Mock(), "puppy runs").phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == '"puppy runs"'
+
+
+def test_fts_phrase_query_execution_preserves_user_text():
+    table = mock.Mock()
+    table.schema = pa.schema([])
+    table._execute_query.return_value = pa.table({"text": ["result"]}).to_reader()
+
+    class CapturingReranker:
+        score = "relevance"
+
+        def __init__(self):
+            self.queries = []
+
+        def rerank_fts(self, query, results):
+            self.queries.append(query)
+            return results.append_column("_relevance_score", [[1.0]])
+
+    reranker = CapturingReranker()
+    query = (
+        LanceFtsQueryBuilder(table, "puppy runs")
+        .phrase_query()
+        .with_row_id(False)
+        .rerank(reranker)
+    )
+
+    query.to_arrow()
+
+    backend_query = table._execute_query.call_args.args[0]
+    assert (
+        backend_query.full_text_query.query,
+        reranker.queries,
+        query._query,
+    ) == ('"puppy runs"', ["puppy runs"], "puppy runs")
+
+
+def test_fts_phrase_query_false_preserves_string():
+    query = LanceFtsQueryBuilder(mock.Mock(), "puppy runs").phrase_query(False)
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == "puppy runs"
+
+
+def test_fts_phrase_query_preserves_fully_quoted_string():
+    query = LanceFtsQueryBuilder(mock.Mock(), '"puppy runs"').phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == '"puppy runs"'
+
+
+def test_fts_phrase_query_preserves_structured_phrase_query():
+    phrase_query = PhraseQuery("puppy runs", "text")
+    query = LanceFtsQueryBuilder(mock.Mock(), phrase_query).phrase_query()
+
+    query_object = query.to_query_object()
+
+    assert query_object.full_text_query.query == phrase_query
+
+
+def test_fts_phrase_query_rejects_other_structured_queries():
+    query = LanceFtsQueryBuilder(
+        mock.Mock(), MatchQuery("puppy", "text")
+    ).phrase_query()
+
+    with pytest.raises(
+        TypeError,
+        match=r"phrase_query\(\) requires a string or PhraseQuery, got MatchQuery",
+    ):
+        query.to_query_object()
 
 
 def test_fts_fast_search(table):
