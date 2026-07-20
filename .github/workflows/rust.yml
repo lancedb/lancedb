@@ -98,7 +98,7 @@ jobs:
           cargo build --profile ci --benches --all-features --tests
 
   linux:
-    timeout-minutes: 30
+    timeout-minutes: 60
     # To build all features, we need more disk space than is available
     # on the free OSS github runner. This is mostly due to the the
     # sentence-transformers feature.
@@ -158,7 +158,7 @@ jobs:
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix:
         mac-runner: ["macos-14", "macos-15"]
