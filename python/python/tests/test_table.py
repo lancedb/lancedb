@@ -2285,6 +2285,61 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_update_all_with_scalar_index(tmp_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 4), nullable=True),
+            pa.field("path", pa.string(), nullable=False),
+            pa.field("status", pa.utf8()),
+            pa.field("file_size", pa.int64()),
+        ]
+    )
+    table = tmp_db.create_table("my_table", schema=schema)
+    table.add(
+        pa.Table.from_pylist(
+            [
+                {
+                    "vector": None,
+                    "path": f"/img/{idx}.jpg",
+                    "status": "pending",
+                    "file_size": 1000 + idx,
+                }
+                for idx in range(64)
+            ],
+            schema=schema,
+        )
+    )
+    table.create_scalar_index("path", index_type="BTREE")
+
+    updates_schema = pa.schema(
+        [
+            pa.field("path", pa.string(), nullable=False),
+            pa.field("vector", pa.list_(pa.float32(), 4), nullable=True),
+            pa.field("status", pa.utf8()),
+        ]
+    )
+    updates = pa.Table.from_pylist(
+        [
+            {
+                "path": f"/img/{idx}.jpg",
+                "vector": [0.1] * 4,
+                "status": "indexed",
+            }
+            for idx in range(16)
+        ],
+        schema=updates_schema,
+    )
+
+    merge_insert_res = (
+        table.merge_insert("path").when_matched_update_all().execute(updates)
+    )
+
+    assert merge_insert_res.num_updated_rows == 16
+    assert merge_insert_res.num_inserted_rows == 0
+    assert merge_insert_res.num_deleted_rows == 0
+    assert table.count_rows("status = 'indexed'") == 16
+
+
 def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
