@@ -40,12 +40,12 @@ class WatsonxReranker(Reranker):
         IBM Cloud API key.  Falls back to the ``WATSONX_API_KEY`` environment
         variable when not provided.
     project_id : str, optional
-        watsonx.ai project ID.  Falls back to the ``WATSONX_PROJECT_ID``
-        environment variable when not provided.  Mutually exclusive with
+        watsonx.ai project ID.  Explicit value takes precedence over the
+        ``WATSONX_PROJECT_ID`` environment variable.  Mutually exclusive with
         ``space_id`` — exactly one must be supplied.
     space_id : str, optional
-        watsonx.ai deployment space ID.  Falls back to the ``WATSONX_SPACE_ID``
-        environment variable when not provided.  Mutually exclusive with
+        watsonx.ai deployment space ID.  Explicit value takes precedence over
+        the ``WATSONX_SPACE_ID`` environment variable.  Mutually exclusive with
         ``project_id`` — exactly one must be supplied.
     url : str, optional
         watsonx.ai service URL.  Defaults to
@@ -100,8 +100,16 @@ class WatsonxReranker(Reranker):
         )
 
         # --- project_id / space_id (exactly one required) ---
-        project_id = self.project_id or os.environ.get("WATSONX_PROJECT_ID")
-        space_id = self.space_id or os.environ.get("WATSONX_SPACE_ID")
+        # Explicit field always wins; env vars are consulted only when neither
+        # was passed explicitly, so a stray WATSONX_SPACE_ID never overrides an
+        # explicit project_id and vice-versa.
+        project_id = self.project_id
+        space_id = self.space_id
+
+        if project_id is None and space_id is None:
+            # Neither was passed explicitly — fall back to env vars.
+            project_id = os.environ.get("WATSONX_PROJECT_ID")
+            space_id = os.environ.get("WATSONX_SPACE_ID")
 
         if project_id and space_id:
             raise ValueError("Provide either `project_id` or `space_id`, not both.")
