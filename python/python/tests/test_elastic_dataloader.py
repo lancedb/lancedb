@@ -1333,6 +1333,42 @@ def test_transform_none_yields_dicts(lance_table):
     assert all("id" in item for item in items)
 
 
+@pytest.mark.parametrize(
+    ("configured", "detected", "expected"),
+    [(2, 8, 2), (None, 3, 3), (None, None, 1)],
+)
+def test_transform_parallelism_configures_executor(
+    lance_table, monkeypatch, configured, detected, expected
+):
+    """Explicit transform parallelism overrides the detected CPU count."""
+    real_executor = streaming.ThreadPoolExecutor
+    monkeypatch.setattr(streaming.os, "cpu_count", lambda: detected)
+
+    with patch.object(streaming, "ThreadPoolExecutor", wraps=real_executor) as executor:
+        list(
+            StreamingDataset(
+                lance_table,
+                num_splits=NUM_SPLITS,
+                shuffle_seed=SHUFFLE_SEED,
+                transform_parallelism=configured,
+            )
+        )
+
+    assert executor.call_args_list[-1].kwargs["max_workers"] == expected
+
+
+@pytest.mark.parametrize("transform_parallelism", [0, -1])
+def test_transform_parallelism_must_be_positive(lance_table, transform_parallelism):
+    with pytest.raises(
+        ValueError, match="transform_parallelism must be greater than 0"
+    ):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            transform_parallelism=transform_parallelism,
+        )
+
+
 def test_filter_limits_rows(tmp_path):
     """A filter expression is applied to the permutation so only matching rows
     are yielded.  IDs 0..59 pass ``id < 60``; the other 60 are excluded."""
