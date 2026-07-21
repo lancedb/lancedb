@@ -14,17 +14,15 @@ use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
-use lazy_static::lazy_static;
 use std::pin::Pin;
 
 use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
-lazy_static! {
-    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
-    static ref NAMESPACE_NAME_REGEX: regex::Regex =
-        regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
-}
+static TABLE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
+static NAMESPACE_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(

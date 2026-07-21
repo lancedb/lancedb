@@ -64,7 +64,6 @@ snafu = "0.8"
 url = "2"
 num-traits = "0.2"
 regex = "1.10"
-lazy_static = "1"
 semver = "1.0.25"
 chrono = "0.4"
 
