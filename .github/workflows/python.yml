@@ -182,7 +182,11 @@ jobs:
       matrix:
         config:
           - name: x86
+            platform: x86_64
             runner: windows-latest
+          - name: arm64
+            platform: arm64
+            runner: windows-11-arm
     runs-on: "${{ matrix.config.runner }}"
     defaults:
       run:
@@ -200,7 +204,21 @@ jobs:
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
+      # TODO(win_arm64): run tests on the arm64 leg too once the missing test
+      # dependencies publish win_arm64 wheels. Then drop this `if` (and the
+      # `platform` matrix key if no longer needed) so run_tests runs on both legs.
+      #
+      # Tests only run on x86_64. Several test dependencies have no win_arm64
+      # wheel on PyPI, so the suite cannot run on arm64:
+      #   * pyarrow    - core runtime dependency; without it `import lancedb`
+      #                  itself fails, so the whole suite cannot run.
+      #   * pylance    - required by a subset of tests.
+      #   * datafusion - required by a subset of tests.
+      #   * polars     - the `tests` extra pins `polars<=1.3.0`, and win_arm64
+      #                  wheels only exist from 1.18.0.
+      # The arm64 leg therefore only verifies that the wheel *builds*.
       - uses: ./.github/workflows/run_tests
+        if: ${{ matrix.config.platform == 'x86_64' }}
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels

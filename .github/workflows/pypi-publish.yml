@@ -107,12 +107,32 @@ jobs:
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
   windows:
+    name: "Python windows-${{ matrix.config.platform }}"
     timeout-minutes: 90
-    runs-on: windows-latest
+    runs-on: ${{ matrix.config.runner }}
+    strategy:
+      matrix:
+        config:
+          - platform: x86_64
+            runner: windows-latest
+            # Published: the publish job downloads artifacts matching `wheels-*`.
+            artifact: wheels-windows-x86_64
+          - platform: arm64
+            runner: windows-11-arm
+            # TODO(win_arm64): the `unpublished-` prefix intentionally keeps this
+            # wheel OUT of the release. The publish job downloads `wheels-*`, so
+            # `unpublished-*` is not picked up. The wheel is still uploaded (so it
+            # can be downloaded for local validation), it just isn't published,
+            # because pyarrow (a core runtime dependency) has no win_arm64 wheel
+            # on PyPI yet, so `pip install lancedb` cannot resolve pyarrow on
+            # win_arm64. Once pyarrow ships win_arm64 wheels, rename this to
+            # `wheels-windows-arm64` to include it in the release.
+            artifact: unpublished-wheels-windows-arm64
     env:
       # link.exe is single-threaded and the long pole on Windows builds. Use
       # rustc's bundled lld-link instead.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER: rust-lld
     steps:
       - uses: actions/checkout@v6
         with:
@@ -129,7 +149,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/python-v')
         with:
-          name: wheels-windows
+          name: ${{ matrix.config.artifact }}
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
   publish:
