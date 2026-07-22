@@ -79,6 +79,10 @@ impl ServerVersion {
     pub fn support_multipart_write(&self) -> bool {
         self.0 >= semver::Version::new(0, 4, 0)
     }
+
+    pub fn support_blobs(&self) -> bool {
+        self.0 >= semver::Version::new(0, 5, 0)
+    }
 }
 
 pub const OPT_REMOTE_PREFIX: &str = "remote_database_";

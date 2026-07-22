@@ -1851,3 +1851,106 @@ def test_inherited_remote_table_reopens_after_fork():
     finally:
         server.shutdown()
         server_thread.join()
+
+
+@contextlib.contextmanager
+def blob_remote_table(*, server_version=Version("0.5.0")):
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.send_header("phalanx-version", str(server_version))
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/blobs/columns/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'["image"]')
+        elif request.path == "/v1/table/test/fetch_blobs/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len))
+            assert body["column"] == "image"
+            assert body["row_ids"] == [10, 20, 30]
+            data = pa.table(
+                {"image": pa.array([b"alpha", None, b"gamma"], type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, data.schema) as f:
+                f.write_table(data)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def test_remote_blob_columns_and_fetch():
+    with blob_remote_table() as table:
+        assert table.blob_columns() == ["image"]
+        blobs = table.fetch_blobs("image", [10, 20, 30])
+        assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+        with pytest.raises(NotImplementedError, match="use fetch_blobs"):
+            table.fetch_blob_files("image", [10, 20, 30])
+
+
+def test_remote_blob_fetch_accepts_query_table():
+    hits = pa.table({"_rowid": pa.array([10, 20, 30], type=pa.uint64())})
+
+    with blob_remote_table() as table:
+        blobs = table.fetch_blobs("image", hits)
+
+    assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+def test_remote_to_lance_error_is_readable():
+    with blob_remote_table() as table:
+        with pytest.raises(
+            NotImplementedError,
+            match=r"to_lance\(\).*not supported.*[Cc]loud",
+        ):
+            table.to_lance()
+
+
+@pytest.mark.parametrize(
+    ("native_error", "expected_reason"),
+    [
+        (
+            NotImplementedError(),
+            "this query shape cannot use Lance native pandas conversion",
+        ),
+        (
+            NotImplementedError("to_lance() is not supported on LanceDB cloud tables"),
+            "to_lance() is not supported on LanceDB cloud tables",
+        ),
+    ],
+)
+def test_remote_query_to_pandas_blob_mode_error_is_readable(
+    native_error, expected_reason
+):
+    blob_schema = pa.schema([lancedb.blob("image")])
+
+    with blob_remote_table() as table:
+        with (
+            patch.object(table, "_output_schema", return_value=blob_schema),
+            patch.object(table, "to_lance", side_effect=native_error),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                table.search().to_pandas(blob_mode="bytes")
+
+    message = str(exc_info.value)
+    assert expected_reason in message
+    assert "but . Use" not in message
+
+
+def test_remote_blob_apis_not_supported_on_old_server():
+    with blob_remote_table(server_version=Version("0.1.0")) as table:
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.blob_columns()
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.fetch_blobs("image", [1])
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.fetch_blob_files("image", [1])

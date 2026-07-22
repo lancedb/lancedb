@@ -108,6 +108,16 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     )
 
 
+_NATIVE_PANDAS_UNAVAILABLE = (
+    "this query shape cannot use Lance native pandas conversion"
+)
+
+
+def _native_pandas_failure_reason(native_error: Optional[Exception]) -> str:
+    reason = "" if native_error is None else str(native_error)
+    return reason or _NATIVE_PANDAS_UNAVAILABLE
+
+
 def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
@@ -1037,11 +1047,7 @@ class LanceQueryBuilder(ABC):
                             return df
                     except Exception as err:
                         native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
+                reason = _native_pandas_failure_reason(native_error)
                 raise _unsupported_blob_pandas_error(reason) from native_error
 
         tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
@@ -2963,11 +2969,7 @@ class AsyncQueryBase(object):
                             return df
                     except Exception as err:
                         native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
+                reason = _native_pandas_failure_reason(native_error)
                 raise _unsupported_blob_pandas_error(reason) from native_error
 
         tbl = flatten_columns(await self.to_arrow(timeout=timeout), flatten)

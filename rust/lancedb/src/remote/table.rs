@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+mod blobs;
 pub mod insert;
 
 use self::insert::RemoteInsertExec;
+use crate::blob::BlobFile;
 use crate::expr::expr_to_sql_string;
 use crate::table::write_progress::FinishOnDrop;
 
@@ -44,7 +46,7 @@ use crate::{
         merge::MergeInsertBuilder,
     },
 };
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::{Array, LargeBinaryArray, RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
@@ -2031,6 +2033,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
+    async fn blob_columns(&self) -> Result<Vec<String>> {
+        self.blob_columns_impl().await
+    }
+
+    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
+        self.fetch_blobs_impl(column, row_ids).await
+    }
+
+    async fn fetch_blob_files(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+    ) -> Result<Vec<Option<BlobFile>>> {
+        self.fetch_blob_files_impl(column, row_ids).await
+    }
+
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self.post_read(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
@@ -2911,6 +2929,7 @@ mod tests {
     use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
+    use arrow_array::builder::LargeBinaryBuilder;
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
@@ -3786,6 +3805,242 @@ mod tests {
             .await;
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_blob_columns() {
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/v1/table/my_table/blobs/columns/");
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"["image","thumbnail"]"#)
+                    .unwrap()
+            });
+
+        let columns = table.blob_columns().await.unwrap();
+        assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_decodes_null_aligned_bytes() {
+        let mut builder = LargeBinaryBuilder::new();
+        builder.append_value(b"alpha");
+        builder.append_null();
+        builder.append_value(b"gamma");
+        let blobs = builder.finish();
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(blobs)],
+        )
+        .unwrap();
+        let expected_ref = expected.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["column"], "image");
+                assert_eq!(body["row_ids"], serde_json::json!([10, 20, 30]));
+
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(write_ipc_file(&expected_ref))
+                    .unwrap()
+            },
+        );
+
+        let blobs = table.fetch_blobs("image", &[10, 20, 30]).await.unwrap();
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs.value(0), b"alpha");
+        assert!(blobs.is_null(1));
+        assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_concatenates_multiple_batches() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "image",
+            DataType::LargeBinary,
+            true,
+        )]));
+
+        let mut first_builder = LargeBinaryBuilder::new();
+        first_builder.append_value(b"alpha");
+        first_builder.append_null();
+        let first_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(first_builder.finish())]).unwrap();
+
+        let mut second_builder = LargeBinaryBuilder::new();
+        second_builder.append_value(b"gamma");
+        let second_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(second_builder.finish())]).unwrap();
+
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::FileWriter::try_new(&mut body, &schema).unwrap();
+            writer.write(&first_batch).unwrap();
+            writer.write(&second_batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(body.clone())
+                    .unwrap()
+            },
+        );
+
+        let blobs = table.fetch_blobs("image", &[10, 20, 30]).await.unwrap();
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs.value(0), b"alpha");
+        assert!(blobs.is_null(1));
+        assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    fn fetch_blobs_response_table(body: Vec<u8>) -> Table {
+        Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(body.clone())
+                .unwrap()
+        })
+    }
+
+    fn write_empty_ipc_file(schema: &Schema) -> Vec<u8> {
+        let mut body = Vec::new();
+        arrow_ipc::writer::FileWriter::try_new(&mut body, schema)
+            .unwrap()
+            .finish()
+            .unwrap();
+        body
+    }
+
+    fn assert_fetch_blobs_http_error(error: Error, expected: &str) {
+        match error {
+            Error::Http {
+                source, request_id, ..
+            } => {
+                assert!(source.to_string().contains(expected));
+                assert!(!request_id.is_empty());
+            }
+            error => panic!("expected HTTP error, got {error}"),
+        }
+    }
+
+    fn assert_not_supported_error(error: Error, expected: &str) {
+        match error {
+            Error::NotSupported { message } => assert!(message.contains(expected)),
+            error => panic!("expected not-supported error, got {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_missing_column() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "other",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![Some(
+                b"value".as_slice(),
+            )]))],
+        )
+        .unwrap();
+        let table = fetch_blobs_response_table(write_ipc_file(&batch));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "missing the 'image' column");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_wrong_column_type() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let table = fetch_blobs_response_table(write_ipc_file(&batch));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "type Int32, expected LargeBinary");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_row_count_mismatch() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![Some(
+                b"value".as_slice(),
+            )]))],
+        )
+        .unwrap();
+        let table = fetch_blobs_response_table(write_ipc_file(&batch));
+
+        let error = table.fetch_blobs("image", &[10, 20]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "returned 1 rows for 2 row ids");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_zero_batches_for_nonempty_row_ids() {
+        let schema = Schema::new(vec![Field::new("image", DataType::LargeBinary, true)]);
+        let table = fetch_blobs_response_table(write_empty_ipc_file(&schema));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "returned 0 rows for 1 row ids");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_accepts_zero_batches_for_empty_row_ids() {
+        let schema = Schema::new(vec![Field::new("image", DataType::LargeBinary, true)]);
+        let table = fetch_blobs_response_table(write_empty_ipc_file(&schema));
+
+        let blobs = table.fetch_blobs("image", &[]).await.unwrap();
+        assert!(blobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_blob_apis_not_supported_on_old_server() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("blob request must not reach a server without blob support");
+        });
+
+        assert_not_supported_error(
+            table.fetch_blobs("image", &[1]).await.unwrap_err(),
+            "fetch_blobs",
+        );
+        assert_not_supported_error(table.blob_columns().await.unwrap_err(), "blob_columns");
+        assert_not_supported_error(
+            table.fetch_blob_files("image", &[1]).await.unwrap_err(),
+            "use fetch_blobs",
+        );
     }
 
     #[tokio::test]
