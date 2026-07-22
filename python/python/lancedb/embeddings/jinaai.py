@@ -87,7 +87,7 @@ class JinaEmbeddings(EmbeddingFunction):
         if isinstance(image, bytes):
             image_dict = {"image": base64.b64encode(image).decode("utf-8")}
         elif isinstance(image, (str, Path)):
-            parsed = urlparse.urlparse(image)
+            parsed = urlparse(str(image))
             # TODO handle drive letter on windows.
             PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
             if parsed.scheme == "file":
