@@ -774,9 +774,6 @@ fn shard_writer_config_from_defaults(defaults: &HashMap<String, String>) -> Shar
     if let Some(v) = bool_of("durable_write") {
         config = config.with_durable_write(v);
     }
-    if let Some(v) = bool_of("sync_indexed_write") {
-        config = config.with_sync_indexed_write(v);
-    }
     if let Some(v) = usize_of("max_wal_buffer_size") {
         config = config.with_max_wal_buffer_size(v);
     }
@@ -797,12 +794,6 @@ fn shard_writer_config_from_defaults(defaults: &HashMap<String, String>) -> Shar
     }
     if let Some(v) = millis_of("backpressure_log_interval_ms") {
         config = config.with_backpressure_log_interval(v);
-    }
-    if let Some(v) = usize_of("async_index_buffer_rows") {
-        config = config.with_async_index_buffer_rows(v);
-    }
-    if let Some(v) = millis_of("async_index_interval_ms") {
-        config = config.with_async_index_interval(v);
     }
     if let Some(v) = bool_of("enable_memtable") {
         config = config.with_enable_memtable(v);
@@ -1008,13 +999,11 @@ mod tests {
         let defaults = HashMap::from([
             ("durable_write".to_string(), "false".to_string()),
             ("max_memtable_rows".to_string(), "4096".to_string()),
-            ("async_index_interval_ms".to_string(), "250".to_string()),
             ("unknown_key".to_string(), "ignored".to_string()),
         ]);
         let config = shard_writer_config_from_defaults(&defaults);
         assert!(!config.durable_write);
         assert_eq!(config.max_memtable_rows, 4096);
-        assert_eq!(config.async_index_interval, Duration::from_millis(250));
         assert_eq!(config.shard_spec_id, SHARDING_SPEC_ID);
     }
 
