@@ -14,7 +14,8 @@ use std::sync::Arc;
 use arrow_array::builder::LargeBinaryBuilder;
 use arrow_array::{Array, LargeBinaryArray, RecordBatch, StructArray, UInt8Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
-use lance::dataset::{Dataset, WriteParams};
+use futures::TryStreamExt;
+use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
 use lance_core::datatypes::parse_field_path;
 use lance_encoding::version::LanceFileVersion;
@@ -22,6 +23,40 @@ use lance_encoding::version::LanceFileVersion;
 use crate::error::{Error, Result};
 
 pub use lance::dataset::BlobFile;
+
+/// One row-specific blob range read request.
+///
+/// `row_id` is obtained from a query with row ids enabled.
+/// `offset` and `length` are relative to the beginning of the logical blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobRangeRequest {
+    /// Row id of the blob value to read.
+    pub row_id: u64,
+    /// Byte offset from the beginning of the blob value.
+    pub offset: u64,
+    /// Number of bytes to read.
+    pub length: u64,
+}
+
+impl BlobRangeRequest {
+    /// Create a row-specific blob range request.
+    pub const fn new(row_id: u64, offset: u64, length: u64) -> Self {
+        Self {
+            row_id,
+            offset,
+            length,
+        }
+    }
+}
+
+fn map_blob_read_error(source: lance::Error) -> Error {
+    match source {
+        source @ lance::Error::InvalidInput { .. } => Error::InvalidInput {
+            message: source.to_string(),
+        },
+        source => source.into(),
+    }
+}
 
 /// Creates an Arrow field for a Lance blob v2 column.
 ///
@@ -230,6 +265,84 @@ fn non_null_row_ids(row_ids: &[u64], null_mask: &[bool]) -> Vec<u64> {
         .zip(null_mask)
         .filter_map(|(row_id, is_null)| (!is_null).then_some(*row_id))
         .collect()
+}
+
+/// Materialize blob-local ranges (same length and order as `requests`, nulls preserved).
+pub(crate) async fn take_blob_ranges_aligned(
+    dataset: &Arc<Dataset>,
+    column: &str,
+    requests: &[BlobRangeRequest],
+) -> Result<LargeBinaryArray> {
+    ensure_blob_v2_column(dataset.schema(), column)?;
+    if requests.is_empty() {
+        return Ok(LargeBinaryBuilder::new().finish());
+    }
+
+    let lance_requests = requests
+        .iter()
+        .map(|request| LanceBlobRangeRequest::new(request.row_id, request.offset, request.length))
+        .collect::<Vec<_>>();
+    let reader = dataset
+        .read_blob_ranges(column)
+        .map_err(map_blob_read_error)?
+        .with_row_ids(lance_requests)
+        .preserve_order(false);
+
+    let mut stream = reader
+        .try_into_stream()
+        .await
+        .map_err(map_blob_read_error)?;
+    let mut payloads = vec![None; requests.len()];
+    while let Some(result) = stream.try_next().await.map_err(map_blob_read_error)? {
+        let slot = payloads
+            .get_mut(result.request_index)
+            .ok_or_else(|| Error::Runtime {
+                message: format!(
+                    "blob range read for column '{column}' returned out-of-range request index {} for {} requests",
+                    result.request_index,
+                    requests.len()
+                ),
+            })?;
+        if slot.replace(result.data).is_some() {
+            return Err(Error::Runtime {
+                message: format!(
+                    "blob range read for column '{column}' returned request index {} more than once",
+                    result.request_index
+                ),
+            });
+        }
+    }
+
+    let missing_request_indices = payloads
+        .iter()
+        .enumerate()
+        .filter_map(|(request_index, payload)| payload.is_none().then_some(request_index))
+        .collect::<Vec<_>>();
+    if !missing_request_indices.is_empty() {
+        let missing_row_ids = missing_request_indices
+            .iter()
+            .map(|request_index| requests[*request_index].row_id)
+            .collect::<Vec<_>>();
+        let null_mask = blob_null_mask(dataset, column, &missing_row_ids).await?;
+        for (request_index, is_null) in missing_request_indices.into_iter().zip(null_mask) {
+            if !is_null {
+                return Err(Error::Runtime {
+                    message: format!(
+                        "blob range read for column '{column}' did not return request index {request_index}"
+                    ),
+                });
+            }
+        }
+    }
+
+    let mut builder = LargeBinaryBuilder::new();
+    for payload in payloads {
+        match payload {
+            Some(data) => builder.append_value(data.as_ref()),
+            None => builder.append_null(),
+        }
+    }
+    Ok(builder.finish())
 }
 
 /// Materialize blob bytes for `row_ids` (same length and order, nulls preserved).

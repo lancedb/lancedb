@@ -20,6 +20,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Tuple,
     Union,
     overload,
@@ -1538,6 +1539,23 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        """Materialize row-specific byte ranges from a blob v2 column.
+
+        Each request is a ``(row_id, offset, length)`` tuple. Requests may be
+        repeated or reordered, including multiple ranges for the same blob.
+        The result has the same length and order as ``requests``; null blobs
+        produce null slots and empty ranges on non-null blobs produce ``b""``.
+
+        Row IDs can be obtained from a query with ``with_row_id(True)``. This
+        API is currently supported only by local tables.
+        """
+
+    @abstractmethod
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
@@ -2259,6 +2277,13 @@ class LanceTable(Table):
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
+
+    def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -5822,6 +5847,13 @@ class AsyncTable:
         return await self._inner.fetch_blobs(
             column, _normalize_blob_row_ids(row_ids, column)
         )
+
+    async def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]

@@ -198,6 +198,58 @@ def test_fetch_blobs_null_alignment():
     assert blobs[2].as_py() == b"present"
 
 
+def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
+    table = _blob_table(
+        "range_alignment",
+        [{"id": 1, "image": b"abcdefghij"}, {"id": 2, "image": None}],
+    )
+    by_id = _row_ids_by_id(table)
+    requests = [
+        (by_id[1], 2, 3),
+        (by_id[2], 0, 0),
+        (by_id[1], 0, 2),
+        (by_id[1], 2, 3),
+        (by_id[1], 10, 0),
+    ]
+
+    ranges = table.fetch_blob_ranges("image", requests)
+
+    assert ranges.to_pylist() == [b"cde", None, b"ab", b"cde", b""]
+
+
+def test_fetch_blob_ranges_validates_requests():
+    table = _blob_table("range_validation", [{"id": 1, "image": b"abc"}])
+    row_id = _row_ids_by_id(table)[1]
+
+    with pytest.raises(ValueError, match="exceeds blob size"):
+        table.fetch_blob_ranges("image", [(row_id, 2, 2)])
+
+    with pytest.raises(ValueError, match="offset \\+ length overflowed"):
+        table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
+
+    with pytest.raises(ValueError, match="row ids"):
+        table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
+
+
+def test_fetch_blob_ranges_empty_requests_returns_empty_array():
+    table = _blob_table("range_empty", [{"id": 1, "image": b"x"}])
+    assert table.fetch_blob_ranges("image", []).to_pylist() == []
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_blob_ranges():
+    db = await lancedb.connect_async("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = await db.create_table("range_async", schema=schema)
+    await table.add([{"id": 1, "image": b"abcdefghij"}])
+    hits = await table.query().with_row_id().to_arrow()
+    row_id = hits["_rowid"][0].as_py()
+
+    ranges = await table.fetch_blob_ranges("image", [(row_id, 1, 3), (row_id, 6, 2)])
+
+    assert ranges.to_pylist() == [b"bcd", b"gh"]
+
+
 def test_fetch_blobs_nested_path():
     db = lancedb.connect("memory:///")
     info = pa.StructArray.from_arrays(

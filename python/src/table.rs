@@ -17,7 +17,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::BlobFile;
+use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
@@ -1095,6 +1095,27 @@ impl Table {
         future_into_py(self_.py(), async move {
             let blobs: LargeBinaryArray = inner
                 .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    /// Read row-specific blob-local byte ranges in one planned operation.
+    #[pyo3(signature = (column, requests))]
+    pub fn fetch_blob_ranges(
+        self_: PyRef<'_, Self>,
+        column: String,
+        requests: Vec<(u64, u64, u64)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let requests = requests
+                .into_iter()
+                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
+                .collect::<Vec<_>>();
+            let blobs: LargeBinaryArray = inner
+                .fetch_blob_ranges(column, requests)
                 .await
                 .infer_error()?;
             Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
