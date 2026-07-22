@@ -54,6 +54,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.
 - **Seamless Integration**: Python, Node.js, Rust, and REST APIs for easy integration. Native Python and Javascript/Typescript support.
 - **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [**LlamaIndex** 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+- **VS Code Extension Example**: [Kilo Code](https://github.com/Kilo-Org/kilocode) uses LanceDB for its [codebase indexing vector store](https://github.com/Kilo-Org/kilocode/blob/9ac93a4c904b32801982051c636dff1cdb471136/packages/kilo-indexing/src/indexing/vector-store/lancedb-vector-store.ts).
 
 ## **How to Install**:
 
