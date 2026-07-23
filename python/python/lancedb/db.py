@@ -45,6 +45,7 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
+from ._lancedb import connect_blocking as lancedb_connect_blocking  # type: ignore
 from .table import (
     AsyncTable,
     LanceTable,
@@ -649,26 +650,21 @@ class LanceDBConnection(DBConnection):
         else:
             read_consistency_interval_secs = None
 
-        async def do_connect():
-            return await lancedb_connect(
-                sanitize_uri(uri),
-                None,
-                None,
-                None,
-                read_consistency_interval_secs,
-                None,
-                storage_options,
-                session,
-                manifest_enabled,
-                namespace_client_properties,
-            )
-
         # TODO: It would be nice if we didn't store self.storage_options but it is
         # currently used by the LanceTable.to_lance method.  This doesn't _really_
         # work because some paths like LanceDBConnection.from_inner will lose the
         # storage_options.  Also, this class really shouldn't be holding any state
         # beyond _conn.
-        self._conn = AsyncConnection(LOOP.run(do_connect()))
+        self._conn = AsyncConnection(
+            lancedb_connect_blocking(
+                sanitize_uri(uri),
+                read_consistency_interval_secs,
+                storage_options,
+                session,
+                manifest_enabled,
+                namespace_client_properties,
+            )
+        )
         self._cached_namespace_client: Optional[LanceNamespace] = None
 
     @property

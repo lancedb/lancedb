@@ -351,6 +351,14 @@ async def connect(
     namespace_client_properties: Optional[Dict[str, str]] = None,
     oauth_config: Optional[Any] = None,
 ) -> Connection: ...
+def connect_blocking(
+    uri: str,
+    read_consistency_interval: Optional[float] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+) -> Connection: ...
 def connect_namespace(
     namespace_client_impl: str,
     namespace_client_properties: Dict[str, str],

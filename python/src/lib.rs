@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow::RecordBatchStream;
-use connection::{Connection, connect, connect_namespace, connect_namespace_client};
+use connection::{
+    Connection, connect, connect_blocking, connect_namespace, connect_namespace_client,
+};
 use env_logger::Env;
 use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
@@ -74,6 +76,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(otel::lancedb_metrics_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(otel::snapshot_lancedb_metrics, m)?)?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_blocking, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace, m)?)?;
     m.add_function(wrap_pyfunction!(connect_namespace_client, m)?)?;
     m.add_function(wrap_pyfunction!(table::tokenize, m)?)?;
