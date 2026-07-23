@@ -26,6 +26,8 @@ from typing import Any, Callable, Iterator, Optional
 
 from torch.utils.data import IterableDataset, get_worker_info
 
+from ._lancedb import SharedOffsetCache
+from .background_loop import LOOP
 from .permutation import (
     Permutation,
     Transforms,
@@ -148,6 +150,7 @@ class StreamingDataset(IterableDataset):
         transform: Optional[Callable] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
+        cache_dir: Optional[str] = None,
     ):
         super().__init__()
         if num_splits is None:
@@ -175,6 +178,16 @@ class StreamingDataset(IterableDataset):
         self._transform = transform
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
+        self._cache_dir = cache_dir
+
+        # Initialise the shared offset cache (if requested).
+        if cache_dir is not None:
+            tbl_version = table.version
+            self._shared_cache = LOOP.run(
+                SharedOffsetCache.create(cache_dir, table.name, tbl_version)
+            )
+        else:
+            self._shared_cache = None
 
         # Live references to pipeline state, set only while __iter__ is running
         # in the same process.  Used by the observability properties when the
@@ -273,6 +286,8 @@ class StreamingDataset(IterableDataset):
             if self._columns is not None:
                 perm = perm.select_columns(self._columns)
             perm = perm.with_transform(lambda batch: batch)
+            if self._shared_cache is not None:
+                perm = perm.with_cache(self._shared_cache)
             if self._resume_offset > 0:
                 perm = perm.with_skip(self._resume_offset)
             permutations.append(perm)

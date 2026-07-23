@@ -6,7 +6,9 @@ use connection::{Connection, connect, connect_namespace, connect_namespace_clien
 use env_logger::Env;
 use expr::{PyExpr, expr_col, expr_func, expr_lit};
 use index::IndexConfig;
-use permutation::{PyAsyncPermutationBuilder, PyPermutationReader};
+use permutation::{
+    PyAsyncPermutationBuilder, PyCachingPermutationReader, PyPermutationReader, PySharedOffsetCache,
+};
 use pyo3::{
     Bound, PyResult, Python, pymodule,
     types::{PyModule, PyModuleMethods},
@@ -63,6 +65,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FtsToken>()?;
     m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_class::<PyPermutationReader>()?;
+    m.add_class::<PySharedOffsetCache>()?;
+    m.add_class::<PyCachingPermutationReader>()?;
     m.add_class::<PyExpr>()?;
     // OpenTelemetry metrics bridge
     m.add_class::<otel::PyMetricPoint>()?;
