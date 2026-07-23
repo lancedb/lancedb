@@ -597,9 +597,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           rows.push(retrievedTable.get(i));
         }
 
-        expect(rows[0].metadata.version).toBe(null);
-        expect(rows[0].metadata.author).toBe(null);
-        expect(rows[0].metadata.tags).toBe(null);
+        expect(rows[0].metadata).toBe(null);
         expect(rows[0].id).toBe("doc1");
         expect(rows[0].name).toBe("Document 1");
       });
@@ -696,6 +694,46 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(configColumn?.type.toString()).toBe(
           "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
         );
+      });
+
+      it("will round-trip non-nullable fields inside a nested struct", async function () {
+        // Regression test for https://github.com/lancedb/lancedb/issues/2393
+        // Fields default to non-nullable, so every level of `metadata` here
+        // (metadata, nested, a, b) is non-nullable.
+        const schema = new Schema([
+          new Field("id", new Utf8(), true),
+          new Field(
+            "metadata",
+            new Struct([
+              new Field(
+                "nested",
+                new Struct([
+                  new Field("a", new Int32()),
+                  new Field("b", new Int32()),
+                ]),
+              ),
+            ]),
+          ),
+        ]);
+
+        const data = [
+          { id: "a", metadata: { nested: { a: 1, b: 2 } } },
+          { id: "b", metadata: { nested: { a: 3, b: 4 } } },
+        ];
+
+        const table = await convertToTable(data, undefined, { schema });
+        const buf = await fromTableToBuffer(table);
+        const retrievedTable = tableFromIPC(buf);
+
+        const rows = [];
+        for (let i = 0; i < retrievedTable.numRows; i++) {
+          rows.push(retrievedTable.get(i));
+        }
+
+        expect(rows[0].metadata.nested.a).toBe(1);
+        expect(rows[0].metadata.nested.b).toBe(2);
+        expect(rows[1].metadata.nested.a).toBe(3);
+        expect(rows[1].metadata.nested.b).toBe(4);
       });
 
       it("will handle missing columns in Arrow table input when using embeddings", async function () {
