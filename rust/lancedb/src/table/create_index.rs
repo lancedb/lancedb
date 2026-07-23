@@ -382,7 +382,9 @@ mod tests {
     use crate::connect;
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
-    use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder};
+    use crate::index::scalar::{
+        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
+    };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     };
@@ -1362,7 +1364,10 @@ mod tests {
             .unwrap();
 
         table
-            .create_index(&["text"], Index::FTS(Default::default()))
+            .create_index(
+                &["text"],
+                Index::FTS(FtsIndexBuilder::default().block_size(256).unwrap()),
+            )
             .execute()
             .await
             .unwrap();
@@ -1372,6 +1377,10 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::FTS);
         assert_eq!(index.columns, vec!["text".to_string()]);
         assert_eq!(index.name, "text_idx");
+        assert_eq!(index.index_version, Some(3));
+        let index_params: FtsIndexBuilder =
+            serde_json::from_str(index.index_details.as_deref().unwrap()).unwrap();
+        assert_eq!(index_params.posting_block_size(), 256);
 
         let num_rows = 120;
         let stats = table.index_stats("text_idx").await.unwrap().unwrap();

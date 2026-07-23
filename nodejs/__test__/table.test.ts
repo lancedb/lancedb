@@ -2527,6 +2527,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results3.length).toBe(1);
     });
 
+    test("full text search with custom posting block size", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ blockSize: 256 }),
+      });
+
+      const index = (await table.listIndices()).find(
+        (index) => index.indexType === "FTS",
+      );
+      expect(index?.indexVersion).toBe(3);
+      expect(
+        (index?.indexDetails as Record<string, unknown>)["block_size"],
+      ).toBe(256);
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("rejects invalid full text posting block size", () => {
+      expect(() => Index.fts({ blockSize: 129 as 128 | 256 })).toThrow(
+        "128 or 256",
+      );
+    });
+
     test("full text search without lowercase", async () => {
       const db = await connect(tmpDir.name);
       const data = [

@@ -4496,6 +4496,15 @@ mod tests {
                 serde_json::to_value(InvertedIndexParams::default()).unwrap(),
                 Index::FTS(Default::default()),
             ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["block_size"] = 256.into();
+                    body
+                },
+                Index::FTS(InvertedIndexParams::default().block_size(256).unwrap()),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {
