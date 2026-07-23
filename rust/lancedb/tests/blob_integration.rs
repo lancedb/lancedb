@@ -12,7 +12,7 @@ use futures::TryStreamExt;
 use lance_encoding::version::LanceFileVersion;
 use lancedb::{
     Connection, Error, Result, Table,
-    blob::blob,
+    blob::{BlobRangeRequest, blob},
     connect, connect_namespace,
     database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
     query::{ExecutableQuery, QueryBase},
@@ -596,6 +596,75 @@ async fn fetch_blobs_aligns_with_reordered_and_duplicate_ids() -> Result<()> {
 }
 
 #[tokio::test]
+async fn fetch_blob_ranges_aligns_repeated_ranges_and_nulls() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"abcdefghij".as_slice()), None])
+            .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let by_id = |want: i64| pairs.iter().find(|(id, _)| *id == want).unwrap().1;
+    let requests = [
+        BlobRangeRequest::new(by_id(1), 2, 3),
+        BlobRangeRequest::new(by_id(2), 0, 0),
+        BlobRangeRequest::new(by_id(1), 0, 2),
+        BlobRangeRequest::new(by_id(1), 2, 3),
+        BlobRangeRequest::new(by_id(1), 10, 0),
+    ];
+    let bytes = table.fetch_blob_ranges("image", requests).await?;
+
+    assert_eq!(bytes.len(), requests.len());
+    assert_eq!(bytes.value(0), b"cde");
+    assert!(bytes.is_null(1));
+    assert_eq!(bytes.value(2), b"ab");
+    assert_eq!(bytes.value(3), b"cde");
+    assert_eq!(bytes.value(4), b"");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_validates_requests() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"abc".as_slice())]).await?;
+    let row_id = collect_row_ids(&table).await?[0];
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, 2, 2)])
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert!(err.to_string().contains("exceeds blob size"));
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, u64::MAX, 1)])
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert!(err.to_string().contains("offset + length overflowed"));
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert!(err.to_string().contains("row ids"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_empty_requests_returns_empty_array() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let bytes = table.fetch_blob_ranges("image", std::iter::empty()).await?;
+    assert!(bytes.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn fetch_blobs_empty_ids_returns_empty() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
@@ -843,6 +912,19 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
             _ => unreachable!(),
         }
     }
+
+    let ranges = ids_before
+        .iter()
+        .map(|row_id| BlobRangeRequest::new(*row_id, 5, 3));
+    let ranges_after = table.fetch_blob_ranges("image", ranges).await?;
+    assert_eq!(ranges_after.len(), 2);
+    for (i, (id, _)) in pairs_before.iter().enumerate() {
+        match id {
+            1 => assert_eq!(ranges_after.value(i), b"one"),
+            2 => assert_eq!(ranges_after.value(i), b"two"),
+            _ => unreachable!(),
+        }
+    }
     Ok(())
 }
 
@@ -922,6 +1004,27 @@ async fn fetch_blobs_aligns_across_fragments_with_nulls_and_dups() -> Result<()>
                 bytes.value(slot),
                 dedicated_blob_bytes(*id as u8).as_slice()
             ),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_aligns_across_fragments_with_nulls_and_dups() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = multi_fragment_dedicated_blob_table(&db).await?;
+    let row_ids = row_ids_for_logical(&table, &SCRAMBLED_LOGICAL_IDS).await?;
+    let requests = row_ids
+        .iter()
+        .map(|row_id| BlobRangeRequest::new(*row_id, 123, 8));
+
+    let bytes = table.fetch_blob_ranges("image", requests).await?;
+    assert_eq!(bytes.len(), SCRAMBLED_LOGICAL_IDS.len());
+    for (slot, logical_id) in SCRAMBLED_LOGICAL_IDS.iter().enumerate() {
+        match logical_id {
+            3 | 5 => assert!(bytes.is_null(slot)),
+            id => assert_eq!(bytes.value(slot), [*id as u8; 8]),
         }
     }
     Ok(())

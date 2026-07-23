@@ -46,6 +46,7 @@ use std::sync::Arc;
 use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::DistanceType;
+use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::database::read_freshness::TableFreshness;
@@ -646,6 +647,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "fetch_blobs is not supported on this table type".into(),
         })
     }
+    /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
+    async fn fetch_blob_ranges(
+        &self,
+        _column: &str,
+        _requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "fetch_blob_ranges is not supported on this table type".into(),
+        })
+    }
     /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
     async fn fetch_blob_files(
         &self,
@@ -1053,6 +1064,47 @@ impl Table {
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
         self.inner.fetch_blobs(column.as_ref(), row_ids).await
+    }
+
+    /// Materialize row-specific ranges from a blob v2 column.
+    ///
+    /// Each request contains a row id and a blob-local offset and length.
+    /// Requests may be duplicated or reordered, including multiple
+    /// ranges for the same blob. The output has the same length and order as
+    /// the requests. Null blobs produce null output slots; empty ranges on
+    /// non-null blobs produce empty byte strings.
+    ///
+    /// ```
+    /// use lancedb::blob::BlobRangeRequest;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn read_ranges(table: &Table, row_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// let ranges = table
+    ///     .fetch_blob_ranges(
+    ///         "image",
+    ///         [
+    ///             BlobRangeRequest::new(row_id, 0, 1024),
+    ///             BlobRangeRequest::new(row_id, 4096, 1024),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// # let _ = ranges;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Returns [`Error::InvalidInput`] when a range is invalid, a requested
+    /// row id does not exist, or the column is not a blob v2 column. Returns
+    /// [`Error::NotSupported`] on table types without blob support.
+    pub async fn fetch_blob_ranges(
+        &self,
+        column: impl AsRef<str>,
+        requests: impl IntoIterator<Item = BlobRangeRequest>,
+    ) -> Result<LargeBinaryArray> {
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        self.inner
+            .fetch_blob_ranges(column.as_ref(), &requests)
+            .await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -3068,6 +3120,15 @@ impl BaseTable for NativeTable {
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
         let dataset = self.dataset.get().await?;
         crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
+    }
+
+    async fn fetch_blob_ranges(
+        &self,
+        column: &str,
+        requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
     }
 
     async fn fetch_blob_files(
