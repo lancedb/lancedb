@@ -706,7 +706,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             .err_to_http(request_id.clone())?;
         debug!(
             "Received response for request_id={}: {:?}",
-            request_id, &response
+            request_id, response
         );
         Ok((request_id, response))
     }
@@ -768,7 +768,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 Ok((status, response)) if status.is_success() => {
                     debug!(
                         "Received response for request_id={}: {:?}",
-                        retry_counter.request_id, &response
+                        retry_counter.request_id, response
                     );
                     return Ok((retry_counter.request_id, response));
                 }
