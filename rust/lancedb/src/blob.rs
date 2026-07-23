@@ -273,7 +273,15 @@ pub(crate) async fn take_blobs_aligned(
         if *is_null {
             builder.append_null();
         } else {
-            builder.append_value(payloads[payload_idx].data.as_ref());
+            let data = payloads[payload_idx]
+                .data
+                .as_ref()
+                .ok_or_else(|| Error::Runtime {
+                    message: format!(
+                        "blob read for column '{column}' returned null payload for a non-null row"
+                    ),
+                })?;
+            builder.append_value(data);
             payload_idx += 1;
         }
     }
@@ -309,16 +317,20 @@ pub(crate) async fn take_blob_files_aligned(
     }
 
     let mut handles = handles.into_iter();
-    Ok(null_mask
-        .iter()
-        .map(|is_null| {
-            if *is_null {
-                None
-            } else {
-                Some(handles.next().unwrap())
-            }
-        })
-        .collect())
+    let mut aligned_handles = Vec::with_capacity(row_ids.len());
+    for is_null in null_mask {
+        if is_null {
+            aligned_handles.push(None);
+        } else {
+            let handle = handles.next().unwrap().ok_or_else(|| Error::Runtime {
+                message: format!(
+                    "blob take for column '{column}' returned a null handle for a non-null row"
+                ),
+            })?;
+            aligned_handles.push(Some(handle));
+        }
+    }
+    Ok(aligned_handles)
 }
 
 #[cfg(test)]
