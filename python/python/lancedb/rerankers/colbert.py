@@ -16,7 +16,7 @@ class ColbertReranker(AnswerdotaiRerankers):
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
     return_score : str, default "relevance"
-        options are "relevance" or "all". Only "relevance" is supported for now.
+        options are "relevance" or "all".
     **kwargs
         Additional keyword arguments to pass to the model, for example, 'device'.
         See AnswerDotAI/rerankers for more information.
