@@ -273,7 +273,11 @@ pub(crate) async fn take_blobs_aligned(
         if *is_null {
             builder.append_null();
         } else {
-            builder.append_value(payloads[payload_idx].data.as_ref());
+            if let Some(data) = &payloads[payload_idx].data {
+                builder.append_value(data);
+            } else {
+                builder.append_null();
+            }
             payload_idx += 1;
         }
     }
@@ -315,7 +319,7 @@ pub(crate) async fn take_blob_files_aligned(
             if *is_null {
                 None
             } else {
-                Some(handles.next().unwrap())
+                handles.next().flatten()
             }
         })
         .collect())
