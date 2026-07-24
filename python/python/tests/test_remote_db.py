@@ -768,7 +768,10 @@ def test_table_create_indices():
         # Test create_fts_index with custom name (legacy method)
         with pytest.warns(DeprecationWarning, match="create_fts_index"):
             table.create_fts_index(
-                "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
+                "text",
+                wait_timeout=timedelta(seconds=2),
+                block_size=256,
+                name="custom_fts_idx",
             )
 
         # Test create_index with custom name (legacy form: vector_column_name kwarg)
@@ -791,6 +794,7 @@ def test_table_create_indices():
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["block_size"] == 256
 
         # Check vector index request has custom name
         vector_req = received_requests[2]
@@ -876,7 +880,7 @@ def test_remote_create_index_new_api():
             _warnings.simplefilter("error", DeprecationWarning)
             table.create_index("vector", config=IvfPq(distance_type="l2"))
             table.create_index("category", config=BTree())
-            table.create_index("text", config=FTS())
+            table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
 
@@ -896,6 +900,7 @@ def test_remote_create_index_new_api():
             "vector",
             "vector",
         ]
+        assert received_requests[2]["block_size"] == 256
 
 
 def test_table_wait_for_index_timeout():

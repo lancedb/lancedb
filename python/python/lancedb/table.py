@@ -1106,6 +1106,7 @@ class Table(ABC):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        block_size: int = 128,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
@@ -1177,6 +1178,10 @@ class Table(ABC):
             The maximum length of an n-gram.
         prefix_only: bool, default False
             Whether to only index the prefix of the token for ngram tokenizer.
+        block_size: int, default 128
+            The number of documents per compressed posting block. Must be 128
+            or 256. A value of 256 uses the experimental FTS V3 format and
+            may introduce breaking changes.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         name: str, optional
@@ -3026,6 +3031,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        block_size: int = 128,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -3075,9 +3081,7 @@ class LanceTable(Table):
         else:
             tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
 
-        config = FTS(
-            **tokenizer_configs,
-        )
+        config = FTS(block_size=block_size, **tokenizer_configs)
 
         try:
             LOOP.run(

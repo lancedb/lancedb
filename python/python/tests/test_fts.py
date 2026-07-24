@@ -226,6 +226,23 @@ def test_create_inverted_index(table, with_position):
     assert any(i.name == "custom_fts_index" for i in fts_indices)
 
 
+@pytest.mark.parametrize("block_size", [128, 256])
+def test_create_inverted_index_block_size(table, block_size):
+    table.create_index("text", config=FTS(block_size=block_size))
+
+    index = next(index for index in table.list_indices() if index.index_type == "FTS")
+    assert index.index_details["block_size"] == block_size
+    assert index.index_version == (2 if block_size == 128 else 3)
+
+    results = table.search("puppy").limit(5).to_list()
+    assert len(results) == 5
+
+
+def test_create_inverted_index_rejects_invalid_block_size(table):
+    with pytest.raises(ValueError, match="128 or 256"):
+        table.create_index("text", config=FTS(block_size=129))
+
+
 def test_search_fts(table):
     table.create_fts_index("text")
     results = table.search("puppy").select(["id", "text"]).limit(5).to_list()

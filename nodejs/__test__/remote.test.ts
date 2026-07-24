@@ -15,6 +15,7 @@ import {
   OAuthHeaderProvider,
   StaticHeaderProvider,
 } from "../lancedb/header";
+import { Index } from "../lancedb/indices";
 
 // Test-only header providers
 class CustomProvider extends HeaderProvider {
@@ -223,6 +224,54 @@ describe("remote connection", () => {
         expect(expV2.currentBranch()).toBe("exp");
       },
     );
+  });
+
+  it("sends the FTS posting block size to remote tables", async () => {
+    let createIndexBody: Record<string, unknown> | undefined;
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "text", type: { type: "string" }, nullable: false },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBody = JSON.parse(raw);
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("text", {
+          config: Index.fts({ blockSize: 256 }),
+        });
+      },
+    );
+
+    expect(createIndexBody?.["column"]).toBe("text");
+    expect(createIndexBody?.["index_type"]).toBe("FTS");
+    expect(createIndexBody?.["block_size"]).toBe(256);
   });
 
   it("diffs and merges remote branches", async () => {
