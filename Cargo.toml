@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=10.0.0-beta.2", default-features = false, "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=10.0.0-beta.2", default-features = false, "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=10.0.0-beta.2", default-features = false, "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=10.0.0-beta.2", "tag" = "v10.0.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
+lance = { path = "../lance/rust/lance", default-features = false }
+lance-core = { path = "../lance/rust/lance-core" }
+lance-datagen = { path = "../lance/rust/lance-datagen" }
+lance-file = { path = "../lance/rust/lance-file" }
+lance-io = { path = "../lance/rust/lance-io", default-features = false }
+lance-index = { path = "../lance/rust/lance-index" }
+lance-linalg = { path = "../lance/rust/lance-linalg" }
+lance-namespace = { path = "../lance/rust/lance-namespace" }
+lance-namespace-impls = { path = "../lance/rust/lance-namespace-impls", default-features = false }
+lance-table = { path = "../lance/rust/lance-table" }
+lance-testing = { path = "../lance/rust/lance-testing" }
+lance-datafusion = { path = "../lance/rust/lance-datafusion" }
+lance-encoding = { path = "../lance/rust/lance-encoding" }
+lance-arrow = { path = "../lance/rust/lance-arrow" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
