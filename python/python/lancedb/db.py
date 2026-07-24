@@ -178,13 +178,18 @@ class DBConnection(EnforceOverrides):
             "Namespace operations are not supported for this connection type"
         )
 
-    def namespace_exists(self, namespace_id: List[str]) -> None:
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
         """Check if a namespace exists.
 
         Parameters
         ----------
         namespace_id: List[str]
             The namespace identifier to check.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
 
         Raises
         ------
@@ -195,7 +200,7 @@ class DBConnection(EnforceOverrides):
             "Namespace operations are not supported for this connection type"
         )
 
-    def table_exists(self, table_id: List[str]) -> None:
+    def table_exists(self, table_id: List[str]) -> bool:
         """Check if a table exists.
 
         Parameters
@@ -203,6 +208,11 @@ class DBConnection(EnforceOverrides):
         table_id: List[str]
             The table identifier to check (full path including namespace
             segments and table name).
+
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
 
         Raises
         ------

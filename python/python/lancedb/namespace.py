@@ -38,7 +38,11 @@ from lance_namespace_urllib3_client.models.query_table_request_vector import (
     QueryTableRequestVector,
 )
 from lance_namespace_urllib3_client.models.string_fts_query import StringFtsQuery
-from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lance_namespace.errors import (
+    NamespaceNotEmptyError,
+    NamespaceNotFoundError,
+    TableNotFoundError,
+)
 from lancedb._lancedb import (
     connect_namespace as _connect_namespace,
     connect_namespace_client as _connect_namespace_client,
@@ -783,7 +787,7 @@ class LanceNamespaceDBConnection(DBConnection):
         return LOOP.run(self._inner.describe_namespace(namespace_path))
 
     @override
-    def namespace_exists(self, namespace_id: List[str]) -> None:
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
         """
         Check if a namespace exists.
 
@@ -792,16 +796,20 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_id : List[str]
             The namespace identifier to check.
 
-        Raises
-        ------
-        NamespaceNotFoundError
-            If the namespace does not exist.
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
         """
         request = NamespaceExistsRequest(id=namespace_id)
-        self._namespace_client.namespace_exists(request)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
 
     @override
-    def table_exists(self, table_id: List[str]) -> None:
+    def table_exists(self, table_id: List[str]) -> bool:
         """
         Check if a table exists.
 
@@ -811,13 +819,17 @@ class LanceNamespaceDBConnection(DBConnection):
             The table identifier to check (full path including namespace
             segments and table name).
 
-        Raises
-        ------
-        TableNotFoundError
-            If the table does not exist.
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
         """
         request = TableExistsRequest(id=table_id)
-        self._namespace_client.table_exists(request)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
 
     @override
     def list_tables(
@@ -1272,7 +1284,7 @@ class AsyncLanceNamespaceDBConnection:
         """
         return await self._inner.describe_namespace(namespace_path)
 
-    async def namespace_exists(self, namespace_id: List[str]) -> None:
+    async def namespace_exists(self, namespace_id: List[str]) -> bool:
         """
         Check if a namespace exists.
 
@@ -1281,15 +1293,19 @@ class AsyncLanceNamespaceDBConnection:
         namespace_id : List[str]
             The namespace identifier to check.
 
-        Raises
-        ------
-        NamespaceNotFoundError
-            If the namespace does not exist.
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
         """
         request = NamespaceExistsRequest(id=namespace_id)
-        self._namespace_client.namespace_exists(request)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
 
-    async def table_exists(self, table_id: List[str]) -> None:
+    async def table_exists(self, table_id: List[str]) -> bool:
         """
         Check if a table exists.
 
@@ -1299,13 +1315,17 @@ class AsyncLanceNamespaceDBConnection:
             The table identifier to check (full path including namespace
             segments and table name).
 
-        Raises
-        ------
-        TableNotFoundError
-            If the table does not exist.
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
         """
         request = TableExistsRequest(id=table_id)
-        self._namespace_client.table_exists(request)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
 
     async def list_tables(
         self,

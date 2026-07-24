@@ -772,7 +772,7 @@ def test_namespace_with_schema_only(s3_bucket: str, use_custom: bool):
 @pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
 def test_namespace_exists(use_custom: bool):
     """
-    Test namespace_exists returns None for existing and raises for non-existent.
+    Test namespace_exists returns True for existing and False for non-existent.
     """
     temp_dir = tempfile.mkdtemp()
     try:
@@ -787,12 +787,11 @@ def test_namespace_exists(use_custom: bool):
         namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
         db.create_namespace([namespace_name])
 
-        # Existing namespace should return None
-        assert db.namespace_exists(namespace_id=[namespace_name]) is None
+        # Existing namespace should return True
+        assert db.namespace_exists(namespace_id=[namespace_name]) is True
 
-        # Non-existent namespace should raise an error
-        with pytest.raises(Exception):
-            db.namespace_exists(namespace_id=["nonexistent_ns"])
+        # Non-existent namespace should return False
+        assert db.namespace_exists(namespace_id=["nonexistent_ns"]) is False
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -800,7 +799,7 @@ def test_namespace_exists(use_custom: bool):
 @pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
 def test_table_exists(use_custom: bool):
     """
-    Test table_exists returns None for existing table and raises for non-existent.
+    Test table_exists returns True for existing table and False for non-existent.
     """
     temp_dir = tempfile.mkdtemp()
     try:
@@ -827,12 +826,11 @@ def test_table_exists(use_custom: bool):
 
         db.create_table(table_name, schema=schema, namespace_path=namespace_path)
 
-        # Existing table should return None
+        # Existing table should return True
         table_id = namespace_path + [table_name]
-        assert db.table_exists(table_id=table_id) is None
+        assert db.table_exists(table_id=table_id) is True
 
-        # Non-existent table should raise an error
-        with pytest.raises(Exception):
-            db.table_exists(table_id=namespace_path + ["nonexistent_table"])
+        # Non-existent table should return False
+        assert db.table_exists(table_id=namespace_path + ["nonexistent_table"]) is False
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
