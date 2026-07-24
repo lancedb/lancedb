@@ -489,6 +489,41 @@ pub struct FtsToken {
     pub position: u32,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CreateIndexResult {
+    job_id: Option<String>,
+}
+
+impl CreateIndexResult {
+    pub(crate) fn accepted(job_id: String) -> Self {
+        Self {
+            job_id: Some(job_id),
+        }
+    }
+
+    pub fn job_id(&self) -> Option<&str> {
+        self.job_id.as_deref()
+    }
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobDescription {
+    pub job_id: String,
+    #[serde(default)]
+    pub job_type: String,
+    #[serde(default)]
+    pub job_subtype: String,
+    pub job_state: String,
+    #[serde(default)]
+    pub creation_ms: i64,
+    #[serde(default)]
+    pub spec: serde_json::Value,
+    #[serde(default)]
+    pub status: serde_json::Value,
+}
+
 /// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
 ///
 /// This does not require a table or FTS index. Use
@@ -561,6 +596,23 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    #[doc(hidden)]
+    async fn create_index_with_result(&self, index: IndexBuilder) -> Result<CreateIndexResult> {
+        self.create_index(index).await?;
+        Ok(CreateIndexResult::default())
+    }
+    #[doc(hidden)]
+    async fn describe_job(&self, _job_id: &str) -> Result<JobDescription> {
+        Err(Error::NotSupported {
+            message: "job APIs are only supported on remote tables".to_string(),
+        })
+    }
+    #[doc(hidden)]
+    async fn cancel_job(&self, _job_id: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "job APIs are only supported on remote tables".to_string(),
+        })
+    }
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -1259,6 +1311,16 @@ impl Table {
             builder = builder.wait_timeout(timeout);
         }
         builder
+    }
+
+    #[doc(hidden)]
+    pub async fn describe_job(&self, job_id: &str) -> Result<JobDescription> {
+        self.inner.describe_job(job_id).await
+    }
+
+    #[doc(hidden)]
+    pub async fn cancel_job(&self, job_id: &str) -> Result<()> {
+        self.inner.cancel_job(job_id).await
     }
 
     /// Create a builder for a merge insert operation

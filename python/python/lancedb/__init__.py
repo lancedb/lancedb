@@ -19,6 +19,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
+from .job import AsyncJob, Job
 from .schema import blob, vector, BlobType
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
@@ -497,6 +498,7 @@ __all__ = [
     "connect_namespace",
     "connect_namespace_async",
     "AsyncConnection",
+    "AsyncJob",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "FtsToken",
@@ -512,6 +514,7 @@ __all__ = [
     "DBConnection",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "Job",
     "RemoteDBConnection",
     "Session",
     "Table",

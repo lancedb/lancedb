@@ -69,6 +69,7 @@ from .index import (
     HnswFlat,
     FTS,
 )
+from .job import AsyncJob, Job
 from .expr import Expr
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
@@ -883,7 +884,7 @@ class Table(ABC):
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     # Legacy API overload (deprecated)
     @overload
@@ -907,7 +908,7 @@ class Table(ABC):
         name: Optional[str] = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     def create_index(
         self,
@@ -930,7 +931,7 @@ class Table(ABC):
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
-    ):
+    ) -> Optional[Job]:
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
@@ -957,6 +958,12 @@ class Table(ABC):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Returns
+        -------
+        Optional[Job]
+            A job handle when the remote server submits the index through the Job
+            Registry. Local tables and older remote servers return ``None``.
 
         Examples
         --------
@@ -2536,7 +2543,7 @@ class LanceTable(Table):
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     # Legacy API overload (deprecated)
     @overload
@@ -2562,7 +2569,7 @@ class LanceTable(Table):
         name: Optional[str] = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     def create_index(
         self,
@@ -2593,7 +2600,7 @@ class LanceTable(Table):
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
-    ):
+    ) -> Optional[Job]:
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
@@ -2620,6 +2627,12 @@ class LanceTable(Table):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Returns
+        -------
+        Optional[Job]
+            A job handle when the remote server submits the index through the Job
+            Registry. Local tables and older remote servers return ``None``.
 
         Examples
         --------
@@ -2735,7 +2748,7 @@ class LanceTable(Table):
                     self.checkout_latest()
                     return
 
-        return LOOP.run(
+        job = LOOP.run(
             self._table.create_index(
                 column,
                 replace=replace,
@@ -2745,6 +2758,7 @@ class LanceTable(Table):
                 train=train,
             )
         )
+        return Job(job) if job is not None else None
 
     def _is_legacy_create_index_call(
         self,
@@ -4738,7 +4752,7 @@ class AsyncTable:
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
-    ):
+    ) -> Optional[AsyncJob]:
         """Create an index to speed up queries
 
         Indices can be created on vector columns or scalar columns.
@@ -4769,6 +4783,12 @@ class AsyncTable:
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
+
+        Returns
+        -------
+        Optional[AsyncJob]
+            A job handle when the remote server submits the index through the Job
+            Registry. Local tables and older remote servers return ``None``.
         """
         if config is not None:
             if not isinstance(
@@ -4794,7 +4814,8 @@ class AsyncTable:
                     + str(type(config))
                 )
         try:
-            await self._inner.create_index(
+            job_table = self._inner._clone()
+            job_id = await job_table.create_index(
                 column,
                 index=config,
                 replace=replace,
@@ -4802,6 +4823,7 @@ class AsyncTable:
                 name=name,
                 train=train,
             )
+            return AsyncJob(job_table, job_id) if job_id is not None else None
         except (ValueError, RuntimeError) as e:
             if isinstance(config, FTS):
                 _maybe_add_fts_error_note(

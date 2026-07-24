@@ -19,8 +19,10 @@ use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::BranchDiff;
+use crate::table::CreateIndexResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
+use crate::table::JobDescription;
 use crate::table::LsmWriteSpec;
 use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
@@ -79,6 +81,11 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Deserialize)]
+struct CreateIndexJobResponse {
+    job_id: String,
+}
 
 /// Per-table state driving the freshness headers (`x-lancedb-min-version`,
 /// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on read
@@ -2194,7 +2201,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(delete_response)
     }
 
-    async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
+    async fn create_index(&self, index: IndexBuilder) -> Result<()> {
+        self.create_index_with_result(index).await.map(|_| ())
+    }
+
+    async fn create_index_with_result(&self, mut index: IndexBuilder) -> Result<CreateIndexResult> {
         self.check_mutable().await?;
         let request = self
             .client
@@ -2287,13 +2298,57 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send(request, true).await?;
 
-        self.check_table_response(&request_id, response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let result = if response.status() == StatusCode::ACCEPTED {
+            let body = response.text().await.err_to_http(request_id.clone())?;
+            let response: CreateIndexJobResponse =
+                serde_json::from_str(&body).map_err(|err| Error::Http {
+                    source: format!("Failed to parse create index job response: {err}").into(),
+                    request_id: request_id.clone(),
+                    status_code: Some(StatusCode::ACCEPTED),
+                })?;
+            if response.job_id.trim().is_empty() {
+                return Err(Error::Http {
+                    source: "Create index job response contained an empty job_id".into(),
+                    request_id,
+                    status_code: Some(StatusCode::ACCEPTED),
+                });
+            }
+            CreateIndexResult::accepted(response.job_id)
+        } else {
+            CreateIndexResult::default()
+        };
 
         if let Some(wait_timeout) = index.wait_timeout {
             let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
             self.wait_for_index(&[&index_name], wait_timeout).await?;
         }
 
+        Ok(result)
+    }
+
+    async fn describe_job(&self, job_id: &str) -> Result<JobDescription> {
+        let request = self
+            .client
+            .post("/v1/jobs/describe")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|err| Error::Http {
+            source: format!("Failed to parse describe job response: {err}").into(),
+            request_id,
+            status_code: Some(StatusCode::OK),
+        })
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<()> {
+        let request = self
+            .client
+            .post("/v1/jobs/cancel")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, response) = self.send(request, true).await?;
+        self.client.check_response(&request_id, response).await?;
         Ok(())
     }
 
@@ -6001,6 +6056,161 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_index_returns_job_id_and_job_api_uses_it() {
+        let describe_body = describe_response(&Schema::new(vec![Field::new(
+            "category",
+            DataType::Int32,
+            false,
+        )]));
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"j1_create_index"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    assert_eq!(
+                        request_body_json(&request),
+                        json!({"job_id": "j1_create_index"})
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{
+                                "job_id": "j1_create_index",
+                                "job_type": "index",
+                                "job_subtype": "scalar",
+                                "job_state": "IN_PROGRESS",
+                                "creation_ms": 123,
+                                "spec": {"column": "category"},
+                                "status": {"rows_processed": 50, "total_rows": 200}
+                            }"#
+                            .to_string(),
+                        )
+                        .unwrap()
+                }
+                "/v1/jobs/cancel" => {
+                    assert_eq!(
+                        request_body_json(&request),
+                        json!({"job_id": "j1_create_index"})
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"j1_create_index"}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let result = table
+            .create_index(&["category"], Index::BTree(Default::default()))
+            .execute_with_result()
+            .await
+            .unwrap();
+        assert_eq!(result.job_id(), Some("j1_create_index"));
+
+        let description = table.describe_job(result.job_id().unwrap()).await.unwrap();
+        assert_eq!(description.job_id, "j1_create_index");
+        assert_eq!(description.job_state, "IN_PROGRESS");
+        assert_eq!(
+            description.status,
+            json!({"rows_processed": 50, "total_rows": 200})
+        );
+
+        table.cancel_job(result.job_id().unwrap()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_index_legacy_response_has_no_job_id() {
+        let describe_body = describe_response(&Schema::new(vec![Field::new(
+            "category",
+            DataType::Int32,
+            false,
+        )]));
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let result = table
+            .create_index(&["category"], Index::BTree(Default::default()))
+            .execute_with_result()
+            .await
+            .unwrap();
+        assert_eq!(result.job_id(), None);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_public_execute_accepts_job_response() {
+        let describe_body = describe_response(&Schema::new(vec![Field::new(
+            "category",
+            DataType::Int32,
+            false,
+        )]));
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"j1_create_index"}"#.to_string())
+                    .unwrap(),
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        table
+            .create_index(&["category"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[rstest]
+    #[case(r#"{}"#)]
+    #[case(r#"{"job_id":""}"#)]
+    #[tokio::test]
+    async fn test_create_index_rejects_invalid_job_response(#[case] response_body: &'static str) {
+        let describe_body = describe_response(&Schema::new(vec![Field::new(
+            "category",
+            DataType::Int32,
+            false,
+        )]));
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(202)
+                    .body(response_body.to_string())
+                    .unwrap(),
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let error = table
+            .create_index(&["category"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Http { .. }));
     }
 
     #[tokio::test]

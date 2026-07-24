@@ -286,6 +286,11 @@ impl IndexBuilder {
     pub async fn execute(self) -> Result<()> {
         self.parent.clone().create_index(self).await
     }
+
+    #[doc(hidden)]
+    pub async fn execute_with_result(self) -> Result<crate::table::CreateIndexResult> {
+        self.parent.clone().create_index_with_result(self).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

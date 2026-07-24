@@ -600,6 +600,10 @@ impl Table {
         self.name.clone()
     }
 
+    pub fn _clone(&self) -> PyResult<Self> {
+        Ok(Self::new(self.inner_ref()?.clone()))
+    }
+
     /// Returns True if the table is open, False if it is closed.
     pub fn is_open(&self) -> bool {
         self.inner.is_some()
@@ -797,7 +801,24 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            op.execute().await.infer_error()?;
+            let result = op.execute_with_result().await.infer_error()?;
+            Ok(result.job_id().map(str::to_string))
+        })
+    }
+
+    pub fn _describe_job<'a>(self_: PyRef<'a, Self>, job_id: String) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let description = inner.describe_job(&job_id).await.infer_error()?;
+            serde_json::to_string(&description)
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+        })
+    }
+
+    pub fn _cancel_job<'a>(self_: PyRef<'a, Self>, job_id: String) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.cancel_job(&job_id).await.infer_error()?;
             Ok(())
         })
     }

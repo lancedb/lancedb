@@ -47,6 +47,7 @@ from lancedb.index import (
     IvfSq,
     LabelList,
 )
+from lancedb.job import Job
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -386,7 +387,7 @@ class RemoteTable(Table):
         wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     # Legacy API overload (deprecated)
     @overload
@@ -407,7 +408,7 @@ class RemoteTable(Table):
         num_bits: int = ...,
         name: Optional[str] = ...,
         train: bool = ...,
-    ) -> None: ...
+    ) -> Optional[Job]: ...
 
     def create_index(
         self,
@@ -425,7 +426,7 @@ class RemoteTable(Table):
         config: Optional[IndexConfigType] = None,
         name: Optional[str] = None,
         train: bool = True,
-    ):
+    ) -> Optional[Job]:
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
@@ -435,13 +436,22 @@ class RemoteTable(Table):
         argument plus separate ``vector_column_name`` / ``num_partitions`` /
         etc. parameters, and emits a ``DeprecationWarning``.
 
+        Returns
+        -------
+        Optional[Job]
+            A handle for the submitted Job Registry job. Older servers that complete
+            submission through the legacy event path return ``None``.
+
         Examples
         --------
         New API (recommended):
 
-        >>> table.create_index(  # doctest: +SKIP
+        >>> job = table.create_index(  # doctest: +SKIP
         ...     "vector", config=IvfPq(distance_type="l2")
         ... )
+        >>> job.status()  # doctest: +SKIP
+        'in_progress'
+        >>> job.wait()  # doctest: +SKIP
         >>> table.create_index("category", config=BTree())  # doctest: +SKIP
         >>> table.create_index("content", config=FTS())  # doctest: +SKIP
 
@@ -526,7 +536,7 @@ class RemoteTable(Table):
         else:
             column = metric
 
-        LOOP.run(
+        job = LOOP.run(
             self._table.create_index(
                 column,
                 config=config,
@@ -535,6 +545,7 @@ class RemoteTable(Table):
                 train=train,
             )
         )
+        return Job(job) if job is not None else None
 
     def _is_legacy_create_index_call(
         self,
