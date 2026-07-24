@@ -3,10 +3,13 @@
 
 pub mod insert;
 
-use self::insert::RemoteInsertExec;
+use self::insert::{RemoteWriteExec, WriteOp};
 use crate::expr::expr_to_sql_string;
 use crate::table::write_progress::FinishOnDrop;
-
+// Used by the test module below (single-request write requests set these
+// headers directly in test handlers); kept at module scope so both the
+// library and its tests can name them.
+#[cfg(test)]
 use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
@@ -44,7 +47,7 @@ use crate::{
         merge::MergeInsertBuilder,
     },
 };
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
@@ -53,6 +56,7 @@ use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::{StreamExt, TryStreamExt};
+#[cfg(test)]
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
@@ -455,84 +459,12 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(
-            Vec::new(),
-            &RecordBatchReader::schema(&*data),
-        )?;
-
-        //  Mutex is just here to make it sync. We shouldn't have any contention.
-        let mut data = Mutex::new(data);
-        let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
-            Some(Ok(batch)) => {
-                writer.write(&batch).ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-            Some(Err(e)) => Some(Err(e)),
-            None => {
-                writer.finish().ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-        });
-        let body_stream = futures::stream::iter(body_iter);
-        Ok(reqwest::Body::wrap_stream(body_stream))
-    }
-
-    /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
-        reader: &mut R,
-    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
-        let schema = reader.schema();
-        let mut batches = Vec::new();
-        for batch in reader {
-            batches.push(batch?);
-        }
-        Ok((schema, batches))
-    }
-
-    /// Create a new RecordBatchReader from buffered data
-    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
-        let iter = batches.into_iter().map(Ok);
-        RecordBatchIterator::new(iter, schema)
-    }
-
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
         let res = if with_retry {
             self.client.send_with_retry(req, None, true).await?
         } else {
             self.client.send(req).await?
         };
-        Ok(res)
-    }
-
-    /// Send the request with streaming body.
-    /// This will use retries if with_retry is set and the number of configured retries is > 0.
-    /// If retries are enabled, the stream will be buffered into memory.
-    async fn send_streaming(
-        &self,
-        req: RequestBuilder,
-        mut data: Box<dyn RecordBatchReader + Send>,
-        with_retry: bool,
-    ) -> Result<(String, Response)> {
-        if !with_retry || self.client.retry_config.retries == 0 {
-            let body = Self::reader_as_body(data)?;
-            return self.client.send(req.body(body)).await;
-        }
-
-        // to support retries, buffer into memory and clone the batches on each retry
-        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-        let make_body = Box::new(move || {
-            let reader = Self::make_reader(schema.clone(), batches.clone());
-            Self::reader_as_body(Box::new(reader))
-        });
-        let res = self
-            .client
-            .send_with_retry(req, Some(make_body), false)
-            .await?;
-
         Ok(res)
     }
 
@@ -1238,12 +1170,14 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
         let _guard = output.tracker.as_ref().map(|t| t.track_task());
 
-        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             output.plan,
-            output.overwrite,
+            WriteOp::Insert {
+                overwrite: output.overwrite,
+            },
             output.tracker.clone(),
             self.branch.clone(),
         ));
@@ -1258,7 +1192,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             match result {
                 Ok(_) => {
                     let add_result = (insert.as_ref() as &dyn std::any::Any)
-                        .downcast_ref::<RemoteInsertExec<S>>()
+                        .downcast_ref::<RemoteWriteExec<S>>()
                         .and_then(|i| i.add_result())
                         .unwrap_or(AddResult { version: 0 });
 
@@ -1359,7 +1293,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             )?,
         ) as Arc<dyn ExecutionPlan>;
 
-        let insert = Arc::new(RemoteInsertExec::new_multipart(
+        let insert = Arc::new(RemoteWriteExec::new_multipart(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
@@ -2354,48 +2288,66 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let timeout = params.timeout;
-
         let query = MergeInsertRequest::try_from(params)?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/merge_insert/", self.identifier))
-            .query(&query)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
-        request = self.apply_branch_query(request);
 
-        if let Some(timeout) = timeout {
-            // (If it doesn't fit into u64, it's not worth sending anyways.)
-            if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
-                request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+        // Drive merge_insert through the same RemoteWriteExec streaming path as
+        // add(). This routes the request body through the error side-channel so
+        // an input stream error (e.g. NaN rejection) surfaces with its original
+        // message instead of the masked HTTP error Hyper produces when a request
+        // body stream fails under HTTP2 (issue #2339). The branch, request
+        // timeout header, and merge query params are all applied inside the exec.
+        //
+        // The public merge_insert API only accepts a `RecordBatchReader`, which
+        // is not rescannable and so could not be retried directly. To preserve
+        // the previous retry-on-retryable-status behaviour, buffer the reader
+        // into memory first: a `Vec<RecordBatch>` is rescannable, so the outer
+        // loop can re-execute the plan (and re-stream the body) on each retry.
+        // This mirrors the old `send_streaming(with_retry=true)` path, which
+        // likewise buffered the reader to support retries.
+        let batches = new_data.collect::<std::result::Result<Vec<_>, _>>()?;
+        let source: Box<dyn Scannable> = Box::new(batches);
+        let rescannable = source.rescannable();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
+
+        let mut merge: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            WriteOp::MergeInsert { query, timeout },
+            None,
+            self.branch.clone(),
+        ));
+
+        let mut retry_counter = crate::remote::retry::RetryCounter::new(
+            &self.client.retry_config,
+            uuid::Uuid::new_v4().to_string(),
+        );
+
+        loop {
+            let stream = execute_plan(merge.clone(), Default::default())?;
+            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
+
+            match result {
+                Ok(_) => {
+                    let merge_result = (merge.as_ref() as &dyn std::any::Any)
+                        .downcast_ref::<RemoteWriteExec<S>>()
+                        .and_then(|m| m.merge_result())
+                        .unwrap_or_default();
+
+                    self.track_write_version(merge_result.version);
+                    return Ok(merge_result);
+                }
+                Err(err) if rescannable && self.is_retryable_write_error(&err) => {
+                    retry_counter.increment_from_error(err)?;
+                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                    merge = merge.reset_state()?;
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
         }
-
-        let (request_id, response) = self.send_streaming(request, new_data, true).await?;
-
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        if body.trim().is_empty() {
-            // Backward compatible with old servers
-            return Ok(MergeResult {
-                version: 0,
-                num_deleted_rows: 0,
-                num_inserted_rows: 0,
-                num_updated_rows: 0,
-                num_attempts: 0,
-                num_rows: 0,
-            });
-        }
-
-        let merge_insert_response: MergeResult =
-            serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse merge_insert response: {}", e).into(),
-                request_id,
-                status_code: None,
-            })?;
-
-        self.track_write_version(merge_insert_response.version);
-        Ok(merge_insert_response)
     }
 
     async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
@@ -2862,20 +2814,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         write_params: lance::dataset::WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
-        Ok(Arc::new(insert::RemoteInsertExec::new(
+        Ok(Arc::new(insert::RemoteWriteExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             input,
-            overwrite,
+            WriteOp::Insert { overwrite },
             None,
             self.branch.clone(),
         )))
     }
 }
 
-#[derive(Serialize)]
-struct MergeInsertRequest {
+#[derive(Serialize, Clone, Debug)]
+pub(crate) struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
