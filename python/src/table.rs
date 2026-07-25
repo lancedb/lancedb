@@ -1215,8 +1215,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_lsm_write) = parameters.use_lsm_write {
-            builder.use_lsm_write(use_lsm_write);
+        if let Some(use_lsm) = parameters.use_lsm {
+            builder.use_lsm(use_lsm);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1454,7 +1454,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_lsm_write: Option<bool>,
+    use_lsm: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

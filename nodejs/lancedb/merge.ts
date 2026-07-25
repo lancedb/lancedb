@@ -88,21 +88,17 @@ export class MergeInsertBuilder {
     );
   }
   /**
-   * Controls whether the merge uses the MemWAL LSM write path.
+   * Control MemWAL routing for this merge.
    *
    * By default (unset), a `mergeInsert` on a table with an LSM write spec is
-   * routed through Lance's MemWAL shard writer, and a table without one uses
-   * the standard path. Pass `false` to force the standard path even when a
-   * spec is set. Pass `true` to require a spec — `mergeInsert` rejects if none
-   * is installed.
+   * routed through Lance's MemWAL shard writer, and a table without one uses the
+   * standard path.
    *
-   * @param useLsmWrite - Whether to use the LSM write path.
+   * @param enable - `true` forces MemWAL routing and errors if the table has no
+   * LSM write spec. `false` forces the standard write path even when a spec is set.
    */
-  useLsmWrite(useLsmWrite: boolean): MergeInsertBuilder {
-    return new MergeInsertBuilder(
-      this.#native.useLsmWrite(useLsmWrite),
-      this.#schema,
-    );
+  useLsm(enable: boolean): MergeInsertBuilder {
+    return new MergeInsertBuilder(this.#native.useLsm(enable), this.#schema);
   }
   /**
    * Controls how an LSM merge checks that its input targets a single shard.

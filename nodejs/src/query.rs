@@ -169,6 +169,11 @@ impl Query {
     }
 
     #[napi]
+    pub fn use_lsm(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_lsm(enable);
+    }
+
+    #[napi]
     pub fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> napi::Result<()> {
         let ordering = ordering.map(|ordering| {
             ordering
@@ -375,6 +380,11 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn use_lsm(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_lsm(enable);
+    }
+
+    #[napi]
     pub fn rerank(
         &mut self,
         rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
@@ -477,6 +487,11 @@ impl TakeQuery {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi]
+    pub fn use_lsm(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_lsm(enable);
     }
 
     #[napi(catch_unwind)]
