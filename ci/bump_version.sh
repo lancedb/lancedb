@@ -2,9 +2,9 @@ set -e
 
 RELEASE_TYPE=${1:-"stable"}
 BUMP_MINOR=${2:-false}
-TAG_PREFIX=${3:-"v"} # Such as "python-v"
-HEAD_SHA=${4:-$(git rev-parse HEAD)}
+HEAD_SHA=$(git rev-parse HEAD)
 
+readonly TAG_PREFIX="v"
 readonly SELF_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
 PREV_TAG=$(git tag --sort='version:refname' | grep ^$TAG_PREFIX | python $SELF_DIR/semver_sort.py $TAG_PREFIX | tail -n 1)
@@ -12,7 +12,7 @@ echo "Found previous tag $PREV_TAG"
 
 # Initially, we don't want to tag if we are doing stable, because we will bump
 # again later. See comment at end for why.
-if [[ "$RELEASE_TYPE" == 'stable' ]]; then 
+if [[ "$RELEASE_TYPE" == 'stable' ]]; then
   BUMP_ARGS="--no-tag"
 fi
 
