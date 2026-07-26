@@ -52,7 +52,6 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
-    supports_blob_auto_row_id,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -1277,10 +1276,7 @@ class LanceQueryBuilder(ABC):
         return self._with_row_id is True
 
     def _blob_auto_row_id_enabled(self) -> bool:
-        if not supports_blob_auto_row_id(self._table):
-            return False
         return blob_auto_row_id_for_scan(
-            self._table,
             self._table.schema,
             self._columns,
             with_row_id=self._with_row_id,
@@ -2771,7 +2767,7 @@ class AsyncQueryBase(object):
         )
 
     async def _maybe_add_blob_row_id(self) -> None:
-        if self._table is None or not supports_blob_auto_row_id(self._table):
+        if self._table is None:
             self._blob_auto_row_id = False
             self._blob_paths = ()
             return
@@ -2779,7 +2775,6 @@ class AsyncQueryBase(object):
         req = self._inner.to_query_request()
         schema = await self._table.schema()
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             req.select,
             with_row_id=self._with_row_id,
@@ -3031,7 +3026,6 @@ class AsyncQueryBase(object):
 
         schema = await self._table.schema()
         blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             query.columns,
             with_row_id=self._with_row_id,
@@ -3875,10 +3869,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
         blob_paths: tuple[str, ...] = ()
-        if self._table is not None and supports_blob_auto_row_id(self._table):
+        if self._table is not None:
             schema = await self._table.schema()
             blob_auto_row_id = blob_auto_row_id_for_scan(
-                self._table,
                 schema,
                 req.select,
                 with_row_id=self._with_row_id,
