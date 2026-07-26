@@ -5363,6 +5363,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
+        if query.use_lsm is not None:
+            async_query = async_query.use_lsm(query.use_lsm)
         if query.with_row_id:
             async_query = async_query.with_row_id()
         if query.order_by:
@@ -5483,7 +5485,7 @@ class AsyncTable:
                 when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
-                use_lsm_write=merge._use_lsm_write,
+                use_lsm=merge._use_lsm,
                 validate_single_shard=merge._validate_single_shard,
             ),
         )
