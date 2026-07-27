@@ -29,7 +29,20 @@ pub async fn wait_for_index(
     // poll via list_indices() and index_stats() until all indices are created and fully indexed
     while start.elapsed() < timeout {
         let mut completed = vec![];
-        let indices = table.list_indices().await?;
+        // A transient TableNotFound here (e.g. a replica read racing ahead of
+        // manifest propagation) looks identical to a real missing table, but
+        // the table was just confirmed to exist by the caller. Treat it the
+        // same as index_stats()'s "not found yet" case and keep polling
+        // instead of failing the whole wait on a single bad read.
+        let indices = match table.list_indices().await {
+            Ok(indices) => indices,
+            Err(Error::TableNotFound { .. }) => {
+                debug!("list_indices returned not found; still waiting for index");
+                sleep(Duration::from_millis(DEFAULT_SLEEP_MS)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         for &idx in &remaining {
             if !indices.iter().any(|i| i.name == *idx) {

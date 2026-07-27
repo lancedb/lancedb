@@ -5791,6 +5791,67 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_wait_for_index_tolerates_transient_list_indices_not_found() {
+        // A replica read can race ahead of manifest propagation and 404 on
+        // list_indices() even though the table (just confirmed by the caller)
+        // and its index both exist. wait_for_index() should treat that the
+        // same as index_stats()'s "not found yet" case and keep polling
+        // instead of failing the whole wait on a single bad read.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let table = Table::new_with_handler("my_table", move |request| {
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new(
+                        "vector",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, true)),
+                            8,
+                        ),
+                        false,
+                    )]);
+                    serde_json::from_str::<serde_json::Value>(&describe_response(&schema)).unwrap()
+                }
+                "/v1/table/my_table/index/list/" => {
+                    let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if call == 0 {
+                        return http::Response::builder()
+                            .status(404)
+                            .body("{}".to_string())
+                            .unwrap();
+                    }
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "vector_idx",
+                                "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["vector"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/vector_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                _path => serde_json::json!(None::<String>),
+            };
+            let body = serde_json::to_string(&response_body).unwrap();
+            let status = if body == "null" { 404 } else { 200 };
+            http::Response::builder().status(status).body(body).unwrap()
+        });
+
+        table
+            .wait_for_index(&["vector_idx"], Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+
     fn _make_table_with_indices(unindexed_rows: usize) -> Table {
         Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
