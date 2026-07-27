@@ -1534,6 +1534,9 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
+        The result has the same length and order as ``row_ids``. Null blobs
+        produce null slots; valid empty blobs produce ``b""``.
+
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
         """

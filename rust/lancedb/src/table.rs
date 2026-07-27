@@ -1030,8 +1030,9 @@ impl Table {
 
     /// Materialize blob bytes for the given row ids.
     ///
-    /// Output matches `row_ids` in length and order. Null and zero-length rows
-    /// are null. Prefer [`Self::fetch_blob_files`] for large selections.
+    /// Output matches `row_ids` in length and order. Null blobs are null;
+    /// valid empty blobs contain empty byte strings. Prefer
+    /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1093,8 +1094,8 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// Returns [`Error::InvalidInput`] when a range is invalid, a requested
-    /// row id does not exist, or the column is not a blob v2 column. Returns
+    /// Returns an error when a range is invalid, a requested row id does not
+    /// exist, or the column is not a blob v2 column. Returns
     /// [`Error::NotSupported`] on table types without blob support.
     pub async fn fetch_blob_ranges(
         &self,

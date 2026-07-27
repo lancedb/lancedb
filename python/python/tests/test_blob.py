@@ -184,18 +184,23 @@ def test_fetch_blobs_accepts_query_result():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
 
-def test_fetch_blobs_null_alignment():
+def test_fetch_blobs_preserves_null_and_empty_values():
     table = _blob_table(
         "nulls",
-        [{"id": 1, "image": b"present"}, {"id": 2, "image": None}],
+        [
+            {"id": 1, "image": b"present"},
+            {"id": 2, "image": None},
+            {"id": 3, "image": b""},
+        ],
     )
     by_id = _row_ids_by_id(table)
-    request = [by_id[1], by_id[2], by_id[1]]
+    request = [by_id[1], by_id[2], by_id[3], by_id[1]]
     blobs = table.fetch_blobs("image", request)
     assert len(blobs) == len(request)
     assert blobs[0].as_py() == b"present"
     assert blobs[1].as_py() is None
-    assert blobs[2].as_py() == b"present"
+    assert blobs[2].as_py() == b""
+    assert blobs[3].as_py() == b"present"
 
 
 def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
@@ -221,10 +226,10 @@ def test_fetch_blob_ranges_validates_requests():
     table = _blob_table("range_validation", [{"id": 1, "image": b"abc"}])
     row_id = _row_ids_by_id(table)[1]
 
-    with pytest.raises(ValueError, match="exceeds blob size"):
+    with pytest.raises(RuntimeError, match="exceeds blob size"):
         table.fetch_blob_ranges("image", [(row_id, 2, 2)])
 
-    with pytest.raises(ValueError, match="offset \\+ length overflowed"):
+    with pytest.raises(RuntimeError, match="offset \\+ length overflowed"):
         table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
 
     with pytest.raises(ValueError, match="row ids"):

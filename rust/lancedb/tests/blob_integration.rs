@@ -634,14 +634,12 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
         .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, 2, 2)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
     assert!(err.to_string().contains("exceeds blob size"));
 
     let err = table
         .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, u64::MAX, 1)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
     assert!(err.to_string().contains("offset + length overflowed"));
 
     let err = table
@@ -682,6 +680,32 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
     let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
+    assert!(err.to_string().contains("row ids"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+    let row_id = collect_row_ids(&table).await?[0];
+    let row_ids = [u64::MAX, row_id];
+
+    let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert!(err.to_string().contains("row ids"));
+
+    let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
+    assert!(err.to_string().contains("row ids"));
+
+    let requests = row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1));
+    let err = table
+        .fetch_blob_ranges("image", requests)
+        .await
+        .unwrap_err();
+    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
     assert!(err.to_string().contains("row ids"));
     Ok(())
 }
@@ -929,7 +953,7 @@ async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<
 }
 
 #[tokio::test]
-async fn zero_length_blob_reads_back_as_null() -> Result<()> {
+async fn empty_blob_reads_back_as_empty_bytes() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"".as_slice())]).await?;
@@ -937,7 +961,8 @@ async fn zero_length_blob_reads_back_as_null() -> Result<()> {
     let ids = collect_row_ids(&table).await?;
     let bytes = table.fetch_blobs("image", &ids).await?;
     assert_eq!(bytes.len(), 1);
-    assert!(bytes.is_null(0));
+    assert!(!bytes.is_null(0));
+    assert!(bytes.value(0).is_empty());
     Ok(())
 }
 

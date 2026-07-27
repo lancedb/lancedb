@@ -11,13 +11,11 @@
 
 use std::sync::Arc;
 
+use arrow_array::LargeBinaryArray;
 use arrow_array::builder::LargeBinaryBuilder;
-use arrow_array::{Array, LargeBinaryArray, RecordBatch, StructArray, UInt8Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
-use futures::TryStreamExt;
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
-use lance_core::datatypes::parse_field_path;
 use lance_encoding::version::LanceFileVersion;
 
 use crate::error::{Error, Result};
@@ -46,15 +44,6 @@ impl BlobRangeRequest {
             offset,
             length,
         }
-    }
-}
-
-fn map_blob_read_error(source: lance::Error) -> Error {
-    match source {
-        source @ lance::Error::InvalidInput { .. } => Error::InvalidInput {
-            message: source.to_string(),
-        },
-        source => source.into(),
     }
 }
 
@@ -180,91 +169,24 @@ pub(crate) fn ensure_blob_v2_column(
     }
 }
 
-/// Returns the leaf descriptor `StructArray` for `column` in a descriptor batch.
-fn leaf_descriptor_struct<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a StructArray> {
-    let path = parse_field_path(column).map_err(|e| Error::InvalidInput {
-        message: format!("invalid blob column path '{column}': {e}"),
-    })?;
-    let not_struct = || Error::Runtime {
-        message: format!("blob column '{column}' did not read back as a descriptor struct"),
-    };
-    let mut current = batch
-        .column_by_name(&path[0])
-        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-        .ok_or_else(not_struct)?;
-    for segment in &path[1..] {
-        current = current
-            .column_by_name(segment)
-            .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-            .ok_or_else(not_struct)?;
+fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) -> Result<()> {
+    if requested == resolved {
+        return Ok(());
     }
-    Ok(current)
-}
-
-/// Null rows in `row_ids`, from a descriptor take.
-///
-/// Lance `read_blobs` / `take_blobs` skip null rows (`kind == 0 && position == 0 && size == 0`).
-/// TODO(lance): aligned read API would drop this pass.
-async fn blob_null_mask(
-    dataset: &Arc<Dataset>,
-    column: &str,
-    row_ids: &[u64],
-) -> Result<Vec<bool>> {
-    let projection = dataset.schema().project(&[column])?;
-    let descriptors = dataset.take_builder(row_ids, projection)?.execute().await?;
-    if descriptors.num_rows() != row_ids.len() {
-        return Err(Error::InvalidInput {
+    if resolved < requested {
+        Err(Error::InvalidInput {
             message: format!(
-                "blob take for column '{column}' requested {} row ids but only {} exist in the \
-                 table; pass row ids collected from this table",
-                row_ids.len(),
-                descriptors.num_rows()
+                "blob read for column '{column}' requested {requested} row ids but only {resolved} \
+                 exist in the table; pass row ids collected from this table"
             ),
-        });
-    }
-    let descriptor_struct = leaf_descriptor_struct(&descriptors, column)?;
-    let child = |name: &str| {
-        descriptor_struct
-            .column_by_name(name)
-            .ok_or_else(|| Error::Runtime {
-                message: format!("blob descriptor for '{column}' is missing the '{name}' field"),
-            })
-    };
-    let kinds = child("kind")?
-        .as_any()
-        .downcast_ref::<UInt8Array>()
-        .ok_or_else(|| Error::Runtime {
-            message: format!("blob descriptor 'kind' for '{column}' is not a UInt8 array"),
-        })?;
-    let positions = child("position")?
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .ok_or_else(|| Error::Runtime {
-            message: format!("blob descriptor 'position' for '{column}' is not a UInt64 array"),
-        })?;
-    let sizes = child("size")?
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .ok_or_else(|| Error::Runtime {
-            message: format!("blob descriptor 'size' for '{column}' is not a UInt64 array"),
-        })?;
-
-    // Match Lance `collect_blob_entries_v2` skip condition (`BlobKind::Inline` == 0).
-    Ok((0..descriptor_struct.len())
-        .map(|i| {
-            descriptor_struct.is_null(i)
-                || kinds.is_null(i)
-                || (kinds.value(i) == 0 && positions.value(i) == 0 && sizes.value(i) == 0)
         })
-        .collect())
-}
-
-fn non_null_row_ids(row_ids: &[u64], null_mask: &[bool]) -> Vec<u64> {
-    row_ids
-        .iter()
-        .zip(null_mask)
-        .filter_map(|(row_id, is_null)| (!is_null).then_some(*row_id))
-        .collect()
+    } else {
+        Err(Error::Runtime {
+            message: format!(
+                "blob read for column '{column}' returned {resolved} results for {requested} row ids"
+            ),
+        })
+    }
 }
 
 /// Materialize blob-local ranges (same length and order as `requests`, nulls preserved).
@@ -282,63 +204,18 @@ pub(crate) async fn take_blob_ranges_aligned(
         .iter()
         .map(|request| LanceBlobRangeRequest::new(request.row_id, request.offset, request.length))
         .collect::<Vec<_>>();
-    let reader = dataset
-        .read_blob_ranges(column)
-        .map_err(map_blob_read_error)?
+    let payloads = dataset
+        .read_blob_ranges(column)?
         .with_row_ids(lance_requests)
-        .preserve_order(false);
-
-    let mut stream = reader
-        .try_into_stream()
-        .await
-        .map_err(map_blob_read_error)?;
-    let mut payloads = vec![None; requests.len()];
-    while let Some(result) = stream.try_next().await.map_err(map_blob_read_error)? {
-        let slot = payloads
-            .get_mut(result.request_index)
-            .ok_or_else(|| Error::Runtime {
-                message: format!(
-                    "blob range read for column '{column}' returned out-of-range request index {} for {} requests",
-                    result.request_index,
-                    requests.len()
-                ),
-            })?;
-        if slot.replace(result.data).is_some() {
-            return Err(Error::Runtime {
-                message: format!(
-                    "blob range read for column '{column}' returned request index {} more than once",
-                    result.request_index
-                ),
-            });
-        }
-    }
-
-    let missing_request_indices = payloads
-        .iter()
-        .enumerate()
-        .filter_map(|(request_index, payload)| payload.is_none().then_some(request_index))
-        .collect::<Vec<_>>();
-    if !missing_request_indices.is_empty() {
-        let missing_row_ids = missing_request_indices
-            .iter()
-            .map(|request_index| requests[*request_index].row_id)
-            .collect::<Vec<_>>();
-        let null_mask = blob_null_mask(dataset, column, &missing_row_ids).await?;
-        for (request_index, is_null) in missing_request_indices.into_iter().zip(null_mask) {
-            if !is_null {
-                return Err(Error::Runtime {
-                    message: format!(
-                        "blob range read for column '{column}' did not return request index {request_index}"
-                    ),
-                });
-            }
-        }
-    }
+        .preserve_order(true)
+        .execute()
+        .await?;
+    ensure_all_row_ids_resolved(column, requests.len(), payloads.len())?;
 
     let mut builder = LargeBinaryBuilder::new();
     for payload in payloads {
-        match payload {
-            Some(data) => builder.append_value(data.as_ref()),
+        match payload.data {
+            Some(data) => builder.append_value(data),
             None => builder.append_null(),
         }
     }
@@ -356,38 +233,19 @@ pub(crate) async fn take_blobs_aligned(
         return Ok(LargeBinaryBuilder::new().finish());
     }
 
-    let null_mask = blob_null_mask(dataset, column, row_ids).await?;
-    let non_null_row_ids = non_null_row_ids(row_ids, &null_mask);
-    let non_null_count = non_null_row_ids.len();
-    let payloads = if non_null_count == 0 {
-        Vec::new()
-    } else {
-        dataset
-            .read_blobs(column)?
-            .with_row_ids(non_null_row_ids)
-            .preserve_order(true)
-            .execute()
-            .await?
-    };
-
-    if payloads.len() != non_null_count {
-        return Err(Error::Runtime {
-            message: format!(
-                "blob read for column '{column}' returned {} payloads for {} non-null rows",
-                payloads.len(),
-                non_null_count
-            ),
-        });
-    }
+    let payloads = dataset
+        .read_blobs(column)?
+        .with_row_ids(row_ids.to_vec())
+        .preserve_order(true)
+        .execute()
+        .await?;
+    ensure_all_row_ids_resolved(column, row_ids.len(), payloads.len())?;
 
     let mut builder = LargeBinaryBuilder::new();
-    let mut payload_idx = 0;
-    for is_null in &null_mask {
-        if *is_null {
-            builder.append_null();
-        } else {
-            builder.append_value(payloads[payload_idx].data.as_ref());
-            payload_idx += 1;
+    for payload in payloads {
+        match payload.data {
+            Some(data) => builder.append_value(data),
+            None => builder.append_null(),
         }
     }
     Ok(builder.finish())
@@ -404,34 +262,9 @@ pub(crate) async fn take_blob_files_aligned(
         return Ok(Vec::new());
     }
 
-    let null_mask = blob_null_mask(dataset, column, row_ids).await?;
-    let non_null_row_ids = non_null_row_ids(row_ids, &null_mask);
-    let handles = if non_null_row_ids.is_empty() {
-        Vec::new()
-    } else {
-        dataset.take_blobs(&non_null_row_ids, column).await?
-    };
-    if handles.len() != non_null_row_ids.len() {
-        return Err(Error::Runtime {
-            message: format!(
-                "blob take for column '{column}' returned {} handles for {} non-null rows",
-                handles.len(),
-                non_null_row_ids.len()
-            ),
-        });
-    }
-
-    let mut handles = handles.into_iter();
-    Ok(null_mask
-        .iter()
-        .map(|is_null| {
-            if *is_null {
-                None
-            } else {
-                Some(handles.next().unwrap())
-            }
-        })
-        .collect())
+    let handles = dataset.take_blobs(row_ids, column).await?;
+    ensure_all_row_ids_resolved(column, row_ids.len(), handles.len())?;
+    Ok(handles)
 }
 
 #[cfg(test)]
