@@ -456,6 +456,10 @@ impl Connection {
     ///
     /// # Returns
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
+    /// If the table's storage is present but holds no readable dataset (for example a
+    /// `<name>.lance` directory left behind by an interrupted drop and re-create, which
+    /// [`Self::table_names`] still lists) this returns [`Error::TableCorrupted`]
+    /// instead.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),
