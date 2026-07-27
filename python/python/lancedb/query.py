@@ -2756,6 +2756,20 @@ class AsyncQueryBase(object):
         query.fragment_ids = self._fragment_ids
         return query
 
+    def _carry_query_state(self, derived: "AsyncQueryBase") -> "AsyncQueryBase":
+        """Copy this query's Python-side state onto one derived from it.
+
+        `nearest_to` and `nearest_to_text` wrap a new Rust builder in a fresh Python
+        object, so anything tracked here rather than in Rust is lost unless it is
+        copied across. Dropping `_with_row_id` in particular makes an explicit
+        `with_row_id()` look like an auto-added one to the blob path.
+        """
+        derived._with_row_id = self._with_row_id
+        derived._with_row_address = self._with_row_address
+        derived._fragments = self._fragments
+        derived._fragment_ids = self._fragment_ids
+        return derived
+
     def _user_requested_row_id(self) -> bool:
         return self._with_row_id is True
 
@@ -3405,11 +3419,15 @@ class AsyncQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncVectorQuery(new_self, self._table)
+            return self._carry_query_state(AsyncVectorQuery(new_self, self._table))
         else:
-            return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._carry_query_state(
+                AsyncVectorQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     def nearest_to_text(
@@ -3441,12 +3459,16 @@ class AsyncQuery(AsyncStandardQuery):
             columns = []
 
         if isinstance(query, str):
-            return AsyncFTSQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
-                self._table,
+            return self._carry_query_state(
+                AsyncFTSQuery(
+                    self._inner.nearest_to_text({"query": query, "columns": columns}),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        return self._carry_query_state(
+            AsyncFTSQuery(self._inner.nearest_to_text({"query": query}), self._table)
+        )
 
 
 class AsyncFTSQuery(AsyncStandardQuery):
@@ -3535,11 +3557,15 @@ class AsyncFTSQuery(AsyncStandardQuery):
             new_self = self._inner.nearest_to(query_vectors[0])
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
-            return AsyncHybridQuery(new_self, self._table)
+            return self._carry_query_state(AsyncHybridQuery(new_self, self._table))
         else:
-            return AsyncHybridQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector)),
-                self._table,
+            return self._carry_query_state(
+                AsyncHybridQuery(
+                    self._inner.nearest_to(
+                        AsyncQuery._query_vec_to_array(query_vector)
+                    ),
+                    self._table,
+                )
             )
 
     async def to_batches(
@@ -3793,13 +3819,15 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             columns = []
 
         if isinstance(query, str):
-            return AsyncHybridQuery(
-                self._inner.nearest_to_text({"query": query, "columns": columns}),
-                self._table,
+            return self._carry_query_state(
+                AsyncHybridQuery(
+                    self._inner.nearest_to_text({"query": query, "columns": columns}),
+                    self._table,
+                )
             )
         # FullTextQuery object
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query}), self._table
+        return self._carry_query_state(
+            AsyncHybridQuery(self._inner.nearest_to_text({"query": query}), self._table)
         )
 
     async def to_batches(
