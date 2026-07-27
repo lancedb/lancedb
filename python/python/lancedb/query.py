@@ -101,10 +101,13 @@ def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) ->
 
 
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
+    # On a remote table both to_pandas() and to_arrow() on the table itself also
+    # raise, so the advice has to name something other than a plain scan.
     return RuntimeError(
         "blob columns require Lance native scanner conversion for query "
-        f"to_pandas(), but {reason}. Use a plain scan query or remove blob "
-        "columns from the projection."
+        f"to_pandas(), but {reason}. Read the descriptors with to_arrow() on this "
+        "query and pass the result to fetch_blobs(), or remove blob columns from "
+        "the projection."
     )
 
 

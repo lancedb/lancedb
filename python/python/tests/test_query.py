@@ -482,13 +482,13 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         )
 
 
-def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+def test_vector_query_to_pandas_blob_descriptions_points_at_fetch_blobs(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         "test_vector_query_blob_descriptions", _blob_query_data()
     )
 
-    with pytest.raises(RuntimeError, match="plain scan query"):
+    with pytest.raises(RuntimeError, match=r"to_arrow\(\).*fetch_blobs\(\)"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
             blob_mode="descriptions"
         )
