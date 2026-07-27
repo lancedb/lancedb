@@ -63,7 +63,8 @@ pub enum Error {
         "Hit retry limit for request_id={request_id} (\
         request_failures={request_failures}/{max_request_failures}, \
         connect_failures={connect_failures}/{max_connect_failures}, \
-        read_failures={read_failures}/{max_read_failures})"
+        read_failures={read_failures}/{max_read_failures}), \
+        last error: {source}"
     ))]
     Retry {
         request_id: String,

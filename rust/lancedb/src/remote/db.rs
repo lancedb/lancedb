@@ -988,13 +988,22 @@ mod tests {
                 .unwrap()
         });
         let result = conn.table_names().execute().await;
-        if let Err(Error::Retry {
+        let Err(error) = result else {
+            panic!("unexpected result: {:?}", result);
+        };
+        // Printing the error has to show why, without walking the cause chain.
+        let message = error.to_string();
+        assert!(
+            message.contains("internal server error"),
+            "retry error hides why it gave up: {message}"
+        );
+        if let Error::Retry {
             request_id,
             request_failures,
             max_request_failures,
             source,
             ..
-        }) = result
+        } = error
         {
             let expected_id = seen_request_id.get().unwrap();
             assert_eq!(&request_id, expected_id);
@@ -1005,7 +1014,7 @@ mod tests {
                 source
             );
         } else {
-            panic!("unexpected result: {:?}", result);
+            panic!("unexpected error: {:?}", error);
         };
     }
 
