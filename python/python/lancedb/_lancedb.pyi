@@ -297,6 +297,11 @@ class Table:
     async def fetch_blobs(
         self, column: str, row_ids: list[int]
     ) -> pa.LargeBinaryArray: ...
+    async def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: List[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray: ...
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]
     ) -> list[Optional[BlobFile]]: ...
