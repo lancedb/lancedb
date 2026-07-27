@@ -1631,9 +1631,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
+        // Servers report the creation time either as an RFC 3339 `timestamp`
+        // (direct-table path) or as `timestamp_millis` in milliseconds since
+        // epoch (namespace-backed path), and may omit `metadata`.
+        #[derive(Deserialize)]
+        struct VersionEntry {
+            version: u64,
+            timestamp: Option<DateTime<Utc>>,
+            timestamp_millis: Option<i64>,
+            #[serde(default)]
+            metadata: std::collections::BTreeMap<String, String>,
+        }
+
         #[derive(Deserialize)]
         struct ListVersionsResponse {
-            versions: Vec<Version>,
+            versions: Vec<VersionEntry>,
         }
 
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -1644,11 +1656,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     err, body
                 )
                 .into(),
-                request_id,
+                request_id: request_id.clone(),
                 status_code: None,
             })?;
 
-        Ok(body.versions)
+        body.versions
+            .into_iter()
+            .map(|entry| {
+                let timestamp = entry
+                    .timestamp
+                    .or_else(|| {
+                        entry
+                            .timestamp_millis
+                            .and_then(DateTime::<Utc>::from_timestamp_millis)
+                    })
+                    .ok_or_else(|| Error::Http {
+                        source: format!(
+                            "list_versions response for version {} has neither a valid \
+                             `timestamp` nor `timestamp_millis` field",
+                            entry.version
+                        )
+                        .into(),
+                        request_id: request_id.clone(),
+                        status_code: None,
+                    })?;
+                Ok(Version {
+                    version: entry.version,
+                    timestamp,
+                    metadata: entry.metadata,
+                })
+            })
+            .collect()
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
@@ -5244,6 +5282,56 @@ mod tests {
             "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
         // assert_eq!(versions, expected);
+    }
+
+    /// Namespace-backed servers report `timestamp_millis` instead of
+    /// `timestamp`, and may omit `metadata` entirely.
+    #[tokio::test]
+    async fn test_list_versions_timestamp_millis() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/version/list/");
+
+            let response_body = serde_json::json!({
+                "versions": [
+                    {
+                        "version": 1,
+                        "manifest_path": "path/to/_versions/1.manifest",
+                        "timestamp_millis": 1704067200000i64,
+                    },
+                    {
+                        "version": 2,
+                        "manifest_path": "path/to/_versions/2.manifest",
+                        "timestamp_millis": 1706745600000i64,
+                        "metadata": {"key": "value"},
+                    },
+                ]
+            });
+            let response_body = serde_json::to_string(&response_body).unwrap();
+
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let versions = table.list_versions().await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(
+            versions[0].timestamp,
+            "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert!(versions[0].metadata.is_empty());
+        assert_eq!(versions[1].version, 2);
+        assert_eq!(
+            versions[1].timestamp,
+            "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            versions[1].metadata.get("key").map(String::as_str),
+            Some("value")
+        );
     }
 
     #[tokio::test]
