@@ -306,6 +306,39 @@ impl ShardWriterEntry {
         }
         Ok(())
     }
+
+    /// The cached writer's latest in-memory manifest (current generation +
+    /// flushed generations). `Ok(None)` if the writer was already closed.
+    /// Used by the LSM read path to snapshot this shard authoritatively
+    /// without re-reading the on-disk manifest.
+    async fn manifest(&self) -> Result<Option<lance_index::mem_wal::ShardManifest>> {
+        let guard = self.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return Ok(None);
+        };
+        writer.manifest().await.map_err(|e| Error::Runtime {
+            message: format!("read: shard writer manifest read failed: {}", e),
+        })
+    }
+
+    /// Atomically capture the cached writer's active + frozen-awaiting-flush
+    /// memtables for unified LSM scanning. `Ok(None)` if the writer was
+    /// already closed.
+    async fn in_memory_memtable_refs(
+        &self,
+    ) -> Result<Option<lance::dataset::mem_wal::scanner::InMemoryMemTables>> {
+        let guard = self.inner.read().await;
+        let Some(writer) = guard.as_ref() else {
+            return Ok(None);
+        };
+        writer
+            .in_memory_memtable_refs()
+            .await
+            .map(Some)
+            .map_err(|e| Error::Runtime {
+                message: format!("read: shard writer memtable capture failed: {}", e),
+            })
+    }
 }
 
 impl ShardWriterCache {
@@ -343,6 +376,36 @@ impl ShardWriterCache {
         let entry = Arc::new(ShardWriterEntry::new(writer));
         *guard = Some((shard_id, entry.clone()));
         Ok(entry)
+    }
+
+    /// Snapshot the cached writer's shard for the LSM read path: its shard id,
+    /// authoritative in-memory manifest, and active + frozen memtable refs.
+    /// Returns `None` when no writer is currently cached (e.g. nothing has been
+    /// written this session, or the writer was closed).
+    #[allow(clippy::redundant_pub_crate)]
+    pub(crate) async fn read_snapshot(
+        &self,
+    ) -> Result<
+        Option<(
+            Uuid,
+            Option<lance_index::mem_wal::ShardManifest>,
+            Option<lance::dataset::mem_wal::scanner::InMemoryMemTables>,
+        )>,
+    > {
+        let cached = {
+            let guard = self.slot.read().await;
+            guard.as_ref().map(|(id, entry)| (*id, entry.clone()))
+        };
+        let Some((shard_id, entry)) = cached else {
+            return Ok(None);
+        };
+        // Capture memtables before the manifest. If a flush interleaves, dedup
+        // tolerates the same rows appearing in both a memtable and a freshly
+        // flushed generation, but would drop rows present in neither. Manifest
+        // last guarantees any generation flushed mid-capture is still covered.
+        let memtables = entry.in_memory_memtable_refs().await?;
+        let manifest = entry.manifest().await?;
+        Ok(Some((shard_id, manifest, memtables)))
     }
 
     /// Close the cached writer, if any, and clear the slot.
@@ -408,19 +471,20 @@ pub(crate) async fn lsm_dispatch_decision(
     table: &NativeTable,
     params: &MergeInsertBuilder,
 ) -> Result<LsmDispatch> {
-    // `Some(false)` is an explicit opt-out: use the standard path.
-    if params.use_lsm_write == Some(false) {
+    // Explicit opt-out: use the standard path regardless of any installed spec.
+    if params.use_lsm == Some(false) {
         return Ok(LsmDispatch::Standard);
     }
 
     let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
-        // No LSM write spec installed. `Some(true)` explicitly asked for the
-        // LSM path, which is meaningless without a spec; `None` (the default)
-        // just falls back to the standard path.
-        if params.use_lsm_write == Some(true) {
+        // No write spec installed. `use_lsm(true)` demanded MemWAL routing, so
+        // that is an error; otherwise fall back to the standard path.
+        if params.use_lsm == Some(true) {
             return Err(Error::InvalidInput {
-                message: "merge_insert: use_lsm_write(true) requires an LSM write spec on the table; call set_lsm_write_spec first".to_string(),
+                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
+                    install one with set_lsm_write_spec or leave use_lsm unset"
+                    .to_string(),
             });
         }
         return Ok(LsmDispatch::Standard);
@@ -449,7 +513,7 @@ pub(crate) async fn lsm_dispatch_decision(
 
     if !is_upsert_only(params) {
         return Err(Error::InvalidInput {
-            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_lsm_write(false) to use the standard merge_insert path".to_string(),
+            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_lsm(false) to use the standard merge_insert path".to_string(),
         });
     }
 

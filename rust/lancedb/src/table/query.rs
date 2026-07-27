@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+mod lsm;
+
 use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
@@ -20,6 +22,7 @@ use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
 use futures::future::try_join_all;
+use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
@@ -53,7 +56,7 @@ pub async fn execute_query(
     // QueryTable pushdown runs the query server-side, but only on the main
     // branch: the namespace request carries no branch yet, so a branch handle
     // must fall through to local execution.
-    if can_execute_namespace_query(table, query)
+    if can_execute_namespace_query(table, query).await?
         && let Some(ref namespace_client) = table.namespace_client
     {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
@@ -61,18 +64,35 @@ pub async fn execute_query(
     execute_generic_query(table, query, options).await
 }
 
-fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> bool {
-    table
+async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> Result<bool> {
+    if !(table
         .pushdown_operations
         .contains(&NamespaceClientPushdownOperation::QueryTable)
         && table.namespace_client.is_some()
         && table.dataset.current_branch().is_none()
-        && !requires_local_namespace_execution(query)
+        && !requires_local_namespace_execution(query))
+    {
+        return Ok(false);
+    }
+    // A MemWAL write spec means reads auto-route through the LSM scanner in
+    // `create_plan` even when `use_lsm` is unset. The namespace request has no
+    // use_lsm field, so pushing the default query down would silently omit
+    // un-compacted rows — force local execution whenever a spec is installed.
+    let dataset = table.dataset.get().await?;
+    if dataset.mem_wal_index_details().await?.is_some() {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request has no approx_mode field yet, so
-    // pushing this query down would silently ignore the user's setting.
+    // The namespace QueryTable request has no approx_mode or use_lsm field yet, so
+    // pushing these down would silently ignore the user's setting. For use_lsm that
+    // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
+    // so a pushed-down query would return stale base-only data with no error.
+    if query.base().use_lsm.is_some() {
+        return true;
+    }
     matches!(
         query,
         AnyQuery::VectorQuery(VectorQueryRequest {
@@ -120,6 +140,29 @@ pub async fn create_plan(
     query.base.check_filter()?;
 
     let ds_ref = table.dataset.get().await?;
+
+    // MemWAL read routing driven by `use_lsm`:
+    //   * unset  — route through the LSM scanner iff the table carries a write spec
+    //   * Some(true)  — force LSM routing; error if the table has no write spec
+    //   * Some(false) — read the base table only, bypassing the MemWAL
+    // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
+    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
+    let use_lsm = match query.base.use_lsm {
+        Some(true) if !has_spec => {
+            return Err(Error::InvalidInput {
+                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
+                    install one with set_lsm_write_spec or leave use_lsm unset"
+                    .to_string(),
+            });
+        }
+        Some(enable) => enable,
+        None => has_spec,
+    };
+    if use_lsm {
+        return lsm::create_lsm_plan(table, ds_ref, query).await;
+    }
+
     let schema = ds_ref.schema();
     let mut column = query.column.clone();
 
@@ -891,6 +934,65 @@ mod tests {
             column: Some("vector".to_string()),
             query_vector: vec![query_vector as ArrayRef],
             approx_mode: Some(crate::ApproxMode::Accurate),
+            ..Default::default()
+        });
+
+        let stream = execute_query(&native_table, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+        assert_eq!(count, 1);
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use crate::table::query::execute_query;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let vectors = Arc::new(fixed_size_list_array(
+            vec![0.0, 0.0, 10.0, 10.0, 20.0, 20.0],
+            2,
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), vectors],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_use_lsm_namespace_fallback", batch)
+            .execute()
+            .await
+            .unwrap();
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        // `use_lsm` set (even to false) must force local execution — the namespace
+        // request has no use_lsm field, so a pushdown would silently ignore it.
+        let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                use_lsm: Some(false),
+                ..Default::default()
+            },
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as ArrayRef],
             ..Default::default()
         });
 

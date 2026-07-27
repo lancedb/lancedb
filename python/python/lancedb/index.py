@@ -115,6 +115,12 @@ class FTS:
 
     For example, it works with `title`, `description`, `content`, etc.
 
+    Examples
+    --------
+    Create an index configuration that uses 256-document posting blocks:
+
+    >>> config = FTS(block_size=256)
+
     Attributes
     ----------
     with_position : bool, default False
@@ -148,6 +154,10 @@ class FTS:
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+    block_size : int, default 128
+        The number of documents per compressed posting block. Supported values
+        are 128 and 256. A value of 256 uses the experimental FTS V3 format
+        and may introduce breaking changes.
 
     Notes
     -----
@@ -168,6 +178,7 @@ class FTS:
     ngram_min_length: int = 3
     ngram_max_length: int = 3
     prefix_only: bool = False
+    block_size: int = 128
 
 
 @dataclass

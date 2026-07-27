@@ -527,6 +527,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
+    it("should expose useLsm on takeRowIds as the base-only escape hatch", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // useLsm(false) is reachable on TakeQuery (the escape hatch for MemWAL tables,
+      // where take-by-row-id auto-routes to the LSM scanner and is rejected).
+      const res = await table.takeRowIds([0, 2]).useLsm(false).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
     it("should throw for negative number in takeRowIds", () => {
       expect(() => table.takeRowIds([-1])).toThrow("Row id cannot be negative");
       expect(() => table.takeRowIds([0, -5, 2])).toThrow(
@@ -2527,6 +2535,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results3.length).toBe(1);
     });
 
+    test("full text search with custom posting block size", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ blockSize: 256 }),
+      });
+
+      const index = (await table.listIndices()).find(
+        (index) => index.indexType === "FTS",
+      );
+      expect(index?.indexVersion).toBe(3);
+      expect(
+        (index?.indexDetails as Record<string, unknown>)["block_size"],
+      ).toBe(256);
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("rejects invalid full text posting block size", () => {
+      expect(() => Index.fts({ blockSize: 129 as 128 | 256 })).toThrow(
+        "128 or 256",
+      );
+    });
+
     test("full text search without lowercase", async () => {
       const db = await connect(tmpDir.name);
       const data = [
@@ -3170,14 +3207,14 @@ describe("LSM merge insert", () => {
     await table.closeLsmWriters();
   });
 
-  it("falls back to the standard path with useLsmWrite(false)", async () => {
+  it("falls back to the standard path with useLsm(false)", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
     const res = await table
       .mergeInsert("id")
       .whenNotMatchedInsertAll()
-      .useLsmWrite(false)
+      .useLsm(false)
       .execute([
         { id: "b", value: 9 },
         { id: "e", value: 5 },
@@ -3210,5 +3247,37 @@ describe("LSM merge insert", () => {
         .whenNotMatchedInsertAll()
         .execute([{ id: "g", value: 7 }]),
     ).rejects.toThrow();
+  });
+
+  it("auto-routes reads through the MemWAL scanner", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn); // base ids "a", "b"
+
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([{ id: "c", value: 3 }]);
+
+    // Default read auto-routes and includes the active memtable row.
+    const lsm = await table.query().toArray();
+    expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
+
+    // useLsm(false) bypasses the MemWAL and reads the base table only.
+    const baseOnly = await table.query().useLsm(false).toArray();
+    expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("reads the base table when no LSM spec is installed", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "plain",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    // No spec: default read and useLsm(false) both succeed against the base table.
+    await expect(table.query().toArray()).resolves.toBeDefined();
+    await expect(table.query().useLsm(false).toArray()).resolves.toBeDefined();
+    // useLsm(true) demands MemWAL routing; without a spec it errors.
+    await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
   });
 });

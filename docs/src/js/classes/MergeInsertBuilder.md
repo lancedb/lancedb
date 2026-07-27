@@ -76,24 +76,23 @@ the query optimizer chooses a suboptimal path.
 
 ***
 
-### useLsmWrite()
+### useLsm()
 
 ```ts
-useLsmWrite(useLsmWrite): MergeInsertBuilder
+useLsm(enable): MergeInsertBuilder
 ```
 
-Controls whether the merge uses the MemWAL LSM write path.
+Control MemWAL routing for this merge.
 
 By default (unset), a `mergeInsert` on a table with an LSM write spec is
-routed through Lance's MemWAL shard writer, and a table without one uses
-the standard path. Pass `false` to force the standard path even when a
-spec is set. Pass `true` to require a spec — `mergeInsert` rejects if none
-is installed.
+routed through Lance's MemWAL shard writer, and a table without one uses the
+standard path.
 
 #### Parameters
 
-* **useLsmWrite**: `boolean`
-    Whether to use the LSM write path.
+* **enable**: `boolean`
+    `true` forces MemWAL routing and errors if the table has no
+    LSM write spec. `false` forces the standard write path even when a spec is set.
 
 #### Returns
 

@@ -167,6 +167,11 @@
 //! # }
 //! ```
 
+// The MemWAL LSM read path (`table::query::lsm`) deepens the `create_plan` future's
+// type graph enough to overflow the default trait-recursion limit while evaluating
+// auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
+#![recursion_limit = "256"]
+
 pub mod arrow;
 pub mod blob;
 pub mod connection;

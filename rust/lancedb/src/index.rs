@@ -54,7 +54,26 @@ pub enum Index {
     /// substrings of the raw bytes, unlike the tokenized [`Index::FTS`] index.
     Fm(FmIndexBuilder),
 
-    /// Full text search index using bm25.
+    /// Full text search index using BM25.
+    ///
+    /// The posting block size defaults to 128. Supported values are 128 and 256;
+    /// a value of 256 uses the experimental FTS V3 format and may introduce
+    /// breaking changes.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::FtsIndexBuilder};
+    ///
+    /// # async fn create_fts_index(
+    /// #     table: &lancedb::Table,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let params = FtsIndexBuilder::default().block_size(256)?;
+    /// table
+    ///     .create_index(&["text"], Index::FTS(params))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     FTS(FtsIndexBuilder),
 
     /// IVF index

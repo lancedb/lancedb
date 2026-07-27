@@ -617,6 +617,11 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<()> {
         params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
+        // Only forward use_lsm when explicitly set; a server that predates it
+        // ignores the field and routes as it would by default.
+        if let Some(use_lsm) = params.use_lsm {
+            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
@@ -2843,6 +2848,10 @@ struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
+    // Only serialize use_lsm when explicitly set (Some); a server that predates
+    // it ignores the field and routes as it would by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_lsm: Option<bool>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -2894,6 +2903,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
+            use_lsm: value.use_lsm,
         })
     }
 }
@@ -4495,6 +4505,15 @@ mod tests {
                 "FTS",
                 serde_json::to_value(InvertedIndexParams::default()).unwrap(),
                 Index::FTS(Default::default()),
+            ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["block_size"] = 256.into();
+                    body
+                },
+                Index::FTS(InvertedIndexParams::default().block_size(256).unwrap()),
             ),
         ];
 
