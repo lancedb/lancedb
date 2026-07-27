@@ -3041,7 +3041,7 @@ class AsyncQueryBase(object):
             if blob_mode == "bytes"
             else {}
         )
-        dataset = await self._table._to_lance()
+        dataset = await self._table.to_lance()
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
                 query,
