@@ -3613,6 +3613,7 @@ mod tests {
                 0,
                 3,
                 true,
+                true,
             ),
             (
                 "empty_custom_stop_words",
@@ -3620,6 +3621,7 @@ mod tests {
                 vec!["the".to_string(), "lance".to_string(), "data".to_string()],
                 2,
                 3,
+                true,
                 true,
             ),
             (
@@ -3629,6 +3631,7 @@ mod tests {
                 2,
                 0,
                 true,
+                true,
             ),
             (
                 "untrained_custom_stop_words",
@@ -3636,6 +3639,16 @@ mod tests {
                 vec!["the".to_string(), "data".to_string()],
                 2,
                 0,
+                false,
+                true,
+            ),
+            (
+                "disabled_custom_stop_words",
+                Some(vec!["lance".to_string()]),
+                vec!["the".to_string(), "lance".to_string(), "data".to_string()],
+                2,
+                3,
+                true,
                 false,
             ),
         ];
@@ -3647,6 +3660,7 @@ mod tests {
             expected_the_matches,
             expected_lance_matches,
             train,
+            remove_stop_words,
         ) in cases
         {
             let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
@@ -3666,6 +3680,7 @@ mod tests {
                 .unwrap();
             let params = crate::index::scalar::FtsIndexBuilder::default()
                 .stem(false)
+                .remove_stop_words(remove_stop_words)
                 .custom_stop_words(custom_stop_words.clone());
             table
                 .create_index(&["text"], Index::FTS(params))

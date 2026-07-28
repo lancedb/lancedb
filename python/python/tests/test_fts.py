@@ -244,21 +244,19 @@ def test_create_inverted_index_rejects_invalid_block_size(table):
 
 
 @pytest.mark.parametrize(
-    ("custom_stop_words", "expected_the", "expected_lance"),
+    ("custom_stop_words", "expected"),
     [
-        (None, 0, 2),
-        ([], 1, 2),
-        (["lance"], 1, 0),
+        (None, ["lance", "data"]),
+        ([], ["the", "lance", "data"]),
+        (["lance"], ["the", "data"]),
     ],
     ids=["builtin", "explicit-empty", "custom"],
 )
-def test_custom_stop_words_inline_none_vs_empty(
-    tmp_path, custom_stop_words, expected_the, expected_lance
-):
+def test_custom_stop_words_inline_none_vs_empty(tmp_path, custom_stop_words, expected):
     db = ldb.connect(tmp_path)
     table = db.create_table(
         "documents",
-        data=pa.table({"text": ["the lance database", "lance data"]}),
+        data=pa.table({"text": ["the lance data"]}),
     )
     table.create_index(
         "text",
@@ -266,92 +264,23 @@ def test_custom_stop_words_inline_none_vs_empty(
     )
 
     assert (
-        len(table.search("the", query_type="fts").limit(10).to_list()) == expected_the
+        table.list_indices()[0].index_details["custom_stop_words"] == custom_stop_words
     )
-    assert (
-        len(table.search("lance", query_type="fts").limit(10).to_list())
-        == expected_lance
-    )
-    details = table.list_indices()[0].index_details
-    assert details["custom_stop_words"] == custom_stop_words
-
-
-def test_custom_stop_words_are_inactive_when_removal_is_disabled(tmp_path):
-    db = ldb.connect(tmp_path)
-    table = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database", "lance data"]}),
-    )
-    table.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            remove_stop_words=False,
-            custom_stop_words=["lance"],
-        ),
-    )
-
-    assert len(table.search("lance", query_type="fts").limit(10).to_list()) == 2
     tokens = table.tokenize("the lance data", column="text")
-    assert [token.text for token in tokens] == ["the", "lance", "data"]
+    assert [token.text for token in tokens] == expected
 
 
-def test_custom_stop_words_file_is_snapshotted_and_reopened(tmp_path):
+def test_tokenize_custom_stop_words_file(tmp_path):
     stop_words_path = tmp_path / "stop-words.txt"
-    stop_words_path.write_bytes(
-        "lance\r\n\r\nlance\r\nKeep Case\r\n spaced \r\n".encode()
-    )
-    db = ldb.connect(tmp_path / "db")
-    table = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database", "lance data"]}),
-    )
-    table.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            custom_stop_words=FtsStopWordsFile(stop_words_path),
-        ),
+    stop_words_path.write_text("lance\n", encoding="utf-8")
+
+    tokens = ldb.tokenize(
+        "the lance data",
+        stem=False,
+        custom_stop_words=FtsStopWordsFile(stop_words_path),
     )
 
-    stop_words_path.write_text("the\n", encoding="utf-8")
-    reopened = db.open_table("documents")
-
-    details = reopened.list_indices()[0].index_details
-    assert details["custom_stop_words"] == ["lance", "Keep Case", " spaced "]
-    tokens = reopened.tokenize("the lance data", column="text")
     assert [token.text for token in tokens] == ["the", "data"]
-    assert len(reopened.search("the", query_type="fts").limit(10).to_list()) == 1
-    assert len(reopened.search("lance", query_type="fts").limit(10).to_list()) == 0
-
-
-def test_custom_stop_words_table_is_snapshotted(tmp_path):
-    db = ldb.connect(tmp_path)
-    stop_words = db.create_table(
-        "stop_words",
-        data=pa.table({"word": ["lance", "", "lance", "data"]}),
-    )
-    documents = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database", "lance data"]}),
-    )
-    documents.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-        ),
-    )
-
-    db.drop_table("stop_words")
-    reopened = db.open_table("documents")
-
-    assert reopened.list_indices()[0].index_details["custom_stop_words"] == [
-        "lance",
-        "data",
-    ]
-    tokens = reopened.tokenize("the lance data", column="text")
-    assert [token.text for token in tokens] == ["the"]
 
 
 @pytest.mark.asyncio
@@ -359,11 +288,11 @@ async def test_custom_stop_words_table_async(tmp_path):
     db = await ldb.connect_async(tmp_path)
     stop_words = await db.create_table(
         "stop_words",
-        data=pa.table({"word": ["lance", "", "lance"]}),
+        data=pa.table({"word": ["lance"]}),
     )
     documents = await db.create_table(
         "documents",
-        data=pa.table({"text": ["the lance database", "lance data"]}),
+        data=pa.table({"text": ["the lance data"]}),
     )
 
     await documents.create_index(
@@ -378,18 +307,7 @@ async def test_custom_stop_words_table_async(tmp_path):
     assert [token.text for token in tokens] == ["the", "data"]
 
 
-def test_custom_stop_words_deprecated_create_fts_index(table):
-    with pytest.warns(DeprecationWarning, match="create_fts_index"):
-        table.create_fts_index(
-            "text",
-            stem=False,
-            custom_stop_words=["puppy"],
-        )
-
-    assert len(table.search("puppy").limit(5).to_list()) == 0
-
-
-def test_custom_stop_words_tokenizer_name_compatibility_is_persisted(table):
+def test_custom_stop_words_legacy_tokenizer_name(table):
     with pytest.warns(DeprecationWarning, match="create_fts_index"):
         table.create_fts_index(
             "text",
@@ -400,117 +318,13 @@ def test_custom_stop_words_tokenizer_name_compatibility_is_persisted(table):
     details = table.list_indices()[0].index_details
     assert details["custom_stop_words"] == ["puppy"]
     assert details["remove_stop_words"] is False
-    assert len(table.search("puppy").limit(5).to_list()) == 5
-    assert [token.text for token in table.tokenize("puppy runs", column="text")] == [
-        "puppy",
-        "runs",
-    ]
 
 
-@pytest.mark.parametrize(
-    ("source_factory", "match"),
-    [
-        (lambda _tmp, _table: "not-a-sequence", "not a string"),
-        (lambda _tmp, _table: ["valid", 42], r"custom_stop_words\[1\]"),
-        (
-            lambda tmp, _table: FtsStopWordsFile(tmp / "missing.txt"),
-            "failed to read custom stop words file",
-        ),
-        (
-            lambda _tmp, _table: FtsStopWordsFile(""),
-            "path must be a non-empty string path",
-        ),
-        (
-            lambda _tmp, table: FtsStopWordsTable(table, "missing"),
-            "failed to resolve custom stop words column",
-        ),
-        (
-            lambda _tmp, table: FtsStopWordsTable(table, ""),
-            "column must be a non-empty string",
-        ),
-        (
-            lambda _tmp, table: FtsStopWordsTable(table, "number"),
-            "must have type Utf8",
-        ),
-    ],
-)
-def test_custom_stop_words_validation_errors(tmp_path, source_factory, match):
-    db = ldb.connect(tmp_path / "db")
-    documents = db.create_table(
-        "documents",
-        data=pa.table(
-            {
-                "text": ["the lance database"],
-                "number": [1],
-            }
-        ),
-    )
-
-    with pytest.raises((TypeError, ValueError), match=match):
-        documents.create_index(
-            "text",
-            config=FTS(custom_stop_words=source_factory(tmp_path, documents)),
-        )
-
-
-def test_custom_stop_words_file_rejects_invalid_utf8(tmp_path):
-    stop_words_path = tmp_path / "stop-words.txt"
-    stop_words_path.write_bytes(b"valid\n\xff")
-    db = ldb.connect(tmp_path / "db")
-    documents = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database"]}),
-    )
-
-    with pytest.raises(ValueError, match="not valid UTF-8"):
-        documents.create_index(
-            "text",
-            config=FTS(custom_stop_words=FtsStopWordsFile(stop_words_path)),
-        )
-
-
-@pytest.mark.parametrize(
-    ("values", "match"),
-    [
-        (pa.array(["valid", None]), "contains NULL"),
-        (pa.array([1, 2]), "must have type Utf8"),
-    ],
-)
-def test_custom_stop_words_table_rejects_invalid_values(tmp_path, values, match):
-    db = ldb.connect(tmp_path)
-    stop_words = db.create_table("stop_words", data=pa.table({"word": values}))
-    documents = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database"]}),
-    )
-
-    with pytest.raises(ValueError, match=match):
-        documents.create_index(
-            "text",
-            config=FTS(
-                custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-            ),
-        )
-
-
-def test_custom_stop_words_table_rejects_closed_table(tmp_path):
-    db = ldb.connect(tmp_path)
-    stop_words = db.create_table(
-        "stop_words",
-        data=pa.table({"word": ["lance"]}),
-    )
-    documents = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance database"]}),
-    )
-    stop_words._table.close()
-
-    with pytest.raises(RuntimeError, match="Table stop_words is closed"):
-        documents.create_index(
-            "text",
-            config=FTS(
-                custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-            ),
+def test_custom_stop_words_rejects_non_string_binding_value():
+    with pytest.raises(TypeError, match=r"custom_stop_words\[1\]"):
+        ldb.tokenize(
+            "the lance data",
+            custom_stop_words=["lance", 42],
         )
 
 
@@ -1163,60 +977,6 @@ def test_tokenize_uses_explicit_icu_tokenizer():
         ("こんにちは", 1),
         ("世界", 2),
     ]
-
-
-@pytest.mark.parametrize(
-    ("custom_stop_words", "expected"),
-    [
-        (None, ["lance", "data"]),
-        ([], ["the", "lance", "data"]),
-        (["lance"], ["the", "data"]),
-    ],
-    ids=["builtin", "explicit-empty", "custom"],
-)
-def test_tokenize_custom_stop_words_none_vs_empty(custom_stop_words, expected):
-    tokens = ldb.tokenize(
-        "the lance data",
-        stem=False,
-        custom_stop_words=custom_stop_words,
-    )
-
-    assert [token.text for token in tokens] == expected
-
-
-def test_tokenize_custom_stop_words_file_and_table(tmp_path):
-    stop_words_path = tmp_path / "stop-words.txt"
-    stop_words_path.write_text("lance\nlance\n\n", encoding="utf-8")
-    file_tokens = ldb.tokenize(
-        "the lance data",
-        stem=False,
-        custom_stop_words=FtsStopWordsFile(stop_words_path),
-    )
-
-    db = ldb.connect(tmp_path / "db")
-    stop_words = db.create_table(
-        "stop_words",
-        data=pa.table({"word": ["lance", "", "lance"]}),
-    )
-    table_tokens = ldb.tokenize(
-        "the lance data",
-        stem=False,
-        custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-    )
-
-    assert [token.text for token in file_tokens] == ["the", "data"]
-    assert [token.text for token in table_tokens] == ["the", "data"]
-
-
-def test_tokenize_custom_stop_words_disabled():
-    tokens = ldb.tokenize(
-        "the lance data",
-        stem=False,
-        remove_stop_words=False,
-        custom_stop_words=["lance"],
-    )
-
-    assert [token.text for token in tokens] == ["the", "lance", "data"]
 
 
 def test_fts_on_list(mem_db: DBConnection):

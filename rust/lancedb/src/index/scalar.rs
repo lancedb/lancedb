@@ -358,6 +358,7 @@ mod tests {
 
     use arrow_array::{
         ArrayRef, Int32Array, LargeStringArray, RecordBatch, RecordBatchIterator, StringArray,
+        StringViewArray,
     };
     use arrow_schema::{DataType, Field, Schema};
     use lance_namespace::LanceNamespace;
@@ -446,12 +447,14 @@ mod tests {
             Arc::new(Schema::new(vec![
                 Field::new("word", DataType::Utf8, false),
                 Field::new("large_word", DataType::LargeUtf8, false),
+                Field::new("view_word", DataType::Utf8View, false),
                 Field::new("number", DataType::Int32, false),
                 Field::new("nullable_word", DataType::Utf8, true),
             ])),
             vec![
                 Arc::new(StringArray::from(vec!["cat", "", "cat", " CAT "])) as ArrayRef,
                 Arc::new(LargeStringArray::from(vec!["large", "large", "", "other"])),
+                Arc::new(StringViewArray::from(vec!["view", "view", "", "other"])),
                 Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
                 Arc::new(StringArray::from(vec![
                     Some("valid"),
@@ -481,6 +484,13 @@ mod tests {
                 .await
                 .unwrap(),
             vec!["large", "other"]
+        );
+        assert_eq!(
+            FtsStopWordsSource::table(table.clone(), "view_word")
+                .resolve()
+                .await
+                .unwrap(),
+            vec!["view", "other"]
         );
 
         let error = FtsStopWordsSource::table(table.clone(), "nullable_word")

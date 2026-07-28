@@ -14,7 +14,6 @@
 package com.lancedb;
 
 import org.lance.namespace.LanceNamespace;
-import org.lance.namespace.client.apache.ApiClient;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -137,130 +136,29 @@ public class LanceDbNamespaceClientBuilder {
    * @throws IllegalStateException if required parameters are missing
    */
   public LanceNamespace build() {
-    validateRequiredFields();
-
-    // Build configuration map
-    Map<String, String> config = new HashMap<>(additionalConfig);
-    config.put("header.x-lancedb-database", database);
-    config.put("header.x-api-key", apiKey);
-    config.put("uri", resolveUri());
-
-    return LanceNamespace.connect("rest", config, null);
-  }
-
-  /**
-   * Build a client for creating FTS indexes with custom stop words.
-   *
-   * <p>The generated Lance Namespace request model currently has no {@code custom_stop_words}
-   * field. Passing a subclass through the JNI-backed {@link LanceNamespace} client would silently
-   * discard that field. This client uses the official HTTP transport directly so the resolved
-   * client-side snapshot reaches LanceDB Cloud or Enterprise.
-   *
-   * <p>The helper supports the same endpoint, API key, database, identifier delimiter, and {@code
-   * header.*}/{@code headers.*} configuration as {@link #build()}. TLS and other transport
-   * configuration cannot be copied safely to the Apache HTTP client and is rejected with an
-   * actionable error instead of being ignored. Callers needing a custom HTTP stack can construct
-   * {@link LanceDbFtsIndexClient} with a preconfigured {@link ApiClient}.
-   *
-   * @return A configured custom-stop-word FTS index client
-   * @throws IllegalStateException if required parameters are missing or an unsupported
-   *     configuration key is present
-   */
-  public LanceDbFtsIndexClient buildFtsIndexClient() {
-    validateRequiredFields();
-
-    String delimiter = additionalConfig.getOrDefault("delimiter", "$");
-    if (delimiter == null || delimiter.isEmpty()) {
-      throw new IllegalStateException("FTS index client delimiter cannot be null or empty");
-    }
-    String uri = resolveUri();
-    if (uri.trim().isEmpty()) {
-      throw new IllegalStateException("FTS index client endpoint cannot be empty");
-    }
-
-    Map<String, String> headers = new HashMap<>();
-    for (Map.Entry<String, String> entry : additionalConfig.entrySet()) {
-      String key = entry.getKey();
-      String value = entry.getValue();
-      if (key == null) {
-        throw new IllegalStateException("FTS index client configuration key cannot be null");
-      }
-      if ("delimiter".equals(key)) {
-        continue;
-      }
-      if ("uri".equals(key)) {
-        throw new IllegalStateException(
-            "FTS index client configuration key 'uri' is not accepted; use endpoint() instead");
-      }
-
-      String headerName = headerName(key);
-      if (headerName != null) {
-        if (headerName.isEmpty()) {
-          throw new IllegalStateException(
-              "FTS index client header configuration requires a non-empty header name");
-        }
-        if (value == null) {
-          throw new IllegalStateException(
-              "FTS index client header '" + headerName + "' cannot have a null value");
-        }
-        if (isReservedHeader(headerName)) {
-          String builderMethod =
-              "x-api-key".equalsIgnoreCase(headerName) ? "apiKey()" : "database()";
-          throw new IllegalStateException(
-              "FTS index client header '"
-                  + headerName
-                  + "' is reserved; configure it with "
-                  + builderMethod
-                  + " instead");
-        }
-        headers.put(headerName, value);
-        continue;
-      }
-
-      throw new IllegalStateException(
-          "FTS index client cannot safely apply configuration key '"
-              + key
-              + "'. Configure an org.lance.namespace.client.apache.ApiClient explicitly and "
-              + "pass it to LanceDbFtsIndexClient instead.");
-    }
-
-    ApiClient apiClient = new ApiClient().setBasePath(uri).setApiKey(apiKey);
-    for (Map.Entry<String, String> header : headers.entrySet()) {
-      apiClient.addDefaultHeader(header.getKey(), header.getValue());
-    }
-    apiClient.addDefaultHeader("x-lancedb-database", database);
-    return new LanceDbFtsIndexClient(apiClient, delimiter);
-  }
-
-  private void validateRequiredFields() {
+    // Validate required fields
     if (apiKey == null) {
       throw new IllegalStateException("API key is required");
     }
     if (database == null) {
       throw new IllegalStateException("Database is required");
     }
-  }
 
-  private String resolveUri() {
+    // Build configuration map
+    Map<String, String> config = new HashMap<>(additionalConfig);
+    config.put("header.x-lancedb-database", database);
+    config.put("header.x-api-key", apiKey);
+
+    // Determine base URL
+    String uri;
     if (endpoint.isPresent()) {
-      return endpoint.get();
+      uri = endpoint.get();
+    } else {
+      String effectiveRegion = region.orElse(DEFAULT_REGION);
+      uri = String.format(CLOUD_URL_PATTERN, database, effectiveRegion);
     }
-    String effectiveRegion = region.orElse(DEFAULT_REGION);
-    return String.format(CLOUD_URL_PATTERN, database, effectiveRegion);
-  }
+    config.put("uri", uri);
 
-  private static String headerName(String key) {
-    if (key.startsWith("header.")) {
-      return key.substring("header.".length());
-    }
-    if (key.startsWith("headers.")) {
-      return key.substring("headers.".length());
-    }
-    return null;
-  }
-
-  private static boolean isReservedHeader(String headerName) {
-    return "x-api-key".equalsIgnoreCase(headerName)
-        || "x-lancedb-database".equalsIgnoreCase(headerName);
+    return LanceNamespace.connect("rest", config, null);
   }
 }

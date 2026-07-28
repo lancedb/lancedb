@@ -358,38 +358,25 @@ def test_fts_custom_stop_word_sources(tmp_path):
         "documents",
         data=[{"text": "the lance database"}, {"text": "searchable data"}],
     )
-
-    # Inline values
-    documents.create_index(
-        "text",
-        config=FTS(stem=False, custom_stop_words=["lance", "searchable"]),
-    )
-
-    # A strict UTF-8 file with one stop word per line
     stop_words_path = tmp_path / "stop-words.txt"
     stop_words_path.write_text("lance\nsearchable\n", encoding="utf-8")
-    documents.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            custom_stop_words=FtsStopWordsFile(stop_words_path),
-        ),
-        replace=True,
-    )
-
-    # A string column from another open LanceDB table
     stop_words = db.create_table(
         "stop_words",
         data=[{"word": "lance"}, {"word": "searchable"}],
     )
-    documents.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-        ),
-        replace=True,
-    )
+
+    # Inline values, a strict UTF-8 newline-delimited file, or a local table column.
+    sources = [
+        ["lance", "searchable"],
+        FtsStopWordsFile(stop_words_path),
+        FtsStopWordsTable(stop_words, "word"),
+    ]
+    for source in sources:
+        documents.create_index(
+            "text",
+            config=FTS(stem=False, custom_stop_words=source),
+            replace=True,
+        )
     # --8<-- [end:fts_custom_stop_words]
 
     tokens = documents.tokenize("the lance database", column="text")

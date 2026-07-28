@@ -539,91 +539,6 @@ CreateTableScalarIndexResponse response = namespaceClient.createTableScalarIndex
 System.out.println("Index transaction: " + response.getTransactionId());
 ```
 
-### Custom FTS Stop Words
-
-`LanceDbFtsIndexRequest` accepts either an inline list or a newline-delimited
-UTF-8 file on the Java client. The client resolves the source to a concrete
-snapshot before the request is sent; a client-local path is never sent to
-LanceDB Cloud or Enterprise.
-
-Custom stop words replace the built-in list for `language` and are only applied
-when `removeStopWords` is true. `null` keeps the built-in language list, while
-an empty list explicitly replaces it with no stop words. Exact empty strings
-are ignored and exact duplicates retain their first occurrence. Other content,
-including case and surrounding whitespace, is preserved.
-
-```java
-import com.lancedb.LanceDbFtsIndexClient;
-import com.lancedb.LanceDbFtsIndexRequest;
-import com.lancedb.LanceDbNamespaceClientBuilder;
-import org.lance.namespace.model.CreateTableIndexResponse;
-
-import java.util.Arrays;
-
-public final class CustomStopWordsExample {
-    public static void main(String[] args) throws Exception {
-        LanceDbNamespaceClientBuilder clientBuilder =
-            LanceDbNamespaceClientBuilder.newBuilder()
-                .apiKey("your_lancedb_api_key")
-                .database("your_database_name");
-
-        LanceDbFtsIndexRequest request = new LanceDbFtsIndexRequest();
-        request.setId(Arrays.asList("my_namespace", "my_table"));
-        request.setColumn("text_column");
-        request.setName("text_idx");
-        request.setRemoveStopWords(true);
-        request.setCustomStopWords(Arrays.asList("copyright", "reserved"));
-
-        try (LanceDbFtsIndexClient indexClient = clientBuilder.buildFtsIndexClient()) {
-            CreateTableIndexResponse response = indexClient.createTableIndex(request);
-            System.out.println("Index transaction: " + response.getTransactionId());
-        }
-    }
-}
-```
-
-To read the snapshot from a file instead, configure the file source before
-calling `createTableIndex`:
-
-```java
-import java.nio.file.Paths;
-
-request.setCustomStopWordsFile(Paths.get("./stop-words.txt"));
-```
-
-The file is decoded as strict UTF-8 and read on the first
-`createTableIndex` call. Lines use LF or CRLF terminators; a lone carriage
-return is preserved as part of the stop word. The resolved list is then
-retained on the request, so a retry uses the same snapshot even if the file
-changes.
-
-!!! warning "Use the dedicated FTS index client for custom stop words"
-    Do not pass `LanceDbFtsIndexRequest` to
-    `namespaceClient.createTableIndex` or
-    `namespaceClient.createTableScalarIndex`. The current generated Lance
-    Namespace model has no `custom_stop_words` field, and its JNI boundary would
-    silently discard the extra JSON property. `LanceDbFtsIndexClient` uses the
-    official HTTP client directly and preserves the resolved snapshot.
-
-    The helper accepts `endpoint`, API key, database, `delimiter`, and
-    `header.*`/`headers.*` builder configuration. It rejects transport settings
-    it cannot safely reproduce, such as `tls.*`; callers needing a custom TLS
-    stack can construct it with a preconfigured Namespace Apache `ApiClient`.
-    It also rejects the `uri`, `header.x-api-key`, and
-    `header.x-lancedb-database` configuration aliases instead of silently
-    overriding them; use `endpoint()`, `apiKey()`, and `database()`,
-    respectively.
-
-!!! note "Java table and tokenization APIs"
-    The current Java SDK is a remote Namespace client and has no embedded/local
-    LanceDB `Table` API. It therefore cannot prove a complete table-column
-    snapshot and intentionally does not accept remote table references as a
-    stop-word source. Materialize those words into an inline list or a local
-    UTF-8 file first.
-
-    Java also has no public standalone tokenization API today, so there is no
-    Java tokenization entry point to extend with custom stop words.
-
 ### Listing Indexes
 
 ```java
@@ -641,14 +556,9 @@ for (IndexContent index : response.getIndexes()) {
 ```
 
 !!! note
-    The current Java namespace API exposes index type, index name, distance type,
-    and the generated FTS fields `withPosition`, `baseTokenizer`, `language`,
-    `maxTokenLength`, `lowerCase`, `stem`, `removeStopWords`, and
-    `asciiFolding`. `LanceDbFtsIndexRequest` adds the custom stop-word snapshot
-    while the upstream generated request catches up. IVF training parameters
-    such as `num_partitions` are not exposed by `CreateTableIndexRequest` yet.
-    To make those configurable from Java, the namespace API must add those
-    fields first.
+    The current Java namespace API exposes index type, index name, distance type, and full text search tokenizer options.
+    IVF training parameters such as `num_partitions` are not exposed by `CreateTableIndexRequest` yet.
+    To make those configurable from Java, the namespace API must add those fields first.
 
 ## Reading Query Results
 

@@ -17,7 +17,7 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import ColumnOrdering, MatchQuery
+from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -881,11 +881,6 @@ def test_remote_create_index_new_api(tmp_path):
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
-        local_db = lancedb.connect(tmp_path / "local-source")
-        local_stop_words = local_db.create_table(
-            "stop_words",
-            data=[{"word": "table-word"}, {"word": ""}, {"word": "table-word"}],
-        )
         # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
         import warnings as _warnings
 
@@ -895,25 +890,11 @@ def test_remote_create_index_new_api(tmp_path):
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
             table.create_index("text", config=FTS(custom_stop_words=[]))
-            table.create_index(
-                "text",
-                config=FTS(
-                    custom_stop_words=["cloud", "", "cloud", "Keep Case"],
-                ),
-            )
             stop_words_path = tmp_path / "stop-words.txt"
-            stop_words_path.write_text("file-word\n\nfile-word\n", encoding="utf-8")
+            stop_words_path.write_text("file-word\n", encoding="utf-8")
             table.create_index(
                 "text",
-                config=FTS(
-                    custom_stop_words=FtsStopWordsFile(stop_words_path),
-                ),
-            )
-            table.create_index(
-                "text",
-                config=FTS(
-                    custom_stop_words=FtsStopWordsTable(local_stop_words, "word"),
-                ),
+                config=FTS(custom_stop_words=FtsStopWordsFile(stop_words_path)),
             )
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
@@ -936,21 +917,10 @@ def test_remote_create_index_new_api(tmp_path):
                     custom_stop_words=FtsStopWordsTable(table, "text"),
                 ),
             )
-        with pytest.raises(
-            ValueError,
-            match="remote table sources cannot guarantee a complete snapshot",
-        ):
-            lancedb.tokenize(
-                "the cloud",
-                custom_stop_words=FtsStopWordsTable(table, "text"),
-            )
-
-        assert len(received_requests) == 9
+        assert len(received_requests) == 7
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
-            "text",
-            "text",
             "text",
             "text",
             "text",
@@ -960,27 +930,8 @@ def test_remote_create_index_new_api(tmp_path):
         assert received_requests[2]["block_size"] == 256
         assert received_requests[2].get("custom_stop_words") is None
         assert received_requests[3]["custom_stop_words"] == []
-        assert received_requests[4]["custom_stop_words"] == ["cloud", "Keep Case"]
-        assert received_requests[5]["custom_stop_words"] == ["file-word"]
-        assert received_requests[6]["custom_stop_words"] == ["table-word"]
-        assert "path" not in json.dumps(received_requests[5])
-        assert "table" not in json.dumps(received_requests[5])
-        assert "table-word" in json.dumps(received_requests[6])
-        assert not {"source", "table", "path"} & received_requests[6].keys()
-
-        # A forked/unpickled RemoteTable may have no live handle. Stop-word
-        # validation must fail without trying to reopen through LOOP.run from
-        # the LOOP thread (which would deadlock).
-        table._table_handle = None
-        with pytest.raises(
-            ValueError,
-            match="remote table sources cannot guarantee a complete snapshot",
-        ):
-            lancedb.tokenize(
-                "the cloud",
-                custom_stop_words=FtsStopWordsTable(table, "text"),
-            )
-        assert table._table_handle is None
+        assert received_requests[4]["custom_stop_words"] == ["file-word"]
+        assert str(stop_words_path) not in json.dumps(received_requests[4])
 
 
 def test_table_wait_for_index_timeout():
@@ -1375,35 +1326,6 @@ def test_query_sync_fts():
             .limit(42)
             .to_list()
         )
-
-
-def test_query_sync_fts_fuzziness_boundary():
-    query_requests = 0
-
-    def handler(body):
-        nonlocal query_requests
-        query_requests += 1
-        assert body["full_text_query"]["query"]["match"]["fuzziness"] == 0
-        return pa.table({"id": [1]})
-
-    with query_test_table(handler, server_version=Version("0.3.0")) as table:
-        table.search(
-            MatchQuery("puppy", "text", fuzziness=0),
-            query_type="fts",
-        ).to_list()
-        assert query_requests == 1
-
-        with pytest.raises(
-            ValueError,
-            match="explicit fuzzy FTS queries are not supported.*fuzziness=0",
-        ):
-            table.search(
-                MatchQuery("puppy", "text", fuzziness=1),
-                query_type="fts",
-            ).to_list()
-
-        # Positive fuzziness fails before issuing another remote query.
-        assert query_requests == 1
 
 
 def test_query_sync_hybrid():

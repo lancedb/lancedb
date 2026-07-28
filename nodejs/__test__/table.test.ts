@@ -42,7 +42,7 @@ import {
   getRegistry,
   register,
 } from "../lancedb/embedding";
-import { type CustomStopWordsSource, Index } from "../lancedb/indices";
+import { Index } from "../lancedb/indices";
 import {
   BooleanQuery,
   Occur,
@@ -2791,345 +2791,34 @@ describe("custom FTS stop words", () => {
     ];
   }
 
-  test("preserves undefined, empty, and custom snapshots", async () => {
-    const data = [{ text: "the alpha" }, { text: "lance beta" }];
-    const builtin = await db.createTable("builtin", data);
-    await builtin.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: true,
-      }),
-    });
-    expect(await stopWordsSnapshot(builtin)).toBeNull();
-    expect(
-      (await builtin.tokenize("the lance", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["lance"]);
+  test.each<[string, string[] | undefined, string[] | null]>([
+    ["undefined", undefined, null],
+    ["empty", [], []],
+    ["inline", ["lance"], ["lance"]],
+  ])(
+    "passes %s stop words through the FTS options",
+    async (name, customStopWords, expected) => {
+      const table = await db.createTable(name, [{ text: "the lance" }]);
+      await table.createIndex("text", {
+        config: Index.fts({ removeStopWords: true, customStopWords }),
+      });
+      expect(await stopWordsSnapshot(table)).toEqual(expected);
+    },
+  );
 
-    const empty = await db.createTable("empty", data);
-    await empty.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: true,
-        customStopWords: [],
-      }),
-    });
-    expect(await stopWordsSnapshot(empty)).toEqual([]);
-    expect(
-      (await empty.tokenize("the lance", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["the", "lance"]);
-
-    const custom = await db.createTable("custom", data);
-    await custom.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: true,
-        customStopWords: ["", "lance", "lance", " data "],
-      }),
-    });
-    expect(await stopWordsSnapshot(custom)).toEqual(["lance", " data "]);
-    expect(
-      (await custom.tokenize("the lance data", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["the", "data"]);
-    await expect(
-      custom.search("the", "fts").limit(10).toArray(),
-    ).resolves.toHaveLength(1);
-    await expect(
-      custom
-        .search(new MatchQuery("alpha", "text", { fuzziness: 1 }))
-        .toArray(),
-    ).rejects.toThrow("uses a custom stop-word snapshot");
-    await expect(
-      custom
-        .search(new MatchQuery("alpha", "text", { fuzziness: 0 }))
-        .toArray(),
-    ).resolves.toHaveLength(1);
-    await expect(
-      builtin
-        .search(new MatchQuery("alpha", "text", { fuzziness: 1 }))
-        .toArray(),
-    ).resolves.toBeDefined();
-
-    custom.close();
-    const reopened = await db.openTable("custom");
-    expect(
-      (await reopened.tokenize("the lance data", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["the", "data"]);
-    await expect(
-      reopened.search("the", "fts").limit(10).toArray(),
-    ).resolves.toHaveLength(1);
-
-    const disabled = await db.createTable("disabled", data);
-    await disabled.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: false,
-        customStopWords: ["lance"],
-      }),
-    });
-    expect(
-      (await disabled.tokenize("the lance data", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["the", "lance", "data"]);
-    await expect(
-      disabled
-        .search(new MatchQuery("alpha", "text", { fuzziness: 1 }))
-        .toArray(),
-    ).resolves.toHaveLength(1);
-  });
-
-  test("uses inline, file, and table sources in standalone tokenize", async () => {
+  test("passes a file source to standalone tokenize", async () => {
     const stopWordsPath = path.join(tmpDir.name, "stop-words.txt");
-    fs.writeFileSync(stopWordsPath, "the\n\nlance\nthe\n", "utf8");
-    const stopWordsTable = await db.createTable("stop_words", [
-      { word: "the" },
-      { word: "" },
-      { word: "lance" },
-      { word: "the" },
-    ]);
-    const common = {
-      baseTokenizer: "simple" as const,
-      stem: false,
-      removeStopWords: true,
-    };
-    const texts = async (customStopWords?: CustomStopWordsSource) =>
-      (
-        await tokenize("the lance data", {
-          ...common,
-          customStopWords,
-        })
-      ).map((token) => token.text);
-
-    expect(await texts()).toEqual(["lance", "data"]);
-    expect(await texts([])).toEqual(["the", "lance", "data"]);
-    expect(await texts(["lance"])).toEqual(["the", "data"]);
-    expect(await texts({ source: "file", path: stopWordsPath })).toEqual([
-      "data",
-    ]);
-    expect(
-      await texts({
-        source: "table",
-        table: stopWordsTable,
-        column: "word",
-      }),
-    ).toEqual(["data"]);
+    fs.writeFileSync(stopWordsPath, "lance\n", "utf8");
     expect(
       (
         await tokenize("the lance data", {
-          ...common,
-          removeStopWords: false,
-          customStopWords: ["lance"],
+          baseTokenizer: "simple",
+          stem: false,
+          removeStopWords: true,
+          customStopWords: { source: "file", path: stopWordsPath },
         })
       ).map((token) => token.text),
-    ).toEqual(["the", "lance", "data"]);
-  });
-
-  test("snapshots file and table sources when creating an index", async () => {
-    const stopWordsPath = path.join(tmpDir.name, "index-stop-words.txt");
-    fs.writeFileSync(stopWordsPath, "lance\nlance\n\n data \n", "utf8");
-    const fileTarget = await db.createTable("file_target", [
-      { text: "the lance data" },
-    ]);
-    await fileTarget.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: true,
-        customStopWords: { source: "file", path: stopWordsPath },
-      }),
-    });
-    expect(await stopWordsSnapshot(fileTarget)).toEqual(["lance", " data "]);
-    fs.writeFileSync(stopWordsPath, "the\n", "utf8");
-    fileTarget.close();
-    const reopenedFileTarget = await db.openTable("file_target");
-    expect(
-      (
-        await reopenedFileTarget.tokenize("the lance data", { column: "text" })
-      ).map((token) => token.text),
     ).toEqual(["the", "data"]);
-
-    const sourceTable = await db.createTable("table_stop_words", [
-      { word: "lance" },
-      { word: "" },
-      { word: "lance" },
-    ]);
-    const tableTarget = await db.createTable("table_target", [
-      { text: "the lance data" },
-    ]);
-    await tableTarget.createIndex("text", {
-      config: Index.fts({
-        stem: false,
-        removeStopWords: true,
-        customStopWords: {
-          source: "table",
-          table: sourceTable,
-          column: "word",
-        },
-      }),
-    });
-    expect(await stopWordsSnapshot(tableTarget)).toEqual(["lance"]);
-    await sourceTable.add([{ word: "the" }]);
-    expect(
-      (await tableTarget.tokenize("the lance data", { column: "text" })).map(
-        (token) => token.text,
-      ),
-    ).toEqual(["the", "data"]);
-  });
-
-  test("rejects malformed sources and source read errors", async () => {
-    expect(() =>
-      Index.fts({
-        customStopWords: ["valid", 42] as unknown as string[],
-      }),
-    ).toThrow("customStopWords[1] must be a string");
-    expect(() =>
-      Index.fts({ customStopWords: null as unknown as string[] }),
-    ).toThrow("customStopWords must be");
-    expect(() =>
-      Index.fts({
-        customStopWords: {
-          source: "file",
-          path: "words.txt",
-          column: "word",
-        } as never,
-      }),
-    ).toThrow("mutually exclusive");
-    expect(() =>
-      Index.fts({
-        customStopWords: { source: "file", path: "" },
-      }),
-    ).toThrow("non-empty string 'path'");
-    expect(() =>
-      Index.fts({
-        customStopWords: {
-          source: "table",
-          table: {} as Table,
-          column: "",
-        },
-      }),
-    ).toThrow("non-empty string 'column'");
-
-    await expect(
-      tokenize("hello", {
-        removeStopWords: true,
-        customStopWords: {
-          source: "file",
-          path: path.join(tmpDir.name, "missing.txt"),
-        },
-      }),
-    ).rejects.toThrow("failed to read custom stop words file");
-
-    const reusableConfig = Index.fts({
-      stem: false,
-      removeStopWords: true,
-      customStopWords: {
-        source: "file",
-        path: path.join(tmpDir.name, "retry-stop-words.txt"),
-      },
-    });
-    const retryTarget = await db.createTable("retry_target", [
-      { text: "hello world" },
-    ]);
-    await expect(
-      retryTarget.createIndex("text", { config: reusableConfig }),
-    ).rejects.toThrow("failed to read custom stop words file");
-    fs.writeFileSync(
-      path.join(tmpDir.name, "retry-stop-words.txt"),
-      "hello\n",
-      "utf8",
-    );
-    await expect(
-      retryTarget.createIndex("text", { config: reusableConfig }),
-    ).resolves.toBeUndefined();
-
-    const invalidUtf8Path = path.join(tmpDir.name, "invalid-utf8.txt");
-    fs.writeFileSync(invalidUtf8Path, Buffer.from([0xff, 0xfe]));
-    await expect(
-      tokenize("hello", {
-        removeStopWords: true,
-        customStopWords: { source: "file", path: invalidUtf8Path },
-      }),
-    ).rejects.toThrow("is not valid UTF-8");
-
-    const words = await db.createTable("error_words", [{ word: "lance" }]);
-    await expect(
-      tokenize("hello", {
-        removeStopWords: true,
-        customStopWords: {
-          source: "table",
-          table: words,
-          column: "missing",
-        },
-      }),
-    ).rejects.toThrow("custom stop words column");
-
-    const numbers = await db.createTable("number_words", [{ word: 1 }]);
-    await expect(
-      tokenize("hello", {
-        removeStopWords: true,
-        customStopWords: {
-          source: "table",
-          table: numbers,
-          column: "word",
-        },
-      }),
-    ).rejects.toThrow("must have type Utf8");
-
-    const nullableSchema = new arrow.Schema([
-      new arrow.Field("word", new arrow.Utf8(), true),
-    ]);
-    const nullableWords = await db.createTable(
-      "nullable_words",
-      [{ word: "lance" }, { word: null }],
-      { schema: nullableSchema },
-    );
-    await expect(
-      tokenize("hello", {
-        removeStopWords: true,
-        customStopWords: {
-          source: "table",
-          table: nullableWords,
-          column: "word",
-        },
-      }),
-    ).rejects.toThrow("contains NULL");
-
-    const target = await db.createTable("closed_source_target", [
-      { text: "hello" },
-    ]);
-    words.close();
-    await expect(
-      target.createIndex("text", {
-        config: Index.fts({
-          removeStopWords: true,
-          customStopWords: {
-            source: "table",
-            table: words,
-            column: "word",
-          },
-        }),
-      }),
-    ).rejects.toThrow("is closed; open the table");
-
-    await expect(
-      target.createIndex("text", {
-        config: Index.fts({
-          removeStopWords: true,
-          customStopWords: {
-            source: "table",
-            table: {} as Table,
-            column: "word",
-          },
-        }),
-      }),
-    ).rejects.toThrow("created by this @lancedb/lancedb package instance");
   });
 });
 

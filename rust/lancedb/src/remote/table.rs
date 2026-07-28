@@ -4726,13 +4726,18 @@ mod tests {
                 "/v1/table/my_table/create_index/" => {
                     let body = request.body().unwrap().as_bytes().unwrap();
                     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    let request_number = create_requests_ref.fetch_add(1, Ordering::SeqCst);
                     let mut expected =
                         serde_json::to_value(InvertedIndexParams::default()).unwrap();
                     expected["column"] = "text".into();
                     expected[INDEX_TYPE_KEY] = "FTS".into();
-                    expected["custom_stop_words"] = json!(["cat", " dog ", "CAT"]);
+                    expected["custom_stop_words"] = match request_number {
+                        0 | 1 => json!(["cat", " dog ", "CAT"]),
+                        2 => json!([]),
+                        3 => json!(["from-table"]),
+                        _ => panic!("unexpected create-index request {request_number}"),
+                    };
                     assert_eq!(body, expected);
-                    create_requests_ref.fetch_add(1, Ordering::SeqCst);
                     http::Response::builder()
                         .status(200)
                         .body("{}".to_string())
@@ -4768,7 +4773,34 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(create_requests.load(Ordering::SeqCst), 2);
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .custom_stop_words(FtsStopWordsSource::inline(Vec::new()))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+
+        let source_conn = crate::connect("memory://").execute().await.unwrap();
+        let source_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("word", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["from-table"]))],
+        )
+        .unwrap();
+        let source_table = source_conn
+            .create_table("stop_words", source_batch)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .custom_stop_words(FtsStopWordsSource::table(source_table, "word"))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(create_requests.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
