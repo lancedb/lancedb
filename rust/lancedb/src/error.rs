@@ -40,10 +40,10 @@ pub enum Error {
     Runtime { message: String },
     #[snafu(display("Timeout error: {message}"))]
     Timeout { message: String },
-    #[snafu(display("Job failed: {message}"))]
-    JobFailed { message: String },
-    #[snafu(display("Job was cancelled"))]
-    JobCancelled,
+    #[snafu(display("Job {job_id} failed: {message}"))]
+    JobFailed { job_id: String, message: String },
+    #[snafu(display("Job {job_id} was cancelled"))]
+    JobCancelled { job_id: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

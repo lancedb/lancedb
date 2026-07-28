@@ -31,7 +31,7 @@ impl std::fmt::Debug for Job {
 
 impl Job {
     /// A job whose operation finished before the handle was created.
-    pub(crate) fn done() -> Self {
+    pub(crate) fn new_done() -> Self {
         Self { handle: None }
     }
 

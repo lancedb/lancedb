@@ -2352,7 +2352,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(match job_id {
             Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
-            None => Job::done(),
+            None => Job::new_done(),
         })
     }
 

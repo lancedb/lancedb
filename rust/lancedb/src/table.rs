@@ -3031,7 +3031,7 @@ impl BaseTable for NativeTable {
         }
         builder.await?;
         self.dataset.update(dataset);
-        Ok(Job::done())
+        Ok(Job::new_done())
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
