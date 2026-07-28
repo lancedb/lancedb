@@ -4678,7 +4678,24 @@ class AsyncTable:
         """
         return AsyncQuery(self._inner.query(), self)
 
-    async def _to_lance(self, **kwargs) -> lance.LanceDataset:
+    async def to_lance(self, **kwargs) -> lance.LanceDataset:
+        """Return the Lance dataset backing this table.
+
+        Parameters
+        ----------
+        **kwargs
+            Forwarded to [`lance.dataset`][lance.dataset].
+
+        Returns
+        -------
+        lance.LanceDataset
+            The Lance dataset at this table handle's version and branch.
+
+        Examples
+        --------
+        >>> async def get_lance_dataset(table):
+        ...     return await table.to_lance()
+        """
         try:
             import lance
         except ImportError:
@@ -4728,7 +4745,7 @@ class AsyncTable:
             return (await self.to_arrow()).to_pandas(**kwargs)
         if blob_mode == "bytes" and blob_v2_column_paths(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
-        return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
+        return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.

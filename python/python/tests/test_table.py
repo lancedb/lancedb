@@ -1258,6 +1258,53 @@ def test_branch_to_lance_targets_branch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_async_to_lance(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance()
+
+    assert dataset.count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    branch = await table.branches.create("exp")
+    await branch.add([{"i": 2}])
+
+    assert (await branch.to_lance()).count_rows() == 2
+    assert (await table.to_lance()).count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_targets_checked_out_version(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    version = await table.version()
+    await table.add([{"i": 2}])
+    checked_out = await db.open_table("t", version=version)
+
+    assert (await checked_out.to_lance()).count_rows() == 1
+    assert (await table.to_lance()).count_rows() == 2
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_forwards_dataset_options(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance(default_scan_options={"with_row_id": True})
+
+    assert "_rowid" in dataset.schema.names
+
+
+@pytest.mark.asyncio
 async def test_async_branches(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table(
