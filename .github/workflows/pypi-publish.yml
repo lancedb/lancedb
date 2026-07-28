@@ -20,6 +20,12 @@ env:
 permissions:
   contents: read
 
+# Without this, a force-push to a PR leaves the previous run going -- including
+# a ~74 minute Windows job and a billed arm64 wheel build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
@@ -122,6 +128,13 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      # NOTE: caching cargo here would be a no-op. This workflow only runs on
+      # tags and PRs, and GitHub only lets a run restore caches from its own ref
+      # or the default branch -- so with no run on main there is nothing that
+      # can populate an entry the release build would be allowed to read. Fixing
+      # this needs a main/nightly trigger (which would also catch wheel-build
+      # breakage before a release); the ~74 minutes here is otherwise dominated
+      # by the fat-LTO link, which no cache avoids.
       - uses: ./.github/workflows/build_windows_wheel
         with:
           python-minor-version: 10
