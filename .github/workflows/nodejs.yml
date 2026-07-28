@@ -62,8 +62,9 @@ jobs:
         sudo apt install -y protobuf-compiler libssl-dev
     - uses: Swatinem/rust-cache@v2
       with:
-        # Restore everywhere, but only save from main. The repo sits at
-        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
         save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Format Rust
       run: cargo fmt --all -- --check
@@ -108,8 +109,9 @@ jobs:
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
       with:
-        # Restore everywhere, but only save from main. The repo sits at
-        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
         save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
@@ -191,8 +193,9 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
       with:
-        # Restore everywhere, but only save from main. The repo sits at
-        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
         save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |

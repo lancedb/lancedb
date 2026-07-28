@@ -108,6 +108,15 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler
+      # `pip install -e .` builds the extension with maturin, which is most of
+      # this job's ~33 minutes. It had no Rust cache, so every dependency was
+      # recompiled from scratch on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install
         run: |
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
@@ -168,6 +177,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      # maturin runs cargo natively on macOS (docker is Linux-only), so the host
+      # target dir is cacheable. This job had no Rust cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci
@@ -232,6 +249,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+      # As with Doctest, `pip install -e .` compiles the extension and this job
+      # had no Rust cache, which is most of its ~37 minutes.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install lancedb
         run: |
           pip install "pydantic<2"

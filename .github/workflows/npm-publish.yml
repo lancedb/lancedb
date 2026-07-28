@@ -146,44 +146,38 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
-      # Windows is the critical path of this workflow now that macOS uses
-      # ThinLTO, so cache its dependency artifacts and not just the registry.
-      # rust-cache prunes `target/` down to dependency rlibs and keys on
-      # Cargo.lock plus the rustc version, keeping the entry near 1 GB instead
-      # of the multi-GB whole-`target/` copy that never fit the cache budget.
+      # These builds were entirely uncached: the old key was static, so
+      # `actions/cache` (which only writes on a miss) could never refresh it,
+      # and the multi-GB whole-`target/` copy it tried to store never fit the
+      # repo's cache budget, so no entry was ever saved. rust-cache prunes
+      # `target/` to dependency artifacts and keys on Cargo.lock plus the rustc
+      # version, which both fixes the key and keeps entries a sane size.
       #
-      # This only saves dependency *compilation*. The LTO link of the cdylib
-      # re-runs regardless, because the local crate changes every time.
-      - name: Cache cargo (Windows)
+      # This caches dependency *compilation* only. The LTO link of the cdylib
+      # re-runs regardless, since the local crate changes every time, so the
+      # win is larger on the non-LTO jobs than here.
+      - name: Cache cargo (native builds)
         uses: Swatinem/rust-cache@v2
-        if: ${{ contains(matrix.settings.target, 'windows') }}
+        if: ${{ !matrix.settings.docker }}
         with:
-          # The release profile and per-target dir differ from what the test
+          # The release profile and per-target dirs differ from what the test
           # workflows cache, so these need to be separate entries.
           key: release-${{ matrix.settings.target }}
           # Only the nightly run on main writes, so tag and PR runs restore a
-          # warm entry without every dependabot PR churning the budget. The
-          # nightly cadence also keeps this inside GitHub's 7-day eviction
-          # window, which a tag-only trigger would not.
+          # warm entry without every dependabot PR writing its own (which would
+          # be unreadable elsewhere anyway, since GitHub scopes caches to the
+          # creating ref). The nightly cadence also keeps entries inside
+          # GitHub's 7-day eviction window, which a tag-only trigger would not.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Every other target caches just the crate registry. A release `target/`
-      # for these is several GB, so caching it blew the repo's cache budget and
-      # the entry was never saved at all -- which is why these builds have
-      # always been cold. The registry is identical across targets on a given
-      # host, so the key is scoped to the host to limit the entry count.
-      #
-      # Docker builds get `.cargo-cache`, which is bind-mounted over the
-      # container's CARGO_HOME below; native builds get the runner's own
-      # ~/.cargo. Both paths are cached so either layout is covered.
-      - name: Cache cargo registry
+      # Docker builds run cargo inside the container, where rust-cache cannot
+      # see CARGO_HOME, so cache the bind-mounted registry directly. The
+      # registry is identical across targets on a given host, so the key is
+      # scoped to the host to limit the entry count.
+      - name: Cache cargo registry (docker builds)
         uses: actions/cache@v5
-        if: ${{ !contains(matrix.settings.target, 'windows') }}
+        if: ${{ matrix.settings.docker }}
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            .cargo-cache/
+          path: .cargo-cache/
           key: nodejs-cargo-registry-${{ matrix.settings.host }}-${{ hashFiles('Cargo.lock') }}
           # Without this the key never changes, so `actions/cache` (which only
           # writes on a miss) would save once and then serve a stale entry
@@ -225,6 +219,12 @@ jobs:
               --js ../lancedb/native.js \
               --strip \
               --output-dir dist/
+      # The container runs as root (`--user 0:0`), so everything it wrote to the
+      # mounted cache dir is root-owned and the cache save step -- which runs as
+      # the runner user -- cannot read it.
+      - name: Take ownership of docker cache dir
+        if: ${{ matrix.settings.docker }}
+        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.cargo-cache"
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}

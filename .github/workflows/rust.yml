@@ -49,8 +49,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
@@ -94,13 +95,9 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
-          # This job deletes Cargo.lock to force a fresh resolve, so cached
-          # dependency artifacts are invalidated by design. The ~1 GB target
-          # entry it used to save bought almost nothing while crowding out
-          # caches that do get hits. Keep the registry, skip the target dir.
-          cache-targets: false
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
@@ -132,8 +129,9 @@ jobs:
           lfs: true
       - uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
@@ -193,8 +191,9 @@ jobs:
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: brew install protobuf
@@ -230,8 +229,9 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Protoc v21.12
         run: choco install --no-progress protoc
@@ -272,8 +272,9 @@ jobs:
           toolchain: ${{ matrix.msrv }}
       - uses: Swatinem/rust-cache@v2
         with:
-          # Restore everywhere, but only save from main. The repo sits at
-          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Downgrade  dependencies
         # These packages have newer requirements for MSRV
