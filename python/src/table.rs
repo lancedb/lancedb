@@ -7,7 +7,10 @@ use crate::{
     connection::Connection,
     error::PythonErrorExt,
     expr::PyExpr,
-    index::{IndexConfig, extract_index_params},
+    index::{
+        IndexConfig, extract_fts_stop_words_source, extract_fts_stop_words_value,
+        extract_index_params,
+    },
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -520,13 +523,15 @@ impl From<LanceDbFtsToken> for FtsToken {
     lower_case = true,
     stem = true,
     remove_stop_words = true,
+    custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
     prefix_only = false
 ))]
 #[allow(clippy::too_many_arguments)]
-pub fn tokenize(
+pub fn tokenize<'py>(
+    py: Python<'py>,
     query: String,
     base_tokenizer: String,
     language: String,
@@ -534,11 +539,17 @@ pub fn tokenize(
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Bound<'py, PyAny>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
-) -> PyResult<Vec<FtsToken>> {
+) -> PyResult<Bound<'py, PyAny>> {
+    let custom_stop_words = custom_stop_words
+        .as_ref()
+        .map(extract_fts_stop_words_value)
+        .transpose()?
+        .flatten();
     let params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
@@ -556,8 +567,15 @@ pub fn tokenize(
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
         .ngram_prefix_only(prefix_only);
-    let tokens = lancedb_tokenize(&query, &params).infer_error()?;
-    Ok(tokens.into_iter().map(FtsToken::from).collect())
+    future_into_py(py, async move {
+        let params = if let Some(source) = custom_stop_words {
+            params.custom_stop_words(Some(source.resolve().await.infer_error()?))
+        } else {
+            params
+        };
+        let tokens = lancedb_tokenize(&query, &params).infer_error()?;
+        Ok(tokens.into_iter().map(FtsToken::from).collect::<Vec<_>>())
+    })
 }
 
 #[pyclass]
@@ -781,7 +799,8 @@ impl Table {
         name: Option<String>,
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let (index, custom_stop_words_source) = extract_index_params(&index)?;
+        let custom_stop_words = extract_fts_stop_words_source(&index)?;
+        let index = extract_index_params(&index)?;
         let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
         let mut op = self_
             .inner_ref()?
@@ -795,8 +814,8 @@ impl Table {
         if let Some(train) = train {
             op = op.train(train);
         }
-        if let Some(source) = custom_stop_words_source {
-            op = op.custom_stop_words_source(source);
+        if let Some(custom_stop_words) = custom_stop_words {
+            op = op.custom_stop_words(custom_stop_words).infer_error()?;
         }
 
         future_into_py(self_.py(), async move {

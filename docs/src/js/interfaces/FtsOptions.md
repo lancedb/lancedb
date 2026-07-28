@@ -59,27 +59,26 @@ the experimental FTS V3 format and may introduce breaking changes.
 ### customStopWords?
 
 ```ts
-optional customStopWords: string[];
+optional customStopWords: CustomStopWordsSource;
 ```
 
-Custom stop words that replace the built-in language list.
+Custom stop words that replace the built-in list for `language`.
 
-`undefined` uses the built-in list while `[]` explicitly selects no stop
-words. This only affects tokenization when `removeStopWords` is true.
+This option only affects tokenization when `removeStopWords` is true. The
+source can be an inline string array, a newline-delimited UTF-8 file on
+this client, or a string column from a local/native LanceDB table.
+Remote table sources are rejected because they cannot currently guarantee
+a complete snapshot; the target table may still be remote.
 
-***
+`undefined` keeps the built-in language list. An empty array explicitly
+replaces it with no stop words.
 
-### customStopWordsSource?
-
-```ts
-optional customStopWordsSource: CustomStopWordsSource;
-```
-
-Request-only source resolved by a remote LanceDB service.
-
-This is mutually exclusive with `customStopWords`. Local native tables
-reject source descriptors; load the source explicitly and pass
-`customStopWords` instead.
+Embedded/local fuzzy queries with `fuzziness > 0` are rejected while this
+snapshot and `removeStopWords` are active. Use `fuzziness: 0`, or omit the
+custom snapshot. Remote tables reject every explicit `fuzziness > 0`
+query, regardless of stop-word configuration, because the server protocol
+does not declare tokenizer-snapshot-safe fuzzy search; omit `fuzziness` or
+use `fuzziness: 0`.
 
 ***
 

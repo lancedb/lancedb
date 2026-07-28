@@ -69,7 +69,7 @@ from .index import (
     HnswSq,
     HnswFlat,
     FTS,
-    CustomStopWordsSource,
+    CustomStopWords,
 )
 from .expr import Expr
 from .merge import LanceMergeInsertBuilder
@@ -1104,8 +1104,7 @@ class Table(ABC):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
-        custom_stop_words: Optional[List[str]] = None,
-        custom_stop_words_source: Optional[CustomStopWordsSource] = None,
+        custom_stop_words: CustomStopWords = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -1140,7 +1139,11 @@ class Table(ABC):
             for english it would be "en_stem". For new native FTS indexes, use
             ``base_tokenizer`` directly; ``tokenizer_name`` is a legacy
             compatibility alias and does not expose model-backed tokenizer names
-            such as ``jieba/default`` or ``lindera/ipadic``.
+            such as ``jieba/default`` or ``lindera/ipadic``. Its historical
+            ``remove_stop_words=False`` setting is preserved. A custom
+            stop-word snapshot is persisted when both options are supplied,
+            but remains inactive; use the modern ``FTS`` config with
+            ``remove_stop_words=True`` to enable it.
         use_tantivy: bool, default False
             Deprecated legacy Tantivy parameter. Setting this to True raises an
             error.
@@ -1173,12 +1176,12 @@ class Table(ABC):
         remove_stop_words : bool, default True
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
-        custom_stop_words : list of str, optional
-            Custom words that replace the built-in language stop-word list. ``None``
-            uses the built-in list; ``[]`` selects no stop words.
-        custom_stop_words_source : CustomStopWordsSource, optional
-            Request-only remote source for custom stop words. Mutually exclusive
-            with ``custom_stop_words`` and rejected by local native tables.
+        custom_stop_words : sequence of str, file source, or table source, optional
+            Custom words that replace the built-in language stop words. ``None``
+            uses the built-in list; an empty sequence explicitly uses no stop
+            words. File and table sources are resolved to a stable snapshot
+            before the index is created. Table sources must be local/native;
+            remote table sources are rejected.
         ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -1867,6 +1870,8 @@ class Table(ABC):
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
         this means the same tokenizer model files must also exist locally.
+        Custom stop-word sources are not re-read; this uses the persisted
+        snapshot stored in the index configuration.
         """
 
     @abstractmethod
@@ -3064,8 +3069,7 @@ class LanceTable(Table):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
-        custom_stop_words: Optional[List[str]] = None,
-        custom_stop_words_source: Optional[CustomStopWordsSource] = None,
+        custom_stop_words: CustomStopWords = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -3078,6 +3082,12 @@ class LanceTable(Table):
         .. deprecated:: 0.25.0
             Use :meth:`create_index` with an FTS config instead.
             Example: ``table.create_index("text_column", config=FTS())``
+
+        When ``tokenizer_name`` is supplied, its historical
+        ``remove_stop_words=False`` setting is preserved. ``custom_stop_words``
+        is still snapshotted and persisted, but remains inactive. Use the modern
+        :class:`lancedb.index.FTS` configuration with
+        ``remove_stop_words=True`` to enable custom stop-word removal.
         """
         self._ensure_no_legacy_fts_index()
 
@@ -3113,7 +3123,6 @@ class LanceTable(Table):
                 "stem": stem,
                 "remove_stop_words": remove_stop_words,
                 "custom_stop_words": custom_stop_words,
-                "custom_stop_words_source": custom_stop_words_source,
                 "ascii_folding": ascii_folding,
                 "ngram_min_length": ngram_min_length,
                 "ngram_max_length": ngram_max_length,
@@ -3122,7 +3131,6 @@ class LanceTable(Table):
         else:
             tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
             tokenizer_configs["custom_stop_words"] = custom_stop_words
-            tokenizer_configs["custom_stop_words_source"] = custom_stop_words_source
 
         config = FTS(block_size=block_size, **tokenizer_configs)
 
@@ -3856,6 +3864,8 @@ class LanceTable(Table):
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
         this means the same tokenizer model files must also exist locally.
+        Custom stop-word sources are not re-read; this uses the persisted
+        snapshot stored in the index configuration.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -6003,6 +6013,8 @@ class AsyncTable:
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
         this means the same tokenizer model files must also exist locally.
+        Custom stop-word sources are not re-read; this uses the persisted
+        snapshot stored in the index configuration.
         """
         return await self._inner.tokenize(query, column=column, index_name=index_name)
 

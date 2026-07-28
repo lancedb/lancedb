@@ -23,6 +23,17 @@
             <artifactId>lance-core</artifactId>
         </dependency>
 
+        <!--
+          The JNI-backed RestNamespace cannot forward extension fields that are
+          absent from its generated Rust request model.  The official Apache
+          client is used by LanceDbFtsIndexClient to send the resolved
+          custom_stop_words snapshot without that lossy JNI round trip.
+        -->
+        <dependency>
+            <groupId>org.lance</groupId>
+            <artifactId>lance-namespace-apache-client</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>

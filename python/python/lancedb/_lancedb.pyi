@@ -16,6 +16,7 @@ from .index import (
     HnswSq,
     HnswFlat,
     FTS,
+    CustomStopWords,
 )
 from lance_namespace import (
     ListNamespacesResponse,
@@ -50,7 +51,7 @@ class MetricDescription:
 def register_lancedb_metrics_recorder() -> bool: ...
 def lancedb_metrics_catalog() -> List[MetricDescription]: ...
 def snapshot_lancedb_metrics() -> List[MetricPoint]: ...
-def tokenize(
+async def tokenize(
     query: str,
     *,
     base_tokenizer: BaseTokenizerType = "simple",
@@ -59,6 +60,7 @@ def tokenize(
     lower_case: bool = True,
     stem: bool = True,
     remove_stop_words: bool = True,
+    custom_stop_words: CustomStopWords = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,

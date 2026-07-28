@@ -16,7 +16,7 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
-use crate::index::Index;
+use crate::index::{Index, custom_stop_words_source};
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
 use crate::util::schema_to_buffer;
@@ -137,7 +137,7 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::use_self)]
     pub async fn create_index(
         &self,
         index: Option<&Index>,
@@ -146,14 +146,26 @@ impl Table {
         wait_timeout_s: Option<i64>,
         name: Option<String>,
         train: Option<bool>,
-        custom_stop_words_source: Option<String>,
+        custom_stop_words: Option<Vec<String>>,
+        custom_stop_words_file: Option<String>,
+        custom_stop_words_table: Option<&Table>,
+        custom_stop_words_column: Option<String>,
     ) -> napi::Result<()> {
+        let custom_stop_words_source = custom_stop_words_source(
+            custom_stop_words,
+            custom_stop_words_file,
+            custom_stop_words_table,
+            custom_stop_words_column,
+        )?;
         let lancedb_index = if let Some(index) = index {
             index.consume()?
         } else {
             lancedb::index::Index::Auto
         };
         let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(source) = custom_stop_words_source {
+            builder = builder.custom_stop_words(source).default_error()?;
+        }
         if let Some(replace) = replace {
             builder = builder.replace(replace);
         }
@@ -166,12 +178,6 @@ impl Table {
         }
         if let Some(train) = train {
             builder = builder.train(train);
-        }
-        if let Some(source) = custom_stop_words_source {
-            let source = serde_json::from_str(&source).map_err(|err| {
-                napi::Error::from_reason(format!("invalid customStopWordsSource: {err}"))
-            })?;
-            builder = builder.custom_stop_words_source(source);
         }
         builder.execute().await.default_error()
     }

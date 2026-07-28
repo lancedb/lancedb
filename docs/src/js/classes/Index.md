@@ -98,6 +98,42 @@ You can combine filters with full text search.
 
 [`Index`](Index.md)
 
+#### Examples
+
+Use an inline stop-word snapshot:
+```ts
+await table.createIndex("text", {
+  config: Index.fts({
+    removeStopWords: true,
+    customStopWords: ["copyright", "reserved"],
+  }),
+});
+```
+
+Read a newline-delimited UTF-8 file on the client:
+```ts
+await table.createIndex("text", {
+  config: Index.fts({
+    removeStopWords: true,
+    customStopWords: { source: "file", path: "./stop-words.txt" },
+  }),
+});
+```
+
+Snapshot a string column from another local/native LanceDB table:
+```ts
+await table.createIndex("text", {
+  config: Index.fts({
+    removeStopWords: true,
+    customStopWords: {
+      source: "table",
+      table: stopWordsTable,
+      column: "word",
+    },
+  }),
+});
+```
+
 ***
 
 ### hnswPq()

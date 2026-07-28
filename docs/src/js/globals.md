@@ -77,6 +77,8 @@
 - [FragmentStatistics](interfaces/FragmentStatistics.md)
 - [FragmentSummaryStats](interfaces/FragmentSummaryStats.md)
 - [FtsOptions](interfaces/FtsOptions.md)
+- [FtsStopWordsFileSource](interfaces/FtsStopWordsFileSource.md)
+- [FtsStopWordsTableSource](interfaces/FtsStopWordsTableSource.md)
 - [FtsToken](interfaces/FtsToken.md)
 - [FullTextQuery](interfaces/FullTextQuery.md)
 - [FullTextSearchOptions](interfaces/FullTextSearchOptions.md)

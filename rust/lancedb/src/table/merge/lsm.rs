@@ -81,6 +81,13 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     }
 
     let mut dataset = (*table.dataset.get().await?).clone();
+    reject_custom_stop_words_fts(
+        &dataset,
+        spec.maintained_indexes(),
+        "set_lsm_write_spec",
+        None,
+    )
+    .await?;
     let mut builder = dataset.initialize_mem_wal();
     let (maintained_indexes, writer_config_defaults) = match spec {
         LsmWriteSpec::Bucket {
@@ -114,6 +121,69 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     }
     builder.execute().await?;
     table.dataset.update(dataset);
+    Ok(())
+}
+
+/// Reject maintained FTS indexes whose full segment params enable custom stop
+/// words.
+///
+/// Lance's MemWAL currently reconstructs an in-memory FTS index from
+/// `InvertedIndexDetails`, which does not carry `custom_stop_words`. Allowing
+/// such an index through would silently tokenize MemWAL rows differently from
+/// the persisted base index. Read each physical segment's full params instead
+/// of relying on the lossy manifest details. Installation, write dispatch, and
+/// LSM FTS read planning all call this before changing or reading MemWAL state.
+/// When `column` is supplied, only an FTS index covering that query column is
+/// checked. A configured custom list is safe while `remove_stop_words` is
+/// disabled because Lance does not apply it.
+pub(in crate::table) async fn reject_custom_stop_words_fts(
+    dataset: &Dataset,
+    maintained_indexes: &[String],
+    operation: &str,
+    column: Option<&str>,
+) -> Result<()> {
+    let field_id = column.and_then(|column| {
+        dataset
+            .schema()
+            .resolve_case_insensitive(column)
+            .and_then(|path| path.last().map(|field| field.id))
+    });
+    if column.is_some() && field_id.is_none() {
+        // Let the caller's ordinary missing-column validation produce its
+        // established diagnostic.
+        return Ok(());
+    }
+    let indices = dataset.load_indices().await?;
+    for segment in indices.iter().filter(|segment| {
+        maintained_indexes.contains(&segment.name)
+            && field_id.is_none_or(|field_id| segment.fields.contains(&field_id))
+            && segment
+                .index_details
+                .as_ref()
+                .is_some_and(|details| details.type_url.ends_with("InvertedIndexDetails"))
+    }) {
+        let params = lance::index::scalar::load_segment_params(dataset, segment)
+            .await
+            .map_err(|source| Error::InvalidInput {
+                message: format!(
+                    "{operation}: failed to read full FTS parameters for maintained index '{}': {}",
+                    segment.name, source,
+                ),
+            })?;
+        if crate::index::fts_params_use_custom_stop_words(&params)? {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "{operation}: maintained FTS index '{}' uses an active custom_stop_words \
+                     snapshot (remove_stop_words=true; an explicitly empty custom list is \
+                     also unsupported); MemWAL cannot preserve this tokenizer setting. \
+                     Remove this index from \
+                     maintained_indexes and use ordinary append followed by optimize \
+                     instead of MemWAL-backed writes",
+                    segment.name
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -489,6 +559,19 @@ pub(crate) async fn lsm_dispatch_decision(
         }
         return Ok(LsmDispatch::Standard);
     };
+
+    // Revalidate on every dispatch, not only when the spec is installed. The
+    // maintained index can be replaced after installation, and an older
+    // database may already contain a MemWAL spec for an incompatible FTS
+    // index. Fail before opening a shard writer so neither case can silently
+    // index new rows with a different tokenizer.
+    reject_custom_stop_words_fts(
+        dataset.as_ref(),
+        &details.maintained_indexes,
+        "merge_insert",
+        None,
+    )
+    .await?;
 
     let pk_cols: Vec<String> = dataset
         .schema()
@@ -924,9 +1007,19 @@ fn lsm_merge_result(num_rows: u64) -> MergeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{ArrayRef, BooleanArray, Int32Array, Int64Array, StringArray, UInt64Array};
-    use arrow_schema::Field;
+    use arrow_array::{
+        ArrayRef, BooleanArray, Int32Array, Int64Array, RecordBatchIterator, StringArray,
+        StructArray, UInt64Array,
+    };
+    use arrow_schema::{Field, Schema};
     use lance_index::mem_wal::ShardingField;
+    use lance_index::scalar::InvertedIndexParams;
+    use tempfile::tempdir;
+
+    use crate::connect;
+    use crate::index::Index;
+    use crate::query::{ExecutableQuery, QueryBase};
+    use lance_index::scalar::FullTextSearchQuery;
 
     fn lance_schema(batch: &RecordBatch) -> LanceSchema {
         LanceSchema::try_from(batch.schema().as_ref()).unwrap()
@@ -966,6 +1059,289 @@ mod tests {
                 parameters: HashMap::new(),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn set_lsm_write_spec_guards_custom_stop_words_fts() {
+        for (case, remove_stop_words, custom_stop_words, should_reject) in [
+            (
+                "enabled_non_empty",
+                true,
+                Some(vec!["lancedb".to_string()]),
+                true,
+            ),
+            ("enabled_empty", true, Some(Vec::new()), true),
+            ("enabled_none", true, None, false),
+            (
+                "disabled_non_empty",
+                false,
+                Some(vec!["lancedb".to_string()]),
+                false,
+            ),
+            ("disabled_empty", false, Some(Vec::new()), false),
+            ("disabled_none", false, None, false),
+        ] {
+            let dir = tempdir().unwrap();
+            let conn = connect(dir.path().to_str().unwrap())
+                .execute()
+                .await
+                .unwrap();
+            let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(StringArray::from(vec!["lancedb database"]))],
+            )
+            .unwrap();
+            let table = conn
+                .create_table(format!("custom_stop_words_{case}"), batch)
+                .execute()
+                .await
+                .unwrap();
+            let index_name = format!("fts_{case}");
+            let params = InvertedIndexParams::default()
+                .remove_stop_words(remove_stop_words)
+                .custom_stop_words(custom_stop_words);
+            table
+                .create_index(&["text"], Index::FTS(params))
+                .name(index_name.clone())
+                .execute()
+                .await
+                .unwrap();
+
+            let result = table
+                .set_lsm_write_spec(
+                    LsmWriteSpec::unsharded().with_maintained_indexes([index_name.as_str()]),
+                )
+                .await;
+            let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+            if should_reject {
+                let message = result
+                    .expect_err("custom stop words must fail closed")
+                    .to_string();
+                assert!(message.contains("custom_stop_words"), "{message}");
+                assert!(message.contains("maintained_indexes"), "{message}");
+                assert!(message.contains("append"), "{message}");
+                assert!(message.contains("optimize"), "{message}");
+                assert!(
+                    dataset.mem_wal_index_details().await.unwrap().is_none(),
+                    "a rejected spec must not install the MemWAL system index"
+                );
+            } else {
+                result
+                    .expect("an FTS index without active custom stop words must remain supported");
+                assert!(
+                    dataset.mem_wal_index_details().await.unwrap().is_some(),
+                    "the supported spec should install the MemWAL system index"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_stop_words_guard_resolves_nested_fts_column() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let payload = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("text", DataType::Utf8, false)),
+            Arc::new(StringArray::from(vec!["nested document"])) as ArrayRef,
+        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "payload",
+            payload.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![payload as ArrayRef]).expect("valid nested batch");
+        let table = conn
+            .create_table("nested_custom_stop_words", batch)
+            .execute()
+            .await
+            .unwrap();
+        let index_name = "payload_text_fts";
+        table
+            .create_index(
+                &["payload.text"],
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .remove_stop_words(true)
+                        .custom_stop_words(Some(vec!["nested".to_string()])),
+                ),
+            )
+            .name(index_name.to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let message = reject_custom_stop_words_fts(
+            dataset.as_ref(),
+            &[index_name.to_string()],
+            "full_text_search",
+            Some("PAYLOAD.TEXT"),
+        )
+        .await
+        .expect_err("nested field path must select and reject the custom FTS index")
+        .to_string();
+        assert!(message.contains("custom_stop_words"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn merge_insert_revalidates_replaced_custom_stop_words_fts_after_reopen() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["lancedb database"])),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("replace_custom_stop_words", batch)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+
+        let index_name = "text_fts";
+        table
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .remove_stop_words(true)
+                        .custom_stop_words(None),
+                ),
+            )
+            .name(index_name.to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([index_name]))
+            .await
+            .unwrap();
+
+        // Persist an un-compacted row using the original (compatible) FTS
+        // tokenizer, then close the writer so the table can be reopened.
+        let mem_wal_row = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![2])),
+                Arc::new(StringArray::from(vec!["memwal document"])),
+            ],
+        )
+        .unwrap();
+        let mem_wal_row: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(mem_wal_row)],
+            schema.clone(),
+        ));
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        merge.execute(mem_wal_row).await.unwrap();
+        table.close_lsm_writers().await.unwrap();
+
+        // Replacing a maintained index after the spec is installed must not
+        // bypass the installation-time guard.
+        table
+            .create_index(
+                &["text"],
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .remove_stop_words(true)
+                        .custom_stop_words(Some(vec!["lancedb".to_string()])),
+                ),
+            )
+            .name(index_name.to_string())
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+        drop(table);
+
+        let table = conn
+            .open_table("replace_custom_stop_words")
+            .execute()
+            .await
+            .unwrap();
+        assert!(
+            table
+                .as_native()
+                .unwrap()
+                .dataset
+                .get()
+                .await
+                .unwrap()
+                .mem_wal_index_details()
+                .await
+                .unwrap()
+                .is_some(),
+            "the persisted MemWAL spec should survive reopen"
+        );
+
+        let query = FullTextSearchQuery::new("database".to_string())
+            .with_column("text".to_string())
+            .unwrap();
+        let result = table.query().full_text_search(query).execute().await;
+        let message = match result {
+            Ok(_) => panic!("read planning must revalidate a replaced maintained FTS index"),
+            Err(error) => error.to_string(),
+        };
+        assert!(message.contains("full_text_search"), "{message}");
+        assert!(message.contains("custom_stop_words"), "{message}");
+        assert!(message.contains("maintained_indexes"), "{message}");
+        assert!(message.contains("append"), "{message}");
+        assert!(message.contains("optimize"), "{message}");
+
+        let upsert = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![3])),
+                Arc::new(StringArray::from(vec!["new document"])),
+            ],
+        )
+        .unwrap();
+        let upsert: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(upsert)], schema));
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let message = merge
+            .execute(upsert)
+            .await
+            .expect_err("dispatch must revalidate a replaced maintained FTS index")
+            .to_string();
+        assert!(message.contains("merge_insert"), "{message}");
+        assert!(message.contains("custom_stop_words"), "{message}");
+        assert!(message.contains("maintained_indexes"), "{message}");
+        assert!(message.contains("append"), "{message}");
+        assert!(message.contains("optimize"), "{message}");
+        assert!(
+            table
+                .as_native()
+                .unwrap()
+                .dataset
+                .shard_writer()
+                .read_snapshot()
+                .await
+                .unwrap()
+                .is_none(),
+            "revalidation must fail before opening a MemWAL shard writer"
+        );
     }
 
     fn bucket_values(batch: &RecordBatch, num_buckets: u32) -> Vec<i32> {

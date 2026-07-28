@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 # --8<-- [end:import-pydantic-base-model]
 # --8<-- [start:import-lancedb-fts]
-from lancedb.index import FTS
+from lancedb.index import FTS, FtsStopWordsFile, FtsStopWordsTable
 
 # --8<-- [end:import-lancedb-fts]
 # --8<-- [start:import-os]
@@ -349,6 +349,51 @@ def test_fts_native():
     table.add([{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"}])
     table.optimize()
     # --8<-- [end:fts_incremental_index]
+
+
+def test_fts_custom_stop_word_sources(tmp_path):
+    # --8<-- [start:fts_custom_stop_words]
+    db = lancedb.connect(tmp_path / "db")
+    documents = db.create_table(
+        "documents",
+        data=[{"text": "the lance database"}, {"text": "searchable data"}],
+    )
+
+    # Inline values
+    documents.create_index(
+        "text",
+        config=FTS(stem=False, custom_stop_words=["lance", "searchable"]),
+    )
+
+    # A strict UTF-8 file with one stop word per line
+    stop_words_path = tmp_path / "stop-words.txt"
+    stop_words_path.write_text("lance\nsearchable\n", encoding="utf-8")
+    documents.create_index(
+        "text",
+        config=FTS(
+            stem=False,
+            custom_stop_words=FtsStopWordsFile(stop_words_path),
+        ),
+        replace=True,
+    )
+
+    # A string column from another open LanceDB table
+    stop_words = db.create_table(
+        "stop_words",
+        data=[{"word": "lance"}, {"word": "searchable"}],
+    )
+    documents.create_index(
+        "text",
+        config=FTS(
+            stem=False,
+            custom_stop_words=FtsStopWordsTable(stop_words, "word"),
+        ),
+        replace=True,
+    )
+    # --8<-- [end:fts_custom_stop_words]
+
+    tokens = documents.tokenize("the lance database", column="text")
+    assert [token.text for token in tokens] == ["the", "database"]
 
 
 @pytest.mark.skipif(

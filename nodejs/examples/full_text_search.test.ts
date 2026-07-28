@@ -29,8 +29,14 @@ test("full text search", async () => {
     const tbl = await db.createTable("myVectors", data, { mode: "overwrite" });
 
     await tbl.createIndex("doc", {
-      config: lancedb.Index.fts(),
+      config: lancedb.Index.fts({
+        stem: false,
+        removeStopWords: true,
+        customStopWords: ["banana"],
+      }),
     });
+    const tokens = await tbl.tokenize("apple banana", { column: "doc" });
+    expect(tokens.map((token) => token.text)).toEqual(["apple"]);
 
     // --8<-- [start:full_text_search]
     const result = await tbl
@@ -42,4 +48,4 @@ test("full text search", async () => {
     expect(result.length).toBe(10);
     // --8<-- [end:full_text_search]
   });
-}, 10_000);
+}, 30_000);

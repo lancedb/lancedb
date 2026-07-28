@@ -27,7 +27,7 @@ use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::merge::MergeFilter;
-use crate::table::query::create_multi_vector_plan;
+use crate::table::query::{create_multi_vector_plan, fuzzy_match_columns};
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
@@ -1003,6 +1003,7 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn prepare_query_bodies(&self, query: &AnyQuery) -> Result<Vec<serde_json::Value>> {
+        self.reject_remote_fuzzy_query(query)?;
         let version = self.current_version().await;
         let mut base_body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut base_body);
@@ -1017,6 +1018,21 @@ impl<S: HttpSend> RemoteTable<S> {
             }
             AnyQuery::VectorQuery(query) => self.apply_vector_query_params(base_body, query),
         }
+    }
+
+    fn reject_remote_fuzzy_query(&self, query: &AnyQuery) -> Result<()> {
+        let Some(fts_query) = query.base().full_text_search.as_ref() else {
+            return Ok(());
+        };
+        let fuzzy_columns = fuzzy_match_columns(&fts_query.query);
+        if !fuzzy_columns.columns.is_empty() || fuzzy_columns.has_unbound_column {
+            return Err(Error::InvalidInput {
+                message: "explicit fuzzy FTS queries are not supported for remote tables because the server protocol does not declare a tokenizer-snapshot-safe fuzzy-search capability; use fuzziness=0"
+                    .to_string(),
+            });
+        }
+
+        Ok(())
     }
 
     fn invalidate_schema_cache(&self) {
@@ -2318,27 +2334,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         };
 
-        if let Some(source) = index.custom_stop_words_source.as_ref() {
-            if !matches!(&index.index, Index::FTS(_)) {
-                return Err(Error::InvalidInput {
-                    message: "`custom_stop_words_source` can only be used with an FTS index"
-                        .to_string(),
-                });
-            }
-            if params
-                .as_ref()
-                .and_then(|params| params.get("custom_stop_words"))
-                .is_some_and(|value| !value.is_null())
-            {
-                return Err(Error::InvalidInput {
-                    message: "`custom_stop_words` and `custom_stop_words_source` are mutually \
-                              exclusive; choose one"
-                        .to_string(),
-                });
-            }
-            body["custom_stop_words_source"] = to_json(source)?;
-        }
-
         body[INDEX_TYPE_KEY] = index_type_str.into();
         if let Some(params) = params {
             for (key, value) in params.as_object().expect("params should be a JSON object") {
@@ -2977,20 +2972,19 @@ mod tests {
     use super::*;
 
     use crate::remote::client::{ClientConfig, RetryConfig};
-    use crate::table::{AddDataMode, FieldMetadataUpdate};
+    use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
-    use lance_index::scalar::inverted::query::MatchQuery;
+    use lance_index::scalar::inverted::query::{BooleanQuery, FtsQuery, MatchQuery, Occur};
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
     use rstest::rstest;
     use serde_json::json;
 
-    use crate::index::scalar::CustomStopWordsSource;
     use crate::index::vector::{
         IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder,
         IvfSqIndexBuilder,
@@ -3000,7 +2994,10 @@ mod tests {
     use crate::utils::background_cache::clock;
     use crate::{
         DistanceType, Error, Table,
-        index::{Index, IndexStatistics, IndexType, vector::IvfPqIndexBuilder},
+        index::{
+            Index, IndexStatistics, IndexType, scalar::FtsStopWordsSource,
+            vector::IvfPqIndexBuilder,
+        },
         query::{
             AnalyzePlanDistributedMetrics, ColumnOrdering, ExecutableQuery, QueryBase,
             QueryExecutionOptions,
@@ -4310,6 +4307,100 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn test_remote_explicit_fuzzy_is_fail_closed_without_network_preflight() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_ref = requests.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 3, 0),
+            move |_request| -> http::Response<String> {
+                requests_ref.fetch_add(1, Ordering::SeqCst);
+                panic!("remote fuzzy guard must reject before any network request")
+            },
+        );
+
+        let queries = [
+            FullTextSearchQuery::new_fuzzy("cot".to_string(), Some(1))
+                .with_column("text".to_string())
+                .unwrap(),
+            FullTextSearchQuery::new_query(FtsQuery::Boolean(BooleanQuery::new([
+                (
+                    Occur::Must,
+                    FtsQuery::Match(
+                        MatchQuery::new("cot".to_string()).with_column(Some("other".to_string())),
+                    ),
+                ),
+                (
+                    Occur::MustNot,
+                    FtsQuery::Match(
+                        MatchQuery::new("cot".to_string())
+                            .with_fuzziness(Some(1))
+                            .with_column(None),
+                    ),
+                ),
+            ]))),
+        ];
+
+        for query in queries {
+            let error = table
+                .query()
+                .full_text_search(query)
+                .execute()
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("tokenizer-snapshot-safe fuzzy-search capability")
+            );
+            assert!(error.to_string().contains("fuzziness=0"));
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_remote_none_and_zero_fuzziness_do_not_list_indices() {
+        for fuzziness in [None, Some(0)] {
+            let expected_data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
+                vec![Arc::new(StringArray::from(vec!["cat"]))],
+            )
+            .unwrap();
+            let expected_data_ref = expected_data.clone();
+            let table = Table::new_with_handler_version(
+                "my_table",
+                semver::Version::new(0, 3, 0),
+                move |request| {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+                    let response_body = write_ipc_file(&expected_data_ref);
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(response_body)
+                        .unwrap()
+                },
+            );
+
+            let batches = table
+                .query()
+                .full_text_search(
+                    FullTextSearchQuery::new_fuzzy("cot".to_string(), fuzziness)
+                        .with_column("text".to_string())
+                        .unwrap(),
+                )
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches, vec![expected_data]);
+        }
+    }
+
     #[rstest]
     #[case(DEFAULT_SERVER_VERSION.clone())]
     #[case(semver::Version::new(0, 2, 0))]
@@ -4575,14 +4666,6 @@ mod tests {
                 },
                 Index::FTS(InvertedIndexParams::default().block_size(256).unwrap()),
             ),
-            (
-                "FTS",
-                serde_json::to_value(
-                    InvertedIndexParams::default().custom_stop_words(Some(Vec::new())),
-                )
-                .unwrap(),
-                Index::FTS(InvertedIndexParams::default().custom_stop_words(Some(Vec::new()))),
-            ),
         ];
 
         for (index_type, expected_body, index) in cases {
@@ -4623,111 +4706,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_fts_index_with_custom_stop_words_source() {
-        let sources = [
-            (
-                CustomStopWordsSource::Inline {
-                    words: vec!["lance".to_string()],
-                },
-                json!({"type": "inline", "words": ["lance"]}),
-            ),
-            (
-                CustomStopWordsSource::File {
-                    uri: "s3://bucket/stop-words.txt".to_string(),
-                },
-                json!({"type": "file", "uri": "s3://bucket/stop-words.txt"}),
-            ),
-            (
-                CustomStopWordsSource::Table {
-                    table: "stop_words".to_string(),
-                    column: "word".to_string(),
-                },
-                json!({"type": "table", "table": "stop_words", "column": "word"}),
-            ),
-        ];
+    async fn test_create_remote_fts_index_sends_stop_word_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stop-words.txt");
+        std::fs::write(&path, b"cat\n\n dog \ncat\nCAT\n").unwrap();
 
-        for (source, expected_source) in sources {
-            let table =
-                Table::new_with_handler("my_table", move |request| match request.url().path() {
-                    "/v1/table/my_table/describe/" => {
-                        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
-                        http::Response::builder()
-                            .status(200)
-                            .body(describe_response(&schema))
-                            .unwrap()
-                    }
-                    "/v1/table/my_table/create_index/" => {
-                        let body: serde_json::Value =
-                            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
-                                .unwrap();
-                        assert_eq!(body["custom_stop_words_source"], expected_source);
-                        assert!(body["custom_stop_words"].is_null());
-                        http::Response::builder()
-                            .status(200)
-                            .body("{}".to_string())
-                            .unwrap()
-                    }
-                    path => panic!("Unexpected path: {path}"),
-                });
-
-            table
-                .create_index(&["text"], Index::FTS(InvertedIndexParams::default()))
-                .custom_stop_words_source(source)
-                .execute()
-                .await
-                .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_fts_index_custom_stop_words_serialization() {
-        let cases = [
-            (None, serde_json::Value::Null),
-            (Some(Vec::new()), json!([])),
-            (
-                Some(vec!["lance".to_string(), "database".to_string()]),
-                json!(["lance", "database"]),
-            ),
-        ];
-
-        for (custom_stop_words, expected) in cases {
-            let table =
-                Table::new_with_handler("my_table", move |request| match request.url().path() {
-                    "/v1/table/my_table/describe/" => {
-                        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
-                        http::Response::builder()
-                            .status(200)
-                            .body(describe_response(&schema))
-                            .unwrap()
-                    }
-                    "/v1/table/my_table/create_index/" => {
-                        let body: serde_json::Value =
-                            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
-                                .unwrap();
-                        assert_eq!(body["custom_stop_words"], expected);
-                        http::Response::builder()
-                            .status(200)
-                            .body("{}".to_string())
-                            .unwrap()
-                    }
-                    path => panic!("Unexpected path: {path}"),
-                });
-
-            table
-                .create_index(
-                    &["text"],
-                    Index::FTS(InvertedIndexParams::default().custom_stop_words(custom_stop_words)),
-                )
-                .execute()
-                .await
-                .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_fts_index_rejects_both_custom_stop_words_forms() {
-        let table =
-            Table::new_with_handler("my_table", move |request| match request.url().path() {
+        let create_requests = Arc::new(AtomicUsize::new(0));
+        let create_requests_ref = create_requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
                 "/v1/table/my_table/describe/" => {
                     let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
                     http::Response::builder()
@@ -4735,22 +4723,52 @@ mod tests {
                         .body(describe_response(&schema))
                         .unwrap()
                 }
-                path => panic!("Unexpected path: {path}"),
-            });
+                "/v1/table/my_table/create_index/" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    let mut expected =
+                        serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    expected["column"] = "text".into();
+                    expected[INDEX_TYPE_KEY] = "FTS".into();
+                    expected["custom_stop_words"] = json!(["cat", " dog ", "CAT"]);
+                    assert_eq!(body, expected);
+                    create_requests_ref.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
 
-        let error = table
-            .create_index(
-                &["text"],
-                Index::FTS(
-                    InvertedIndexParams::default()
-                        .custom_stop_words(Some(vec!["lance".to_string()])),
-                ),
-            )
-            .custom_stop_words_source(CustomStopWordsSource::Inline { words: Vec::new() })
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .train(false)
+            .custom_stop_words(FtsStopWordsSource::file(&path))
+            .unwrap()
             .execute()
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("mutually exclusive"));
+            .unwrap();
+
+        // The legacy direct Rust builder entry point is canonicalized using
+        // the same exact-empty and exact-deduplication rules.
+        table
+            .create_index(
+                &["text"],
+                Index::FTS(InvertedIndexParams::default().custom_stop_words(Some(vec![
+                    "cat".to_string(),
+                    String::new(),
+                    " dog ".to_string(),
+                    "cat".to_string(),
+                    "CAT".to_string(),
+                ]))),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(create_requests.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -5236,73 +5254,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tokenize_preserves_remote_custom_stop_words_tristate() {
-        let cases = [
-            (serde_json::Value::Null, vec!["lance"]),
-            (serde_json::json!([]), vec!["the", "lance"]),
-            (serde_json::json!(["lance"]), vec!["the"]),
-        ];
-
-        for (custom_stop_words, expected) in cases {
-            let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
-            let index_details = serde_json::json!({
-                "lance_tokenizer": null,
-                "base_tokenizer": "simple",
-                "language": "English",
-                "with_position": false,
-                "max_token_length": 40,
-                "lower_case": true,
-                "stem": false,
-                "remove_stop_words": true,
-                "ascii_folding": true,
-                "custom_stop_words": custom_stop_words,
-            })
-            .to_string();
-            let table = Table::new_with_handler("my_table", move |request| {
-                assert_eq!(request.method(), "POST");
-                match request.url().path() {
-                    "/v1/table/my_table/describe/" => http::Response::builder()
-                        .status(200)
-                        .body(describe_response(&schema))
-                        .unwrap(),
-                    "/v1/table/my_table/index/list/" => {
-                        let body = serde_json::json!({
-                            "indexes": [
-                                {
-                                    "index_name": "text_idx",
-                                    "columns": ["text"],
-                                    "index_type": "FTS",
-                                    "index_details": index_details,
-                                },
-                            ]
-                        });
-                        http::Response::builder()
-                            .status(200)
-                            .body(serde_json::to_string(&body).unwrap())
-                            .unwrap()
-                    }
-                    path => panic!("Unexpected path: {}", path),
-                }
-            });
-
-            let tokens = table.tokenize("the lance", "text_idx").await.unwrap();
-            assert_eq!(
-                tokens
-                    .iter()
-                    .map(|token| token.text.as_str())
-                    .collect::<Vec<_>>(),
-                expected
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_tokenize_rejects_lossy_remote_index_details() {
+    async fn test_tokenize_uses_remote_index_details() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let index_details = serde_json::json!({
-            "base_tokenizer": "simple",
+            "base_tokenizer": "icu",
             "language": "English",
-            "remove_stop_words": true,
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": false,
+            "ascii_folding": true,
         })
         .to_string();
         let table = Table::new_with_handler("my_table", move |request| {
@@ -5332,13 +5294,80 @@ mod tests {
             }
         });
 
-        let err = table.tokenize("the lance", "text_idx").await.unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message }
-                if message.contains("incomplete remote tokenizer details")
-                    && message.contains("custom_stop_words")
-        ));
+        let tokens = table
+            .tokenize("Hello, こんにちは世界!", "text_idx")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                FtsToken {
+                    text: "hello".to_string(),
+                    position: 0,
+                },
+                FtsToken {
+                    text: "こんにちは".to_string(),
+                    position: 1,
+                },
+                FtsToken {
+                    text: "世界".to_string(),
+                    position: 2,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_uses_remote_custom_stop_word_snapshot() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let index_details = serde_json::json!({
+            "base_tokenizer": "simple",
+            "language": "English",
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": true,
+            "ascii_folding": true,
+            "custom_stop_words": ["lance"],
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_details": index_details,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let tokens = table.tokenize("the lance data", "text_idx").await.unwrap();
+        assert_eq!(
+            tokens
+                .into_iter()
+                .map(|token| token.text)
+                .collect::<Vec<_>>(),
+            vec!["the", "data"]
+        );
     }
 
     #[tokio::test]

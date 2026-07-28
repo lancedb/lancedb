@@ -437,6 +437,13 @@ pub trait QueryBase {
     ///
     /// This method is only valid on tables that have a full text search index.
     ///
+    /// Explicit fuzzy matching (`fuzziness > 0`) is rejected for native
+    /// indices with active custom stop words because the current fuzzy path
+    /// bypasses the persisted tokenizer. Remote tables reject all explicit
+    /// fuzzy matching until the server protocol can bind it to a tokenizer
+    /// snapshot atomically. `fuzziness=0` and an unset fuzziness continue to
+    /// use the normal query path.
+    ///
     /// ```
     /// use lance_index::scalar::FullTextSearchQuery;
     /// use lancedb::query::{QueryBase, ExecutableQuery};

@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Union
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union
 
 from ._lancedb import (
     IndexConfig,
 )
 from .types import BaseTokenizerType
+
+if TYPE_CHECKING:
+    from .table import AsyncTable, Table
 
 lang_mapping = {
     "ar": "Arabic",
@@ -32,35 +38,86 @@ lang_mapping = {
 
 
 @dataclass(frozen=True)
-class InlineStopWordsSource:
-    """Inline custom stop words for a remote FTS create-index request."""
+class FtsStopWordsFile:
+    """Use newline-delimited custom FTS stop words from a UTF-8 file.
 
-    words: List[str]
-    type: Literal["inline"] = field(default="inline", init=False)
+    The file is read when the index is created (or when
+    :func:`lancedb.tokenize` is called). Its contents are resolved to a stable
+    in-memory snapshot before any remote request is sent.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        Non-empty path to a strictly UTF-8 encoded, newline-delimited
+        stop-word file.
+    """
+
+    path: Union[str, os.PathLike[str]]
+
+    @property
+    def _path(self) -> str:
+        path = os.fspath(self.path)
+        if not isinstance(path, str):
+            raise TypeError("FtsStopWordsFile.path must be a string path")
+        if not path:
+            raise ValueError("FtsStopWordsFile.path must be a non-empty string path")
+        return path
 
 
 @dataclass(frozen=True)
-class FileStopWordsSource:
-    """A UTF-8, newline-delimited custom stop-word object for a remote request."""
+class FtsStopWordsTable:
+    """Use custom FTS stop words from a local LanceDB table string column.
 
-    uri: str
-    type: Literal["file"] = field(default="file", init=False)
+    The column is read when the index is created (or when
+    :func:`lancedb.tokenize` is called). Its values are resolved to a stable
+    in-memory snapshot before any remote request is sent.
 
+    Parameters
+    ----------
+    table : lancedb.Table or lancedb.AsyncTable
+        An open local/native LanceDB table handle. Remote table sources are
+        rejected because LanceDB cannot guarantee an untruncated snapshot;
+        materialize the column locally first.
+    column : str
+        Non-empty name of the string column containing stop words.
+    """
 
-@dataclass(frozen=True)
-class TableStopWordsSource:
-    """A table string column used by a remote FTS create-index request."""
-
-    table: str
+    table: Union["Table", "AsyncTable"]
     column: str
-    type: Literal["table"] = field(default="table", init=False)
+
+    @property
+    def _column(self) -> str:
+        if not isinstance(self.column, str):
+            raise TypeError("FtsStopWordsTable.column must be a string")
+        if not self.column:
+            raise ValueError("FtsStopWordsTable.column must be a non-empty string")
+        return self.column
+
+    @property
+    def _native_table(self) -> Any:
+        # Synchronous RemoteTable lazily reopens through LOOP.run when its
+        # private `_table` property is accessed. This property is itself read
+        # from the LOOP thread by PyO3, so touching `_table` for a stale
+        # forked/unpickled handle would deadlock. Remote sources are unsupported
+        # anyway, so reject them without attempting a reopen.
+        if hasattr(self.table, "_table_handle"):
+            raise ValueError(
+                "remote table sources cannot guarantee a complete snapshot; "
+                "materialize the stop-word column into a local LanceDB table, "
+                "or use an inline list or UTF-8 file"
+            )
+        native_table = getattr(self.table, "_inner", None)
+        if native_table is None:
+            async_table = getattr(self.table, "_table", None)
+            native_table = getattr(async_table, "_inner", None)
+        if native_table is None:
+            raise TypeError(
+                "FtsStopWordsTable.table must be a LanceDB Table or AsyncTable"
+            )
+        return native_table
 
 
-CustomStopWordsSource = Union[
-    InlineStopWordsSource,
-    FileStopWordsSource,
-    TableStopWordsSource,
-]
+CustomStopWords = Optional[Union[Sequence[str], FtsStopWordsFile, FtsStopWordsTable]]
 
 
 @dataclass
@@ -183,15 +240,17 @@ class FTS:
     remove_stop_words : bool, default True
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
-    custom_stop_words : list of str, optional
-        A custom stop-word list that replaces the built-in language list. ``None``
-        uses the built-in list, while ``[]`` explicitly selects no stop words.
-        This only affects tokenization when ``remove_stop_words`` is True.
-    custom_stop_words_source : CustomStopWordsSource, optional
-        A request-only inline, UTF-8 file, or table-column source resolved by a
-        remote LanceDB service. It is mutually exclusive with
-        ``custom_stop_words``. Local native tables reject source descriptors;
-        load the source explicitly and pass ``custom_stop_words`` instead.
+    custom_stop_words : sequence of str, file source, or table source, optional
+        A custom stop-word source. A sequence is used inline;
+        :class:`FtsStopWordsFile` reads a strictly UTF-8 newline-delimited file;
+        and :class:`FtsStopWordsTable` reads a string column from an open local
+        LanceDB table. Remote tables cannot be used as sources. Custom words
+        replace the built-in language stop words
+        and only take effect when ``remove_stop_words`` is True. ``None`` uses
+        the built-in language list, while an empty sequence explicitly uses no
+        stop words. Exact empty strings are ignored and exact duplicates are
+        removed while preserving first-seen order. Values are not trimmed,
+        lowercased, or otherwise normalized.
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -206,6 +265,18 @@ class FTS:
     require tokenizer models in Lance's language model home. Set
     ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
     directory under ``lance/language_models``.
+
+    Local FTS queries with active custom stop words reject an explicit
+    ``fuzziness`` greater than zero because upstream fuzzy matching does not
+    reuse the index's complete tokenizer configuration. An omitted fuzziness
+    value and explicit zero continue to use the configured stop-word snapshot.
+
+    Remote tables temporarily reject every explicitly positive ``fuzziness``
+    before sending a query request, regardless of stop-word configuration,
+    because the service does not yet expose a capability that atomically binds
+    a query to its tokenizer snapshot. Native namespace pushdown routes
+    explicitly fuzzy queries to local execution, where the local rule above
+    applies.
     """
 
     with_position: bool = False
@@ -220,18 +291,7 @@ class FTS:
     ngram_max_length: int = 3
     prefix_only: bool = False
     block_size: int = 128
-    custom_stop_words: Optional[List[str]] = None
-    custom_stop_words_source: Optional[CustomStopWordsSource] = None
-
-    def __post_init__(self):
-        if (
-            self.custom_stop_words is not None
-            and self.custom_stop_words_source is not None
-        ):
-            raise ValueError(
-                "custom_stop_words and custom_stop_words_source are mutually "
-                "exclusive; choose one"
-            )
+    custom_stop_words: CustomStopWords = None
 
 
 @dataclass
@@ -906,10 +966,6 @@ __all__ = [
     "HnswFlat",
     "IndexConfig",
     "FTS",
-    "CustomStopWordsSource",
-    "InlineStopWordsSource",
-    "FileStopWordsSource",
-    "TableStopWordsSource",
     "Bitmap",
     "LabelList",
     "Fm",

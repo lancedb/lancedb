@@ -11,7 +11,7 @@ use lance_index::scalar::FullTextSearchQuery;
 use lancedb::connection::Connection;
 
 use lancedb::index::Index;
-use lancedb::index::scalar::FtsIndexBuilder;
+use lancedb::index::scalar::{FtsIndexBuilder, FtsStopWordsSource};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{Result, Table, connect};
 use rand::random;
@@ -77,6 +77,7 @@ async fn create_table(db: &Connection) -> Result<Table> {
 async fn create_index(table: &Table) -> Result<()> {
     table
         .create_index(&["doc"], Index::FTS(FtsIndexBuilder::default()))
+        .custom_stop_words(FtsStopWordsSource::inline(vec!["example".to_owned()]))?
         .execute()
         .await?;
     Ok(())

@@ -4,7 +4,9 @@
 use std::sync::Mutex;
 
 use lancedb::index::Index as LanceDbIndex;
-use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, FtsStopWordsSource,
+};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
@@ -15,6 +17,54 @@ use napi_derive::napi;
 use crate::error::NapiErrorExt;
 use crate::table::FtsToken;
 use crate::util::parse_distance_type;
+
+pub fn custom_stop_words_source(
+    inline: Option<Vec<String>>,
+    file: Option<String>,
+    table: Option<&crate::table::Table>,
+    column: Option<String>,
+) -> napi::Result<Option<FtsStopWordsSource>> {
+    let has_table_source = table.is_some() || column.is_some();
+    let source_count =
+        usize::from(inline.is_some()) + usize::from(file.is_some()) + usize::from(has_table_source);
+    if source_count > 1 {
+        return Err(napi::Error::from_reason(
+            "custom stop words inline, file, and table sources are mutually exclusive",
+        ));
+    }
+
+    if let Some(words) = inline {
+        return Ok(Some(FtsStopWordsSource::inline(words)));
+    }
+    if let Some(path) = file {
+        if path.is_empty() {
+            return Err(napi::Error::from_reason(
+                "custom stop words file source requires a non-empty path",
+            ));
+        }
+        return Ok(Some(FtsStopWordsSource::file(path)));
+    }
+    match (table, column) {
+        (Some(table), Some(column)) => {
+            if column.is_empty() {
+                return Err(napi::Error::from_reason(
+                    "custom stop words table source requires a non-empty column",
+                ));
+            }
+            let table = table.inner_ref().map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "failed to use custom stop words table: {}",
+                    err.reason
+                ))
+            })?;
+            Ok(Some(FtsStopWordsSource::table(table.clone(), column)))
+        }
+        (None, None) => Ok(None),
+        _ => Err(napi::Error::from_reason(
+            "custom stop words table source requires both table and column",
+        )),
+    }
+}
 
 #[napi]
 pub struct Index {
@@ -35,7 +85,7 @@ impl Index {
 
 #[napi(catch_unwind)]
 #[allow(dead_code, clippy::too_many_arguments)]
-pub fn tokenize(
+pub async fn tokenize(
     query: String,
     base_tokenizer: Option<String>,
     language: Option<String>,
@@ -47,6 +97,10 @@ pub fn tokenize(
     ngram_min_length: Option<u32>,
     ngram_max_length: Option<u32>,
     prefix_only: Option<bool>,
+    custom_stop_words: Option<Vec<String>>,
+    custom_stop_words_file: Option<String>,
+    custom_stop_words_table: Option<&crate::table::Table>,
+    custom_stop_words_column: Option<String>,
 ) -> napi::Result<Vec<FtsToken>> {
     let mut opts = FtsIndexBuilder::default();
     if let Some(base_tokenizer) = base_tokenizer {
@@ -83,6 +137,15 @@ pub fn tokenize(
     }
     if let Some(prefix_only) = prefix_only {
         opts = opts.ngram_prefix_only(prefix_only);
+    }
+    if let Some(source) = custom_stop_words_source(
+        custom_stop_words,
+        custom_stop_words_file,
+        custom_stop_words_table,
+        custom_stop_words_column,
+    )? {
+        let snapshot = source.resolve().await.default_error()?;
+        opts = opts.custom_stop_words(Some(snapshot));
     }
 
     Ok(lancedb_tokenize(&query, &opts)
@@ -227,7 +290,6 @@ impl Index {
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
         block_size: Option<u32>,
-        custom_stop_words: Option<Vec<String>>,
     ) -> napi::Result<Self> {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
@@ -267,9 +329,6 @@ impl Index {
             opts = opts
                 .block_size(block_size as usize)
                 .map_err(|err| napi::Error::from_reason(err.to_string()))?;
-        }
-        if let Some(custom_stop_words) = custom_stop_words {
-            opts = opts.custom_stop_words(Some(custom_stop_words));
         }
 
         Ok(Self {

@@ -222,6 +222,54 @@ pub fn tokenize(query: &str, params: &index::scalar::FtsIndexBuilder) -> Result<
     table::tokenize(query, params)
 }
 
+/// Tokenize text after resolving an optional custom stop-word source.
+///
+/// The source is resolved client-side into the same concrete snapshot used by
+/// [`index::IndexBuilder::custom_stop_words`]. `None` retains the built-in
+/// language stop words, while an empty source replaces them with an empty list.
+/// Custom stop words are only applied when `remove_stop_words` is enabled in
+/// `params`.
+///
+/// # Errors
+///
+/// Returns an error if both `params` and `custom_stop_words` configure a custom
+/// list, or if the file or table source cannot be read and validated.
+///
+/// ```
+/// use lancedb::index::scalar::{FtsIndexBuilder, FtsStopWordsSource};
+///
+/// # async fn tokenize() -> lancedb::Result<()> {
+/// let params = FtsIndexBuilder::default();
+/// let tokens = lancedb::tokenize_with_custom_stop_words(
+///     "search this text",
+///     &params,
+///     Some(FtsStopWordsSource::file("stop-words.txt")),
+/// )
+/// .await?;
+/// # let _ = tokens;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn tokenize_with_custom_stop_words(
+    query: &str,
+    params: &index::scalar::FtsIndexBuilder,
+    custom_stop_words: Option<index::scalar::FtsStopWordsSource>,
+) -> Result<Vec<FtsToken>> {
+    let params = if let Some(source) = custom_stop_words {
+        if index::fts_params_custom_stop_words(params)?.is_some() {
+            return Err(Error::InvalidInput {
+                message: "custom stop words are already configured directly on FtsIndexBuilder; use either FtsIndexBuilder::custom_stop_words or tokenize_with_custom_stop_words, not both".to_string(),
+            });
+        }
+        params
+            .clone()
+            .custom_stop_words(Some(source.resolve().await?))
+    } else {
+        params.clone()
+    };
+    table::tokenize(query, &params)
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
@@ -374,3 +422,119 @@ pub use lance_io::object_store::ObjectStoreRegistry;
 /// declaring their own (potentially mismatched) direct `datafusion` dependency.
 /// See <https://github.com/lancedb/lancedb/issues/3575>.
 pub use datafusion;
+
+#[cfg(test)]
+mod tokenize_source_tests {
+    use std::sync::Arc;
+
+    use arrow_array::{RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use tempfile::tempdir;
+
+    use crate::index::scalar::{FtsIndexBuilder, FtsStopWordsSource};
+    use crate::{connect, tokenize_with_custom_stop_words};
+
+    fn token_text(tokens: Vec<crate::FtsToken>) -> Vec<String> {
+        tokens.into_iter().map(|token| token.text).collect()
+    }
+
+    #[tokio::test]
+    async fn tokenize_distinguishes_none_empty_file_and_table_sources() {
+        let params = FtsIndexBuilder::default().stem(false);
+
+        let builtin = tokenize_with_custom_stop_words("the lance", &params, None)
+            .await
+            .unwrap();
+        assert_eq!(token_text(builtin), vec!["lance"]);
+
+        let empty = tokenize_with_custom_stop_words(
+            "the lance",
+            &params,
+            Some(FtsStopWordsSource::inline(Vec::new())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token_text(empty), vec!["the", "lance"]);
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stop-words.txt");
+        std::fs::write(&path, "lance\n").unwrap();
+        let from_file = tokenize_with_custom_stop_words(
+            "the lance",
+            &params,
+            Some(FtsStopWordsSource::file(path)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token_text(from_file), vec!["the"]);
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("word", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["lance"]))],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("stop_words", batch)
+            .execute()
+            .await
+            .unwrap();
+        let from_table = tokenize_with_custom_stop_words(
+            "the lance",
+            &params,
+            Some(FtsStopWordsSource::table(table, "word")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(token_text(from_table), vec!["the"]);
+    }
+
+    #[tokio::test]
+    async fn tokenize_rejects_two_custom_stop_word_sources() {
+        let params =
+            FtsIndexBuilder::default().custom_stop_words(Some(vec!["configured".to_string()]));
+        let error = tokenize_with_custom_stop_words(
+            "some text",
+            &params,
+            Some(FtsStopWordsSource::inline(vec!["other".to_string()])),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("already configured directly"));
+    }
+
+    #[test]
+    fn direct_tokenize_canonicalizes_custom_stop_words() {
+        let defaults = FtsIndexBuilder::default().stem(false);
+        assert_eq!(
+            token_text(crate::tokenize("the lance", &defaults).unwrap()),
+            vec!["lance"]
+        );
+        let empty = defaults.clone().custom_stop_words(Some(Vec::new()));
+        assert_eq!(
+            token_text(crate::tokenize("the lance", &empty).unwrap()),
+            vec!["the", "lance"]
+        );
+
+        let params = FtsIndexBuilder::default()
+            .stem(false)
+            .custom_stop_words(Some(vec![
+                "lance".to_string(),
+                String::new(),
+                "lance".to_string(),
+                " cat ".to_string(),
+            ]));
+
+        assert_eq!(
+            token_text(crate::tokenize("the lance cat", &params).unwrap()),
+            vec!["the", "cat"]
+        );
+        assert_eq!(
+            crate::index::fts_params_custom_stop_words(
+                &crate::index::canonicalize_fts_params(&params).unwrap()
+            )
+            .unwrap(),
+            Some(vec!["lance".to_string(), " cat ".to_string()])
+        );
+    }
+}
