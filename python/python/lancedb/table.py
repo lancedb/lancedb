@@ -2464,13 +2464,7 @@ class LanceTable(Table):
         return LOOP.run(self._table.count_rows(filter))
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(name={self.name!r}"
-        if self._conn.read_consistency_interval is not None:
-            val += ", read_consistency_interval={!r}".format(
-                self._conn.read_consistency_interval
-            )
-        val += f", _conn={self._conn!r})"
-        return val
+        return f"{self.__class__.__name__}(name={self.name!r}, _conn={self._conn!r})"
 
     def __str__(self) -> str:
         return self.__repr__()
