@@ -1960,9 +1960,9 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
                 {"image": pa.array([b"alpha", None, b"gamma"], type=pa.large_binary())}
             )
             request.send_response(200)
-            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
             request.end_headers()
-            with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
         else:
             request.send_response(404)

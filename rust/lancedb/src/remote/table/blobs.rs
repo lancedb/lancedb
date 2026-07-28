@@ -52,7 +52,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .post_read(&format!("/v1/table/{}/fetch_blobs/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        let mut stream = self.read_arrow_stream(&request_id, response).await?;
+        let mut stream = self.read_arrow_response(&request_id, response).await?;
 
         let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
         while let Some(batch) = stream.try_next().await? {
@@ -79,8 +79,6 @@ impl<S: HttpSend> RemoteTable<S> {
             }
             blob_chunks.push(arrow::compute::cast(blob_column, &DataType::LargeBinary)?);
         }
-        // A server that sends no batches for a non-empty selection is caught by the
-        // length check below, which names both counts.
         let blobs = if blob_chunks.is_empty() {
             LargeBinaryArray::from(Vec::<Option<&[u8]>>::new())
         } else {
@@ -96,7 +94,6 @@ impl<S: HttpSend> RemoteTable<S> {
                 })?
                 .clone()
         };
-        // Same length/order contract as local fetch_blobs.
         if blobs.len() != row_ids.len() {
             return Err(Error::Http {
                 source: format!(
@@ -117,7 +114,6 @@ impl<S: HttpSend> RemoteTable<S> {
         _column: &str,
         _row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
-        // Only point at fetch_blobs when this server can actually serve it.
         let message = if self.server_version.support_blobs() {
             "fetch_blob_files is not supported on LanceDB Cloud yet. \
              Use fetch_blobs for full bytes"
