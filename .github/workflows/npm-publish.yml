@@ -169,21 +169,26 @@ jobs:
           # creating ref). The nightly cadence also keeps entries inside
           # GitHub's 7-day eviction window, which a tag-only trigger would not.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Docker builds run cargo inside the container, where rust-cache cannot
-      # see CARGO_HOME, so cache the bind-mounted registry directly. The
-      # registry is identical across targets on a given host, so the key is
-      # scoped to the host to limit the entry count.
-      - name: Cache cargo registry (docker builds)
-        uses: actions/cache@v5
+      # Docker builds can use rust-cache too. `target/` already lives on the
+      # host because the whole workspace is bind-mounted into the container, and
+      # rust-cache's prune and save run host-side, so they can manage it -- which
+      # is what keeps the entry to dependency artifacts rather than a multi-GB
+      # copy of everything.
+      #
+      # Two differences from the native builds. The container's CARGO_HOME is
+      # bind-mounted from `.cargo-cache` rather than the host's ~/.cargo, so that
+      # has to be cached explicitly. And the key is derived from the *host* rustc
+      # version, which is not the compiler that produced these artifacts; that is
+      # safe because cargo fingerprints the real compiler and rebuilds on a
+      # mismatch, it just means a base-image toolchain bump costs one cold build
+      # instead of invalidating the key.
+      - name: Cache cargo (docker builds)
+        uses: Swatinem/rust-cache@v2
         if: ${{ matrix.settings.docker }}
         with:
-          path: .cargo-cache/
-          key: nodejs-cargo-registry-${{ matrix.settings.host }}-${{ hashFiles('Cargo.lock') }}
-          # Without this the key never changes, so `actions/cache` (which only
-          # writes on a miss) would save once and then serve a stale entry
-          # forever.
-          restore-keys: |
-            nodejs-cargo-registry-${{ matrix.settings.host }}-
+          key: docker-${{ matrix.settings.target }}
+          cache-directories: .cargo-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Zig
@@ -220,11 +225,15 @@ jobs:
               --strip \
               --output-dir dist/
       # The container runs as root (`--user 0:0`), so everything it wrote to the
-      # mounted cache dir is root-owned and the cache save step -- which runs as
-      # the runner user -- cannot read it.
-      - name: Take ownership of docker cache dir
+      # mounted cache dirs is root-owned. rust-cache's post step runs as the
+      # runner user and has to both read these and delete from them while
+      # pruning, so hand them back before it runs.
+      - name: Take ownership of docker build output
         if: ${{ matrix.settings.docker }}
-        run: sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.cargo-cache"
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "${{ github.workspace }}/.cargo-cache" \
+            "${{ github.workspace }}/target"
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
