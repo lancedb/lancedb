@@ -122,6 +122,13 @@ class StreamingDataset(IterableDataset):
         are yielded.  Receives one batch at a time and must return an iterable
         whose length equals the number of rows in the batch.  When ``None``
         (the default) rows are returned as plain Python dicts.
+    connection_factory:
+        Optional callable ``(table_name: str) -> table`` used to reopen the
+        table when the dataset is unpickled in a multi-worker DataLoader
+        process.  When set, only the table name is serialised and the factory
+        reconnects in the worker without embedding credentials.  When
+        ``None`` (the default), the table's own picklable reopen state is used
+        instead.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
