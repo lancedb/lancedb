@@ -55,6 +55,7 @@ use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
+use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
@@ -561,7 +562,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
-    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    async fn create_index(&self, index: IndexBuilder) -> Result<Job>;
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -3007,7 +3008,7 @@ impl BaseTable for NativeTable {
         Ok(AddResult { version })
     }
 
-    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+    async fn create_index(&self, opts: IndexBuilder) -> Result<Job> {
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
@@ -3030,7 +3031,7 @@ impl BaseTable for NativeTable {
         }
         builder.await?;
         self.dataset.update(dataset);
-        Ok(())
+        Ok(Job::done())
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
