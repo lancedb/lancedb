@@ -218,6 +218,15 @@ jobs:
               --output-dir dist/
         if: ${{ !matrix.settings.docker }}
         shell: bash
+      # The standard Windows runners have ~14 GB free, and a release `target/`
+      # for this workspace is a large fraction of that. Report the remaining
+      # headroom so a build that only just fits is visible before a dependency
+      # bump turns it into a failed release. `always()` so the numbers are
+      # still there when the build is what ran out of space.
+      - name: Report disk headroom
+        if: always()
+        run: df -h
+        shell: bash
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
