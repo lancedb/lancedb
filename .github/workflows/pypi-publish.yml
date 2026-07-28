@@ -20,6 +20,12 @@ env:
 permissions:
   contents: read
 
+# Without this, a force-push to a PR leaves the previous run going -- including
+# a ~74 minute Windows job and a billed arm64 wheel build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}

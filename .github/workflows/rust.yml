@@ -48,6 +48,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
           sudo apt update
@@ -89,6 +93,10 @@ jobs:
         run: rm -f Cargo.lock
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
           sudo apt update
@@ -118,6 +126,10 @@ jobs:
           fetch-depth: 0
           lfs: true
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
           sudo apt update
@@ -175,6 +187,10 @@ jobs:
       - name: CPU features
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
@@ -187,12 +203,19 @@ jobs:
           cargo test --profile ci --features $ALL_FEATURES --locked
 
   windows:
-    runs-on: windows-2022
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+          # windows-11-arm is a standard runner, so it is free on public repos.
+          # Running natively lets the aarch64 tests actually execute -- this
+          # job used to cross-compile them and then skip the test step, paying
+          # full codegen and link cost for a compile check.
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: rust/lancedb
@@ -201,6 +224,10 @@ jobs:
       - name: Set target
         run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Protoc v21.12
         run: choco install --no-progress protoc
       - name: Build
@@ -208,11 +235,12 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build --profile ci --features aws,remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
-        # Can only run tests when target matches host
-        if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo test --profile ci --features aws,remote --locked
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
 
   msrv:
     # Check the minimum supported Rust version
@@ -238,6 +266,10 @@ jobs:
         with:
           toolchain: ${{ matrix.msrv }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Downgrade  dependencies
         # These packages have newer requirements for MSRV
         run: |

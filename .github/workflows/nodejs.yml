@@ -61,6 +61,10 @@ jobs:
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
     - uses: Swatinem/rust-cache@v2
+      with:
+        # Restore everywhere, but only save from main. The repo sits at
+        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Format Rust
       run: cargo fmt --all -- --check
     - name: Lint Rust
@@ -103,6 +107,10 @@ jobs:
         cache: 'pnpm'
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
+      with:
+        # Restore everywhere, but only save from main. The repo sits at
+        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
         sudo apt update
@@ -182,6 +190,10 @@ jobs:
         cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
+      with:
+        # Restore everywhere, but only save from main. The repo sits at
+        # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
         brew install protobuf
