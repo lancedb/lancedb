@@ -146,18 +146,38 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
-      # Only the downloaded crate sources are cached, not `target/`. A release
-      # `target/` for this workspace is several GB per target, so caching it
-      # blew the repo's 10 GB cache budget and the entry was never saved at
-      # all (which is why these builds have always been cold). The registry is
-      # identical across targets on a given host, so the key is scoped to the
-      # host rather than the target to keep the number of entries down.
+      # Windows is the critical path of this workflow now that macOS uses
+      # ThinLTO, so cache its dependency artifacts and not just the registry.
+      # rust-cache prunes `target/` down to dependency rlibs and keys on
+      # Cargo.lock plus the rustc version, keeping the entry near 1 GB instead
+      # of the multi-GB whole-`target/` copy that never fit the cache budget.
+      #
+      # This only saves dependency *compilation*. The LTO link of the cdylib
+      # re-runs regardless, because the local crate changes every time.
+      - name: Cache cargo (Windows)
+        uses: Swatinem/rust-cache@v2
+        if: ${{ contains(matrix.settings.target, 'windows') }}
+        with:
+          # The release profile and per-target dir differ from what the test
+          # workflows cache, so these need to be separate entries.
+          key: release-${{ matrix.settings.target }}
+          # Only the nightly run on main writes, so tag and PR runs restore a
+          # warm entry without every dependabot PR churning the budget. The
+          # nightly cadence also keeps this inside GitHub's 7-day eviction
+          # window, which a tag-only trigger would not.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Every other target caches just the crate registry. A release `target/`
+      # for these is several GB, so caching it blew the repo's cache budget and
+      # the entry was never saved at all -- which is why these builds have
+      # always been cold. The registry is identical across targets on a given
+      # host, so the key is scoped to the host to limit the entry count.
       #
       # Docker builds get `.cargo-cache`, which is bind-mounted over the
       # container's CARGO_HOME below; native builds get the runner's own
       # ~/.cargo. Both paths are cached so either layout is covered.
       - name: Cache cargo registry
         uses: actions/cache@v5
+        if: ${{ !contains(matrix.settings.target, 'windows') }}
         with:
           path: |
             ~/.cargo/registry/index/

@@ -94,6 +94,11 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
+          # This job deletes Cargo.lock to force a fresh resolve, so cached
+          # dependency artifacts are invalidated by design. The ~1 GB target
+          # entry it used to save bought almost nothing while crowding out
+          # caches that do get hits. Keep the registry, skip the target dir.
+          cache-targets: false
           # Restore everywhere, but only save from main. The repo sits at
           # GitHub's 10 GB cache cap, so per-PR saves just evict main's entries.
           save-if: ${{ github.ref == 'refs/heads/main' }}

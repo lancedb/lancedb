@@ -197,6 +197,14 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      # maturin runs cargo natively on Windows (docker is Linux-only), so the
+      # host target dir is cacheable. This job had no Rust cache at all and so
+      # rebuilt every dependency from scratch on every run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
