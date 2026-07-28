@@ -3872,6 +3872,44 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def checkpoint_lsm(
+        self,
+        *,
+        deadline_secs: Optional[float] = 300.0,
+        max_generations_per_bucket: Optional[int] = None,
+        include_stats: bool = False,
+    ) -> dict:
+        """Synchronous version of
+        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
+        return LOOP.run(
+            self._table.checkpoint_lsm(
+                deadline_secs=deadline_secs,
+                max_generations_per_bucket=max_generations_per_bucket,
+                include_stats=include_stats,
+            )
+        )
+
+    def flush_lsm(self) -> dict:
+        """Synchronous version of
+        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
+        return LOOP.run(self._table.flush_lsm())
+
+    def compact_lsm(self, *, max_generations_per_bucket: Optional[int] = None) -> dict:
+        """Synchronous version of
+        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
+        return LOOP.run(
+            self._table.compact_lsm(
+                max_generations_per_bucket=max_generations_per_bucket
+            )
+        )
+
+    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+        """Synchronous version of
+        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        return LOOP.run(
+            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+        )
+
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
         [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
@@ -4581,6 +4619,83 @@ class AsyncTable:
         `set_lsm_write_spec`.
         """
         return await self._inner.get_lsm_write_spec()
+
+    async def checkpoint_lsm(
+        self,
+        *,
+        deadline_secs: Optional[float] = 300.0,
+        max_generations_per_bucket: Optional[int] = None,
+        include_stats: bool = False,
+    ) -> dict:
+        """Converge this table's LSM write path into its base table.
+
+        One flush (sealing every memtable into L0), then bounded compaction
+        passes until L0 is empty. The loop runs client-side, so each request
+        does a bounded unit of work and reports what is left.
+
+        Best-effort: nothing is frozen, so with writes flowing there may be
+        new rows by the time it returns — ``converged`` means L0 was empty as
+        of the last pass. Idempotent and safe on a cadence; an
+        already-converged table costs one round trip and zero compaction
+        passes.
+
+        Parameters
+        ----------
+        deadline_secs
+            Stop and report ``converged=False`` after this much wall clock.
+            ``None`` runs until the table converges — safe only when you know
+            it is not under write load.
+        max_generations_per_bucket
+            Bound on generations merged **per bucket** per request. An
+            N-bucket table admits ``N * max_generations_per_bucket`` merges
+            per call.
+        include_stats
+            Attach a ``get_lsm_stats`` block to the report.
+        """
+        return await self._inner.checkpoint_lsm(
+            deadline_secs, max_generations_per_bucket, include_stats
+        )
+
+    async def flush_lsm(self) -> dict:
+        """Seal every bucket's active memtable into L0.
+
+        Does not touch the base table — moving L0 into base is
+        `compact_lsm`. On a node that has not claimed this table, this claims
+        it and replays its WAL log first.
+        """
+        return await self._inner.flush_lsm()
+
+    async def compact_lsm(
+        self, *, max_generations_per_bucket: Optional[int] = None
+    ) -> dict:
+        """Run one bounded L0 to base compaction pass per bucket.
+
+        One pass, not convergence: that is what bounds each request's cost
+        and gives a caller driving its own cadence a progress signal per
+        round trip. Use `checkpoint_lsm` to loop to convergence.
+        """
+        return await self._inner.compact_lsm(max_generations_per_bucket)
+
+    async def get_lsm_stats(
+        self, *, include_generation_rows: bool = False
+    ) -> Optional[dict]:
+        """Read live LSM state: per-bucket detail plus a table-level aggregate.
+
+        Answers "how far behind is my fresh tier", "which bucket is hot", and
+        "why is my fresh-tier vector search brute-force". Mutates no table
+        state, though on a node that has not claimed this table it claims it,
+        exactly as a read would.
+
+        Returns ``None`` — and only — when the LSM write path is not enabled
+        for the table.
+
+        Parameters
+        ----------
+        include_generation_rows
+            Report row counts per L0 generation. Off by default: each costs
+            one Lance manifest read.
+        """
+        return await self._inner.get_lsm_stats(include_generation_rows)
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.

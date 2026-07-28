@@ -77,6 +77,24 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
         status_code: Option<reqwest::StatusCode>,
     },
+    /// An LSM operator route (`flush_lsm` / `compact_lsm` /
+    /// `get_lsm_stats`) failed, carrying the classification the checkpoint
+    /// loop decides on.
+    ///
+    /// It is its own variant because the decision — retry, re-issue from
+    /// `flush`, or stop — is made from the *response body's* namespace
+    /// error code on a 503, and every generic HTTP path in this crate folds
+    /// the body into a string and keeps only the status. Classifying at the
+    /// point of receipt is what keeps a draining node distinguishable from
+    /// a fenced writer, a busy compactor, and a transport blip, all of
+    /// which are otherwise the same 503.
+    #[cfg(feature = "remote")]
+    #[snafu(display("LSM route error ({fault:?}, status={status}): {message}"))]
+    LsmRoute {
+        fault: crate::table::checkpoint::LsmFault,
+        status: u16,
+        message: String,
+    },
     #[snafu(display("Arrow error: {source}"))]
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]

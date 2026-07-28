@@ -28,10 +28,102 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
+    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
 mod scannable;
+
+/// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
+///
+/// Deliberately not flattened to a table-level summary: a table is N
+/// buckets on one node, and the per-bucket detail is the reason the
+/// endpoint exists — flattening hides the single hot bucket someone opened
+/// it to find.
+fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
+    let out = PyDict::new(py);
+    let buckets = PyList::empty(py);
+    for b in &stats.buckets {
+        let e = PyDict::new(py);
+        e.set_item("shard_id", &b.shard_id)?;
+        e.set_item("status", &b.status)?;
+        e.set_item("writer_epoch", b.writer_epoch)?;
+        e.set_item("manifest_version", b.manifest_version)?;
+        e.set_item("current_generation", b.current_generation)?;
+        e.set_item(
+            "replay_after_wal_entry_position",
+            b.replay_after_wal_entry_position,
+        )?;
+        e.set_item(
+            "wal_entry_position_last_seen",
+            b.wal_entry_position_last_seen,
+        )?;
+        e.set_item("wal_lag", b.wal_lag)?;
+        e.set_item("l0_bytes", b.l0_bytes)?;
+        e.set_item("fenced", b.fenced)?;
+        e.set_item("compaction_in_progress", b.compaction_in_progress)?;
+
+        let generations = PyList::empty(py);
+        for g in &b.generations {
+            let ge = PyDict::new(py);
+            ge.set_item("generation", g.generation)?;
+            ge.set_item("path", &g.path)?;
+            ge.set_item("bytes", g.bytes)?;
+            ge.set_item("rows", g.rows)?;
+            generations.append(ge)?;
+        }
+        e.set_item("generations", generations)?;
+
+        let memtable = |m: &lancedb::table::MemtableStats| -> PyResult<Py<PyDict>> {
+            let d = PyDict::new(py);
+            d.set_item("generation", m.generation)?;
+            d.set_item("rows", m.rows)?;
+            d.set_item("bytes", m.bytes)?;
+            d.set_item("batches", m.batches)?;
+            Ok(d.unbind())
+        };
+        e.set_item(
+            "active_memtable",
+            b.active_memtable.as_ref().map(memtable).transpose()?,
+        )?;
+        e.set_item(
+            "frozen_memtables",
+            b.frozen_memtables
+                .as_ref()
+                .map(|fs| {
+                    let l = PyList::empty(py);
+                    for m in fs {
+                        l.append(memtable(m)?)?;
+                    }
+                    PyResult::Ok(l.unbind())
+                })
+                .transpose()?,
+        )?;
+        e.set_item(
+            "memtable_indexes",
+            b.memtable_indexes
+                .as_ref()
+                .map(|ixs| {
+                    let l = PyList::empty(py);
+                    for i in ixs {
+                        let d = PyDict::new(py);
+                        d.set_item("name", &i.name)?;
+                        d.set_item("kind", &i.kind)?;
+                        d.set_item("column", &i.column)?;
+                        l.append(d)?;
+                    }
+                    PyResult::Ok(l.unbind())
+                })
+                .transpose()?,
+        )?;
+        buckets.append(e)?;
+    }
+    out.set_item("buckets", buckets)?;
+    out.set_item("bucket_count", stats.bucket_count)?;
+    out.set_item("generations_total", stats.generations_total)?;
+    out.set_item("l0_bytes_total", stats.l0_bytes_total)?;
+    out.set_item("memtable_rows_total", stats.memtable_rows_total)?;
+    Ok(out.unbind())
+}
 
 #[derive(FromPyObject)]
 enum PredicateArg {
@@ -1264,6 +1356,135 @@ impl Table {
         future_into_py(self_.py(), async move {
             let spec = inner.get_lsm_write_spec().await.infer_error()?;
             Ok(spec.map(LsmWriteSpec::from))
+        })
+    }
+
+    /// Converge the table's LSM write path into its base table.
+    ///
+    /// Returns a dict mirroring `CheckpointReport`. Best-effort: with
+    /// writes flowing, new rows may land after the last pass.
+    #[pyo3(signature = (deadline_secs=None, max_generations_per_bucket=None, include_stats=false))]
+    pub fn checkpoint_lsm(
+        self_: PyRef<'_, Self>,
+        deadline_secs: Option<f64>,
+        max_generations_per_bucket: Option<usize>,
+        include_stats: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let opts = lancedb::table::CheckpointOptions {
+            deadline: deadline_secs.map(std::time::Duration::from_secs_f64),
+            max_generations_per_bucket,
+            include_stats,
+        };
+        future_into_py(self_.py(), async move {
+            let report = inner.checkpoint_lsm(opts).await.infer_error()?;
+            Python::attach(|py| {
+                let d = PyDict::new(py);
+                d.set_item("converged", report.converged)?;
+                d.set_item(
+                    "stop_reason",
+                    report.stop_reason.map(|r| match r {
+                        lancedb::table::CheckpointStopReason::DeadlineExceeded => {
+                            "deadline_exceeded"
+                        }
+                        lancedb::table::CheckpointStopReason::NodeDraining => "node_draining",
+                        lancedb::table::CheckpointStopReason::RepeatedlyUnclaimed => {
+                            "repeatedly_unclaimed"
+                        }
+                    }),
+                )?;
+                d.set_item("rows_sealed", report.rows_sealed)?;
+                d.set_item("generations_compacted", report.generations_compacted)?;
+                d.set_item("rows_merged", report.rows_merged)?;
+                d.set_item("generations_remaining", report.generations_remaining)?;
+                d.set_item("compact_calls", report.compact_calls)?;
+                d.set_item(
+                    "stats",
+                    report.stats.map(|s| lsm_stats_to_py(py, &s)).transpose()?,
+                )?;
+                Ok(d.unbind())
+            })
+        })
+    }
+
+    /// Seal every bucket's active memtable into L0. Returns a dict
+    /// mirroring `FlushReport`.
+    pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let report = inner.flush_lsm().await.infer_error()?;
+            Python::attach(|py| {
+                let d = PyDict::new(py);
+                let buckets = PyList::empty(py);
+                // Per-bucket detail is preserved rather than flattened: a
+                // table is N buckets on one node, and the one hot bucket is
+                // usually why someone is looking.
+                for b in &report.buckets {
+                    let e = PyDict::new(py);
+                    e.set_item("shard_id", &b.shard_id)?;
+                    e.set_item("sealed_generation", b.sealed_generation)?;
+                    e.set_item("rows_sealed", b.rows_sealed)?;
+                    e.set_item("generations_remaining", b.generations_remaining)?;
+                    buckets.append(e)?;
+                }
+                d.set_item("buckets", buckets)?;
+                d.set_item("rows_sealed", report.rows_sealed)?;
+                d.set_item("generations_remaining", report.generations_remaining)?;
+                Ok(d.unbind())
+            })
+        })
+    }
+
+    /// Run one bounded L0 → base pass per bucket. Returns a dict mirroring
+    /// `CompactReport`.
+    #[pyo3(signature = (max_generations_per_bucket=None))]
+    pub fn compact_lsm(
+        self_: PyRef<'_, Self>,
+        max_generations_per_bucket: Option<usize>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let opts = lancedb::table::CompactOptions {
+            max_generations_per_bucket,
+        };
+        future_into_py(self_.py(), async move {
+            let report = inner.compact_lsm(opts).await.infer_error()?;
+            Python::attach(|py| {
+                let d = PyDict::new(py);
+                let buckets = PyList::empty(py);
+                for b in &report.buckets {
+                    let e = PyDict::new(py);
+                    e.set_item("shard_id", &b.shard_id)?;
+                    e.set_item("generations_consumed", b.generations_consumed)?;
+                    e.set_item("rows_merged", b.rows_merged)?;
+                    e.set_item("generations_remaining", b.generations_remaining)?;
+                    buckets.append(e)?;
+                }
+                d.set_item("buckets", buckets)?;
+                d.set_item("generations_consumed", report.generations_consumed)?;
+                d.set_item("rows_merged", report.rows_merged)?;
+                d.set_item("generations_remaining", report.generations_remaining)?;
+                d.set_item(
+                    "highest_wal_entry_position",
+                    report.highest_wal_entry_position,
+                )?;
+                Ok(d.unbind())
+            })
+        })
+    }
+
+    /// Live LSM state, or `None` when the LSM write path is not enabled.
+    #[pyo3(signature = (include_generation_rows=false))]
+    pub fn get_lsm_stats(
+        self_: PyRef<'_, Self>,
+        include_generation_rows: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let opts = lancedb::table::LsmStatsOptions {
+            include_generation_rows,
+        };
+        future_into_py(self_.py(), async move {
+            let stats = inner.get_lsm_stats(opts).await.infer_error()?;
+            Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
         })
     }
 

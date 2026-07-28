@@ -26,10 +26,12 @@ use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
+use crate::table::checkpoint::{GetLsmStatsResponse, classify_lsm_fault};
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
+use crate::table::{CompactOptions, CompactReport, FlushReport, LsmStats, LsmStatsOptions};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
@@ -905,6 +907,44 @@ impl<S: HttpSend> RemoteTable<S> {
             ),
             min_read_version: state.min_read_version,
         }
+    }
+
+    /// Send an LSM operator request and decode its JSON body, classifying
+    /// a failure into an [`Error::LsmRoute`] the checkpoint loop can act on.
+    ///
+    /// Deliberately **not** routed through `check_response` /
+    /// `check_table_response`: those fold the body into a string and keep
+    /// only the status, and the body's `code` is the only thing that tells
+    /// a draining node apart from a fenced writer or a transport blip on a
+    /// 503. Classifying here — before any generic helper touches the
+    /// response — is what preserves a distinction threaded through three
+    /// crates and two error enums.
+    async fn send_lsm_route<T: serde::de::DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+        route: &str,
+    ) -> Result<T> {
+        // `with_retry = false` on purpose. The transport retry layer treats
+        // every 503 alike, so it would burn its whole budget re-asking a
+        // node that already said, terminally, that it is draining — and it
+        // would do so *before* this classifier ever saw the body that says
+        // which 503 it was. Retry policy on these routes belongs to the
+        // checkpoint loop, which can tell the cases apart.
+        let (request_id, response) = self.send(request, false).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        if !status.is_success() {
+            return Err(Error::LsmRoute {
+                fault: classify_lsm_fault(status.as_u16(), &body),
+                status: status.as_u16(),
+                message: format!("{route}: {status}: {body}"),
+            });
+        }
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse {route} response: {e}").into(),
+            request_id,
+            status_code: None,
+        })
     }
 
     /// Build a POST request and attach the read-freshness headers
@@ -2359,6 +2399,35 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Err(Error::NotSupported {
             message: "set_unenforced_primary_key is not supported on LanceDB cloud.".into(),
         })
+    }
+
+    async fn flush_lsm(&self) -> Result<FlushReport> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/flush_lsm/", self.identifier));
+        self.send_lsm_route(request, "flush_lsm").await
+    }
+
+    async fn compact_lsm(&self, opts: CompactOptions) -> Result<CompactReport> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/compact_lsm/", self.identifier))
+            .json(&serde_json::json!({
+                "max_generations_per_bucket": opts.max_generations_per_bucket,
+            }));
+        self.send_lsm_route(request, "compact_lsm").await
+    }
+
+    async fn get_lsm_stats(&self, opts: LsmStatsOptions) -> Result<Option<LsmStats>> {
+        // Read-semantics POST, like `get_lsm_write_spec`.
+        let request = self
+            .post_read(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
+            .json(&serde_json::json!({
+                "include_generation_rows": opts.include_generation_rows,
+            }));
+        let parsed: GetLsmStatsResponse = self.send_lsm_route(request, "get_lsm_stats").await?;
+        // `null` — and only — when the table has no LSM write path.
+        Ok(parsed.lsm_stats)
     }
 
     async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
@@ -5763,6 +5832,265 @@ mod tests {
                 .unwrap()
         });
         assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+    }
+
+    /// A flush that lands in an empty L0 converges on the flush response
+    /// alone — **zero** `compact` calls issued. Asserting the call count is
+    /// the point: `generations_consumed: 0` is also true of a loop that ran
+    /// a pointless pass.
+    #[tokio::test]
+    async fn test_checkpoint_short_circuits_on_empty_l0() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("compact_lsm") {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("an already-converged table must issue no compact calls");
+            }
+            assert_eq!(path, "/v1/table/my_table/flush_lsm/");
+            let response = serde_json::json!({
+                "buckets": [{
+                    "shard_id": "b0",
+                    "sealed_generation": 7,
+                    "rows_sealed": 12,
+                    "generations_remaining": 0,
+                }],
+                "rows_sealed": 12,
+                "generations_remaining": 0,
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let report = table
+            .checkpoint_lsm(crate::table::CheckpointOptions::default())
+            .await
+            .unwrap();
+        assert!(report.converged);
+        assert_eq!(report.rows_sealed, 12);
+        assert_eq!(report.compact_calls, 0);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// The loop drives `compact` until the *server* reports zero remaining,
+    /// accumulating what each pass merged.
+    #[tokio::test]
+    async fn test_checkpoint_loops_compact_until_converged() {
+        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(3));
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            let response = if path.contains("flush_lsm") {
+                serde_json::json!({
+                    "buckets": [{ "shard_id": "b0", "sealed_generation": 4,
+                                  "rows_sealed": 30, "generations_remaining": 3 }],
+                    "rows_sealed": 30,
+                    "generations_remaining": 3,
+                })
+            } else {
+                let left = remaining.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+                serde_json::json!({
+                    "buckets": [{ "shard_id": "b0", "generations_consumed": 1,
+                                  "rows_merged": 10, "generations_remaining": left }],
+                    "generations_consumed": 1,
+                    "rows_merged": 10,
+                    "generations_remaining": left,
+                    "highest_wal_entry_position": 991823,
+                })
+            };
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let report = table
+            .checkpoint_lsm(crate::table::CheckpointOptions::default())
+            .await
+            .unwrap();
+        assert!(report.converged);
+        assert_eq!(report.stop_reason, None);
+        assert_eq!(report.compact_calls, 3);
+        assert_eq!(report.generations_compacted, 3);
+        assert_eq!(report.rows_merged, 30);
+        assert_eq!(report.generations_remaining, 0);
+    }
+
+    /// **Contention is not draining.** A 429 must be retried, not read as
+    /// the one terminal condition. This is the regression that would pass
+    /// silently otherwise: every layer says "unavailable" either way, and
+    /// the checkpoint just stops early blaming a healthy node.
+    #[tokio::test]
+    async fn test_checkpoint_retries_contention_and_does_not_report_draining() {
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().contains("flush_lsm") {
+                let response = serde_json::json!({
+                    "buckets": [{ "shard_id": "b0", "sealed_generation": 1,
+                                  "rows_sealed": 5, "generations_remaining": 1 }],
+                    "rows_sealed": 5,
+                    "generations_remaining": 1,
+                });
+                return http::Response::builder()
+                    .status(200)
+                    .body(response.to_string())
+                    .unwrap();
+            }
+            // First two compacts: latch contention. Then it clears.
+            if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                return http::Response::builder()
+                    .status(429)
+                    .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                    .unwrap();
+            }
+            let response = serde_json::json!({
+                "buckets": [{ "shard_id": "b0", "generations_consumed": 1,
+                              "rows_merged": 5, "generations_remaining": 0 }],
+                "generations_consumed": 1,
+                "rows_merged": 5,
+                "generations_remaining": 0,
+                "highest_wal_entry_position": 1,
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let report = table
+            .checkpoint_lsm(crate::table::CheckpointOptions::default())
+            .await
+            .unwrap();
+        assert!(report.converged, "contention must not abort the checkpoint");
+        assert_ne!(
+            report.stop_reason,
+            Some(crate::table::CheckpointStopReason::NodeDraining),
+            "a busy compactor is not a draining node"
+        );
+        assert_eq!(
+            compacts.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "assert the retry count, not just the outcome"
+        );
+    }
+
+    /// A draining node stops the loop immediately — **without retrying**.
+    /// Asserting the call count matters: a regression to retry-until-
+    /// deadline passes any test that only checks the outcome.
+    #[tokio::test]
+    async fn test_checkpoint_stops_without_retrying_on_draining() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(503)
+                .body(r#"{"code":19,"error":"WAL node draining"}"#.to_string())
+                .unwrap()
+        });
+
+        let report = table
+            .checkpoint_lsm(crate::table::CheckpointOptions::default())
+            .await
+            .unwrap();
+        assert!(!report.converged);
+        assert_eq!(
+            report.stop_reason,
+            Some(crate::table::CheckpointStopReason::NodeDraining)
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "draining is terminal: exactly one request, no retries"
+        );
+    }
+
+    /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
+    /// defaulting to a zero it did not measure. `include_generation_rows`
+    /// is off by default.
+    #[tokio::test]
+    async fn test_get_lsm_stats_round_trip() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_lsm_stats/");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                body["include_generation_rows"], false,
+                "generation rows cost a manifest read each and must be opt-in"
+            );
+            let response = serde_json::json!({
+                "lsm_stats": {
+                    "buckets": [{
+                        "shard_id": "b0",
+                        "status": "Active",
+                        "writer_epoch": 3,
+                        "manifest_version": 11,
+                        "current_generation": 9,
+                        "replay_after_wal_entry_position": 100,
+                        "wal_entry_position_last_seen": 140,
+                        "wal_lag": 40,
+                        "generations": [{ "generation": 8, "path": "ab_gen_8", "bytes": 4096 }],
+                        "l0_bytes": 4096,
+                        "fenced": false,
+                        "compaction_in_progress": false,
+                        "active_memtable": { "generation": 9, "rows": 12, "bytes": 900, "batches": 2 },
+                        "frozen_memtables": [],
+                        "memtable_indexes": [
+                            { "name": "vec_idx", "kind": "hnsw", "column": "vector" }
+                        ],
+                    }],
+                    "bucket_count": 1,
+                    "generations_total": 1,
+                    "l0_bytes_total": 4096,
+                    "memtable_rows_total": 12,
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let stats = table
+            .get_lsm_stats(crate::table::LsmStatsOptions::default())
+            .await
+            .unwrap()
+            .expect("a WAL-backed table reports Some");
+        assert_eq!(stats.bucket_count, 1);
+        assert_eq!(stats.l0_bytes_total, 4096);
+        assert_eq!(stats.memtable_rows_total, 12);
+        let bucket = &stats.buckets[0];
+        assert_eq!(bucket.wal_lag, 40);
+        assert_eq!(bucket.generations[0].generation, 8);
+        assert!(
+            bucket.generations[0].rows.is_none(),
+            "rows are absent unless asked for"
+        );
+        // The row that answers "why is my fresh-tier vector search
+        // brute-force" — an absent hnsw entry is the whole explanation.
+        let indexes = bucket.memtable_indexes.as_ref().unwrap();
+        assert_eq!(indexes[0].kind, "hnsw");
+        assert_eq!(indexes[0].column, "vector");
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_stats_absent_when_wal_off() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({ "lsm_stats": null }).to_string())
+                .unwrap()
+        });
+        assert!(
+            table
+                .get_lsm_stats(crate::table::LsmStatsOptions::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
