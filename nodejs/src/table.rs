@@ -137,6 +137,7 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_index(
         &self,
         index: Option<&Index>,
@@ -145,6 +146,7 @@ impl Table {
         wait_timeout_s: Option<i64>,
         name: Option<String>,
         train: Option<bool>,
+        custom_stop_words_source: Option<String>,
     ) -> napi::Result<()> {
         let lancedb_index = if let Some(index) = index {
             index.consume()?
@@ -164,6 +166,12 @@ impl Table {
         }
         if let Some(train) = train {
             builder = builder.train(train);
+        }
+        if let Some(source) = custom_stop_words_source {
+            let source = serde_json::from_str(&source).map_err(|err| {
+                napi::Error::from_reason(format!("invalid customStopWordsSource: {err}"))
+            })?;
+            builder = builder.custom_stop_words_source(source);
         }
         builder.execute().await.default_error()
     }

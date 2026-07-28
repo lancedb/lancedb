@@ -8,7 +8,7 @@ use lancedb::index::vector::{
 };
 use lancedb::index::{
     Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder},
+    scalar::{BTreeIndexBuilder, CustomStopWordsSource, FmIndexBuilder, FtsIndexBuilder},
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -33,14 +33,42 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     }
 }
 
-pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
+fn extract_custom_stop_words_source(
+    source: &Bound<'_, PyAny>,
+) -> PyResult<Option<CustomStopWordsSource>> {
+    let source = source.getattr("custom_stop_words_source")?;
+    if source.is_none() {
+        return Ok(None);
+    }
+    let source_type: String = source.getattr("type")?.extract()?;
+    match source_type.as_str() {
+        "inline" => Ok(Some(CustomStopWordsSource::Inline {
+            words: source.getattr("words")?.extract()?,
+        })),
+        "file" => Ok(Some(CustomStopWordsSource::File {
+            uri: source.getattr("uri")?.extract()?,
+        })),
+        "table" => Ok(Some(CustomStopWordsSource::Table {
+            table: source.getattr("table")?.extract()?,
+            column: source.getattr("column")?.extract()?,
+        })),
+        other => Err(PyValueError::new_err(format!(
+            "invalid custom_stop_words_source type '{other}'; expected inline, file, or table"
+        ))),
+    }
+}
+
+pub fn extract_index_params(
+    source: &Option<Bound<'_, PyAny>>,
+) -> PyResult<(LanceDbIndex, Option<CustomStopWordsSource>)> {
     if let Some(source) = source {
         match class_name(source)?.as_str() {
-            "BTree" => Ok(LanceDbIndex::BTree(BTreeIndexBuilder::default())),
-            "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
-            "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
-            "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
+            "BTree" => Ok((LanceDbIndex::BTree(BTreeIndexBuilder::default()), None)),
+            "Bitmap" => Ok((LanceDbIndex::Bitmap(Default::default()), None)),
+            "LabelList" => Ok((LanceDbIndex::LabelList(Default::default()), None)),
+            "Fm" => Ok((LanceDbIndex::Fm(FmIndexBuilder::default()), None)),
             "FTS" => {
+                let custom_stop_words_source = extract_custom_stop_words_source(source)?;
                 let params = source.extract::<FtsParams>()?;
                 let inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
@@ -55,6 +83,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
                     .remove_stop_words(params.remove_stop_words)
+                    .custom_stop_words(params.custom_stop_words)
                     .stem(params.stem)
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
@@ -63,7 +92,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
-                Ok(LanceDbIndex::FTS(inner_opts))
+                Ok((LanceDbIndex::FTS(inner_opts), custom_stop_words_source))
             }
             "IvfFlat" => {
                 let params = source.extract::<IvfFlatParams>()?;
@@ -79,7 +108,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     ivf_flat_builder =
                         ivf_flat_builder.target_partition_size(target_partition_size);
                 }
-                Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
+                Ok((LanceDbIndex::IvfFlat(ivf_flat_builder), None))
             }
             "IvfPq" => {
                 let params = source.extract::<IvfPqParams>()?;
@@ -98,7 +127,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
-                Ok(LanceDbIndex::IvfPq(ivf_pq_builder))
+                Ok((LanceDbIndex::IvfPq(ivf_pq_builder), None))
             }
             "IvfSq" => {
                 let params = source.extract::<IvfSqParams>()?;
@@ -113,7 +142,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(target_partition_size) = params.target_partition_size {
                     ivf_sq_builder = ivf_sq_builder.target_partition_size(target_partition_size);
                 }
-                Ok(LanceDbIndex::IvfSq(ivf_sq_builder))
+                Ok((LanceDbIndex::IvfSq(ivf_sq_builder), None))
             }
             "IvfRq" => {
                 let params = source.extract::<IvfRqParams>()?;
@@ -129,7 +158,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(target_partition_size) = params.target_partition_size {
                     ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
                 }
-                Ok(LanceDbIndex::IvfRq(ivf_rq_builder))
+                Ok((LanceDbIndex::IvfRq(ivf_rq_builder), None))
             }
             "HnswPq" => {
                 let params = source.extract::<IvfHnswPqParams>()?;
@@ -150,7 +179,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
-                Ok(LanceDbIndex::IvfHnswPq(hnsw_pq_builder))
+                Ok((LanceDbIndex::IvfHnswPq(hnsw_pq_builder), None))
             }
             "HnswSq" => {
                 let params = source.extract::<IvfHnswSqParams>()?;
@@ -167,7 +196,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(target_partition_size) = params.target_partition_size {
                     hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
                 }
-                Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
+                Ok((LanceDbIndex::IvfHnswSq(hnsw_sq_builder), None))
             }
             "HnswFlat" => {
                 let params = source.extract::<IvfHnswFlatParams>()?;
@@ -185,7 +214,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     hnsw_flat_builder =
                         hnsw_flat_builder.target_partition_size(target_partition_size);
                 }
-                Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
+                Ok((LanceDbIndex::IvfHnswFlat(hnsw_flat_builder), None))
             }
             not_supported => Err(PyValueError::new_err(format!(
                 "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
@@ -193,7 +222,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             ))),
         }
     } else {
-        Ok(LanceDbIndex::Auto)
+        Ok((LanceDbIndex::Auto, None))
     }
 }
 
@@ -206,6 +235,7 @@ struct FtsParams {
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,

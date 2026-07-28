@@ -2564,6 +2564,102 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
+    test("preserves missing, empty, and non-empty custom stop words", async () => {
+      const db = await connect(tmpDir.name);
+
+      const builtIn = await db.createTable("built_in_stop_words", [
+        { text: "the lance database" },
+      ]);
+      await builtIn.createIndex("text", {
+        config: Index.fts({ stem: false }),
+      });
+      await expect(
+        builtIn.tokenize("the lance", { column: "text" }),
+      ).resolves.toEqual([{ text: "lance", position: 1 }]);
+
+      const empty = await db.createTable("empty_custom_stop_words", [
+        { text: "the lance database" },
+      ]);
+      await empty.createIndex("text", {
+        config: Index.fts({ stem: false, customStopWords: [] }),
+      });
+      await expect(
+        empty.tokenize("the lance", { column: "text" }),
+      ).resolves.toEqual([
+        { text: "the", position: 0 },
+        { text: "lance", position: 1 },
+      ]);
+
+      const custom = await db.createTable("non_empty_custom_stop_words", [
+        { text: "the lance database" },
+      ]);
+      await custom.createIndex("text", {
+        config: Index.fts({
+          stem: false,
+          customStopWords: ["lance"],
+        }),
+      });
+      await expect(
+        custom.tokenize("the lance", { column: "text" }),
+      ).resolves.toEqual([{ text: "the", position: 0 }]);
+      await expect(custom.search("the", "fts").toArray()).resolves.toHaveLength(
+        1,
+      );
+      await expect(
+        custom.search("lance", "fts").toArray(),
+      ).resolves.toHaveLength(0);
+
+      const disabled = await db.createTable("disabled_custom_stop_words", [
+        { text: "the lance database" },
+      ]);
+      await disabled.createIndex("text", {
+        config: Index.fts({
+          stem: false,
+          removeStopWords: false,
+          customStopWords: ["lance"],
+        }),
+      });
+      await expect(
+        disabled.tokenize("the lance", { column: "text" }),
+      ).resolves.toEqual([
+        { text: "the", position: 0 },
+        { text: "lance", position: 1 },
+      ]);
+      await expect(
+        disabled.search("lance", "fts").toArray(),
+      ).resolves.toHaveLength(1);
+    });
+
+    test("rejects custom stop-word sources on local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("source_stop_words", [
+        { text: "lance database" },
+      ]);
+
+      await expect(
+        table.createIndex("text", {
+          config: Index.fts({
+            customStopWordsSource: {
+              type: "file",
+              uri: "file:///tmp/stop-words.txt",
+            },
+          }),
+        }),
+      ).rejects.toThrow("only supported for remote tables");
+    });
+
+    test("rejects both custom stop-word forms", () => {
+      expect(() =>
+        Index.fts({
+          customStopWords: [],
+          customStopWordsSource: {
+            type: "file",
+            uri: "s3://bucket/stop-words.txt",
+          },
+        }),
+      ).toThrow("mutually exclusive");
+    });
+
     test("full text search without lowercase", async () => {
       const db = await connect(tmpDir.name);
       const data = [

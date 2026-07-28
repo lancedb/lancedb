@@ -383,7 +383,8 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
     use crate::index::scalar::{
-        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
+        BTreeIndexBuilder, BitmapIndexBuilder, CustomStopWordsSource, FmIndexBuilder,
+        FtsIndexBuilder,
     };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
@@ -1391,6 +1392,183 @@ mod tests {
 
         // Make sure we can call prewarm without error
         table.prewarm_index("text_idx").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_native_fts_rejects_custom_stop_words_source() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["lance database"])) as ArrayRef],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_custom_stop_words_source", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let error = table
+            .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .custom_stop_words_source(CustomStopWordsSource::File {
+                uri: "file:///tmp/stop-words.txt".to_string(),
+            })
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only supported for remote tables")
+        );
+        assert!(error.to_string().contains("custom_stop_words"));
+    }
+
+    #[tokio::test]
+    async fn test_fts_custom_stop_words_survive_table_reopen() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        for (name, custom_stop_words) in [
+            ("default_stop_words", None),
+            ("empty_custom_stop_words", Some(Vec::<String>::new())),
+            (
+                "non_empty_custom_stop_words",
+                Some(vec!["lance".to_string()]),
+            ),
+        ] {
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
+                vec![Arc::new(StringArray::from(vec!["the lance database"])) as ArrayRef],
+            )
+            .unwrap();
+            let table = conn.create_table(name, batch).execute().await.unwrap();
+            table
+                .create_index(
+                    &["text"],
+                    Index::FTS(
+                        FtsIndexBuilder::default()
+                            .stem(false)
+                            .custom_stop_words(custom_stop_words),
+                    ),
+                )
+                .execute()
+                .await
+                .unwrap();
+        }
+        drop(conn);
+
+        let reopened = connect(uri).execute().await.unwrap();
+        let default = reopened
+            .open_table("default_stop_words")
+            .execute()
+            .await
+            .unwrap();
+        let default_tokens = default
+            .tokenize_with_column("the lance", "text")
+            .await
+            .unwrap();
+        assert_eq!(
+            default_tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lance"]
+        );
+        let default_results = default
+            .query()
+            .full_text_search(FullTextSearchQuery::new("the".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            default_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            0
+        );
+
+        let empty = reopened
+            .open_table("empty_custom_stop_words")
+            .execute()
+            .await
+            .unwrap();
+        let empty_tokens = empty
+            .tokenize_with_column("the lance", "text")
+            .await
+            .unwrap();
+        assert_eq!(
+            empty_tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["the", "lance"]
+        );
+        let empty_results = empty
+            .query()
+            .full_text_search(FullTextSearchQuery::new("the".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            empty_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            1
+        );
+
+        let custom = reopened
+            .open_table("non_empty_custom_stop_words")
+            .execute()
+            .await
+            .unwrap();
+        let custom_tokens = custom
+            .tokenize_with_column("the lance", "text")
+            .await
+            .unwrap();
+        assert_eq!(
+            custom_tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["the"]
+        );
+
+        let results = custom
+            .query()
+            .full_text_search(FullTextSearchQuery::new("the".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(results.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        let removed_results = custom
+            .query()
+            .full_text_search(FullTextSearchQuery::new("lance".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            removed_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            0
+        );
     }
 
     #[tokio::test]

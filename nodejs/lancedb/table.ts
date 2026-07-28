@@ -930,6 +930,9 @@ export class LocalTable extends Table {
     // Bit of a hack to get around the fact that TS has no package-scope.
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
+    // biome-ignore lint/suspicious/noExplicitAny: skip
+    const customStopWordsSource = (options?.config as any)
+      ?.customStopWordsSource;
     await this.inner.createIndex(
       nativeIndex,
       column,
@@ -937,6 +940,9 @@ export class LocalTable extends Table {
       options?.waitTimeoutSeconds,
       options?.name,
       options?.train,
+      customStopWordsSource === undefined
+        ? undefined
+        : JSON.stringify(customStopWordsSource),
     );
   }
 

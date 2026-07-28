@@ -1765,7 +1765,10 @@ impl Table {
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
-    /// same tokenizer model files must also exist locally.
+    /// same tokenizer model files must also exist locally. Remote index details
+    /// must contain the full persisted tokenizer parameters, including an
+    /// explicit `custom_stop_words` field. Tokenization fails closed when the
+    /// server only returns lossy index statistics.
     pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
         let indices = self.inner.list_indices().await?;
         let matches = indices
@@ -1790,7 +1793,7 @@ impl Table {
                 message: format!("Index '{}' is not a full text search index", index_name),
             });
         }
-        self.tokenize_with_index(query, index, index_name)
+        self.tokenize_with_index(query, index, index_name).await
     }
 
     /// Tokenize a full-text search query using the tokenizer configured on the
@@ -1799,7 +1802,9 @@ impl Table {
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
     /// index metadata. For remote tables, this means the same tokenizer model
-    /// files must also exist locally.
+    /// files must also exist locally. Remote index details must contain the
+    /// full persisted tokenizer parameters, including an explicit
+    /// `custom_stop_words` field.
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
         let schema = self.inner.schema().await?;
         let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
@@ -1831,30 +1836,80 @@ impl Table {
         self.tokenize(query, &index.name).await
     }
 
-    fn tokenize_with_index(
+    async fn tokenize_with_index(
         &self,
         query: &str,
         index: &IndexConfig,
         index_name: &str,
     ) -> Result<Vec<FtsToken>> {
         let selector_description = format!("index name '{}'", index_name);
-        let details = index
-            .index_details
-            .as_deref()
-            .ok_or_else(|| Error::InvalidInput {
+        let params = if let Some(native) = self.inner.as_native() {
+            let dataset = native.dataset.get().await?;
+            let segments = dataset.load_indices_by_name(index_name).await?;
+            let mut params = None;
+            for segment in segments.iter() {
+                let segment_params =
+                    lance::index::scalar::load_segment_params(&dataset, segment).await?;
+                match &params {
+                    Some(expected) if expected != &segment_params => {
+                        return Err(Error::InvalidInput {
+                            message: format!(
+                                "Full text search index '{}' for {} has inconsistent tokenizer \
+                                 parameters across segments",
+                                index.name, selector_description
+                            ),
+                        });
+                    }
+                    Some(_) => {}
+                    None => params = Some(segment_params),
+                }
+            }
+            params.ok_or_else(|| Error::InvalidInput {
                 message: format!(
-                    "Full text search index '{}' for {} does not include tokenizer details",
+                    "Full text search index '{}' for {} does not have any committed segments",
                     index.name, selector_description
                 ),
+            })?
+        } else {
+            let details = index
+                .index_details
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!(
+                        "Full text search index '{}' for {} does not include tokenizer details",
+                        index.name, selector_description
+                    ),
+                })?;
+            let details = serde_json::from_str::<serde_json::Value>(details).map_err(|err| {
+                Error::InvalidInput {
+                    message: format!(
+                        "Failed to parse tokenizer details for full text search index '{}' for {}: {}",
+                        index.name, selector_description, err
+                    ),
+                }
             })?;
-        let params = serde_json::from_str::<InvertedIndexParams>(details).map_err(|err| {
-            Error::InvalidInput {
-                message: format!(
-                    "Failed to parse tokenizer details for full text search index '{}' for {}: {}",
-                    index.name, selector_description, err
-                ),
+            if !details.as_object().is_some_and(|details| {
+                details.contains_key("lance_tokenizer") && details.contains_key("custom_stop_words")
+            }) {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Full text search index '{}' for {} has incomplete remote tokenizer \
+                         details: the server must return the full persisted parameters \
+                         (including `lance_tokenizer` and `custom_stop_words`); tokenization \
+                         cannot safely fall back to language defaults",
+                        index.name, selector_description
+                    ),
+                });
             }
-        })?;
+            serde_json::from_value::<InvertedIndexParams>(details).map_err(|err| {
+                Error::InvalidInput {
+                    message: format!(
+                        "Failed to parse tokenizer details for full text search index '{}' for {}: {}",
+                        index.name, selector_description, err
+                    ),
+                }
+            })?
+        };
         tokenize(query, &params).map_err(|err| match err {
             Error::InvalidInput { message } => Error::InvalidInput {
                 message: format!(
@@ -3008,6 +3063,14 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+        if opts.custom_stop_words_source.is_some() {
+            return Err(Error::NotSupported {
+                message: "`custom_stop_words_source` is only supported for remote tables; \
+                          resolve file or table sources to `custom_stop_words` before creating \
+                          a local native FTS index"
+                    .to_string(),
+            });
+        }
         if opts.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),

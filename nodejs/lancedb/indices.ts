@@ -554,6 +554,23 @@ export interface FtsOptions {
   removeStopWords?: boolean;
 
   /**
+   * Custom stop words that replace the built-in language list.
+   *
+   * `undefined` uses the built-in list while `[]` explicitly selects no stop
+   * words. This only affects tokenization when `removeStopWords` is true.
+   */
+  customStopWords?: string[];
+
+  /**
+   * Request-only source resolved by a remote LanceDB service.
+   *
+   * This is mutually exclusive with `customStopWords`. Local native tables
+   * reject source descriptors; load the source explicitly and pass
+   * `customStopWords` instead.
+   */
+  customStopWordsSource?: CustomStopWordsSource;
+
+  /**
    * whether to remove punctuation
    */
   asciiFolding?: boolean;
@@ -582,10 +599,43 @@ export interface FtsOptions {
   blockSize?: 128 | 256;
 }
 
+/**
+ * A request-only source for custom FTS stop words.
+ *
+ * Remote services resolve file and table descriptors into a stable snapshot.
+ * Local native tables reject source descriptors.
+ *
+ * @example
+ * ```ts
+ * const inline = {
+ *   type: "inline",
+ *   words: ["the", "a"],
+ * } satisfies CustomStopWordsSource;
+ * const file = {
+ *   type: "file",
+ *   uri: "s3://bucket/stop-words.txt",
+ * } satisfies CustomStopWordsSource;
+ * const table = {
+ *   type: "table",
+ *   table: "catalog.schema.stop_words",
+ *   column: "word",
+ * } satisfies CustomStopWordsSource;
+ * ```
+ */
+export type CustomStopWordsSource =
+  | { type: "inline"; words: string[] }
+  | { type: "file"; uri: string }
+  | { type: "table"; table: string; column: string };
+
 export class Index {
   private readonly inner: LanceDbIndex;
-  private constructor(inner: LanceDbIndex) {
+  private readonly customStopWordsSource?: CustomStopWordsSource;
+  private constructor(
+    inner: LanceDbIndex,
+    customStopWordsSource?: CustomStopWordsSource,
+  ) {
     this.inner = inner;
+    this.customStopWordsSource = customStopWordsSource;
   }
 
   /**
@@ -746,6 +796,14 @@ export class Index {
    * You can combine filters with full text search.
    */
   static fts(options?: Partial<FtsOptions>) {
+    if (
+      options?.customStopWords !== undefined &&
+      options?.customStopWordsSource !== undefined
+    ) {
+      throw new Error(
+        "customStopWords and customStopWordsSource are mutually exclusive; choose one",
+      );
+    }
     return new Index(
       LanceDbIndex.fts(
         options?.withPosition,
@@ -760,7 +818,9 @@ export class Index {
         options?.ngramMaxLength,
         options?.prefixOnly,
         options?.blockSize,
+        options?.customStopWords,
       ),
+      options?.customStopWordsSource,
     );
   }
 

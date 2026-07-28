@@ -10,6 +10,36 @@
 //! etc.  Scalar indices can also speed up prefiltering for vector searches.  A single
 //! vector search with prefiltering can use both a scalar index and a vector index.
 
+use serde::{Deserialize, Serialize};
+
+/// A request-only source for custom FTS stop words.
+///
+/// Remote LanceDB services resolve this source to a stable inline snapshot before
+/// starting an index build. Local native tables do not resolve external sources;
+/// callers must load them themselves and use
+/// [`FtsIndexBuilder::custom_stop_words`] instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CustomStopWordsSource {
+    /// Stop words supplied directly in the create-index request.
+    Inline {
+        /// Words that replace the built-in language stop-word list.
+        words: Vec<String>,
+    },
+    /// A strict UTF-8, newline-delimited object.
+    File {
+        /// URI of the object to read.
+        uri: String,
+    },
+    /// A string column in a table visible to the remote service.
+    Table {
+        /// Logical table identifier.
+        table: String,
+        /// Top-level string column containing one stop word per row.
+        column: String,
+    },
+}
+
 /// Builder for a btree index
 ///
 /// A btree index is an index on scalar columns.  The index stores a copy of the column

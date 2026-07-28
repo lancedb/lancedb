@@ -781,7 +781,7 @@ impl Table {
         name: Option<String>,
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let index = extract_index_params(&index)?;
+        let (index, custom_stop_words_source) = extract_index_params(&index)?;
         let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
         let mut op = self_
             .inner_ref()?
@@ -794,6 +794,9 @@ impl Table {
         }
         if let Some(train) = train {
             op = op.train(train);
+        }
+        if let Some(source) = custom_stop_words_source {
+            op = op.custom_stop_words_source(source);
         }
 
         future_into_py(self_.py(), async move {

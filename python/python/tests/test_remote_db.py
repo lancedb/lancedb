@@ -868,7 +868,15 @@ def test_remote_create_index_new_api():
             request.send_response(404)
             request.end_headers()
 
-    from lancedb.index import BTree, FTS, IvfPq, IvfRq
+    from lancedb.index import (
+        BTree,
+        FTS,
+        FileStopWordsSource,
+        InlineStopWordsSource,
+        IvfPq,
+        IvfRq,
+        TableStopWordsSource,
+    )
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
@@ -881,6 +889,28 @@ def test_remote_create_index_new_api():
             table.create_index("vector", config=IvfPq(distance_type="l2"))
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
+            table.create_index("text", config=FTS(custom_stop_words=[]))
+            table.create_index(
+                "text", config=FTS(custom_stop_words=["lance", "database"])
+            )
+            table.create_index(
+                "text",
+                config=FTS(custom_stop_words_source=InlineStopWordsSource(["lance"])),
+            )
+            table.create_index(
+                "text",
+                config=FTS(
+                    custom_stop_words_source=FileStopWordsSource(
+                        "s3://bucket/stop-words.txt"
+                    )
+                ),
+            )
+            table.create_index(
+                "text",
+                config=FTS(
+                    custom_stop_words_source=TableStopWordsSource("stop_words", "word")
+                ),
+            )
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
 
@@ -892,15 +922,36 @@ def test_remote_create_index_new_api():
                 num_partitions=8,
             )
 
-        assert len(received_requests) == 5
+        assert len(received_requests) == 10
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
+            "text",
+            "text",
+            "text",
+            "text",
+            "text",
             "text",
             "vector",
             "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        assert received_requests[2]["custom_stop_words"] is None
+        assert received_requests[3]["custom_stop_words"] == []
+        assert received_requests[4]["custom_stop_words"] == ["lance", "database"]
+        assert received_requests[5]["custom_stop_words_source"] == {
+            "type": "inline",
+            "words": ["lance"],
+        }
+        assert received_requests[6]["custom_stop_words_source"] == {
+            "type": "file",
+            "uri": "s3://bucket/stop-words.txt",
+        }
+        assert received_requests[7]["custom_stop_words_source"] == {
+            "type": "table",
+            "table": "stop_words",
+            "column": "word",
+        }
 
 
 def test_table_wait_for_index_timeout():

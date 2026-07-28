@@ -118,6 +118,7 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
+  CustomStopWordsSource,
   BaseTokenizer,
 } from "./indices";
 

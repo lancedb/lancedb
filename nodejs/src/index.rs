@@ -227,6 +227,7 @@ impl Index {
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
         block_size: Option<u32>,
+        custom_stop_words: Option<Vec<String>>,
     ) -> napi::Result<Self> {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
@@ -266,6 +267,9 @@ impl Index {
             opts = opts
                 .block_size(block_size as usize)
                 .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+        }
+        if let Some(custom_stop_words) = custom_stop_words {
+            opts = opts.custom_stop_words(Some(custom_stop_words));
         }
 
         Ok(Self {

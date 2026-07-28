@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from dataclasses import dataclass
-from typing import Literal, Optional
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional, Union
 
 from ._lancedb import (
     IndexConfig,
@@ -29,6 +29,38 @@ lang_mapping = {
     "ta": "Tamil",
     "tr": "Turkish",
 }
+
+
+@dataclass(frozen=True)
+class InlineStopWordsSource:
+    """Inline custom stop words for a remote FTS create-index request."""
+
+    words: List[str]
+    type: Literal["inline"] = field(default="inline", init=False)
+
+
+@dataclass(frozen=True)
+class FileStopWordsSource:
+    """A UTF-8, newline-delimited custom stop-word object for a remote request."""
+
+    uri: str
+    type: Literal["file"] = field(default="file", init=False)
+
+
+@dataclass(frozen=True)
+class TableStopWordsSource:
+    """A table string column used by a remote FTS create-index request."""
+
+    table: str
+    column: str
+    type: Literal["table"] = field(default="table", init=False)
+
+
+CustomStopWordsSource = Union[
+    InlineStopWordsSource,
+    FileStopWordsSource,
+    TableStopWordsSource,
+]
 
 
 @dataclass
@@ -151,6 +183,15 @@ class FTS:
     remove_stop_words : bool, default True
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
+    custom_stop_words : list of str, optional
+        A custom stop-word list that replaces the built-in language list. ``None``
+        uses the built-in list, while ``[]`` explicitly selects no stop words.
+        This only affects tokenization when ``remove_stop_words`` is True.
+    custom_stop_words_source : CustomStopWordsSource, optional
+        A request-only inline, UTF-8 file, or table-column source resolved by a
+        remote LanceDB service. It is mutually exclusive with
+        ``custom_stop_words``. Local native tables reject source descriptors;
+        load the source explicitly and pass ``custom_stop_words`` instead.
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -179,6 +220,18 @@ class FTS:
     ngram_max_length: int = 3
     prefix_only: bool = False
     block_size: int = 128
+    custom_stop_words: Optional[List[str]] = None
+    custom_stop_words_source: Optional[CustomStopWordsSource] = None
+
+    def __post_init__(self):
+        if (
+            self.custom_stop_words is not None
+            and self.custom_stop_words_source is not None
+        ):
+            raise ValueError(
+                "custom_stop_words and custom_stop_words_source are mutually "
+                "exclusive; choose one"
+            )
 
 
 @dataclass
@@ -853,6 +906,10 @@ __all__ = [
     "HnswFlat",
     "IndexConfig",
     "FTS",
+    "CustomStopWordsSource",
+    "InlineStopWordsSource",
+    "FileStopWordsSource",
+    "TableStopWordsSource",
     "Bitmap",
     "LabelList",
     "Fm",

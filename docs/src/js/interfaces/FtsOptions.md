@@ -56,6 +56,33 @@ the experimental FTS V3 format and may introduce breaking changes.
 
 ***
 
+### customStopWords?
+
+```ts
+optional customStopWords: string[];
+```
+
+Custom stop words that replace the built-in language list.
+
+`undefined` uses the built-in list while `[]` explicitly selects no stop
+words. This only affects tokenization when `removeStopWords` is true.
+
+***
+
+### customStopWordsSource?
+
+```ts
+optional customStopWordsSource: CustomStopWordsSource;
+```
+
+Request-only source resolved by a remote LanceDB service.
+
+This is mutually exclusive with `customStopWords`. Local native tables
+reject source descriptors; load the source explicitly and pass
+`customStopWords` instead.
+
+***
+
 ### language?
 
 ```ts

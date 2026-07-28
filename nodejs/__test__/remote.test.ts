@@ -226,8 +226,8 @@ describe("remote connection", () => {
     );
   });
 
-  it("sends the FTS posting block size to remote tables", async () => {
-    let createIndexBody: Record<string, unknown> | undefined;
+  it("serializes FTS custom stop words and sources to remote tables", async () => {
+    const createIndexBodies: Record<string, unknown>[] = [];
 
     await withMockDatabase(
       (req, res) => {
@@ -253,7 +253,7 @@ describe("remote connection", () => {
             raw += chunk;
           });
           req.on("end", () => {
-            createIndexBody = JSON.parse(raw);
+            createIndexBodies.push(JSON.parse(raw));
             res.writeHead(200).end();
           });
           return;
@@ -266,12 +266,59 @@ describe("remote connection", () => {
         await table.createIndex("text", {
           config: Index.fts({ blockSize: 256 }),
         });
+        await table.createIndex("text", {
+          config: Index.fts({ customStopWords: [] }),
+        });
+        await table.createIndex("text", {
+          config: Index.fts({ customStopWords: ["lance", "database"] }),
+        });
+        await table.createIndex("text", {
+          config: Index.fts({
+            customStopWordsSource: { type: "inline", words: ["lance"] },
+          }),
+        });
+        await table.createIndex("text", {
+          config: Index.fts({
+            customStopWordsSource: {
+              type: "file",
+              uri: "s3://bucket/stop-words.txt",
+            },
+          }),
+        });
+        await table.createIndex("text", {
+          config: Index.fts({
+            customStopWordsSource: {
+              type: "table",
+              table: "stop_words",
+              column: "word",
+            },
+          }),
+        });
       },
     );
 
-    expect(createIndexBody?.["column"]).toBe("text");
-    expect(createIndexBody?.["index_type"]).toBe("FTS");
-    expect(createIndexBody?.["block_size"]).toBe(256);
+    expect(createIndexBodies[0]["column"]).toBe("text");
+    expect(createIndexBodies[0]["index_type"]).toBe("FTS");
+    expect(createIndexBodies[0]["block_size"]).toBe(256);
+    expect(createIndexBodies[0]["custom_stop_words"]).toBeNull();
+    expect(createIndexBodies[1]["custom_stop_words"]).toEqual([]);
+    expect(createIndexBodies[2]["custom_stop_words"]).toEqual([
+      "lance",
+      "database",
+    ]);
+    expect(createIndexBodies[3]["custom_stop_words_source"]).toEqual({
+      type: "inline",
+      words: ["lance"],
+    });
+    expect(createIndexBodies[4]["custom_stop_words_source"]).toEqual({
+      type: "file",
+      uri: "s3://bucket/stop-words.txt",
+    });
+    expect(createIndexBodies[5]["custom_stop_words_source"]).toEqual({
+      type: "table",
+      table: "stop_words",
+      column: "word",
+    });
   });
 
   it("diffs and merges remote branches", async () => {

@@ -22,7 +22,7 @@ import zipfile
 
 import lancedb as ldb
 from lancedb.db import DBConnection
-from lancedb.index import FTS
+from lancedb.index import FTS, FileStopWordsSource
 from lancedb.query import (
     BoostQuery,
     MatchQuery,
@@ -241,6 +241,82 @@ def test_create_inverted_index_block_size(table, block_size):
 def test_create_inverted_index_rejects_invalid_block_size(table):
     with pytest.raises(ValueError, match="128 or 256"):
         table.create_index("text", config=FTS(block_size=129))
+
+
+def test_custom_stop_words_preserve_none_and_empty(mem_db: DBConnection):
+    built_in = mem_db.create_table(
+        "built_in_stop_words", [{"text": "the lance database"}]
+    )
+    built_in.create_index(
+        "text",
+        config=FTS(stem=False, custom_stop_words=None),
+    )
+    assert [token.text for token in built_in.tokenize("the lance", column="text")] == [
+        "lance"
+    ]
+
+    empty = mem_db.create_table(
+        "empty_custom_stop_words", [{"text": "the lance database"}]
+    )
+    empty.create_index(
+        "text",
+        config=FTS(stem=False, custom_stop_words=[]),
+    )
+    assert [token.text for token in empty.tokenize("the lance", column="text")] == [
+        "the",
+        "lance",
+    ]
+
+    custom = mem_db.create_table(
+        "non_empty_custom_stop_words", [{"text": "the lance database"}]
+    )
+    custom.create_index(
+        "text",
+        config=FTS(stem=False, custom_stop_words=["lance"]),
+    )
+    assert [token.text for token in custom.tokenize("the lance", column="text")] == [
+        "the"
+    ]
+    assert len(custom.search("the", query_type="fts").to_list()) == 1
+    assert custom.search("lance", query_type="fts").to_list() == []
+
+    disabled = mem_db.create_table(
+        "disabled_custom_stop_words", [{"text": "the lance database"}]
+    )
+    disabled.create_index(
+        "text",
+        config=FTS(
+            stem=False,
+            remove_stop_words=False,
+            custom_stop_words=["lance"],
+        ),
+    )
+    assert [token.text for token in disabled.tokenize("the lance", column="text")] == [
+        "the",
+        "lance",
+    ]
+    assert len(disabled.search("lance", query_type="fts").to_list()) == 1
+
+
+def test_local_fts_rejects_custom_stop_words_source(mem_db: DBConnection):
+    table = mem_db.create_table("source_stop_words", [{"text": "lance database"}])
+    with pytest.raises(RuntimeError, match="only supported for remote tables"):
+        table.create_index(
+            "text",
+            config=FTS(
+                custom_stop_words_source=FileStopWordsSource(
+                    "file:///tmp/stop-words.txt"
+                )
+            ),
+        )
+
+
+def test_fts_rejects_both_custom_stop_words_forms():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        FTS(
+            custom_stop_words=[],
+            custom_stop_words_source=FileStopWordsSource("s3://bucket/stop-words.txt"),
+        )
 
 
 def test_search_fts(table):

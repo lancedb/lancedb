@@ -13,7 +13,10 @@ use crate::index::vector::IvfRqIndexBuilder;
 use crate::{DistanceType, Error, Result, table::BaseTable};
 
 use self::{
-    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, LabelListIndexBuilder},
+    scalar::{
+        BTreeIndexBuilder, BitmapIndexBuilder, CustomStopWordsSource, FmIndexBuilder,
+        LabelListIndexBuilder,
+    },
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
         IvfSqIndexBuilder,
@@ -192,6 +195,7 @@ pub struct IndexBuilder {
     pub(crate) wait_timeout: Option<Duration>,
     pub(crate) train: bool,
     pub(crate) name: Option<String>,
+    pub(crate) custom_stop_words_source: Option<CustomStopWordsSource>,
 }
 
 impl IndexBuilder {
@@ -204,6 +208,7 @@ impl IndexBuilder {
             train: true,
             wait_timeout: None,
             name: None,
+            custom_stop_words_source: None,
         }
     }
 
@@ -290,6 +295,21 @@ impl IndexBuilder {
     /// ```
     pub fn train(mut self, v: bool) -> Self {
         self.train = v;
+        self
+    }
+
+    /// Supply a request-only source for custom FTS stop words.
+    ///
+    /// This option is supported only for FTS indexes on remote tables. The
+    /// remote service resolves the source to a stable snapshot before the
+    /// distributed build starts. Local native tables return an error instead of
+    /// reading a path or table implicitly; load the source explicitly and use
+    /// [`FtsIndexBuilder::custom_stop_words`] for local indexes.
+    ///
+    /// This is mutually exclusive with inline custom stop words configured
+    /// directly on the [`FtsIndexBuilder`].
+    pub fn custom_stop_words_source(mut self, source: CustomStopWordsSource) -> Self {
+        self.custom_stop_words_source = Some(source);
         self
     }
 
