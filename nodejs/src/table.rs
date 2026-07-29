@@ -169,6 +169,39 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn create_index_async(
+        &self,
+        index: Option<&Index>,
+        column: String,
+        replace: Option<bool>,
+        wait_timeout_s: Option<i64>,
+        name: Option<String>,
+        train: Option<bool>,
+    ) -> napi::Result<crate::job::Job> {
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(replace) = replace {
+            builder = builder.replace(replace);
+        }
+        if let Some(timeout) = wait_timeout_s {
+            builder =
+                builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
+        }
+        if let Some(name) = name {
+            builder = builder.name(name);
+        }
+        if let Some(train) = train {
+            builder = builder.train(train);
+        }
+        let job = builder.execute_async().await.default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .drop_index(&index_name)

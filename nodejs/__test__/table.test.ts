@@ -851,7 +851,9 @@ describe("When creating an index", () => {
   afterEach(() => tmpDir.removeCallback());
 
   it("should create a vector index on vector columns", async () => {
-    await tbl.createIndex("vec");
+    const job = await tbl.createIndexAsync("vec");
+    await job.wait();
+    await job.cancel();
 
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
