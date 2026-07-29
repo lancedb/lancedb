@@ -107,67 +107,17 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ## Embeddings
 
-::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
-
-::: lancedb.embeddings.registry.get_registry
-
-::: lancedb.embeddings.registry.register
-
-::: lancedb.embeddings.base.EmbeddingFunctionConfig
-
-::: lancedb.embeddings.base.EmbeddingFunction
-
-::: lancedb.embeddings.base.TextEmbeddingFunction
-
-::: lancedb.embeddings.sentence_transformers.SentenceTransformerEmbeddings
-
-::: lancedb.embeddings.openai.OpenAIEmbeddings
-
-::: lancedb.embeddings.open_clip.OpenClipEmbeddings
-
-::: lancedb.embeddings.bedrock.BedRockText
-
-::: lancedb.embeddings.cohere.CohereEmbeddingFunction
-
-::: lancedb.embeddings.gemini_text.GeminiText
-
-::: lancedb.embeddings.gte.GteEmbeddings
-
-::: lancedb.embeddings.instructor.InstructorEmbeddingFunction
-
-::: lancedb.embeddings.jinaai.JinaEmbeddings
-
-::: lancedb.embeddings.ollama.OllamaEmbeddings
-
-::: lancedb.embeddings.transformers.TransformersEmbeddingFunction
-
-::: lancedb.embeddings.transformers.ColbertEmbeddings
-
-::: lancedb.embeddings.voyageai.VoyageAIEmbeddingFunction
-
-::: lancedb.embeddings.watsonx.WatsonxEmbeddings
-
-::: lancedb.embeddings.colpali.ColPaliEmbeddings
-
-::: lancedb.embeddings.imagebind.ImageBindEmbeddings
-
-::: lancedb.embeddings.siglip.SigLipEmbeddings
+::: lancedb.embeddings
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Remote configuration
 
-::: lancedb.remote.ClientConfig
-
-::: lancedb.remote.TimeoutConfig
-
-::: lancedb.remote.RetryConfig
-
-::: lancedb.remote.TlsConfig
-
-::: lancedb.remote.HeaderProvider
-
-::: lancedb.remote.OAuthConfig
-
-::: lancedb.remote.OAuthFlowType
+::: lancedb.remote
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Context
 
@@ -204,8 +154,6 @@ import lancedb
 tokens = list(lancedb.tokenize("acme makes searchable data",
                                custom_stop_words=["acme"]))
 ```
-
-::: lancedb.index.FTS
 
 ::: lancedb.tokenize
 
@@ -266,29 +214,10 @@ instead of being materialized with the rest of the row.
 
 ## Reranking
 
-::: lancedb.rerankers.base.Reranker
-
-::: lancedb.rerankers.linear_combination.LinearCombinationReranker
-
-::: lancedb.rerankers.cohere.CohereReranker
-
-::: lancedb.rerankers.colbert.ColbertReranker
-
-::: lancedb.rerankers.cross_encoder.CrossEncoderReranker
-
-::: lancedb.rerankers.openai.OpenaiReranker
-
-::: lancedb.rerankers.jinaai.JinaReranker
-
-::: lancedb.rerankers.rrf.RRFReranker
-
-::: lancedb.rerankers.mrr.MRRReranker
-
-::: lancedb.rerankers.answerdotai.AnswerdotaiRerankers
-
-::: lancedb.rerankers.voyageai.VoyageAIReranker
-
-::: lancedb.rerankers.watsonx.WatsonxReranker
+::: lancedb.rerankers
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Connections (Asynchronous)
 
@@ -320,31 +249,13 @@ Table hold your actual data as a collection of records / rows.
 Indices can be created on a table to speed up queries. This section
 lists the indices that LanceDb supports.
 
-::: lancedb.index.BTree
-
-::: lancedb.index.Bitmap
-
-::: lancedb.index.LabelList
-
-::: lancedb.index.FTS
-
-::: lancedb.index.IvfPq
-
-::: lancedb.index.HnswPq
-
-::: lancedb.index.HnswSq
-
-::: lancedb.index.IvfFlat
-
-::: lancedb.index.IvfSq
-
-::: lancedb.index.IvfRq
-
-::: lancedb.index.HnswFlat
-
-::: lancedb.index.Fm
-
-::: lancedb.index.IndexConfig
+::: lancedb.index
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+      # `lang_mapping` is defined in the module rather than imported, so it is
+      # picked up despite not being in `__all__`. It is an internal lookup table.
+      filters: ["!^_", "!^lang_mapping$"]
 
 ::: lancedb.table.IndexStatistics
 
