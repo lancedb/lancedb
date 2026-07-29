@@ -4585,7 +4585,7 @@ mod tests {
                 .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
-            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
         }
 
         // Happy path: install spec; verify MemWAL details record it.

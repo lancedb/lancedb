@@ -121,6 +121,9 @@ impl From<lance::Error> for Error {
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
             lance::Error::External { source } => Self::from_box_error(source),
+            lance::Error::InvalidInput { source, .. } => Self::InvalidInput {
+                message: source.to_string(),
+            },
             _ => Self::Lance { source },
         }
     }
