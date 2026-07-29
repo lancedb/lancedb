@@ -22,7 +22,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "embed-multilingual-v2.0"
+    name : str, default "embed-multilingual-v2.0"
         The name of the model to use. List of acceptable models:
 
             * embed-english-v3.0
@@ -33,12 +33,14 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             * embed-english-light-v2.0
             * embed-multilingual-v2.0
 
-    source_input_type: str, default "search_document"
+    source_input_type : str, default "search_document"
         The input type for the source column in the database
 
-    query_input_type: str, default "search_query"
+    query_input_type : str, default "search_query"
         The input type for the query column in the database
 
+    Notes
+    -----
     Cohere supports following input types:
 
     | Input Type               | Description                          |

@@ -219,7 +219,7 @@ class HnswPq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -228,7 +228,7 @@ class HnswPq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    num_sub_vectors, default is vector dimension / 16
+    num_sub_vectors: int, default is vector dimension / 16
 
         Number of sub-vectors of PQ.
 
@@ -244,13 +244,13 @@ class HnswPq:
         If the dimension is not visible by 8 then we use 1 subvector.  This is not
         ideal and will likely result in poor performance.
 
-     num_bits: int, default 8
+    num_bits: int, default 8
         Number of bits to encode each sub-vector.
 
         This value controls how much the sub-vectors are compressed.  The more bits
         the more accurate the index but the slower search. Only 4 and 8 are supported.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -263,7 +263,7 @@ class HnswPq:
         those cases it is unlikely that setting this larger will lead to the index
         converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -279,14 +279,14 @@ class HnswPq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -297,7 +297,7 @@ class HnswPq:
         This value should be set to a value that is not less than `ef` in the
         search phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
 
@@ -351,7 +351,7 @@ class HnswSq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -360,7 +360,7 @@ class HnswSq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -373,7 +373,7 @@ class HnswSq:
         In those cases it is unlikely that setting this larger will lead to
         the index converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -389,14 +389,14 @@ class HnswSq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -407,7 +407,7 @@ class HnswSq:
         This value should be set to a value that is not less than `ef` in the search
         phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
 
@@ -460,7 +460,7 @@ class HnswFlat:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -470,18 +470,18 @@ class HnswFlat:
         graph, so setting this value higher reduces the peak memory use of
         training.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
         When training an IVF index we use kmeans to calculate the partitions.
         This parameter controls how many iterations of kmeans to run.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
@@ -489,7 +489,7 @@ class HnswFlat:
         The higher the value the more accurate the search but the slower it
         will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW
         graph.
@@ -501,7 +501,7 @@ class HnswFlat:
         than 500.  This value should be set to a value that is not less than `ef`
         in the search phase.
 
-    target_partition_size, default is 1,048,576
+    target_partition_size: int, default is 1,048,576
 
         The target size of each partition.
     """
@@ -605,7 +605,7 @@ class IvfFlat:
 
         The default value is 256.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
 
         The target size of each partition.
 
@@ -769,7 +769,7 @@ class IvfPq:
 
         The default value is 256.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
 
         The target size of each partition.
 
@@ -830,7 +830,7 @@ class IvfRq:
     sample_rate: int, default 256
         Controls the number of training vectors: sample_rate * num_partitions.
 
-    target_partition_size, default is 8192
+    target_partition_size: int, default is 8192
         Target size of each partition.
     """
 

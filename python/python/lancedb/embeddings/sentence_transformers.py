@@ -21,13 +21,13 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "all-MiniLM-L6-v2"
+    name : str, default "all-MiniLM-L6-v2"
         The name of the model to use.
-    device: str, default "cpu"
+    device : str, default "cpu"
         The device to use for the model
-    normalize: bool, default True
+    normalize : bool, default True
         Whether to normalize the embeddings
-    trust_remote_code: bool, default True
+    trust_remote_code : bool, default True
         Whether to trust the remote code
     """
 

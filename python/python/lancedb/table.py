@@ -1832,6 +1832,8 @@ class Table(ABC):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -1986,15 +1988,14 @@ class Table(ABC):
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
 
     @abstractmethod
@@ -3813,6 +3814,8 @@ class LanceTable(Table):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -5774,15 +5777,14 @@ class AsyncTable:
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
         try:
             await self._inner.checkout(version)
@@ -5966,6 +5968,8 @@ class AsyncTable:
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -6346,6 +6350,8 @@ class Branches:
         dry_run: bool, default False
             When True, only preview. When False, attempt the merge.
 
+        Notes
+        -----
         A rejected merge returns ``status="rejected"`` instead of raising.
         """
         return LOOP.run(self._table.branches.merge(from_branch, dry_run))
