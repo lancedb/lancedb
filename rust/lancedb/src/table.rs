@@ -21,6 +21,7 @@ use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
+use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
@@ -3131,10 +3132,9 @@ impl BaseTable for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let total_rows = dataset.count_rows(None).await? as u64;
-        let indices = dataset
-            .describe_indices(None)
-            .await?
-            .into_iter()
+        let descriptions = dataset.describe_indices(None).await?;
+        let mut indices: Vec<IndexConfig> = descriptions
+            .iter()
             .filter_map(|idx_desc| {
                 let index_type: crate::index::IndexType = idx_desc
                     .index_type()
@@ -3192,6 +3192,31 @@ impl BaseTable for NativeTable {
                 })
             })
             .collect();
+
+        for index in indices
+            .iter_mut()
+            .filter(|index| index.index_type == crate::index::IndexType::FTS)
+        {
+            let Some(description) = descriptions
+                .iter()
+                .find(|description| description.name() == index.name)
+            else {
+                continue;
+            };
+            let segments = description.segments();
+            let Some(segment) = segments.first() else {
+                continue;
+            };
+            let params = load_segment_params(&dataset, segment).await?;
+            let details = serde_json::to_string(&params).map_err(|source| Error::Other {
+                message: format!(
+                    "Failed to serialize full text search configuration for index '{}'",
+                    index.name
+                ),
+                source: Some(Box::new(source)),
+            })?;
+            index.index_details = Some(details);
+        }
         Ok(indices)
     }
 

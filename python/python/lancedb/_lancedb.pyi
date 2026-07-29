@@ -59,6 +59,7 @@ def tokenize(
     lower_case: bool = True,
     stem: bool = True,
     remove_stop_words: bool = True,
+    custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,

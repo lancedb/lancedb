@@ -94,9 +94,33 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ## Full text search
 
-Use [lancedb.table.Table.create_fts_index][] for the synchronous API or
-[lancedb.table.AsyncTable.create_index][] with [lancedb.index.FTS][] for the
-asynchronous API.
+Pass `custom_stop_words` to [lancedb.index.FTS][]:
+
+```python
+from lancedb.index import FTS
+
+table.create_index(
+    "text",
+    config=FTS(remove_stop_words=True, custom_stop_words=["acme", "internal"]),
+)
+```
+
+The list replaces the built-in stop words and is used only when
+`remove_stop_words=True`:
+
+- `custom_stop_words=None` uses the built-in list for `language`.
+- `custom_stop_words=[]` removes no words.
+- Values are passed through without trimming, lowercasing, or other rewriting.
+
+The same option is available on `lancedb.tokenize(...)` and the deprecated
+[lancedb.table.Table.create_fts_index][] compatibility helper:
+
+```python
+import lancedb
+
+tokens = list(lancedb.tokenize("acme makes searchable data",
+                               custom_stop_words=["acme"]))
+```
 
 ::: lancedb.index.FTS
 

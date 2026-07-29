@@ -2761,6 +2761,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
   },
 );
 
+test("tokenize supports custom stop words", async () => {
+  const tokens = await tokenize("the lance data", {
+    stem: false,
+    removeStopWords: true,
+    customStopWords: ["lance"],
+  });
+  expect(tokens.map((token) => token.text)).toEqual(["the", "data"]);
+});
+
 describe("when calling explainPlan", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;

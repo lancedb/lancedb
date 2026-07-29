@@ -4505,6 +4505,19 @@ mod tests {
                 },
                 Index::FTS(InvertedIndexParams::default().block_size(256).unwrap()),
             ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["custom_stop_words"] = json!(["cat", " cat ", "CAT"]);
+                    body
+                },
+                Index::FTS(InvertedIndexParams::default().custom_stop_words(Some(vec![
+                    "cat".to_string(),
+                    " cat ".to_string(),
+                    "CAT".to_string(),
+                ]))),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {
@@ -5036,8 +5049,9 @@ mod tests {
             "max_token_length": 40,
             "lower_case": true,
             "stem": false,
-            "remove_stop_words": false,
+            "remove_stop_words": true,
             "ascii_folding": true,
+            "custom_stop_words": ["hello"],
         })
         .to_string();
         let table = Table::new_with_handler("my_table", move |request| {
@@ -5075,10 +5089,6 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                FtsToken {
-                    text: "hello".to_string(),
-                    position: 0,
-                },
                 FtsToken {
                     text: "こんにちは".to_string(),
                     position: 1,

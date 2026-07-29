@@ -1366,11 +1366,19 @@ mod tests {
         table
             .create_index(
                 &["text"],
-                Index::FTS(FtsIndexBuilder::default().block_size(256).unwrap()),
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .stem(false)
+                        .custom_stop_words(Some(vec!["cat".to_string()]))
+                        .block_size(256)
+                        .unwrap(),
+                ),
             )
             .execute()
             .await
             .unwrap();
+        drop(table);
+        let table = conn.open_table("test_bitmap").execute().await.unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
@@ -1381,6 +1389,32 @@ mod tests {
         let index_params: FtsIndexBuilder =
             serde_json::from_str(index.index_details.as_deref().unwrap()).unwrap();
         assert_eq!(index_params.posting_block_size(), 256);
+        assert_eq!(
+            serde_json::to_value(&index_params).unwrap()["custom_stop_words"],
+            serde_json::json!(["cat"])
+        );
+        assert_eq!(
+            table
+                .tokenize("cat dog", "text_idx")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|token| token.text)
+                .collect::<Vec<_>>(),
+            vec!["dog"]
+        );
+
+        let batches = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("cat dog".to_string()))
+            .limit(120)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 40);
 
         let num_rows = 120;
         let stats = table.index_stats("text_idx").await.unwrap().unwrap();

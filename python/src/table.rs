@@ -520,6 +520,7 @@ impl From<LanceDbFtsToken> for FtsToken {
     lower_case = true,
     stem = true,
     remove_stop_words = true,
+    custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
@@ -534,6 +535,7 @@ pub fn tokenize(
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
@@ -555,7 +557,8 @@ pub fn tokenize(
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
-        .ngram_prefix_only(prefix_only);
+        .ngram_prefix_only(prefix_only)
+        .custom_stop_words(custom_stop_words);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
