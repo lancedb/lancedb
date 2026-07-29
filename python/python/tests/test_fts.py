@@ -219,11 +219,13 @@ def test_create_inverted_index(table, with_position):
         table.create_fts_index(
             "text",
             with_position=with_position,
+            custom_stop_words=["puppy"],
             name="custom_fts_index",
         )
     indices = table.list_indices()
     fts_indices = [i for i in indices if i.index_type == "FTS"]
     assert any(i.name == "custom_fts_index" for i in fts_indices)
+    assert fts_indices[0].index_details["custom_stop_words"] == ["puppy"]
 
 
 @pytest.mark.parametrize("block_size", [128, 256])
@@ -241,6 +243,24 @@ def test_create_inverted_index_block_size(table, block_size):
 def test_create_inverted_index_rejects_invalid_block_size(table):
     with pytest.raises(ValueError, match="128 or 256"):
         table.create_index("text", config=FTS(block_size=129))
+
+
+def test_custom_stop_words_list(table):
+    table.create_index(
+        "text",
+        config=FTS(stem=False, custom_stop_words=["lance"]),
+    )
+
+    assert table.list_indices()[0].index_details["custom_stop_words"] == ["lance"]
+    tokens = table.tokenize("the lance data", column="text")
+    assert [token.text for token in tokens] == ["the", "data"]
+    empty_tokens = ldb.tokenize("the lance data", stem=False, custom_stop_words=[])
+    assert [token.text for token in empty_tokens] == ["the", "lance", "data"]
+    with pytest.raises(TypeError, match=r"custom_stop_words.*int"):
+        ldb.tokenize(
+            "the lance data",
+            custom_stop_words=["lance", 42],
+        )
 
 
 def test_search_fts(table):

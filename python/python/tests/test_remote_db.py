@@ -771,6 +771,7 @@ def test_table_create_indices():
                 "text",
                 wait_timeout=timedelta(seconds=2),
                 block_size=256,
+                custom_stop_words=["cloud"],
                 name="custom_fts_idx",
             )
 
@@ -795,6 +796,7 @@ def test_table_create_indices():
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
         assert fts_req["block_size"] == 256
+        assert fts_req["custom_stop_words"] == ["cloud"]
 
         # Check vector index request has custom name
         vector_req = received_requests[2]

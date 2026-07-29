@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from ._lancedb import (
     IndexConfig,
@@ -151,6 +151,11 @@ class FTS:
     remove_stop_words : bool, default True
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
+    custom_stop_words : list of str, optional
+        Custom words replace the built-in language stop words
+        and only take effect when ``remove_stop_words`` is True. ``None`` uses
+        the built-in language list, while an empty list explicitly uses no
+        stop words.
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -179,6 +184,7 @@ class FTS:
     ngram_max_length: int = 3
     prefix_only: bool = False
     block_size: int = 128
+    custom_stop_words: Optional[List[str]] = None
 
 
 @dataclass

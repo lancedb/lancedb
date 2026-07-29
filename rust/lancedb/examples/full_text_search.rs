@@ -76,7 +76,12 @@ async fn create_table(db: &Connection) -> Result<Table> {
 
 async fn create_index(table: &Table) -> Result<()> {
     table
-        .create_index(&["doc"], Index::FTS(FtsIndexBuilder::default()))
+        .create_index(
+            &["doc"],
+            Index::FTS(
+                FtsIndexBuilder::default().custom_stop_words(Some(vec!["example".to_owned()])),
+            ),
+        )
         .execute()
         .await?;
     Ok(())

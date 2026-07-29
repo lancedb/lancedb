@@ -1103,6 +1103,7 @@ class Table(ABC):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
+        custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -1170,6 +1171,9 @@ class Table(ABC):
         remove_stop_words : bool, default True
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
+        custom_stop_words : list of str, optional
+            Custom words that replace the built-in language stop words. ``None``
+            uses the built-in list; an empty list explicitly uses no stop words.
         ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -3055,6 +3059,7 @@ class LanceTable(Table):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
+        custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -3101,6 +3106,7 @@ class LanceTable(Table):
                 "lower_case": lower_case,
                 "stem": stem,
                 "remove_stop_words": remove_stop_words,
+                "custom_stop_words": custom_stop_words,
                 "ascii_folding": ascii_folding,
                 "ngram_min_length": ngram_min_length,
                 "ngram_max_length": ngram_max_length,
@@ -3108,6 +3114,7 @@ class LanceTable(Table):
             }
         else:
             tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
+            tokenizer_configs["custom_stop_words"] = custom_stop_words
 
         config = FTS(block_size=block_size, **tokenizer_configs)
 

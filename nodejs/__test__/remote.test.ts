@@ -226,7 +226,7 @@ describe("remote connection", () => {
     );
   });
 
-  it("sends the FTS posting block size to remote tables", async () => {
+  it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
     await withMockDatabase(
@@ -264,7 +264,11 @@ describe("remote connection", () => {
       async (db) => {
         const table = await db.openTable("t");
         await table.createIndex("text", {
-          config: Index.fts({ blockSize: 256 }),
+          config: Index.fts({
+            blockSize: 256,
+            removeStopWords: true,
+            customStopWords: ["the"],
+          }),
         });
       },
     );
@@ -272,6 +276,7 @@ describe("remote connection", () => {
     expect(createIndexBody?.["column"]).toBe("text");
     expect(createIndexBody?.["index_type"]).toBe("FTS");
     expect(createIndexBody?.["block_size"]).toBe(256);
+    expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
   it("diffs and merges remote branches", async () => {
