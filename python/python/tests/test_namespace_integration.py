@@ -18,6 +18,7 @@ Tests verify:
 """
 
 import copy
+import os
 import shutil
 import sys
 import tempfile
@@ -239,7 +240,7 @@ def create_tracking_namespace(
 
     dir_props = {f"storage.{k}": v for k, v in storage_options_with_refresh.items()}
 
-    if bucket_name.startswith("/") or bucket_name.startswith("file://"):
+    if os.path.isabs(bucket_name) or bucket_name.startswith("file://"):
         dir_props["root"] = f"{bucket_name}/namespace_root"
     else:
         dir_props["root"] = f"s3://{bucket_name}/namespace_root"
