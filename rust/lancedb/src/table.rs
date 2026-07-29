@@ -4136,10 +4136,10 @@ mod tests {
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
     }
 
-    // Windows does not support precise sleep durations due to timer resolution limitations.
-    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_read_consistency_interval() {
+        use crate::utils::background_cache::clock;
+
         let intervals = vec![
             None,
             Some(0),
@@ -4166,6 +4166,12 @@ mod tests {
             let conn2 = conn2.execute().await.unwrap();
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
 
+            // Freeze the consistency clock now that `table2` has seeded its cache, so the
+            // interval only elapses when this test advances it. Otherwise the write and
+            // count_rows calls below race the real 100ms interval, which a loaded CI
+            // runner loses. Must come after open_table: creating the cache clears the mock.
+            clock::pin();
+
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
@@ -4183,7 +4189,7 @@ mod tests {
                 }
                 Some(100) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    clock::advance_by(Duration::from_millis(100));
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 _ => unreachable!(),
