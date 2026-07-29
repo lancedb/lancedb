@@ -580,8 +580,9 @@ class RemoteTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table). It has the same API signature as
-        the OSS version.
+        """Add more data to the [Table][lancedb.table.Table].
+
+        It has the same API signature as the OSS version.
 
         Parameters
         ----------

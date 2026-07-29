@@ -1211,7 +1211,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [Table][lancedb.table.Table].
 
         Parameters
         ----------
@@ -1343,8 +1343,8 @@ class Table(ABC):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in
         [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
@@ -1778,7 +1778,7 @@ class Table(ABC):
         for faster reads.
 
         Arguments are passed onto Lance's
-        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
+        `lance.dataset.DatasetOptimizer.compact_files`.
         For most cases, the default should be fine.
 
         See Also
@@ -3387,7 +3387,7 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
         and [full-text search][search].
 
         Examples
@@ -4691,7 +4691,7 @@ class AsyncTable:
         Parameters
         ----------
         **kwargs
-            Forwarded to [`lance.dataset`][lance.dataset].
+            Forwarded to `lance.dataset`.
 
         Returns
         -------
@@ -5010,7 +5010,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
         Parameters
         ----------
@@ -5212,8 +5212,8 @@ class AsyncTable:
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in [AsyncQuery][lancedb.query.AsyncQuery].
 
