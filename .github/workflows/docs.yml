@@ -6,10 +6,14 @@ on:
 
   # Validate the docs build on PRs that touch the docs or this workflow.
   # These runs stop after the build; only pushes to main deploy.
+  #
+  # The Python API reference is generated from docstrings under python/python,
+  # so a cross-reference is just as likely to break there as under docs/.
   pull_request:
     paths:
       - .github/workflows/docs.yml
       - docs/**
+      - python/python/**
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
