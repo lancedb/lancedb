@@ -108,7 +108,7 @@ jobs:
           if-no-files-found: error
   windows:
     timeout-minutes: 90
-    runs-on: windows-2025-8x-x64
+    runs-on: windows-latest
     env:
       # link.exe is single-threaded and the long pole on Windows builds. Use
       # rustc's bundled lld-link instead.
