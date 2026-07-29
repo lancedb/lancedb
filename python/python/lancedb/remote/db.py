@@ -415,6 +415,11 @@ class RemoteDBConnection(DBConnection):
 
         if namespace_path is None:
             namespace_path = []
+        if storage_options is not None:
+            logging.info(
+                "storage_options is ignored in LanceDb Cloud"
+                " (storage is managed; set storage_options on connect() instead)"
+            )
         if index_cache_size is not None:
             logging.info(
                 "index_cache_size is ignored in LanceDb Cloud"
