@@ -383,7 +383,7 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
     use crate::index::scalar::{
-        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder, FtsStopWordsSource,
+        BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, FtsIndexBuilder,
     };
     use crate::index::vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
@@ -1366,11 +1366,19 @@ mod tests {
         table
             .create_index(
                 &["text"],
-                Index::FTS(FtsIndexBuilder::default().block_size(256).unwrap()),
+                Index::FTS(
+                    FtsIndexBuilder::default()
+                        .stem(false)
+                        .custom_stop_words(Some(vec!["cat".to_string()]))
+                        .block_size(256)
+                        .unwrap(),
+                ),
             )
             .execute()
             .await
             .unwrap();
+        drop(table);
+        let table = conn.open_table("test_bitmap").execute().await.unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
@@ -1381,6 +1389,32 @@ mod tests {
         let index_params: FtsIndexBuilder =
             serde_json::from_str(index.index_details.as_deref().unwrap()).unwrap();
         assert_eq!(index_params.posting_block_size(), 256);
+        assert_eq!(
+            serde_json::to_value(&index_params).unwrap()["custom_stop_words"],
+            serde_json::json!(["cat"])
+        );
+        assert_eq!(
+            table
+                .tokenize("cat dog", "text_idx")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|token| token.text)
+                .collect::<Vec<_>>(),
+            vec!["dog"]
+        );
+
+        let batches = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("cat dog".to_string()))
+            .limit(120)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 40);
 
         let num_rows = 120;
         let stats = table.index_stats("text_idx").await.unwrap().unwrap();
@@ -1391,205 +1425,6 @@ mod tests {
 
         // Make sure we can call prewarm without error
         table.prewarm_index("text_idx").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_create_fts_index_from_table_stop_words_snapshot() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let stop_words = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("word", DataType::Utf8, false)])),
-            vec![Arc::new(StringArray::from(vec!["cat", "", "cat"]))],
-        )
-        .unwrap();
-        let stop_words_table = conn
-            .create_table("stop_words", stop_words)
-            .execute()
-            .await
-            .unwrap();
-
-        let documents = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
-            vec![Arc::new(StringArray::from(vec![
-                "the cat dog",
-                "the fish",
-                "dog only",
-            ]))],
-        )
-        .unwrap();
-        let table = conn
-            .create_table("documents", documents)
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(
-                &["text"],
-                Index::FTS(FtsIndexBuilder::default().stem(false)),
-            )
-            .custom_stop_words(FtsStopWordsSource::table(stop_words_table, "word"))
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-
-        // The source table is not needed after index creation. Both local and
-        // remote create paths receive a concrete snapshot.
-        conn.drop_table("stop_words", &[]).await.unwrap();
-        drop(table);
-        drop(conn);
-
-        let conn = connect(uri).execute().await.unwrap();
-        let table = conn.open_table("documents").execute().await.unwrap();
-        async fn count_fts(table: &crate::Table, query: &str) -> usize {
-            table
-                .query()
-                .full_text_search(FullTextSearchQuery::new(query.to_string()))
-                .execute()
-                .await
-                .unwrap()
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(RecordBatch::num_rows)
-                .sum()
-        }
-
-        assert_eq!(count_fts(&table, "cat").await, 0);
-        assert_eq!(count_fts(&table, "the").await, 2);
-        assert_eq!(count_fts(&table, "dog").await, 2);
-
-        let error = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new_fuzzy("cot".to_string(), Some(1)))
-            .execute()
-            .await
-            .err()
-            .unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("fuzzy FTS queries are not supported")
-        );
-        assert!(error.to_string().contains("custom stop-word snapshot"));
-    }
-
-    #[tokio::test]
-    async fn test_create_fts_index_from_file_stop_words_snapshot() {
-        let tmp_dir = tempdir().unwrap();
-        let stop_words_path = tmp_dir.path().join("stop-words.txt");
-        std::fs::write(&stop_words_path, "cat\n").unwrap();
-        let conn = connect("memory://").execute().await.unwrap();
-        let documents = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
-            vec![Arc::new(StringArray::from(vec![
-                "the cat dog",
-                "the fish",
-                "dog only",
-            ]))],
-        )
-        .unwrap();
-        let table = conn
-            .create_table("file_stop_words_documents", documents)
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(
-                &["text"],
-                Index::FTS(FtsIndexBuilder::default().stem(false)),
-            )
-            .custom_stop_words(FtsStopWordsSource::file(&stop_words_path))
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-
-        // The file is only a client-side source. Query tokenization continues
-        // to use the persisted snapshot after it changes or disappears.
-        std::fs::write(&stop_words_path, "dog\n").unwrap();
-        std::fs::remove_file(&stop_words_path).unwrap();
-        async fn count_fts(table: &crate::Table, query: &str) -> usize {
-            table
-                .query()
-                .full_text_search(FullTextSearchQuery::new(query.to_string()))
-                .execute()
-                .await
-                .unwrap()
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(RecordBatch::num_rows)
-                .sum()
-        }
-
-        assert_eq!(count_fts(&table, "cat").await, 0);
-        assert_eq!(count_fts(&table, "the").await, 2);
-        assert_eq!(count_fts(&table, "dog").await, 2);
-    }
-
-    #[tokio::test]
-    async fn test_custom_stop_words_builder_validation() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
-            vec![Arc::new(StringArray::from(vec!["hello world"]))],
-        )
-        .unwrap();
-        let table = conn
-            .create_table("documents", batch)
-            .execute()
-            .await
-            .unwrap();
-
-        let error = table
-            .create_index(&["text"], Index::BTree(Default::default()))
-            .custom_stop_words(Vec::<String>::new())
-            .err()
-            .unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("only be configured for an FTS index")
-        );
-
-        let error = table
-            .create_index(
-                &["text"],
-                Index::FTS(FtsIndexBuilder::default().custom_stop_words(Some(Vec::new()))),
-            )
-            .custom_stop_words(Vec::<String>::new())
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("already configured directly"));
-
-        let builder = table
-            .create_index(&["text"], Index::FTS(Default::default()))
-            .custom_stop_words(Vec::<String>::new())
-            .unwrap();
-        let error = builder
-            .custom_stop_words(vec!["other".to_string()])
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("set more than once"));
-
-        let error = table
-            .create_index(&["text"], Index::FTS(Default::default()))
-            .train(false)
-            .custom_stop_words(FtsStopWordsSource::file("/does/not/exist"))
-            .unwrap()
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("failed to read custom stop words file")
-        );
     }
 
     #[tokio::test]

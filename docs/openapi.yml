@@ -424,27 +424,16 @@ paths:
                           type: string
                         index_uuid:
                           type: string
-                        index_type:
-                          type: string
-                          description: The index type, including FTS for full-text indexes.
-                        index_details:
-                          type: [string, "null"]
-                          description: |
-                            JSON-encoded index configuration. For an FTS index this
-                            must contain the complete tokenizer configuration,
-                            including remove_stop_words and custom_stop_words
-                            (null, an empty array, or a non-empty array), so clients
-                            can safely reconstruct the persisted tokenizer snapshot.
         "401":
           $ref: "#/components/responses/unauthorized"
         "404":
           $ref: "#/components/responses/not_found"
   /v1/table/{name}/create_index/:
     post:
-      description: Create an index on a table
+      description: Create vector index on a Table
       tags:
         - Tables
-      summary: Create an index on a table
+      summary: Create vector index on a Table
       operationId: createIndex
       parameters:
         - $ref: "#/components/parameters/table_name"
@@ -469,12 +458,11 @@ paths:
                   items:
                     type: string
                   description: |
-                    The resolved custom stop-word snapshot for an FTS index. A non-null
+                    The custom stop-word list for an FTS index. A non-null
                     array replaces the language's built-in stop-word list and is only
                     applied when remove_stop_words is enabled. Null uses the built-in
                     language list, while an empty array explicitly replaces it with no
-                    stop words. Clients must resolve local file or table sources before
-                    sending this request; paths and table references are not accepted.
+                    stop words.
       responses:
         "200":
           description: Index successfully created

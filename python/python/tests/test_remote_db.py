@@ -771,7 +771,7 @@ def test_table_create_indices():
                 "text",
                 wait_timeout=timedelta(seconds=2),
                 block_size=256,
-                custom_stop_words=["cloud", "", "cloud"],
+                custom_stop_words=["cloud"],
                 name="custom_fts_idx",
             )
 
@@ -812,7 +812,7 @@ def test_table_create_indices():
         table.drop_index("custom_fts_idx")
 
 
-def test_remote_create_index_new_api(tmp_path):
+def test_remote_create_index_new_api():
     received_requests = []
 
     def handler(request):
@@ -870,17 +870,11 @@ def test_remote_create_index_new_api(tmp_path):
             request.send_response(404)
             request.end_headers()
 
-    from lancedb.index import (
-        BTree,
-        FTS,
-        FtsStopWordsFile,
-        FtsStopWordsTable,
-        IvfPq,
-        IvfRq,
-    )
+    from lancedb.index import BTree, FTS, IvfPq, IvfRq
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
+
         # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
         import warnings as _warnings
 
@@ -889,13 +883,6 @@ def test_remote_create_index_new_api(tmp_path):
             table.create_index("vector", config=IvfPq(distance_type="l2"))
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
-            table.create_index("text", config=FTS(custom_stop_words=[]))
-            stop_words_path = tmp_path / "stop-words.txt"
-            stop_words_path.write_text("file-word\n", encoding="utf-8")
-            table.create_index(
-                "text",
-                config=FTS(custom_stop_words=FtsStopWordsFile(stop_words_path)),
-            )
             # IvfRq via new API
             table.create_index("vector", config=IvfRq(distance_type="l2"))
 
@@ -907,31 +894,15 @@ def test_remote_create_index_new_api(tmp_path):
                 num_partitions=8,
             )
 
-        with pytest.raises(
-            ValueError,
-            match="remote table sources cannot guarantee a complete snapshot",
-        ):
-            table.create_index(
-                "text",
-                config=FTS(
-                    custom_stop_words=FtsStopWordsTable(table, "text"),
-                ),
-            )
-        assert len(received_requests) == 7
+        assert len(received_requests) == 5
         assert [req["column"] for req in received_requests] == [
             "vector",
             "category",
-            "text",
-            "text",
             "text",
             "vector",
             "vector",
         ]
         assert received_requests[2]["block_size"] == 256
-        assert received_requests[2].get("custom_stop_words") is None
-        assert received_requests[3]["custom_stop_words"] == []
-        assert received_requests[4]["custom_stop_words"] == ["file-word"]
-        assert str(stop_words_path) not in json.dumps(received_requests[4])
 
 
 def test_table_wait_for_index_timeout():

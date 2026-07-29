@@ -497,7 +497,6 @@ pub struct FtsToken {
 /// [`crate::index::scalar::FtsIndexBuilder`] to supply the same tokenizer
 /// options used when creating an FTS index.
 pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToken>> {
-    let params = crate::index::canonicalize_fts_params(params)?;
     let mut tokenizer = params.build().map_err(|err| Error::InvalidInput {
         message: format!("Failed to build tokenizer: {}", err),
     })?;
@@ -1763,8 +1762,7 @@ impl Table {
         self.inner.list_indices().await
     }
 
-    /// Tokenize a full-text search query using the tokenizer snapshot persisted
-    /// in an FTS index's details, including any custom stop words.
+    /// Tokenize a full-text search query using the tokenizer configured on an FTS index.
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
@@ -1796,8 +1794,8 @@ impl Table {
         self.tokenize_with_index(query, index, index_name)
     }
 
-    /// Tokenize a full-text search query using the tokenizer snapshot persisted
-    /// in the FTS index for a column, including any custom stop words.
+    /// Tokenize a full-text search query using the tokenizer configured on the
+    /// FTS index for a column.
     ///
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
@@ -3197,114 +3195,89 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         let total_rows = dataset.count_rows(None).await? as u64;
         let descriptions = dataset.describe_indices(None).await?;
-        let mut indices = Vec::with_capacity(descriptions.len());
-        'descriptions: for idx_desc in descriptions {
-            let index_type: crate::index::IndexType = idx_desc
-                .index_type()
-                .parse()
-                .unwrap_or(crate::index::IndexType::Unknown);
-            if index_type == crate::index::IndexType::Unknown {
-                // Internal or future index types that this version doesn't recognize
-                // (e.g. Lance's internal FragReuseIndex) are silently excluded from
-                // the user-visible index listing.
-                log::debug!(
-                    "Skipping unrecognized index '{}' (type '{}') in list_indices",
-                    idx_desc.name(),
-                    idx_desc.index_type(),
-                );
-                continue;
-            }
-
-            let field_ids = idx_desc.field_ids();
-            let mut columns = Vec::with_capacity(field_ids.len());
-            for field_id in field_ids {
-                let field_path = match dataset.schema().field_path(*field_id as i32) {
-                    Ok(field_path) => field_path,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to resolve field path for index {} field id {}: {}",
-                            idx_desc.name(),
-                            field_id,
-                            e
-                        );
-                        continue 'descriptions;
-                    }
-                };
-                columns.push(field_path);
-            }
-
-            let segments = idx_desc.segments();
-            let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
-            let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
-            let index_version = segments.first().map(|seg| seg.index_version);
-            let num_indexed_rows = idx_desc.rows_indexed();
-            let index_details = if index_type == crate::index::IndexType::FTS
-                && !segments.is_empty()
-            {
-                let first_segment = &segments[0];
-                let params = load_segment_params(&dataset, first_segment)
-                        .await
-                        .map_err(|source| Error::Other {
-                            message: format!(
-                                "Failed to load full text search configuration for index '{}' segment '{}': {}",
-                                idx_desc.name(),
-                                first_segment.uuid,
-                                source
-                            ),
-                            source: Some(Box::new(source)),
-                        })?;
-                for segment in &segments[1..] {
-                    let segment_params = load_segment_params(&dataset, segment)
-                            .await
-                            .map_err(|source| Error::Other {
-                                message: format!(
-                                    "Failed to load full text search configuration for index '{}' segment '{}': {}",
-                                    idx_desc.name(),
-                                    segment.uuid,
-                                    source
-                                ),
-                                source: Some(Box::new(source)),
-                            })?;
-                    if params != segment_params {
-                        return Err(Error::InvalidInput {
-                            message: format!(
-                                "Full text search index '{}' has inconsistent configurations across segments '{}' and '{}'",
-                                idx_desc.name(),
-                                first_segment.uuid,
-                                segment.uuid
-                            ),
-                        });
-                    }
+        let mut indices: Vec<IndexConfig> = descriptions
+            .iter()
+            .filter_map(|idx_desc| {
+                let index_type: crate::index::IndexType = idx_desc
+                    .index_type()
+                    .parse()
+                    .unwrap_or(crate::index::IndexType::Unknown);
+                if index_type == crate::index::IndexType::Unknown {
+                    // Internal or future index types that this version doesn't recognize
+                    // (e.g. Lance's internal FragReuseIndex) are silently excluded from
+                    // the user-visible index listing.
+                    log::debug!(
+                        "Skipping unrecognized index '{}' (type '{}') in list_indices",
+                        idx_desc.name(),
+                        idx_desc.index_type(),
+                    );
+                    return None;
                 }
-                Some(
-                    serde_json::to_string(&params).map_err(|source| Error::Other {
-                        message: format!(
-                            "Failed to serialize full text search configuration for index '{}'",
-                            idx_desc.name()
-                        ),
-                        source: Some(Box::new(source)),
-                    })?,
-                )
-            } else {
-                // Preserve the manifest-level details behavior for non-FTS
-                // indices and for any legacy FTS metadata without segments.
-                idx_desc.details().ok()
-            };
 
-            indices.push(IndexConfig {
-                name: idx_desc.name().to_string(),
-                index_type,
-                columns,
-                index_uuid,
-                type_url: Some(idx_desc.type_url().to_string()),
-                created_at,
-                num_indexed_rows: Some(num_indexed_rows),
-                num_unindexed_rows: Some(total_rows.saturating_sub(num_indexed_rows)),
-                size_bytes: idx_desc.total_size_bytes(),
-                num_segments: Some(segments.len() as u32),
-                index_version,
-                index_details,
-            });
+                let field_ids = idx_desc.field_ids();
+                let mut columns = Vec::with_capacity(field_ids.len());
+                for field_id in field_ids {
+                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                        Ok(field_path) => field_path,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to resolve field path for index {} field id {}: {}",
+                                idx_desc.name(),
+                                field_id,
+                                e
+                            );
+                            return None;
+                        }
+                    };
+                    columns.push(field_path);
+                }
+
+                let segments = idx_desc.segments();
+                let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
+                let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
+                let index_version = segments.first().map(|seg| seg.index_version);
+                let num_indexed_rows = idx_desc.rows_indexed();
+
+                Some(IndexConfig {
+                    name: idx_desc.name().to_string(),
+                    index_type,
+                    columns,
+                    index_uuid,
+                    type_url: Some(idx_desc.type_url().to_string()),
+                    created_at,
+                    num_indexed_rows: Some(num_indexed_rows),
+                    num_unindexed_rows: Some(total_rows.saturating_sub(num_indexed_rows)),
+                    size_bytes: idx_desc.total_size_bytes(),
+                    num_segments: Some(segments.len() as u32),
+                    index_version,
+                    index_details: idx_desc.details().ok(),
+                })
+            })
+            .collect();
+
+        for index in indices
+            .iter_mut()
+            .filter(|index| index.index_type == crate::index::IndexType::FTS)
+        {
+            let Some(description) = descriptions
+                .iter()
+                .find(|description| description.name() == index.name)
+            else {
+                continue;
+            };
+            let segments = description.segments();
+            let Some(segment) = segments.first() else {
+                continue;
+            };
+            let params = load_segment_params(&dataset, segment).await?;
+            let details = serde_json::to_string(&params).map_err(|source| Error::Other {
+                message: format!(
+                    "Failed to serialize full text search configuration for index '{}'",
+                    index.name
+                ),
+                source: Some(Box::new(source)),
+            })?;
+            index.index_details = Some(details);
         }
         Ok(indices)
     }
@@ -3555,7 +3528,6 @@ mod tests {
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
-    use lance_index::scalar::FullTextSearchQuery;
     use tempfile::tempdir;
 
     use super::*;
@@ -3584,175 +3556,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn test_fts_stop_words_survive_table_reopen() {
-        async fn count_fts(table: &Table, query: &str) -> usize {
-            table
-                .query()
-                .full_text_search(FullTextSearchQuery::new(query.to_string()))
-                .execute()
-                .await
-                .unwrap()
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(RecordBatch::num_rows)
-                .sum()
-        }
-
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let cases = [
-            (
-                "builtin_stop_words",
-                None,
-                vec!["lance".to_string(), "data".to_string()],
-                0,
-                3,
-                true,
-                true,
-            ),
-            (
-                "empty_custom_stop_words",
-                Some(Vec::new()),
-                vec!["the".to_string(), "lance".to_string(), "data".to_string()],
-                2,
-                3,
-                true,
-                true,
-            ),
-            (
-                "custom_stop_words",
-                Some(vec!["lance".to_string()]),
-                vec!["the".to_string(), "data".to_string()],
-                2,
-                0,
-                true,
-                true,
-            ),
-            (
-                "untrained_custom_stop_words",
-                Some(vec!["lance".to_string()]),
-                vec!["the".to_string(), "data".to_string()],
-                2,
-                0,
-                false,
-                true,
-            ),
-            (
-                "disabled_custom_stop_words",
-                Some(vec!["lance".to_string()]),
-                vec!["the".to_string(), "lance".to_string(), "data".to_string()],
-                2,
-                3,
-                true,
-                false,
-            ),
-        ];
-
-        for (
-            table_name,
-            custom_stop_words,
-            expected_tokens,
-            expected_the_matches,
-            expected_lance_matches,
-            train,
-            remove_stop_words,
-        ) in cases
-        {
-            let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
-            let batch = RecordBatch::try_new(
-                schema,
-                vec![Arc::new(StringArray::from(vec![
-                    "the lance data",
-                    "lance database",
-                ]))],
-            )
-            .unwrap();
-            let conn = connect(uri).execute().await.unwrap();
-            let table = conn
-                .create_table(table_name, batch)
-                .execute()
-                .await
-                .unwrap();
-            let params = crate::index::scalar::FtsIndexBuilder::default()
-                .stem(false)
-                .remove_stop_words(remove_stop_words)
-                .custom_stop_words(custom_stop_words.clone());
-            table
-                .create_index(&["text"], Index::FTS(params))
-                .train(train)
-                .execute()
-                .await
-                .unwrap();
-
-            let index = table.list_indices().await.unwrap().remove(0);
-            if !train {
-                assert!(
-                    index.num_segments.is_some_and(|segments| segments > 0),
-                    "untrained FTS indexes must create a physical segment to persist custom stop words"
-                );
-            }
-            let details: serde_json::Value =
-                serde_json::from_str(index.index_details.as_deref().unwrap()).unwrap();
-            assert_eq!(
-                details["custom_stop_words"],
-                serde_json::to_value(&custom_stop_words).unwrap()
-            );
-
-            drop(table);
-            drop(conn);
-
-            let reopened_conn = connect(uri).execute().await.unwrap();
-            let reopened = reopened_conn
-                .open_table(table_name)
-                .execute()
-                .await
-                .unwrap();
-            let reopened_index = reopened.list_indices().await.unwrap().remove(0);
-            let reopened_details: serde_json::Value =
-                serde_json::from_str(reopened_index.index_details.as_deref().unwrap()).unwrap();
-            assert_eq!(
-                reopened_details["custom_stop_words"],
-                serde_json::to_value(&custom_stop_words).unwrap()
-            );
-
-            let additional_batch = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)])),
-                vec![Arc::new(StringArray::from(vec!["the lance snapshot"]))],
-            )
-            .unwrap();
-            reopened.add(additional_batch).execute().await.unwrap();
-            reopened
-                .optimize(OptimizeAction::Index(Default::default()))
-                .await
-                .unwrap();
-
-            let optimized_index = reopened.list_indices().await.unwrap().remove(0);
-            let optimized_details: serde_json::Value =
-                serde_json::from_str(optimized_index.index_details.as_deref().unwrap()).unwrap();
-            assert_eq!(
-                optimized_details["custom_stop_words"],
-                serde_json::to_value(&custom_stop_words).unwrap()
-            );
-
-            let tokens = reopened
-                .tokenize("the lance data", "text_idx")
-                .await
-                .unwrap();
-            assert_eq!(
-                tokens
-                    .into_iter()
-                    .map(|token| token.text)
-                    .collect::<Vec<_>>(),
-                expected_tokens
-            );
-            assert_eq!(count_fts(&reopened, "the").await, expected_the_matches);
-            assert_eq!(count_fts(&reopened, "lance").await, expected_lance_matches);
-        }
     }
 
     #[tokio::test]

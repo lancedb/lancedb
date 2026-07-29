@@ -435,19 +435,6 @@ async fn fts_plan(
             .to_string(),
     })?;
 
-    // The MemWAL in-memory FTS config is reconstructed from lossy manifest
-    // details that omit custom stop words. Revalidate the maintained index's
-    // full physical segment params on every LSM FTS read: the index may have
-    // been replaced after the write spec was installed, or an older database
-    // may already contain an incompatible spec.
-    crate::table::merge::lsm::reject_custom_stop_words_fts(
-        dataset,
-        &details.maintained_indexes,
-        "full_text_search",
-        Some(column),
-    )
-    .await?;
-
     // Without a maintained in-memory FTS index for this column, the active memtable
     // arm produces an empty plan (`active_source_can_execute_fts` returns false), so
     // the search silently omits un-compacted documents. Reject rather than mislead.

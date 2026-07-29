@@ -22,7 +22,7 @@ import zipfile
 
 import lancedb as ldb
 from lancedb.db import DBConnection
-from lancedb.index import FTS, FtsStopWordsFile, FtsStopWordsTable
+from lancedb.index import FTS
 from lancedb.query import (
     BoostQuery,
     MatchQuery,
@@ -219,11 +219,13 @@ def test_create_inverted_index(table, with_position):
         table.create_fts_index(
             "text",
             with_position=with_position,
+            custom_stop_words=["puppy"],
             name="custom_fts_index",
         )
     indices = table.list_indices()
     fts_indices = [i for i in indices if i.index_type == "FTS"]
     assert any(i.name == "custom_fts_index" for i in fts_indices)
+    assert fts_indices[0].index_details["custom_stop_words"] == ["puppy"]
 
 
 @pytest.mark.parametrize("block_size", [128, 256])
@@ -243,85 +245,18 @@ def test_create_inverted_index_rejects_invalid_block_size(table):
         table.create_index("text", config=FTS(block_size=129))
 
 
-@pytest.mark.parametrize(
-    ("custom_stop_words", "expected"),
-    [
-        (None, ["lance", "data"]),
-        ([], ["the", "lance", "data"]),
-        (["lance"], ["the", "data"]),
-    ],
-    ids=["builtin", "explicit-empty", "custom"],
-)
-def test_custom_stop_words_inline_none_vs_empty(tmp_path, custom_stop_words, expected):
-    db = ldb.connect(tmp_path)
-    table = db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance data"]}),
-    )
+def test_custom_stop_words_list(table):
     table.create_index(
         "text",
-        config=FTS(stem=False, custom_stop_words=custom_stop_words),
+        config=FTS(stem=False, custom_stop_words=["lance"]),
     )
 
-    assert (
-        table.list_indices()[0].index_details["custom_stop_words"] == custom_stop_words
-    )
+    assert table.list_indices()[0].index_details["custom_stop_words"] == ["lance"]
     tokens = table.tokenize("the lance data", column="text")
-    assert [token.text for token in tokens] == expected
-
-
-def test_tokenize_custom_stop_words_file(tmp_path):
-    stop_words_path = tmp_path / "stop-words.txt"
-    stop_words_path.write_text("lance\n", encoding="utf-8")
-
-    tokens = ldb.tokenize(
-        "the lance data",
-        stem=False,
-        custom_stop_words=FtsStopWordsFile(stop_words_path),
-    )
-
     assert [token.text for token in tokens] == ["the", "data"]
-
-
-@pytest.mark.asyncio
-async def test_custom_stop_words_table_async(tmp_path):
-    db = await ldb.connect_async(tmp_path)
-    stop_words = await db.create_table(
-        "stop_words",
-        data=pa.table({"word": ["lance"]}),
-    )
-    documents = await db.create_table(
-        "documents",
-        data=pa.table({"text": ["the lance data"]}),
-    )
-
-    await documents.create_index(
-        "text",
-        config=FTS(
-            stem=False,
-            custom_stop_words=FtsStopWordsTable(stop_words, "word"),
-        ),
-    )
-
-    tokens = await documents.tokenize("the lance data", column="text")
-    assert [token.text for token in tokens] == ["the", "data"]
-
-
-def test_custom_stop_words_legacy_tokenizer_name(table):
-    with pytest.warns(DeprecationWarning, match="create_fts_index"):
-        table.create_fts_index(
-            "text",
-            tokenizer_name="default",
-            custom_stop_words=["puppy"],
-        )
-
-    details = table.list_indices()[0].index_details
-    assert details["custom_stop_words"] == ["puppy"]
-    assert details["remove_stop_words"] is False
-
-
-def test_custom_stop_words_rejects_non_string_binding_value():
-    with pytest.raises(TypeError, match=r"custom_stop_words\[1\]"):
+    empty_tokens = ldb.tokenize("the lance data", stem=False, custom_stop_words=[])
+    assert [token.text for token in empty_tokens] == ["the", "lance", "data"]
+    with pytest.raises(TypeError, match=r"custom_stop_words.*int"):
         ldb.tokenize(
             "the lance data",
             custom_stop_words=["lance", 42],

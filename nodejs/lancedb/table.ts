@@ -18,11 +18,7 @@ import {
 } from "./arrow";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
-import type {
-  CustomStopWordsSource,
-  FtsOptions,
-  IndexOptions,
-} from "./indices";
+import { IndexOptions } from "./indices";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -40,7 +36,6 @@ import {
   Tags,
   UpdateFieldMetadataResult,
   UpdateResult,
-  Index as _NativeIndex,
   Table as _NativeTable,
 } from "./native";
 import {
@@ -182,67 +177,6 @@ export type TokenizeTableOptions =
       indexName: string;
       column?: never;
     };
-
-interface NativeCustomStopWordsSource {
-  inline?: string[];
-  file?: string;
-  table?: _NativeTable;
-  column?: string;
-}
-
-function ftsRecipeToNative(
-  options: Readonly<Partial<FtsOptions>>,
-): _NativeIndex {
-  return _NativeIndex.fts(
-    options.withPosition,
-    options.baseTokenizer,
-    options.language,
-    options.maxTokenLength,
-    options.lowercase,
-    options.stem,
-    options.removeStopWords,
-    options.asciiFolding,
-    options.ngramMinLength,
-    options.ngramMaxLength,
-    options.prefixOnly,
-    options.blockSize,
-  );
-}
-
-/**
- * Convert a validated public source into the native binding arguments.
- *
- * @internal
- */
-export function customStopWordsSourceToNative(
-  source?: CustomStopWordsSource,
-): NativeCustomStopWordsSource {
-  if (source === undefined) {
-    return {};
-  }
-  if (Array.isArray(source)) {
-    return { inline: source };
-  }
-  if (source.source === "file") {
-    return { file: source.path };
-  }
-  if (!(source.table instanceof LocalTable)) {
-    throw new TypeError(
-      "customStopWords table source must be a table created by this @lancedb/lancedb package instance",
-    );
-  }
-  if (!source.table.isOpen()) {
-    throw new Error(
-      `customStopWords table source '${source.table.name}' is closed; open the table before resolving stop words`,
-    );
-  }
-  const nativeTable = (
-    source.table as unknown as {
-      inner: _NativeTable;
-    }
-  ).inner;
-  return { table: nativeTable, column: source.column };
-}
 
 /**
  * Specification selecting Lance's MemWAL LSM-style write path for
@@ -994,19 +928,8 @@ export class LocalTable extends Table {
 
   async createIndex(column: string, options?: Partial<IndexOptions>) {
     // Bit of a hack to get around the fact that TS has no package-scope.
-    const config = options?.config as unknown as
-      | {
-          inner?: _NativeIndex;
-          ftsOptions?: Readonly<Partial<FtsOptions>>;
-        }
-      | undefined;
-    const nativeIndex =
-      config?.ftsOptions !== undefined
-        ? ftsRecipeToNative(config.ftsOptions)
-        : config?.inner;
-    const source = customStopWordsSourceToNative(
-      config?.ftsOptions?.customStopWords,
-    );
+    // biome-ignore lint/suspicious/noExplicitAny: skip
+    const nativeIndex = (options?.config as any)?.inner;
     await this.inner.createIndex(
       nativeIndex,
       column,
@@ -1014,10 +937,6 @@ export class LocalTable extends Table {
       options?.waitTimeoutSeconds,
       options?.name,
       options?.train,
-      source.inline,
-      source.file,
-      source.table,
-      source.column,
     );
   }
 

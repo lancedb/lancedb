@@ -77,8 +77,6 @@
 - [FragmentStatistics](interfaces/FragmentStatistics.md)
 - [FragmentSummaryStats](interfaces/FragmentSummaryStats.md)
 - [FtsOptions](interfaces/FtsOptions.md)
-- [FtsStopWordsFileSource](interfaces/FtsStopWordsFileSource.md)
-- [FtsStopWordsTableSource](interfaces/FtsStopWordsTableSource.md)
 - [FtsToken](interfaces/FtsToken.md)
 - [FullTextQuery](interfaces/FullTextQuery.md)
 - [FullTextSearchOptions](interfaces/FullTextSearchOptions.md)
@@ -130,7 +128,6 @@
 
 - [AnalyzePlanDistributedMetrics](type-aliases/AnalyzePlanDistributedMetrics.md)
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
-- [CustomStopWordsSource](type-aliases/CustomStopWordsSource.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)

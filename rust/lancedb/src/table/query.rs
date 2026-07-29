@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 mod lsm;
@@ -10,7 +9,6 @@ use super::NativeTable;
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
-use crate::index::fts_params_use_custom_stop_words;
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
@@ -27,10 +25,7 @@ use futures::future::try_join_all;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
-use lance::index::DatasetIndexExt;
-use lance::index::scalar::load_segment_params;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
-use lance_index::scalar::inverted::query::FtsQuery;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
@@ -50,134 +45,6 @@ impl AnyQuery {
             Self::VectorQuery(query) => &query.base,
         }
     }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct FuzzyMatchColumns {
-    pub(crate) columns: HashSet<String>,
-    pub(crate) has_unbound_column: bool,
-}
-
-pub(crate) fn fuzzy_match_columns(query: &FtsQuery) -> FuzzyMatchColumns {
-    fn collect(query: &FtsQuery, columns: &mut FuzzyMatchColumns) {
-        let mut collect_match = |column: &Option<String>, fuzziness: Option<u32>| {
-            if matches!(fuzziness, Some(value) if value > 0) {
-                match column {
-                    Some(column) => {
-                        columns.columns.insert(column.clone());
-                    }
-                    None => columns.has_unbound_column = true,
-                }
-            }
-        };
-
-        match query {
-            FtsQuery::Match(query) => collect_match(&query.column, query.fuzziness),
-            FtsQuery::Phrase(_) => {}
-            FtsQuery::Boost(query) => {
-                collect(&query.positive, columns);
-                collect(&query.negative, columns);
-            }
-            FtsQuery::MultiMatch(query) => {
-                for query in &query.match_queries {
-                    collect_match(&query.column, query.fuzziness);
-                }
-            }
-            FtsQuery::Boolean(query) => {
-                for query in query
-                    .should
-                    .iter()
-                    .chain(&query.must)
-                    .chain(&query.must_not)
-                {
-                    collect(query, columns);
-                }
-            }
-        }
-    }
-
-    let mut columns = FuzzyMatchColumns::default();
-    collect(query, &mut columns);
-    columns
-}
-
-fn fts_description_columns(
-    dataset: &lance::Dataset,
-    description: &dyn lance_index::IndexDescription,
-) -> Result<Vec<String>> {
-    description
-        .field_ids()
-        .iter()
-        .map(|field_id| {
-            dataset
-                .schema()
-                .field_path(*field_id as i32)
-                .map_err(Error::from)
-        })
-        .collect()
-}
-
-fn is_fts_description(description: &dyn lance_index::IndexDescription) -> bool {
-    description
-        .index_type()
-        .parse()
-        .unwrap_or(crate::index::IndexType::Unknown)
-        == crate::index::IndexType::FTS
-}
-
-fn has_explicit_fuzzy_match(query: &FtsQuery) -> bool {
-    let columns = fuzzy_match_columns(query);
-    !columns.columns.is_empty() || columns.has_unbound_column
-}
-
-async fn reject_custom_stop_words_fuzzy_query(
-    dataset: &lance::Dataset,
-    query: &AnyQuery,
-) -> Result<()> {
-    let Some(fts_query) = query.base().full_text_search.as_ref() else {
-        return Ok(());
-    };
-    if !has_explicit_fuzzy_match(&fts_query.query) {
-        return Ok(());
-    }
-
-    let descriptions = dataset.describe_indices(None).await?;
-    let fts_descriptions = descriptions
-        .iter()
-        .filter(|description| is_fts_description(description.as_ref()))
-        .collect::<Vec<_>>();
-    let fuzzy_columns = fuzzy_match_columns(&fts_query.query);
-
-    for description in fts_descriptions {
-        if !fuzzy_columns.has_unbound_column
-            && !fts_description_columns(dataset, description.as_ref())?
-                .iter()
-                .any(|column| fuzzy_columns.columns.contains(column))
-        {
-            continue;
-        }
-        for segment in description.segments() {
-            let params = load_segment_params(dataset, segment)
-                .await
-                .map_err(|source| Error::InvalidInput {
-                    message: format!(
-                        "failed to validate fuzzy FTS query against index `{}` segment `{}`: {}",
-                        description.name(),
-                        segment.uuid,
-                        source
-                    ),
-                })?;
-            if fts_params_use_custom_stop_words(&params)? {
-                return Err(Error::InvalidInput {
-                    message: format!(
-                        "fuzzy FTS queries are not supported for index `{}` because it uses a custom stop-word snapshot; use fuzziness=0 or rebuild the index without custom stop words",
-                        description.name()
-                    ),
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 //Decide between namespace or local
@@ -219,23 +86,10 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // Namespace QueryTable cannot atomically bind an explicit fuzzy query to the
-    // tokenizer snapshot validated by this client. Keep it local so
-    // `create_plan` validates and executes against the same Dataset handle.
-    if query
-        .base()
-        .full_text_search
-        .as_ref()
-        .is_some_and(|query| has_explicit_fuzzy_match(&query.query))
-    {
-        return true;
-    }
-
-    // The namespace QueryTable request has no approx_mode or use_lsm field yet,
-    // so pushing these down would silently ignore the user's setting. For
-    // use_lsm that is worse than a tuning miss: MemWAL read routing lives only
-    // in `create_plan`, so a pushed-down query would return stale base-only data
-    // with no error.
+    // The namespace QueryTable request has no approx_mode or use_lsm field yet, so
+    // pushing these down would silently ignore the user's setting. For use_lsm that
+    // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
+    // so a pushed-down query would return stale base-only data with no error.
     if query.base().use_lsm.is_some() {
         return true;
     }
@@ -258,7 +112,7 @@ pub async fn analyze_query_plan(
 }
 
 /// Local Execution Path (DataFusion)
-pub(crate) async fn execute_generic_query(
+async fn execute_generic_query(
     table: &NativeTable,
     query: &AnyQuery,
     options: QueryExecutionOptions,
@@ -279,15 +133,13 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    query.base().check_filter()?;
-
-    let ds_ref = table.dataset.get().await?;
-    reject_custom_stop_words_fuzzy_query(&ds_ref, query).await?;
-
     let query = match query {
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
+    query.base.check_filter()?;
+
+    let ds_ref = table.dataset.get().await?;
 
     // MemWAL read routing driven by `use_lsm`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -845,219 +697,6 @@ mod tests {
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
-    }
-
-    #[test]
-    fn test_fuzzy_match_columns_only_collects_explicit_positive_fuzziness() {
-        use lance_index::scalar::inverted::query::{
-            BooleanQuery, MatchQuery, MultiMatchQuery, Occur,
-        };
-
-        for fuzziness in [None, Some(0)] {
-            let query = FtsQuery::Match(
-                MatchQuery::new("term".to_string())
-                    .with_column(Some("ignored".to_string()))
-                    .with_fuzziness(fuzziness),
-            );
-            assert_eq!(fuzzy_match_columns(&query), FuzzyMatchColumns::default());
-        }
-
-        let query = FtsQuery::Match(
-            MatchQuery::new("term".to_string())
-                .with_column(Some("text".to_string()))
-                .with_fuzziness(Some(1)),
-        );
-        assert_eq!(
-            fuzzy_match_columns(&query).columns,
-            HashSet::from(["text".to_string()])
-        );
-
-        let mut multi_match =
-            MultiMatchQuery::try_new("term".to_string(), vec!["title".into(), "body".into()])
-                .unwrap();
-        multi_match.match_queries[1].fuzziness = Some(1);
-        let boolean = FtsQuery::Boolean(BooleanQuery::new([
-            (Occur::Must, FtsQuery::MultiMatch(multi_match)),
-            (
-                Occur::MustNot,
-                FtsQuery::Match(
-                    MatchQuery::new("term".to_string())
-                        .with_column(None)
-                        .with_fuzziness(Some(1)),
-                ),
-            ),
-        ]));
-        let columns = fuzzy_match_columns(&boolean);
-        assert_eq!(columns.columns, HashSet::from(["body".to_string()]));
-        assert!(columns.has_unbound_column);
-    }
-
-    #[test]
-    fn test_namespace_pushdown_keeps_explicit_fuzzy_queries_local() {
-        use lance_index::scalar::FullTextSearchQuery;
-
-        let query = |fuzziness| {
-            AnyQuery::Query(QueryRequest {
-                full_text_search: Some(
-                    FullTextSearchQuery::new_fuzzy("term".to_string(), fuzziness)
-                        .with_column("text".to_string())
-                        .unwrap(),
-                ),
-                ..Default::default()
-            })
-        };
-
-        assert!(!requires_local_namespace_execution(&query(None)));
-        assert!(!requires_local_namespace_execution(&query(Some(0))));
-        assert!(requires_local_namespace_execution(&query(Some(1))));
-    }
-
-    #[tokio::test]
-    async fn test_custom_stop_words_fuzzy_guard_is_column_and_activation_scoped() {
-        use arrow_array::{RecordBatch, StringArray};
-        use arrow_schema::{DataType, Field, Schema};
-        use lance_index::scalar::inverted::query::{BooleanQuery, MatchQuery, Occur};
-        use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
-
-        use crate::connect;
-        use crate::index::{Index, scalar::FtsStopWordsSource};
-        use crate::query::{ExecutableQuery, QueryBase};
-
-        let conn = connect("memory://").execute().await.unwrap();
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("custom_text", DataType::Utf8, false),
-                Field::new("plain_text", DataType::Utf8, false),
-                Field::new("inactive_text", DataType::Utf8, false),
-            ])),
-            vec![
-                Arc::new(StringArray::from(vec!["cat cot"])),
-                Arc::new(StringArray::from(vec!["cat cot"])),
-                Arc::new(StringArray::from(vec!["cat cot"])),
-            ],
-        )
-        .unwrap();
-        let table = conn
-            .create_table("fuzzy_stop_words", batch)
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(
-                &["custom_text"],
-                Index::FTS(InvertedIndexParams::default().stem(false)),
-            )
-            .name("custom_text_fts".to_string())
-            .custom_stop_words(FtsStopWordsSource::inline(vec!["cat".to_string()]))
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(
-                &["plain_text"],
-                Index::FTS(InvertedIndexParams::default().stem(false)),
-            )
-            .name("plain_text_fts".to_string())
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(
-                &["inactive_text"],
-                Index::FTS(
-                    InvertedIndexParams::default()
-                        .stem(false)
-                        .remove_stop_words(false),
-                ),
-            )
-            .name("inactive_text_fts".to_string())
-            .custom_stop_words(FtsStopWordsSource::inline(vec!["cat".to_string()]))
-            .unwrap()
-            .execute()
-            .await
-            .unwrap();
-
-        let execute = |column: &'static str, fuzziness| {
-            let table = table.clone();
-            async move {
-                table
-                    .query()
-                    .full_text_search(
-                        FullTextSearchQuery::new_fuzzy("cot".to_string(), fuzziness)
-                            .with_column(column.to_string())
-                            .unwrap(),
-                    )
-                    .execute()
-                    .await
-            }
-        };
-
-        execute("custom_text", None).await.unwrap();
-        execute("custom_text", Some(0)).await.unwrap();
-        execute("plain_text", Some(1)).await.unwrap();
-        execute("inactive_text", Some(1)).await.unwrap();
-
-        let error = execute("custom_text", Some(1)).await.err().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("fuzzy FTS queries are not supported")
-        );
-        assert!(error.to_string().contains("custom_text_fts"));
-
-        let namespace_client = Arc::new(CountingNamespaceClient::default());
-        let mut native_table = table.as_native().unwrap().clone();
-        native_table.namespace_client = Some(namespace_client.clone());
-        native_table
-            .pushdown_operations
-            .insert(NamespaceClientPushdownOperation::QueryTable);
-        let namespace_query = AnyQuery::Query(QueryRequest {
-            full_text_search: Some(
-                FullTextSearchQuery::new_fuzzy("cot".to_string(), Some(1))
-                    .with_column("custom_text".to_string())
-                    .unwrap(),
-            ),
-            ..Default::default()
-        });
-        let error = execute_query(
-            &native_table,
-            &namespace_query,
-            QueryExecutionOptions::default(),
-        )
-        .await
-        .err()
-        .unwrap();
-        assert!(error.to_string().contains("custom_text_fts"));
-        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
-
-        // An unbound fuzzy leaf remains fail-closed even when another leaf is
-        // bound (and therefore the compound query reports a non-empty column
-        // set). Its candidate set is every FTS-indexed column.
-        let mixed_query = FtsQuery::Boolean(BooleanQuery::new([
-            (
-                Occur::Must,
-                FtsQuery::Match(
-                    MatchQuery::new("cot".to_string()).with_column(Some("plain_text".to_string())),
-                ),
-            ),
-            (
-                Occur::MustNot,
-                FtsQuery::Match(
-                    MatchQuery::new("cot".to_string())
-                        .with_fuzziness(Some(1))
-                        .with_column(None),
-                ),
-            ),
-        ]));
-        let error = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new_query(mixed_query))
-            .execute()
-            .await
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("custom_text_fts"));
     }
 
     #[tokio::test]

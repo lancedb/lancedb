@@ -2769,57 +2769,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
   },
 );
 
-describe("custom FTS stop words", () => {
-  let tmpDir: tmp.DirResult;
-  let db: Connection;
-
-  beforeEach(async () => {
-    tmpDir = tmp.dirSync({ unsafeCleanup: true });
-    db = await connect(tmpDir.name);
+test("tokenize supports custom stop words", async () => {
+  const tokens = await tokenize("the lance data", {
+    stem: false,
+    removeStopWords: true,
+    customStopWords: ["lance"],
   });
-
-  afterEach(() => {
-    tmpDir.removeCallback();
-  });
-
-  async function stopWordsSnapshot(table: Table): Promise<unknown> {
-    const index = (await table.listIndices()).find(
-      (candidate) => candidate.indexType === "FTS",
-    );
-    return (index?.indexDetails as Record<string, unknown> | undefined)?.[
-      "custom_stop_words"
-    ];
-  }
-
-  test.each<[string, string[] | undefined, string[] | null]>([
-    ["undefined", undefined, null],
-    ["empty", [], []],
-    ["inline", ["lance"], ["lance"]],
-  ])(
-    "passes %s stop words through the FTS options",
-    async (name, customStopWords, expected) => {
-      const table = await db.createTable(name, [{ text: "the lance" }]);
-      await table.createIndex("text", {
-        config: Index.fts({ removeStopWords: true, customStopWords }),
-      });
-      expect(await stopWordsSnapshot(table)).toEqual(expected);
-    },
-  );
-
-  test("passes a file source to standalone tokenize", async () => {
-    const stopWordsPath = path.join(tmpDir.name, "stop-words.txt");
-    fs.writeFileSync(stopWordsPath, "lance\n", "utf8");
-    expect(
-      (
-        await tokenize("the lance data", {
-          baseTokenizer: "simple",
-          stem: false,
-          removeStopWords: true,
-          customStopWords: { source: "file", path: stopWordsPath },
-        })
-      ).map((token) => token.text),
-    ).toEqual(["the", "data"]);
-  });
+  expect(tokens.map((token) => token.text)).toEqual(["the", "data"]);
 });
 
 describe("when calling explainPlan", () => {

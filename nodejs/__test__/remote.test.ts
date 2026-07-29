@@ -3,12 +3,10 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
-import * as tmp from "tmp";
 import {
   ClientConfig,
   Connection,
   ConnectionOptions,
-  MatchQuery,
   TlsConfig,
   connect,
 } from "../lancedb";
@@ -228,105 +226,57 @@ describe("remote connection", () => {
     );
   });
 
-  it("serializes FTS options and rejects unsupported remote use", async () => {
-    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
-    try {
-      const localDb = await connect(tmpDir.name);
-      const stopWordsTable = await localDb.createTable("dictionary_table", [
-        { word: "the" },
-      ]);
+  it("sends FTS options to remote tables", async () => {
+    let createIndexBody: Record<string, unknown> | undefined;
 
-      let createIndexBody: Record<string, unknown> | undefined;
-      let unexpectedRequestCount = 0;
-      await withMockDatabase(
-        (req, res) => {
-          const path = req.url ?? "";
-          if (path.endsWith("/describe/")) {
-            res.writeHead(200, { "Content-Type": "application/json" }).end(
-              JSON.stringify({
-                name: "t",
-                version: 1,
-                schema: {
-                  fields: [
-                    {
-                      name: "text",
-                      type: { type: "string" },
-                      nullable: false,
-                    },
-                  ],
-                },
-              }),
-            );
-            return;
-          }
-
-          if (path.endsWith("/create_index/")) {
-            let raw = "";
-            req.on("data", (chunk) => {
-              raw += chunk;
-            });
-            req.on("end", () => {
-              createIndexBody = JSON.parse(raw);
-              res.writeHead(200).end();
-            });
-            return;
-          }
-
-          unexpectedRequestCount += 1;
-          res.writeHead(404).end();
-        },
-        async (remoteDb) => {
-          const table = await remoteDb.openTable("t");
-          await table.createIndex("text", {
-            config: Index.fts({
-              blockSize: 256,
-              removeStopWords: true,
-              customStopWords: {
-                source: "table",
-                table: stopWordsTable,
-                column: "word",
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "text", type: { type: "string" }, nullable: false },
+                ],
               },
             }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
           });
+          req.on("end", () => {
+            createIndexBody = JSON.parse(raw);
+            res.writeHead(200).end();
+          });
+          return;
+        }
 
-          await expect(
-            table.createIndex("text", {
-              config: Index.fts({
-                removeStopWords: true,
-                customStopWords: {
-                  source: "table",
-                  table,
-                  column: "text",
-                },
-              }),
-            }),
-          ).rejects.toThrow(
-            "remote table sources cannot guarantee a complete snapshot",
-          );
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("text", {
+          config: Index.fts({
+            blockSize: 256,
+            removeStopWords: true,
+            customStopWords: ["the"],
+          }),
+        });
+      },
+    );
 
-          await expect(
-            table
-              .search(new MatchQuery("alph", "text", { fuzziness: 1 }))
-              .toArray(),
-          ).rejects.toThrow(
-            "explicit fuzzy FTS queries are not supported for remote tables",
-          );
-        },
-      );
-
-      expect(createIndexBody?.["column"]).toBe("text");
-      expect(createIndexBody?.["index_type"]).toBe("FTS");
-      expect(createIndexBody?.["block_size"]).toBe(256);
-      expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
-      const serialized = JSON.stringify(createIndexBody);
-      expect(serialized).not.toContain("dictionary_table");
-      expect(serialized).not.toContain('"source"');
-      expect(serialized).not.toContain('"table"');
-      expect(serialized).not.toContain('"column":"word"');
-      expect(unexpectedRequestCount).toBe(0);
-    } finally {
-      tmpDir.removeCallback();
-    }
+    expect(createIndexBody?.["column"]).toBe("text");
+    expect(createIndexBody?.["index_type"]).toBe("FTS");
+    expect(createIndexBody?.["block_size"]).toBe(256);
+    expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
   it("diffs and merges remote branches", async () => {

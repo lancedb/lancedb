@@ -17,12 +17,7 @@ import {
 } from "./native.js";
 
 import { HeaderProvider } from "./header";
-import {
-  type BaseTokenizer,
-  type CustomStopWordsSource,
-  normalizeCustomStopWordsSource,
-} from "./indices";
-import { customStopWordsSourceToNative } from "./table";
+import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
@@ -123,9 +118,6 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
-  CustomStopWordsSource,
-  FtsStopWordsFileSource,
-  FtsStopWordsTableSource,
   BaseTokenizer,
 } from "./indices";
 
@@ -205,16 +197,12 @@ export interface TokenizeOptions {
   /**
    * Custom stop words that replace the built-in list for `language`.
    *
-   * The source can be an inline string array, a newline-delimited UTF-8 file
-   * on this client, or a string column from a local/native LanceDB table.
-   * Remote table sources are rejected because they cannot currently guarantee
-   * a complete snapshot. This option is only applied when `removeStopWords` is
-   * true.
+   * This option only affects tokenization when `removeStopWords` is true.
    *
    * `undefined` keeps the built-in language list. An empty array explicitly
    * replaces it with no stop words.
    */
-  customStopWords?: CustomStopWordsSource;
+  customStopWords?: string[];
 
   /** Whether to fold ASCII characters. */
   asciiFolding?: boolean;
@@ -239,10 +227,6 @@ export async function tokenize(
   query: string,
   options?: Partial<TokenizeOptions>,
 ): Promise<FtsToken[]> {
-  const customStopWords = normalizeCustomStopWordsSource(
-    options?.customStopWords,
-  );
-  const source = customStopWordsSourceToNative(customStopWords);
   return await nativeTokenize(
     query,
     options?.baseTokenizer,
@@ -251,14 +235,11 @@ export async function tokenize(
     options?.lowercase,
     options?.stem,
     options?.removeStopWords,
+    options?.customStopWords,
     options?.asciiFolding,
     options?.ngramMinLength,
     options?.ngramMaxLength,
     options?.prefixOnly,
-    source.inline,
-    source.file,
-    source.table,
-    source.column,
   );
 }
 

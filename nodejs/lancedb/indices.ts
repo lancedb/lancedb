@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { Index as LanceDbIndex } from "./native";
-import type { Table } from "./table";
 
 /**
  * Options to create an `IVF_PQ` index
@@ -498,143 +497,6 @@ export type BaseTokenizer =
   | `lindera/${string}`;
 
 /**
- * A source for custom full-text-search stop words.
- *
- * An inline array supplies the entries directly. A file is read as UTF-8 with
- * one stop word per line. A table source reads stop words from the selected
- * string column of a local/native LanceDB table. Remote table sources are
- * rejected because the client cannot currently guarantee a complete snapshot.
- *
- * ```ts
- * const inline: CustomStopWordsSource = ["copyright", "reserved"];
- * const file: CustomStopWordsSource = {
- *   source: "file",
- *   path: "./stop-words.txt",
- * };
- * const tableColumn: CustomStopWordsSource = {
- *   source: "table",
- *   table: stopWordsTable,
- *   column: "word",
- * };
- * ```
- *
- * Empty strings are ignored and exact duplicates are removed while preserving
- * the first occurrence. Values are otherwise preserved exactly: LanceDB does
- * not trim them, lowercase them, or otherwise normalize their contents.
- * Embedded/local fuzzy queries fail closed when `fuzziness` is greater than
- * zero and a custom snapshot is active; `fuzziness: 0` and indexes without a
- * custom snapshot continue to work normally. Remote tables currently reject
- * every explicit `fuzziness > 0` query because the server protocol does not
- * declare tokenizer-snapshot-safe fuzzy search; omit `fuzziness` or use
- * `fuzziness: 0`.
- *
- * The source is resolved when the index is created, and the resulting list is
- * stored as a stable index snapshot. Standalone `tokenize` resolves the same
- * kind of one-call snapshot. File paths are always read by this client, never
- * by a remote LanceDB service.
- */
-export type CustomStopWordsSource =
-  | string[]
-  | FtsStopWordsFileSource
-  | FtsStopWordsTableSource;
-
-/** A newline-delimited UTF-8 custom stop-words file on this client. */
-export interface FtsStopWordsFileSource {
-  /** Select a newline-delimited UTF-8 file. */
-  source: "file";
-  /** Path to the stop-words file on the client. */
-  path: string;
-}
-
-/** A custom stop-words snapshot read from a LanceDB table column. */
-export interface FtsStopWordsTableSource {
-  /** Select a LanceDB table column. */
-  source: "table";
-  /**
-   * Local/native table containing the stop words.
-   *
-   * A remote table cannot be used as the source. Materialize its stop-word
-   * column locally first, or use an inline list or UTF-8 file.
-   */
-  table: Table;
-  /** Name of the string column containing the stop words. */
-  column: string;
-}
-
-/**
- * Validate and copy a custom-stop-words source without resolving it.
- *
- * @internal
- */
-export function normalizeCustomStopWordsSource(
-  value: unknown,
-): CustomStopWordsSource | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (Array.isArray(value)) {
-    for (const [index, stopWord] of value.entries()) {
-      if (typeof stopWord !== "string") {
-        throw new TypeError(
-          `customStopWords[${index}] must be a string, received ${typeof stopWord}`,
-        );
-      }
-    }
-    // Keep [] distinct from undefined and prevent later caller mutation.
-    return [...value];
-  }
-
-  if (value === null || typeof value !== "object") {
-    throw new TypeError(
-      "customStopWords must be a string array, a file source, or a table source",
-    );
-  }
-
-  const candidate = value as Record<string, unknown>;
-  if (candidate.source === "file") {
-    if (candidate.table !== undefined || candidate.column !== undefined) {
-      throw new TypeError(
-        "customStopWords file and table sources are mutually exclusive",
-      );
-    }
-    if (typeof candidate.path !== "string" || candidate.path.length === 0) {
-      throw new TypeError(
-        "customStopWords file source requires a non-empty string 'path'",
-      );
-    }
-    return { source: "file", path: candidate.path };
-  }
-
-  if (candidate.source === "table") {
-    if (candidate.path !== undefined) {
-      throw new TypeError(
-        "customStopWords file and table sources are mutually exclusive",
-      );
-    }
-    if (candidate.table === null || typeof candidate.table !== "object") {
-      throw new TypeError(
-        "customStopWords table source requires a LanceDB 'table'",
-      );
-    }
-    if (typeof candidate.column !== "string" || candidate.column.length === 0) {
-      throw new TypeError(
-        "customStopWords table source requires a non-empty string 'column'",
-      );
-    }
-    return {
-      source: "table",
-      table: candidate.table as Table,
-      column: candidate.column,
-    };
-  }
-
-  throw new TypeError(
-    "customStopWords object source must have source: 'file' or source: 'table'",
-  );
-}
-
-/**
  * Options to create a full text search index
  */
 export interface FtsOptions {
@@ -694,23 +556,12 @@ export interface FtsOptions {
   /**
    * Custom stop words that replace the built-in list for `language`.
    *
-   * This option only affects tokenization when `removeStopWords` is true. The
-   * source can be an inline string array, a newline-delimited UTF-8 file on
-   * this client, or a string column from a local/native LanceDB table.
-   * Remote table sources are rejected because they cannot currently guarantee
-   * a complete snapshot; the target table may still be remote.
+   * This option only affects tokenization when `removeStopWords` is true.
    *
    * `undefined` keeps the built-in language list. An empty array explicitly
    * replaces it with no stop words.
-   *
-   * Embedded/local fuzzy queries with `fuzziness > 0` are rejected while this
-   * snapshot and `removeStopWords` are active. Use `fuzziness: 0`, or omit the
-   * custom snapshot. Remote tables reject every explicit `fuzziness > 0`
-   * query, regardless of stop-word configuration, because the server protocol
-   * does not declare tokenizer-snapshot-safe fuzzy search; omit `fuzziness` or
-   * use `fuzziness: 0`.
    */
-  customStopWords?: CustomStopWordsSource;
+  customStopWords?: string[];
 
   /**
    * whether to remove punctuation
@@ -742,14 +593,9 @@ export interface FtsOptions {
 }
 
 export class Index {
-  private readonly inner?: LanceDbIndex;
-  private readonly ftsOptions?: Readonly<Partial<FtsOptions>>;
-  private constructor(
-    inner?: LanceDbIndex,
-    ftsOptions?: Readonly<Partial<FtsOptions>>,
-  ) {
+  private readonly inner: LanceDbIndex;
+  private constructor(inner: LanceDbIndex) {
     this.inner = inner;
-    this.ftsOptions = ftsOptions;
   }
 
   /**
@@ -908,80 +754,25 @@ export class Index {
    * The results of a full text search are ordered by relevance measured by BM25.
    *
    * You can combine filters with full text search.
-   *
-   * @example
-   * Use an inline stop-word snapshot:
-   * ```ts
-   * await table.createIndex("text", {
-   *   config: Index.fts({
-   *     removeStopWords: true,
-   *     customStopWords: ["copyright", "reserved"],
-   *   }),
-   * });
-   * ```
-   *
-   * @example
-   * Read a newline-delimited UTF-8 file on the client:
-   * ```ts
-   * await table.createIndex("text", {
-   *   config: Index.fts({
-   *     removeStopWords: true,
-   *     customStopWords: { source: "file", path: "./stop-words.txt" },
-   *   }),
-   * });
-   * ```
-   *
-   * @example
-   * Snapshot a string column from another local/native LanceDB table:
-   * ```ts
-   * await table.createIndex("text", {
-   *   config: Index.fts({
-   *     removeStopWords: true,
-   *     customStopWords: {
-   *       source: "table",
-   *       table: stopWordsTable,
-   *       column: "word",
-   *     },
-   *   }),
-   * });
-   * ```
    */
   static fts(options?: Partial<FtsOptions>) {
-    const customStopWords = normalizeCustomStopWordsSource(
-      options?.customStopWords,
+    return new Index(
+      LanceDbIndex.fts(
+        options?.withPosition,
+        options?.baseTokenizer,
+        options?.language,
+        options?.maxTokenLength,
+        options?.lowercase,
+        options?.stem,
+        options?.removeStopWords,
+        options?.customStopWords,
+        options?.asciiFolding,
+        options?.ngramMinLength,
+        options?.ngramMaxLength,
+        options?.prefixOnly,
+        options?.blockSize,
+      ),
     );
-    if (
-      options?.blockSize !== undefined &&
-      options.blockSize !== 128 &&
-      options.blockSize !== 256
-    ) {
-      throw new RangeError("FTS blockSize must be 128 or 256");
-    }
-    // Preserve the synchronous validation behavior of Index.fts while
-    // discarding the single-use native builder. Table.createIndex constructs a
-    // fresh builder from the saved recipe below.
-    LanceDbIndex.fts(
-      options?.withPosition,
-      options?.baseTokenizer,
-      options?.language,
-      options?.maxTokenLength,
-      options?.lowercase,
-      options?.stem,
-      options?.removeStopWords,
-      options?.asciiFolding,
-      options?.ngramMinLength,
-      options?.ngramMaxLength,
-      options?.prefixOnly,
-      options?.blockSize,
-    );
-    // File and table sources can only be resolved asynchronously when
-    // Table.createIndex runs. Save an immutable recipe and create a fresh
-    // native builder for each invocation so failed resolution does not consume
-    // the public Index configuration.
-    return new Index(undefined, {
-      ...options,
-      customStopWords,
-    });
   }
 
   /**

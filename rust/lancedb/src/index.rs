@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
-use scalar::{FtsIndexBuilder, FtsStopWordsSource, normalize_stop_words};
+use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
 use std::sync::Arc;
@@ -187,7 +187,6 @@ pub enum Index {
 pub struct IndexBuilder {
     parent: Arc<dyn BaseTable>,
     pub(crate) index: Index,
-    custom_stop_words_source: Option<FtsStopWordsSource>,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
     pub(crate) wait_timeout: Option<Duration>,
@@ -200,7 +199,6 @@ impl IndexBuilder {
         Self {
             parent,
             index,
-            custom_stop_words_source: None,
             columns,
             replace: true,
             train: true,
@@ -304,134 +302,9 @@ impl IndexBuilder {
         self
     }
 
-    /// Configure a mutually exclusive source of custom FTS stop words.
-    ///
-    /// The source is resolved on the client when [`Self::execute`] runs. Files
-    /// are read as UTF-8 newline-delimited text, and table sources project and
-    /// stream only the selected string column. The resulting concrete list is
-    /// persisted as the index's tokenizer snapshot and is the only value sent
-    /// to a remote server.
-    ///
-    /// Custom stop words replace the built-in language stop words and are only
-    /// used when `remove_stop_words` is enabled in [`FtsIndexBuilder`].
-    /// Native FTS queries using an active custom snapshot reject explicit
-    /// positive fuzziness because Lance's fuzzy path currently bypasses the
-    /// persisted tokenizer. Remote tables reject explicit positive fuzziness
-    /// until the server protocol declares snapshot-safe fuzzy support.
-    ///
-    /// ```
-    /// use lancedb::index::{
-    ///     Index,
-    ///     scalar::{FtsIndexBuilder, FtsStopWordsSource},
-    /// };
-    ///
-    /// # async fn create_index(table: &lancedb::Table) -> lancedb::Result<()> {
-    /// table
-    ///     .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
-    ///     .custom_stop_words(FtsStopWordsSource::file("stop-words.txt"))?
-    ///     .execute()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if this is not an FTS index, a source was already set,
-    /// or the supplied [`FtsIndexBuilder`] already contains a custom stop-word
-    /// list.
-    pub fn custom_stop_words(mut self, source: impl Into<FtsStopWordsSource>) -> Result<Self> {
-        if self.custom_stop_words_source.is_some() {
-            return Err(Error::InvalidInput {
-                message: "custom stop words source was set more than once".to_string(),
-            });
-        }
-        let Index::FTS(params) = &self.index else {
-            return Err(Error::InvalidInput {
-                message: "custom stop words can only be configured for an FTS index".to_string(),
-            });
-        };
-        if fts_params_have_custom_stop_words(params)? {
-            return Err(Error::InvalidInput {
-                message: "custom stop words are already configured directly on FtsIndexBuilder; use either FtsIndexBuilder::custom_stop_words or IndexBuilder::custom_stop_words, not both".to_string(),
-            });
-        }
-        self.custom_stop_words_source = Some(source.into());
-        Ok(self)
-    }
-
-    pub async fn execute(mut self) -> Result<()> {
-        let direct_custom_stop_words = match &self.index {
-            Index::FTS(params) => fts_params_custom_stop_words(params)?,
-            _ => None,
-        };
-        if let Some(source) = self.custom_stop_words_source.take() {
-            let snapshot = source.resolve().await?;
-            let Index::FTS(params) = &mut self.index else {
-                return Err(Error::InvalidInput {
-                    message: "custom stop words can only be configured for an FTS index"
-                        .to_string(),
-                });
-            };
-            if fts_params_have_custom_stop_words(params)? {
-                return Err(Error::InvalidInput {
-                    message: "custom stop words are already configured directly on FtsIndexBuilder; use either FtsIndexBuilder::custom_stop_words or IndexBuilder::custom_stop_words, not both".to_string(),
-                });
-            }
-            *params = params.clone().custom_stop_words(Some(snapshot));
-        } else if direct_custom_stop_words.is_some()
-            && let Index::FTS(params) = &mut self.index
-        {
-            *params = canonicalize_fts_params(params)?;
-        }
+    pub async fn execute(self) -> Result<()> {
         self.parent.clone().create_index(self).await
     }
-}
-
-fn fts_params_have_custom_stop_words(params: &FtsIndexBuilder) -> Result<bool> {
-    Ok(fts_params_custom_stop_words(params)?.is_some())
-}
-
-pub(crate) fn fts_params_custom_stop_words(
-    params: &FtsIndexBuilder,
-) -> Result<Option<Vec<String>>> {
-    let value = serde_json::to_value(params).map_err(|e| Error::InvalidInput {
-        message: format!("failed to inspect FTS params for custom stop words: {}", e),
-    })?;
-    match value.get("custom_stop_words") {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid custom stop words in FTS params: {}", e),
-            }),
-    }
-}
-
-pub(crate) fn canonicalize_fts_params(params: &FtsIndexBuilder) -> Result<FtsIndexBuilder> {
-    match fts_params_custom_stop_words(params)? {
-        Some(stop_words) => Ok(params
-            .clone()
-            .custom_stop_words(Some(normalize_stop_words(stop_words)))),
-        None => Ok(params.clone()),
-    }
-}
-
-pub(crate) fn fts_params_use_custom_stop_words(params: &FtsIndexBuilder) -> Result<bool> {
-    let value = serde_json::to_value(params).map_err(|e| Error::InvalidInput {
-        message: format!("failed to inspect FTS params for stop-word removal: {}", e),
-    })?;
-    let remove_stop_words = value
-        .get("remove_stop_words")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| Error::InvalidInput {
-            message: "invalid remove_stop_words value in FTS params".to_string(),
-        })?;
-    Ok(remove_stop_words
-        && !matches!(
-            value.get("custom_stop_words"),
-            None | Some(serde_json::Value::Null)
-        ))
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

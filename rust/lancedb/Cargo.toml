@@ -53,7 +53,7 @@ metrics-util = { workspace = true, optional = true }
 goosefs-sdk = { version = "=0.1.5", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
-tokio = { version = "1.23", features = ["fs", "rt-multi-thread", "sync"] }
+tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 log.workspace = true
 async-trait = "0"
 bytes = "1"

@@ -8,15 +8,15 @@ use lancedb::index::vector::{
 };
 use lancedb::index::{
     Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, FtsStopWordsSource},
+    scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder},
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
 use pyo3::{
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyKeyError, PyTypeError, PyValueError},
+    Bound, FromPyObject, Py, PyAny, PyResult, Python,
+    exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
-    types::{PyAnyMethods, PySequence, PyString, PyTypeMethods},
+    types::{PyAnyMethods, PyString},
 };
 
 use crate::util::parse_distance_type;
@@ -30,86 +30,6 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     match full_name.rsplit_once('.') {
         Some((_, name)) => Ok(name.to_string()),
         None => Ok(full_name.to_string()),
-    }
-}
-
-pub(crate) fn extract_fts_stop_words_source(
-    source: &Option<Bound<'_, PyAny>>,
-) -> PyResult<Option<FtsStopWordsSource>> {
-    let Some(config) = source else {
-        return Ok(None);
-    };
-    if class_name(config)? != "FTS" {
-        return Ok(None);
-    }
-
-    let value = config.getattr(intern!(config.py(), "custom_stop_words"))?;
-    extract_fts_stop_words_value(&value)
-}
-
-pub(crate) fn extract_fts_stop_words_value(
-    value: &Bound<'_, PyAny>,
-) -> PyResult<Option<FtsStopWordsSource>> {
-    if value.is_none() {
-        return Ok(None);
-    }
-
-    match class_name(value)?.as_str() {
-        "FtsStopWordsFile" => {
-            let path = value
-                .getattr(intern!(value.py(), "_path"))?
-                .extract::<String>()
-                .map_err(|_| {
-                    PyTypeError::new_err(
-                        "FtsStopWordsFile.path must be a string or os.PathLike[str]",
-                    )
-                })?;
-            Ok(Some(FtsStopWordsSource::file(path)))
-        }
-        "FtsStopWordsTable" => {
-            let column = value
-                .getattr(intern!(value.py(), "_column"))?
-                .extract::<String>()
-                .map_err(|_| PyTypeError::new_err("FtsStopWordsTable.column must be a string"))?;
-            let native_table = value.getattr(intern!(value.py(), "_native_table"))?;
-            let native_table = native_table
-                .extract::<PyRef<'_, crate::table::Table>>()
-                .map_err(|_| {
-                    PyTypeError::new_err(
-                        "FtsStopWordsTable.table must be a LanceDB Table or AsyncTable",
-                    )
-                })?;
-            let table = native_table.inner_ref()?.clone();
-            Ok(Some(FtsStopWordsSource::table(table, column)))
-        }
-        _ => {
-            if value.cast::<PyString>().is_ok() {
-                return Err(PyTypeError::new_err(
-                    "custom_stop_words must be a sequence of strings, not a string",
-                ));
-            }
-            value.cast::<PySequence>().map_err(|_| {
-                PyTypeError::new_err(
-                    "custom_stop_words must be a sequence of strings, \
-                     FtsStopWordsFile, FtsStopWordsTable, or None",
-                )
-            })?;
-
-            let mut words = Vec::new();
-            for (idx, word) in value.try_iter()?.enumerate() {
-                let word = word?;
-                words.push(word.extract::<String>().map_err(|_| {
-                    PyTypeError::new_err(format!(
-                        "custom_stop_words[{idx}] must be a string, got {}",
-                        word.get_type()
-                            .name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|_| "unknown".to_string())
-                    ))
-                })?);
-            }
-            Ok(Some(FtsStopWordsSource::inline(words)))
-        }
     }
 }
 
@@ -139,7 +59,8 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
-                    .ngram_prefix_only(params.prefix_only);
+                    .ngram_prefix_only(params.prefix_only)
+                    .custom_stop_words(params.custom_stop_words);
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -286,6 +207,7 @@ struct FtsParams {
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
