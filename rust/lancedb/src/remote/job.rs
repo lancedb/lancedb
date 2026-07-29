@@ -76,13 +76,13 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                 JobState::Done => return Ok(()),
                 JobState::Failed => {
                     return Err(Error::JobFailed {
-                        job_id: self.job_id.clone(),
+                        job_id: Some(self.job_id.clone()),
                         message: "job reached the FAILED state".to_string(),
                     });
                 }
                 JobState::Cancelled => {
                     return Err(Error::JobCancelled {
-                        job_id: self.job_id.clone(),
+                        job_id: Some(self.job_id.clone()),
                     });
                 }
                 JobState::InProgress | JobState::Other => {}

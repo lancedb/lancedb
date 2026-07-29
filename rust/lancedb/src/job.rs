@@ -4,8 +4,10 @@
 //! Handles to operations a server may run asynchronously.
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
+use tokio::task::{AbortHandle, JoinHandle};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
@@ -41,6 +43,14 @@ impl Job {
         }
     }
 
+    /// A job running as a task in this process.
+    pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
+        Self::new(Box::new(SpawnedJob {
+            abort: task.abort_handle(),
+            task: Mutex::new(Some(task)),
+        }))
+    }
+
     /// Waits until the operation reaches a terminal state.
     ///
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
@@ -60,5 +70,33 @@ impl Job {
             None => Ok(()),
             Some(handle) => handle.cancel().await,
         }
+    }
+}
+
+/// Tracks an operation running as a task in this process. `wait` consumes the
+/// task, so only the first call reports its outcome.
+struct SpawnedJob {
+    task: Mutex<Option<JoinHandle<Result<()>>>>,
+    abort: AbortHandle,
+}
+
+#[async_trait]
+impl JobHandle for SpawnedJob {
+    async fn wait(&self) -> Result<()> {
+        let Some(task) = self.task.lock().await.take() else {
+            return Ok(());
+        };
+        match task.await {
+            Ok(result) => result,
+            Err(err) if err.is_cancelled() => Err(Error::JobCancelled { job_id: None }),
+            Err(err) => Err(Error::Runtime {
+                message: format!("index job task failed: {err}"),
+            }),
+        }
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        self.abort.abort();
+        Ok(())
     }
 }

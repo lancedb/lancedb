@@ -21,6 +21,9 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 
 use crate::error::{Error, Result};
+
+/// Resolved column, index parameters and index type for one build.
+pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, IndexType);
 use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
@@ -103,6 +106,47 @@ impl NativeTable {
             arrow_schema::DataType::FixedSizeList(_, n) => Ok(*n as u32),
             _ => Ok(infer_vector_dim(field.data_type())? as u32),
         }
+    }
+
+    /// Resolves the target column and index parameters, erroring on input the
+    /// build would reject.
+    pub(super) async fn prepare_index(
+        &self,
+        opts: &crate::index::IndexBuilder,
+    ) -> Result<PreparedIndex> {
+        if opts.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Multi-column (composite) indices are not yet supported".to_string(),
+            });
+        }
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+        let params = self.make_index_params(&field, opts.index.clone()).await?;
+        let index_type = self.get_index_type_for_field(&field, &opts.index);
+        Ok((column, params, index_type))
+    }
+
+    /// Builds a prepared index and publishes the new dataset version.
+    pub(super) async fn build_index(
+        &self,
+        opts: crate::index::IndexBuilder,
+        prepared: PreparedIndex,
+    ) -> Result<()> {
+        let (column, lance_idx_params, index_type) = prepared;
+        let mut dataset = (*self.dataset.get().await?).clone();
+        let columns = [column.as_str()];
+        let mut builder = dataset
+            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
+            .train(opts.train)
+            .replace(opts.replace);
+
+        if let Some(name) = opts.name {
+            builder = builder.name(name);
+        }
+        builder.await?;
+        self.dataset.update(dataset);
+        Ok(())
     }
 
     pub(super) fn resolve_index_field(
@@ -473,6 +517,53 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_job_waits_for_local_build() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        // The build runs as a task, so the index need not exist yet; it must
+        // once the job resolves.
+        job.wait().await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 1);
+        // Cancelling a finished job is a no-op.
+        job.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_job_cancel_stops_local_build() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.cancel().await.unwrap();
+        match job.wait().await {
+            Err(crate::Error::JobCancelled { .. }) => {}
+            // The build may finish before the abort lands.
+            Ok(()) => {}
+            other => panic!("unexpected job outcome: {other:?}"),
+        }
     }
 
     #[tokio::test]

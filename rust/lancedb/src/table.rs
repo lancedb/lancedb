@@ -562,7 +562,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
-    async fn create_index(&self, index: IndexBuilder) -> Result<Job>;
+    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+
+    /// Starts index creation, returning a handle to the resulting job.
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job>;
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -3008,30 +3011,19 @@ impl BaseTable for NativeTable {
         Ok(AddResult { version })
     }
 
-    async fn create_index(&self, opts: IndexBuilder) -> Result<Job> {
-        if opts.columns.len() != 1 {
-            return Err(Error::Schema {
-                message: "Multi-column (composite) indices are not yet supported".to_string(),
-            });
-        }
-        self.dataset.ensure_mutable()?;
-        let mut dataset = (*self.dataset.get().await?).clone();
-        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+        let prepared = self.prepare_index(&opts).await?;
+        self.build_index(opts, prepared).await
+    }
 
-        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(&field, &opts.index);
-        let columns = [column.as_str()];
-        let mut builder = dataset
-            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
-            .train(opts.train)
-            .replace(opts.replace);
-
-        if let Some(name) = opts.name {
-            builder = builder.name(name);
-        }
-        builder.await?;
-        self.dataset.update(dataset);
-        Ok(Job::new_done())
+    async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
+        // Prepare before spawning so bad input is reported by this call rather
+        // than only by the job.
+        let prepared = self.prepare_index(&opts).await?;
+        let table = self.clone();
+        Ok(Job::spawned(tokio::spawn(async move {
+            table.build_index(opts, prepared).await
+        })))
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {

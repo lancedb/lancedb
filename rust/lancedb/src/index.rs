@@ -303,7 +303,7 @@ impl IndexBuilder {
     }
 
     pub async fn execute(self) -> Result<()> {
-        self.parent.clone().create_index(self).await.map(|_| ())
+        self.parent.clone().create_index(self).await
     }
 
     /// Creates the index, returning a [`Job`] tracking the operation.
@@ -311,7 +311,7 @@ impl IndexBuilder {
     /// The job may already be complete when returned, and callers must not
     /// assume the index exists until [`Job::wait`] resolves.
     pub async fn execute_async(self) -> Result<Job> {
-        self.parent.clone().create_index(self).await
+        self.parent.clone().create_index_async(self).await
     }
 }
 

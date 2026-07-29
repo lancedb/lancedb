@@ -291,6 +291,120 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+
+        let column = match index.columns.len() {
+            0 => {
+                return Err(Error::InvalidInput {
+                    message: "No columns specified".into(),
+                });
+            }
+            1 => index.columns.pop().unwrap(),
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Indices over multiple columns not yet supported".into(),
+                });
+            }
+        };
+        let schema = self.schema().await?;
+        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
+        let mut body = serde_json::json!({
+            "column": canonical_column
+        });
+
+        // Add name parameter if provided (for backwards compatibility, only include if Some)
+        if let Some(ref name) = index.name {
+            body["name"] = serde_json::Value::String(name.clone());
+        }
+
+        // Warn if train=false is specified since it's not meaningful
+        if !index.train {
+            log::warn!(
+                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+            );
+        }
+
+        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
+            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                message: format!("failed to serialize index params {:?}", e),
+            })
+        }
+
+        // Map each Index variant to its wire type name and serializable params.
+        // Auto is special-cased since it needs schema inspection.
+        let (index_type_str, params) = match &index.index {
+            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
+            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
+            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
+            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
+            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
+            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
+            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
+            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
+            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
+            Index::Fm(p) => ("FM", Some(to_json(p)?)),
+            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
+            Index::Auto => {
+                if supported_vector_data_type(field.data_type()) {
+                    body[METRIC_TYPE_KEY] =
+                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
+                    ("IVF_PQ", None)
+                } else if supported_btree_data_type(field.data_type()) {
+                    ("BTREE", None)
+                } else {
+                    return Err(Error::NotSupported {
+                        message: format!(
+                            "there are no indices supported for the field `{}` with the data type {}",
+                            field.name(),
+                            field.data_type()
+                        ),
+                    });
+                }
+            }
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Index type not supported".into(),
+                });
+            }
+        };
+
+        body[INDEX_TYPE_KEY] = index_type_str.into();
+        if let Some(params) = params {
+            for (key, value) in params.as_object().expect("params should be a JSON object") {
+                body[key] = value.clone();
+            }
+        }
+        self.apply_branch_body(&mut body);
+
+        let request = request.json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+        let job_id = response
+            .text()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|value| {
+                value
+                    .get("job_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+
+        if let Some(wait_timeout) = index.wait_timeout {
+            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+            self.wait_for_index(&[&index_name], wait_timeout).await?;
+        }
+
+        Ok(job_id)
+    }
+
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
@@ -2239,118 +2353,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(delete_response)
     }
 
-    async fn create_index(&self, mut index: IndexBuilder) -> Result<Job> {
-        self.check_mutable().await?;
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+    async fn create_index(&self, index: IndexBuilder) -> Result<()> {
+        self.submit_create_index(index).await.map(|_| ())
+    }
 
-        let column = match index.columns.len() {
-            0 => {
-                return Err(Error::InvalidInput {
-                    message: "No columns specified".into(),
-                });
-            }
-            1 => index.columns.pop().unwrap(),
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Indices over multiple columns not yet supported".into(),
-                });
-            }
-        };
-        let schema = self.schema().await?;
-        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
-        let mut body = serde_json::json!({
-            "column": canonical_column
-        });
-
-        // Add name parameter if provided (for backwards compatibility, only include if Some)
-        if let Some(ref name) = index.name {
-            body["name"] = serde_json::Value::String(name.clone());
-        }
-
-        // Warn if train=false is specified since it's not meaningful
-        if !index.train {
-            log::warn!(
-                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
-            );
-        }
-
-        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
-            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
-                message: format!("failed to serialize index params {:?}", e),
-            })
-        }
-
-        // Map each Index variant to its wire type name and serializable params.
-        // Auto is special-cased since it needs schema inspection.
-        let (index_type_str, params) = match &index.index {
-            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
-            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
-            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
-            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
-            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
-            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
-            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
-            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
-            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
-            Index::Fm(p) => ("FM", Some(to_json(p)?)),
-            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
-            Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
-                    body[METRIC_TYPE_KEY] =
-                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
-                    ("IVF_PQ", None)
-                } else if supported_btree_data_type(field.data_type()) {
-                    ("BTREE", None)
-                } else {
-                    return Err(Error::NotSupported {
-                        message: format!(
-                            "there are no indices supported for the field `{}` with the data type {}",
-                            field.name(),
-                            field.data_type()
-                        ),
-                    });
-                }
-            }
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Index type not supported".into(),
-                });
-            }
-        };
-
-        body[INDEX_TYPE_KEY] = index_type_str.into();
-        if let Some(params) = params {
-            for (key, value) in params.as_object().expect("params should be a JSON object") {
-                body[key] = value.clone();
-            }
-        }
-        self.apply_branch_body(&mut body);
-
-        let request = request.json(&body);
-
-        let (request_id, response) = self.send(request, true).await?;
-
-        let response = self.check_table_response(&request_id, response).await?;
-        let job_id = response
-            .text()
-            .await
-            .ok()
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-            .and_then(|value| {
-                value
-                    .get("job_id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_string)
-            });
-
-        if let Some(wait_timeout) = index.wait_timeout {
-            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
-            self.wait_for_index(&[&index_name], wait_timeout).await?;
-        }
-
-        Ok(match job_id {
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job> {
+        Ok(match self.submit_create_index(index).await? {
             Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
             None => Job::new_done(),
         })
