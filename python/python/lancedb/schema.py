@@ -71,7 +71,7 @@ def _metadata_marks_legacy_blob(metadata: dict) -> bool:
     return _metadata_value(metadata, _BLOB_V1_KEY) in ("true", b"true")
 
 
-def is_blob_v2_field(field: pa.Field) -> bool:
+def _is_blob_v2_field(field: pa.Field) -> bool:
     """Return True if `field` declares a blob v2 extension column."""
     field_type = field.type
     if (
@@ -82,14 +82,14 @@ def is_blob_v2_field(field: pa.Field) -> bool:
     return _metadata_marks_blob_v2(field.metadata or {})
 
 
-def is_blob_like_field(field: pa.Field) -> bool:
+def _is_blob_like_field(field: pa.Field) -> bool:
     """Blob detection for ``to_pandas(blob_mode=...)`` and scanner paths only.
 
     Matches v2 extension fields on table schema, legacy ``lance-encoding:blob``
     storage columns, and v2 query descriptor fields (the engine tags those with
     the same metadata). Not used for fetch or auto ``_rowid``.
     """
-    return is_blob_v2_field(field) or _metadata_marks_legacy_blob(field.metadata or {})
+    return _is_blob_v2_field(field) or _metadata_marks_legacy_blob(field.metadata or {})
 
 
 def _collect_blob_paths(schema: pa.Schema, is_blob) -> list[str]:
@@ -113,17 +113,17 @@ def _collect_blob_paths(schema: pa.Schema, is_blob) -> list[str]:
     return paths
 
 
-def blob_column_paths(schema: pa.Schema) -> list[str]:
+def _blob_column_paths(schema: pa.Schema) -> list[str]:
     """Dotted paths of blob-like columns (v2 extension or legacy metadata)."""
-    return _collect_blob_paths(schema, is_blob_like_field)
+    return _collect_blob_paths(schema, _is_blob_like_field)
 
 
-def blob_v2_column_paths(schema: pa.Schema) -> list[str]:
-    return _collect_blob_paths(schema, is_blob_v2_field)
+def _blob_v2_column_paths(schema: pa.Schema) -> list[str]:
+    return _collect_blob_paths(schema, _is_blob_v2_field)
 
 
-def schema_has_blob_field(schema: pa.Schema) -> bool:
-    return bool(blob_column_paths(schema))
+def _schema_has_blob_field(schema: pa.Schema) -> bool:
+    return bool(_blob_column_paths(schema))
 
 
 def blob(name: str, nullable: bool = True) -> pa.Field:

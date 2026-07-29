@@ -10,7 +10,7 @@ import pytest
 import lancedb
 from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
 from lancedb.index import FTS
-from lancedb.schema import blob_column_paths, blob_v2_column_paths
+from lancedb.schema import _blob_column_paths, _blob_v2_column_paths
 
 
 def _blob_table(name, rows):
@@ -62,7 +62,7 @@ def test_blob_v2_column_paths_include_list_children():
         ]
     )
 
-    assert blob_v2_column_paths(schema) == [
+    assert _blob_v2_column_paths(schema) == [
         "info.blob",
         "images.image",
         "large_images.large_image",
@@ -95,13 +95,13 @@ def test_blob_v2_column_paths_exclude_legacy_metadata():
             ),
         ]
     )
-    assert blob_v2_column_paths(schema) == ["image"]
-    assert blob_column_paths(schema) == ["image", "legacy"]
+    assert _blob_v2_column_paths(schema) == ["image"]
+    assert _blob_column_paths(schema) == ["image", "legacy"]
 
 
 def test_blob_v2_paths_match_blob_columns():
     table = _blob_table("paths_match", [{"id": 1, "image": b"x"}])
-    assert blob_v2_column_paths(table.schema) == table.blob_columns()
+    assert _blob_v2_column_paths(table.schema) == table.blob_columns()
 
     db = lancedb.connect("memory:///")
     info = pa.StructArray.from_arrays(
@@ -116,7 +116,7 @@ def test_blob_v2_paths_match_blob_columns():
         names=["id", "info"],
     )
     nested = db.create_table("nested_paths", data=data)
-    assert blob_v2_column_paths(nested.schema) == nested.blob_columns()
+    assert _blob_v2_column_paths(nested.schema) == nested.blob_columns()
 
 
 def test_auto_row_id_stash_round_trip():

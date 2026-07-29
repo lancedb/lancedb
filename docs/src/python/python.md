@@ -210,6 +210,8 @@ instead of being materialized with the rest of the row.
 
 ::: lancedb.permutation.Permutation
 
+::: lancedb.permutation.Permutations
+
 ::: lancedb.permutation.Transforms
 
 ## Reranking
@@ -253,9 +255,6 @@ lists the indices that LanceDb supports.
     options:
       show_root_heading: false
       show_root_toc_entry: false
-      # `lang_mapping` is defined in the module rather than imported, so it is
-      # picked up despite not being in `__all__`. It is an internal lookup table.
-      filters: ["!^_", "!^lang_mapping$"]
 
 ::: lancedb.table.IndexStatistics
 

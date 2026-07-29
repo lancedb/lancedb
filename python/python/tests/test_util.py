@@ -19,7 +19,7 @@ from lancedb.table import (
     _infer_target_schema,
     _merge_metadata,
     _sanitize_data,
-    sanitize_create_table,
+    _sanitize_create_table,
 )
 import pyarrow as pa
 import pandas as pd
@@ -507,7 +507,7 @@ def test_sanitize_create_table_merges_and_overrides_embedding_metadata():
         ),
     )
 
-    data, schema = sanitize_create_table(
+    data, schema = _sanitize_create_table(
         pa.table({"text": ["good"]}),
         schema,
         metadata=metadata,

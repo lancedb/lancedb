@@ -32,7 +32,7 @@ from lancedb.query import (
     PhraseQuery,
     Query,
     FullTextSearchQuery,
-    ensure_vector_query,
+    _ensure_vector_query,
 )
 from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
@@ -1996,15 +1996,15 @@ def test_search_empty_table(mem_db):
 
 
 def test_ensure_vector_query_empty_list():
-    """Regression: ensure_vector_query used to return instead of raise ValueError."""
+    """Regression: _ensure_vector_query used to return instead of raise ValueError."""
     with pytest.raises(ValueError, match="non-empty"):
-        ensure_vector_query([])
+        _ensure_vector_query([])
 
 
 def test_ensure_vector_query_nested_empty_list():
-    """Regression: ensure_vector_query used to return instead of raise ValueError."""
+    """Regression: _ensure_vector_query used to return instead of raise ValueError."""
     with pytest.raises(ValueError, match="non-empty"):
-        ensure_vector_query([[]])
+        _ensure_vector_query([[]])
 
 
 def test_fast_search(tmp_path):

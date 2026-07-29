@@ -4,7 +4,7 @@
 from functools import singledispatch
 from typing import List, Optional, Tuple, Union
 
-from lancedb.pydantic import LanceModel, model_to_dict
+from lancedb.pydantic import LanceModel, _model_to_dict
 import pyarrow as pa
 
 from ._lancedb import RecordBatchStream
@@ -107,7 +107,7 @@ def _arrow_from_list(data: list) -> pa.Table:
 
     if isinstance(data[0], LanceModel):
         schema = data[0].__class__.to_arrow_schema()
-        dicts = [model_to_dict(d) for d in data]
+        dicts = [_model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
     return pa.Table.from_pylist(data)

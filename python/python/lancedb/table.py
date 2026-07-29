@@ -72,7 +72,7 @@ from .index import (
 )
 from .expr import Expr
 from .merge import LanceMergeInsertBuilder
-from .pydantic import LanceModel, model_to_dict
+from .pydantic import LanceModel, _model_to_dict
 from .query import (
     AnalyzePlanDistributedMetrics,
     AsyncFTSQuery,
@@ -97,8 +97,8 @@ from .util import (
     join_uri,
     value_to_sql,
 )
-from .index import lang_mapping
-from .schema import blob_v2_column_paths, schema_has_blob_field
+from .index import _lang_mapping
+from .schema import _blob_v2_column_paths, _schema_has_blob_field
 
 
 def _should_push_down_query_table(
@@ -140,7 +140,7 @@ def _maybe_add_fts_error_note(
 ) -> None:
     message = str(exception)
     if language is not None and "not support the requested language" in message:
-        supported_langs = ", ".join(lang_mapping.values())
+        supported_langs = ", ".join(_lang_mapping.values())
         _add_unique_note(exception, f"Supported languages: {supported_langs}")
         return
 
@@ -249,7 +249,7 @@ def _into_pyarrow_reader(
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
-            data = [model_to_dict(d) for d in data]
+            data = [_model_to_dict(d) for d in data]
             return pa.Table.from_pylist(data, schema=schema).to_reader()
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data).to_reader()
@@ -527,7 +527,7 @@ def _infer_subschema(
     return fields
 
 
-def sanitize_create_table(
+def _sanitize_create_table(
     data,
     schema: Union[pa.Schema, LanceModel],
     metadata=None,
@@ -2499,11 +2499,11 @@ class LanceTable(Table):
         pd.DataFrame
         """
         validate_blob_mode(blob_mode)
-        if blob_mode == "descriptions" or not schema_has_blob_field(self.schema):
+        if blob_mode == "descriptions" or not _schema_has_blob_field(self.schema):
             arrow_tbl = self.to_arrow()
             if blob_mode == "descriptions":
                 arrow_tbl = strip_auto_row_ids(
-                    arrow_tbl, blob_v2_column_paths(self.schema)
+                    arrow_tbl, _blob_v2_column_paths(self.schema)
                 )
             return arrow_tbl.to_pandas(**kwargs)
 
@@ -2514,7 +2514,7 @@ class LanceTable(Table):
         ):
             return self.to_arrow().to_pandas(**kwargs)
 
-        if blob_mode == "bytes" and blob_v2_column_paths(self.schema):
+        if blob_mode == "bytes" and _blob_v2_column_paths(self.schema):
             return self.search().to_pandas(blob_mode=blob_mode, **kwargs)
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
@@ -3184,11 +3184,11 @@ class LanceTable(Table):
         lang = tokenizer_name[:2]
         if tokenizer_name[-5:] != "_stem":
             raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
-        if lang not in lang_mapping:
+        if lang not in _lang_mapping:
             raise ValueError(f"Invalid language code {lang}")
         return {
             "base_tokenizer": "simple",
-            "language": lang_mapping[lang],
+            "language": _lang_mapping[lang],
             "max_token_length": 40,
             "lower_case": True,
             "stem": True,
@@ -4169,7 +4169,7 @@ def _handle_bad_vector_column(
         data = data.set_column(position, vector_column_name, vec_arr)
 
     if pa.types.is_floating(vec_arr.type.value_type):
-        has_nan = has_nan_values(vec_arr)
+        has_nan = _has_nan_values(vec_arr)
     else:
         has_nan = pa.array([False] * len(vec_arr))
 
@@ -4277,7 +4277,7 @@ def _fill_bad_vector_values(
     return filled.cast(arr.type)
 
 
-def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
+def _has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
     if isinstance(arr, pa.ChunkedArray):
         values = pa.chunked_array([chunk.flatten() for chunk in arr.chunks])
     else:
@@ -4745,15 +4745,15 @@ class AsyncTable:
         """
         validate_blob_mode(blob_mode)
         schema = await self.schema()
-        if blob_mode == "descriptions" or not schema_has_blob_field(schema):
+        if blob_mode == "descriptions" or not _schema_has_blob_field(schema):
             arrow_tbl = await self.to_arrow()
             if blob_mode == "descriptions":
-                arrow_tbl = strip_auto_row_ids(arrow_tbl, blob_v2_column_paths(schema))
+                arrow_tbl = strip_auto_row_ids(arrow_tbl, _blob_v2_column_paths(schema))
             return arrow_tbl.to_pandas(**kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
-        if blob_mode == "bytes" and blob_v2_column_paths(schema):
+        if blob_mode == "bytes" and _blob_v2_column_paths(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
@@ -5055,7 +5055,7 @@ class AsyncTable:
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
             # so vector columns are inferred as FixedSizeList.
-            data, _ = sanitize_create_table(
+            data, _ = _sanitize_create_table(
                 data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
         elif on_bad_vectors != "error" or (

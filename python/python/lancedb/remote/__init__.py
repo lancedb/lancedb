@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from lancedb import __version__
 
-from .header import HeaderProvider
+from .header import HeaderProvider, OAuthProvider, StaticHeaderProvider
 from .oauth import OAuthConfig, OAuthFlowType
 
 # The API reference renders this module with a single mkdocstrings directive,
@@ -20,6 +20,8 @@ __all__ = [
     "TlsConfig",
     "ClientConfig",
     "HeaderProvider",
+    "StaticHeaderProvider",
+    "OAuthProvider",
     "OAuthConfig",
     "OAuthFlowType",
 ]

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional, Union
 import pyarrow as pa
 
 from .expr import Expr
-from .schema import blob_v2_column_paths
+from .schema import _blob_v2_column_paths
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
 from .util import get_uri_scheme
 
@@ -139,7 +139,7 @@ def blob_v2_projection_sources(
     schema: pa.Schema,
     projection: QueryProjection,
 ) -> dict[str, str]:
-    blob_columns = blob_v2_column_paths(schema)
+    blob_columns = _blob_v2_column_paths(schema)
     if not blob_columns:
         return {}
     columns = set(blob_columns)
@@ -160,7 +160,7 @@ def v2_projection_needs_row_id(
 ) -> bool:
     if with_row_id:
         return False
-    return projection_includes_blob_column(projection, blob_v2_column_paths(schema))
+    return projection_includes_blob_column(projection, _blob_v2_column_paths(schema))
 
 
 def blob_auto_row_id_for_scan(

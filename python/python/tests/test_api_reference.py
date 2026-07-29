@@ -28,36 +28,36 @@ pytestmark = pytest.mark.skipif(
     reason="needs a source checkout; docs/ is not shipped in the wheel",
 )
 
-# Modules whose public surface belongs in the reference. Modules absent from this
-# list (internal helpers such as `lancedb.util` or `lancedb._blob`) are not checked.
-CHECKED_MODULES = [
-    "lancedb",
-    "lancedb.context",
-    "lancedb.db",
-    "lancedb.embeddings",
-    "lancedb.exceptions",
-    "lancedb.expr",
-    "lancedb.index",
-    "lancedb.merge",
-    "lancedb.namespace",
-    "lancedb.otel",
-    "lancedb.permutation",
-    "lancedb.pydantic",
-    "lancedb.query",
-    "lancedb.remote",
-    "lancedb.rerankers",
-    "lancedb.schema",
-    "lancedb.streaming",
-    "lancedb.table",
-]
+# Every module under `lancedb/` is checked except these, so a module added later is
+# covered by default. Underscore-prefixed modules are skipped without being listed.
+UNCHECKED_MODULES = {
+    "lancedb.arrow",
+    "lancedb.background_loop",
+    "lancedb.common",
+    "lancedb.conftest",
+    "lancedb.dependencies",
+    "lancedb.embeddings.gte_mlx_model",
+    "lancedb.embeddings.utils",
+    "lancedb.integrations",
+    "lancedb.integrations.pyarrow",
+    "lancedb.io",
+    "lancedb.namespace_utils",
+    "lancedb.remote.db",
+    "lancedb.remote.errors",
+    "lancedb.remote.table",
+    "lancedb.rerankers.util",
+    "lancedb.scannable",
+    "lancedb.types",
+    "lancedb.util",
+}
 
-# Public names deliberately kept out of the reference. Each entry is a decision,
-# not an oversight -- add to this list only with a reason.
+# Public names deliberately kept out of the reference, keyed by where they are
+# defined so one entry covers every alias. Each is a decision, not an oversight --
+# add to this list only with a reason.
 INTENTIONALLY_UNDOCUMENTED = {
     # Concrete implementations documented through their abstract base class.
-    "lancedb.LanceDBConnection",
-    "lancedb.RemoteDBConnection",
     "lancedb.db.LanceDBConnection",
+    "lancedb.remote.db.RemoteDBConnection",
     "lancedb.table.LanceTable",
     # Base classes folded into the concrete query classes by mkdocstrings'
     # `inherited_members` option.
@@ -69,24 +69,11 @@ INTENTIONALLY_UNDOCUMENTED = {
     "lancedb.query.ColumnOrdering",
     "lancedb.query.FullTextQueryType",
     "lancedb.query.FullTextSearchQuery",
-    "lancedb.query.ensure_vector_query",
     # Path-normalising helper that predates the reference page; undocumented and
     # has no docstring, but stays in `lancedb.__all__` for backwards compatibility.
     "lancedb.common.sanitize_uri",
-    # Internal helpers that happen to lack a leading underscore.
-    "lancedb.permutation.Permutations",
-    "lancedb.permutation.Transforms",
+    # Mixin that exists to be subclassed by the vector helpers, not used directly.
     "lancedb.pydantic.FixedSizeListMixin",
-    "lancedb.pydantic.get_extras",
-    "lancedb.pydantic.is_nullable",
-    "lancedb.pydantic.model_to_dict",
-    "lancedb.schema.blob_column_paths",
-    "lancedb.schema.blob_v2_column_paths",
-    "lancedb.schema.is_blob_like_field",
-    "lancedb.schema.is_blob_v2_field",
-    "lancedb.schema.schema_has_blob_field",
-    "lancedb.table.has_nan_values",
-    "lancedb.table.sanitize_create_table",
 }
 
 _DEFINITION_NODES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
@@ -99,29 +86,35 @@ def _module_name(path: Path) -> str:
     return ".".join(("lancedb", *parts))
 
 
-def _source_files() -> list[Path]:
+@cache
+def _trees() -> dict[str, ast.Module]:
     # A .pyi stub stands in for its compiled module (`lancedb._lancedb`).
     stubs = {p.with_suffix(".py") for p in PACKAGE_ROOT.rglob("*.pyi")}
-    return [
+    sources = [
         *(p for p in PACKAGE_ROOT.rglob("*.py") if p not in stubs),
         *PACKAGE_ROOT.rglob("*.pyi"),
+    ]
+    return {_module_name(p): ast.parse(p.read_text()) for p in sources}
+
+
+def _checked_modules() -> list[str]:
+    return [
+        module
+        for module in sorted(_trees())
+        if module not in UNCHECKED_MODULES
+        and not any(part.startswith("_") for part in module.split(".")[1:])
     ]
 
 
 @cache
-def _trees() -> dict[str, ast.Module]:
-    return {_module_name(p): ast.parse(p.read_text()) for p in _source_files()}
-
-
-@cache
-def _definitions() -> set[str]:
+def _definitions() -> frozenset[str]:
     """Every ``module.Name`` that is a class or function defined in the package."""
-    return {
+    return frozenset(
         f"{module}.{node.name}"
         for module, tree in _trees().items()
         for node in tree.body
         if isinstance(node, _DEFINITION_NODES)
-    }
+    )
 
 
 @cache
@@ -163,66 +156,56 @@ def _resolve(path: str) -> Optional[str]:
     return path
 
 
-@cache
-def _paths_to(definition: str) -> frozenset[str]:
-    """Every importable path that reaches a definition, including its own.
-
-    `lancedb.schema.blob` is also reachable as `lancedb.blob`, and the reference
-    may legitimately document it under either name.
-    """
-    return frozenset(
-        {definition, *(p for p in _reexports() if _resolve(p) == definition)}
-    )
-
-
-def _public_names(module: str) -> tuple[set[str], bool]:
-    """Public names of a module, and whether they came from ``__all__``."""
+def _public_names(module: str) -> set[str]:
     tree = _trees()[module]
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             getattr(target, "id", None) == "__all__" for target in node.targets
         ):
-            return {element.value for element in node.value.elts}, True
+            return {element.value for element in node.value.elts}
+    return _defined_names(module)
+
+
+def _defined_names(module: str) -> set[str]:
     return {
         node.name
-        for node in tree.body
+        for node in _trees()[module].body
         if isinstance(node, _DEFINITION_NODES) and not node.name.startswith("_")
-    }, False
+    }
 
 
 @cache
-def _documented() -> tuple[frozenset[str], frozenset[str]]:
-    """Individual symbols, and whole modules, rendered by the reference page."""
-    symbols, modules = set(), set()
+def _documented() -> frozenset[str]:
+    """Every definition the reference page renders, by where it is defined."""
+    rendered = set()
     for line in REFERENCE_PAGE.read_text().splitlines():
         if not line.startswith("::: "):
             continue
         target = line[4:].strip()
-        (modules if target in _trees() else symbols).add(target)
-    return frozenset(symbols), frozenset(modules)
+        if target in _trees():
+            # A whole-module directive renders the names a module exports, plus any
+            # public name defined in the module itself whether exported or not.
+            paths = {
+                f"{target}.{name}"
+                for name in _public_names(target) | _defined_names(target)
+            }
+        else:
+            paths = {target}
+        rendered |= {d for d in map(_resolve, paths) if d is not None}
+    return frozenset(rendered)
 
 
-@pytest.mark.parametrize("module", CHECKED_MODULES)
+@pytest.mark.parametrize("module", _checked_modules())
 def test_public_api_is_in_the_reference(module: str) -> None:
-    symbols, rendered_modules = _documented()
-    names, from_dunder_all = _public_names(module)
-
     missing = []
-    for name in sorted(names):
+    for name in sorted(_public_names(module)):
         exported_as = f"{module}.{name}"
-        if exported_as in INTENTIONALLY_UNDOCUMENTED:
-            continue
-        defined_at = _resolve(exported_as)
+        definition = _resolve(exported_as)
         # Constants and type aliases (`lancedb.URI`, `__version__`) resolve to
         # nothing and have no place in a class/function reference.
-        if defined_at is None or defined_at in INTENTIONALLY_UNDOCUMENTED:
+        if definition is None:
             continue
-        # A whole-module directive renders everything the module exports, but for
-        # a re-export package only the names listed in `__all__`.
-        rendered_wholesale = module in rendered_modules and (
-            from_dunder_all or defined_at == exported_as
-        )
-        if rendered_wholesale or symbols & _paths_to(defined_at):
+        if definition in INTENTIONALLY_UNDOCUMENTED or definition in _documented():
             continue
         missing.append(exported_as)
 
@@ -230,20 +213,46 @@ def test_public_api_is_in_the_reference(module: str) -> None:
         f"{len(missing)} public name(s) in {module} are missing from "
         f"{REFERENCE_PAGE.relative_to(REPO_ROOT)}:\n  "
         + "\n  ".join(missing)
-        + "\n\nAdd a `::: <path>` line to the matching section of that page, or "
-        "add the name to INTENTIONALLY_UNDOCUMENTED in this test with a reason."
+        + "\n\nAdd a `::: <path>` line to the matching section of that page, make the "
+        "name private, or add it to INTENTIONALLY_UNDOCUMENTED in this test."
     )
 
 
 def test_reference_has_no_stale_entries() -> None:
     """Every `::: lancedb...` target on the page resolves to real source."""
-    symbols, modules = _documented()
     stale = [
-        target
-        for target in sorted(symbols)
-        if _resolve(target) is None and target not in _definitions()
+        line[4:].strip()
+        for line in REFERENCE_PAGE.read_text().splitlines()
+        if line.startswith("::: lancedb")
+        and line[4:].strip() not in _trees()
+        and _resolve(line[4:].strip()) is None
     ]
     assert not stale, (
         "Reference entries with no matching class or function:\n  " + "\n  ".join(stale)
     )
-    assert modules, "Expected the page to render at least one module wholesale"
+
+
+def test_intentionally_undocumented_is_accurate() -> None:
+    """Keep the opt-out list from rotting into a set of false claims."""
+    gone = sorted(INTENTIONALLY_UNDOCUMENTED - _definitions())
+    assert not gone, "No longer defined, drop from the list:\n  " + "\n  ".join(gone)
+
+    contradictory = sorted(INTENTIONALLY_UNDOCUMENTED & _documented())
+    assert not contradictory, (
+        "Listed as undocumented but the reference renders them:\n  "
+        + "\n  ".join(contradictory)
+    )
+
+    # An entry earns its place only if some checked module exports a name that
+    # resolves to it -- being defined in an unchecked module is not disqualifying,
+    # since `lancedb` re-exports several of those.
+    reachable = {
+        _resolve(f"{module}.{name}")
+        for module in _checked_modules()
+        for name in _public_names(module)
+    }
+    unreachable = sorted(INTENTIONALLY_UNDOCUMENTED - reachable)
+    assert not unreachable, (
+        "Not exported by any checked module, so the entry does nothing:\n  "
+        + "\n  ".join(unreachable)
+    )
