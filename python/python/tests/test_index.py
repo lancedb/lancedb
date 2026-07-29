@@ -85,6 +85,13 @@ async def binary_table(db_async):
 
 
 @pytest.mark.asyncio
+async def test_create_index_async_returns_done_job(some_table: AsyncTable):
+    job = await some_table.create_index_async("id", config=BTree())
+    await job.wait()
+    await job.cancel()
+
+
+@pytest.mark.asyncio
 async def test_create_scalar_index(some_table: AsyncTable):
     # Can create
     await some_table.create_index("id")

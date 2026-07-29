@@ -810,6 +810,120 @@ def test_table_create_indices():
         table.drop_index("custom_fts_idx")
 
 
+def test_remote_create_index_async_returns_job():
+    from lancedb.index import BTree
+
+    describe_calls = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/create_index/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "job-1"
+            describe_calls.append(1)
+            state = "IN_PROGRESS" if len(describe_calls) == 1 else "DONE"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(dict(job_id="job-1", job_state=state)).encode()
+            )
+        elif request.path == "/v1/jobs/cancel":
+            assert json.loads(body)["job_id"] == "job-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.create_index_async("id", config=BTree())
+        job.wait(timeout=timedelta(seconds=30))
+        assert len(describe_calls) == 2
+        job.cancel()
+
+
+def test_remote_job_wait_raises_on_failure():
+    from lancedb.exceptions import JobFailedError
+    from lancedb.index import BTree
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/create_index/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-2"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "job-2"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(dict(job_id="job-2", job_state="FAILED")).encode()
+            )
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.create_index_async("id", config=BTree())
+        with pytest.raises(JobFailedError, match="job-2"):
+            job.wait()
+
+
 def test_remote_create_index_new_api():
     received_requests = []
 

@@ -1402,6 +1402,13 @@ async def test_async_open_table_with_branch_version(tmp_path):
     assert await pinned.count_rows() == 4  # writable again
 
 
+def test_create_index_async_returns_done_job(mem_db: DBConnection):
+    table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
+    job = table.create_index_async("id", config=BTree())
+    job.wait()
+    job.cancel()
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
