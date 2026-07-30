@@ -3454,6 +3454,27 @@ impl BaseTable for NativeTable {
         let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
         let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
 
+        // Roll the per-field stats up to top-level columns: every field id in a
+        // column's subtree (struct/list children) maps back to the root column
+        // name. Columns are seeded at 0 so an empty or legacy-storage column
+        // still appears in the map rather than being absent.
+        let mut field_to_column: HashMap<u32, &str> = HashMap::new();
+        let mut column_bytes: HashMap<String, u64> = HashMap::new();
+        for column in &ds.schema().fields {
+            column_bytes.insert(column.name.clone(), 0);
+            let mut subtree = vec![column];
+            while let Some(field) = subtree.pop() {
+                field_to_column.insert(field.id as u32, column.name.as_str());
+                subtree.extend(field.children.iter());
+            }
+        }
+        for field_stats in &ds_stats.fields {
+            if let Some(column) = field_to_column.get(&field_stats.id) {
+                *column_bytes.entry((*column).to_string()).or_insert(0) +=
+                    field_stats.bytes_on_disk;
+            }
+        }
+
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
             frags
@@ -3501,6 +3522,7 @@ impl BaseTable for NativeTable {
             num_rows,
             num_indices,
             fragment_stats: frag_stats,
+            column_bytes: Some(column_bytes),
         };
         Ok(stats)
     }
@@ -3535,6 +3557,14 @@ pub struct TableStatistics {
 
     /// Statistics on table fragments
     pub fragment_stats: FragmentStatistics,
+
+    /// The compressed on-disk bytes of each top-level column, with nested
+    /// fields summed into their root column. Counts data-file bytes only:
+    /// blob sidecar payloads and index files are not included, and blob
+    /// columns therefore report just their descriptor bytes. `None` when the
+    /// backend provides no per-column breakdown (e.g. older remote servers).
+    #[serde(default)]
+    pub column_bytes: Option<HashMap<String, u64>>,
 }
 
 #[skip_serializing_none]
@@ -5052,6 +5082,12 @@ mod tests {
                         p99: 100,
                     },
                 },
+                // Both columns hold identical data, so they split total_bytes
+                // evenly.
+                column_bytes: Some(HashMap::from([
+                    ("id".to_string(), 1150),
+                    ("foo".to_string(), 1150),
+                ])),
             }
         );
         let res = empty_table.stats().await.unwrap();
@@ -5075,6 +5111,11 @@ mod tests {
                         p99: 0,
                     },
                 },
+                // Columns are seeded at 0 even when no fragments exist.
+                column_bytes: Some(HashMap::from([
+                    ("id".to_string(), 0),
+                    ("foo".to_string(), 0),
+                ])),
             }
         )
     }
