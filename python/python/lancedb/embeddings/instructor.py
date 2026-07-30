@@ -35,23 +35,23 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str
+    name : str
         The name of the model to use. Available models are listed at
         https://github.com/xlang-ai/instructor-embedding#model-list;
         The default model is hkunlp/instructor-base
-    batch_size: int, default 32
+    batch_size : int, default 32
         The batch size to use when generating embeddings
-    device: str, default "cpu"
+    device : str, default "cpu"
         The device to use when generating embeddings
-    show_progress_bar: bool, default True
+    show_progress_bar : bool, default True
         Whether to show a progress bar when generating embeddings
-    normalize_embeddings: bool, default True
+    normalize_embeddings : bool, default True
         Whether to normalize the embeddings
-    quantize: bool, default False
+    quantize : bool, default False
         Whether to quantize the model
-    source_instruction: str, default "represent the document for retrieval"
+    source_instruction : str, default "represent the document for retrieval"
         The instruction for the source column
-    query_instruction: str, default "represent the document for retrieving the most
+    query_instruction : str, default "represent the document for retrieving the most
         similar documents"
         The instruction for the query
 

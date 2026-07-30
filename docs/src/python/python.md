@@ -26,6 +26,18 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
+::: lancedb.Session
+
+## Namespaces (Synchronous)
+
+A namespace-backed connection resolves tables through a
+[Lance namespace](https://lancedb.github.io/lance-namespace/) service instead of
+listing a storage directory.
+
+::: lancedb.connect_namespace
+
+::: lancedb.namespace.LanceNamespaceDBConnection
+
 ## Tables (Synchronous)
 
 ::: lancedb.table.Table
@@ -34,7 +46,11 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.table.FragmentSummaryStats
 
+::: lancedb.table.TableStatistics
+
 ::: lancedb.table.Tags
+
+::: lancedb.table.Branches
 
 ## Expressions
 
@@ -62,29 +78,46 @@ of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
 
 ::: lancedb.query.LanceHybridQueryBuilder
 
+::: lancedb.query.LanceEmptyQueryBuilder
+
+::: lancedb.query.LanceTakeQueryBuilder
+
+## Full text queries
+
+Structured full text queries can be passed to
+[Table.search][lancedb.table.Table.search] or
+[AsyncTable.search][lancedb.table.AsyncTable.search] in place of a query string,
+and combined with [BooleanQuery][lancedb.query.BooleanQuery].
+
+::: lancedb.query.FullTextQuery
+
+::: lancedb.query.MatchQuery
+
+::: lancedb.query.PhraseQuery
+
+::: lancedb.query.BoostQuery
+
+::: lancedb.query.MultiMatchQuery
+
+::: lancedb.query.BooleanQuery
+
+::: lancedb.query.FullTextOperator
+
+::: lancedb.query.Occur
+
 ## Embeddings
 
-::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
-
-::: lancedb.embeddings.base.EmbeddingFunctionConfig
-
-::: lancedb.embeddings.base.EmbeddingFunction
-
-::: lancedb.embeddings.base.TextEmbeddingFunction
-
-::: lancedb.embeddings.sentence_transformers.SentenceTransformerEmbeddings
-
-::: lancedb.embeddings.openai.OpenAIEmbeddings
-
-::: lancedb.embeddings.open_clip.OpenClipEmbeddings
+::: lancedb.embeddings
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Remote configuration
 
-::: lancedb.remote.ClientConfig
-
-::: lancedb.remote.TimeoutConfig
-
-::: lancedb.remote.RetryConfig
+::: lancedb.remote
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Context
 
@@ -122,13 +155,36 @@ tokens = list(lancedb.tokenize("acme makes searchable data",
                                custom_stop_words=["acme"]))
 ```
 
-::: lancedb.index.FTS
+::: lancedb.tokenize
+
+::: lancedb.FtsToken
+
+## Blobs
+
+Blob columns store large binary values out of line so they can be read lazily
+instead of being materialized with the rest of the row.
+
+::: lancedb.blob
+
+::: lancedb.BlobType
+
+::: lancedb._blob.BlobFile
+    options:
+      show_root_full_path: false
 
 ## Utilities
 
 ::: lancedb.schema.vector
 
 ::: lancedb.merge.LanceMergeInsertBuilder
+
+::: lancedb.otel.instrument_lancedb_metrics
+
+## Exceptions
+
+::: lancedb.exceptions.MissingValueError
+
+::: lancedb.exceptions.MissingColumnError
 
 ## Integrations
 
@@ -138,19 +194,30 @@ tokens = list(lancedb.tokenize("acme makes searchable data",
 
 ::: lancedb.pydantic.vector
 
+::: lancedb.pydantic.Vector
+
+::: lancedb.pydantic.MultiVector
+
 ::: lancedb.pydantic.LanceModel
+
+## PyTorch
+
+::: lancedb.streaming.StreamingDataset
+
+::: lancedb.permutation.permutation_builder
+
+::: lancedb.permutation.PermutationBuilder
+
+::: lancedb.permutation.Permutation
+
+::: lancedb.permutation.Transforms
 
 ## Reranking
 
-::: lancedb.rerankers.linear_combination.LinearCombinationReranker
-
-::: lancedb.rerankers.cohere.CohereReranker
-
-::: lancedb.rerankers.colbert.ColbertReranker
-
-::: lancedb.rerankers.cross_encoder.CrossEncoderReranker
-
-::: lancedb.rerankers.openai.OpenaiReranker
+::: lancedb.rerankers
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
 
 ## Connections (Asynchronous)
 
@@ -161,6 +228,12 @@ can be used to create, list, or open tables.
 
 ::: lancedb.db.AsyncConnection
 
+## Namespaces (Asynchronous)
+
+::: lancedb.connect_namespace_async
+
+::: lancedb.namespace.AsyncLanceNamespaceDBConnection
+
 ## Tables (Asynchronous)
 
 Table hold your actual data as a collection of records / rows.
@@ -169,32 +242,20 @@ Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.table.AsyncTags
 
+::: lancedb.table.AsyncBranches
+
 ## Indices (Asynchronous)
 
 Indices can be created on a table to speed up queries. This section
 lists the indices that LanceDb supports.
 
-::: lancedb.index.BTree
-
-::: lancedb.index.Bitmap
-
-::: lancedb.index.LabelList
-
-::: lancedb.index.FTS
-
-::: lancedb.index.IvfPq
-
-::: lancedb.index.HnswPq
-
-::: lancedb.index.HnswSq
-
-::: lancedb.index.IvfFlat
-
-::: lancedb.index.IvfSq
-
-::: lancedb.index.IvfRq
-
-::: lancedb.index.HnswFlat
+::: lancedb.index
+    options:
+      show_root_heading: false
+      show_root_toc_entry: false
+      # `lang_mapping` is defined in the module rather than imported, so it is
+      # picked up despite not being in `__all__`. It is an internal lookup table.
+      filters: ["!^_", "!^lang_mapping$"]
 
 ::: lancedb.table.IndexStatistics
 
@@ -220,5 +281,9 @@ rows nearest to a query vector and can be created with the
       inherited_members: true
 
 ::: lancedb.query.AsyncHybridQuery
+    options:
+      inherited_members: true
+
+::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true

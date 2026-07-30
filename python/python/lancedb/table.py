@@ -1211,7 +1211,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [Table][lancedb.table.Table].
 
         Parameters
         ----------
@@ -1343,8 +1343,8 @@ class Table(ABC):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in
         [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
@@ -1780,7 +1780,7 @@ class Table(ABC):
         for faster reads.
 
         Arguments are passed onto Lance's
-        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
+        `lance.dataset.DatasetOptimizer.compact_files`.
         For most cases, the default should be fine.
 
         See Also
@@ -1834,6 +1834,8 @@ class Table(ABC):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -1988,15 +1990,14 @@ class Table(ABC):
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
 
     @abstractmethod
@@ -3383,8 +3384,8 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         Examples
         --------
@@ -3414,8 +3415,9 @@ class LanceTable(Table):
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/[where][sql]/limit clauses are applied
-            to filter the table
+            - If None then the
+            select/[where][lancedb.query.LanceQueryBuilder.where]/limit clauses
+            are applied to filter the table
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -3809,6 +3811,8 @@ class LanceTable(Table):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -4687,7 +4691,7 @@ class AsyncTable:
         Parameters
         ----------
         **kwargs
-            Forwarded to [`lance.dataset`][lance.dataset].
+            Forwarded to `lance.dataset`.
 
         Returns
         -------
@@ -5006,7 +5010,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
         Parameters
         ----------
@@ -5208,8 +5212,8 @@ class AsyncTable:
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in [AsyncQuery][lancedb.query.AsyncQuery].
 
@@ -5770,15 +5774,14 @@ class AsyncTable:
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
         try:
             await self._inner.checkout(version)
@@ -5962,6 +5965,8 @@ class AsyncTable:
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -6342,6 +6347,8 @@ class Branches:
         dry_run: bool, default False
             When True, only preview. When False, attempt the merge.
 
+        Notes
+        -----
         A rejected merge returns ``status="rejected"`` instead of raising.
         """
         return LOOP.run(self._table.branches.merge(from_branch, dry_run))

@@ -404,7 +404,7 @@ class DBConnection(EnforceOverrides):
 
         Data is converted to Arrow before being written to disk. For maximum
         control over how data is saved, either provide the PyArrow schema to
-        convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
+        convert to or else provide a [PyArrow Table][pyarrow.Table] directly.
 
         >>> import pyarrow as pa
         >>> custom_schema = pa.schema([
@@ -1570,7 +1570,7 @@ class AsyncConnection(object):
 
         Data is converted to Arrow before being written to disk. For maximum
         control over how data is saved, either provide the PyArrow schema to
-        convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
+        convert to or else provide a [PyArrow Table][pyarrow.Table] directly.
 
         >>> import pyarrow as pa
         >>> custom_schema = pa.schema([

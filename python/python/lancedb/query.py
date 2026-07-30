@@ -650,7 +650,8 @@ class Query(pydantic.BaseModel):
     distance_type : Optional[str]
         the distance type to use for vector search
 
-        This can be l2 (default), cosine and dot.  See [metric definitions][search] for
+        This can be l2 (default), cosine and dot.  See
+        [metric definitions](https://lancedb.com/docs/search/vector-search/) for
         more details.
 
         If this is not a vector search this will be None.
@@ -663,8 +664,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     refine_factor : Optional[int]
@@ -672,8 +674,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     lower_bound : Optional[float]
@@ -1647,8 +1650,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         This method sets both the minimum and maximum number of probes to the same
         value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
@@ -1748,8 +1751,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         As an example, a refine factor of 2 will sample 2x as many vectors as
         requested, re-ranks them, and returns the top half most relevant results.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         Parameters
         ----------
@@ -3373,8 +3376,9 @@ class AsyncQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Vector searches always have a
+        [limit][lancedb.query.AsyncVectorQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors. When multiple vectors are passed in, if the vector
@@ -3505,8 +3509,9 @@ class AsyncFTSQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Hybrid searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Hybrid searches always have a
+        [limit][lancedb.query.AsyncHybridQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest

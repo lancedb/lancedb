@@ -167,7 +167,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
     Parameters
     ----------
-    name: str
+    name : str
         The name of the model to use. List of acceptable models:
 
             * voyage-4 (1024 dims, general-purpose and multilingual retrieval)
@@ -185,7 +185,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             * voyage-law-2
             * voyage-code-2
 
-    output_dimension: int, optional
+    output_dimension : int, optional
         The output dimension for models that support flexible dimensions.
         Currently only voyage-multimodal-3.5 supports this feature.
         Valid options: 256, 512, 1024 (default), 2048.
