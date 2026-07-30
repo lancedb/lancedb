@@ -3,6 +3,7 @@
 
 //! LanceDB Table APIs
 
+use crate::blob::BlobFile;
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
@@ -12,7 +13,6 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use lance::dataset::BlobFile;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
