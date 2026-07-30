@@ -3454,25 +3454,38 @@ impl BaseTable for NativeTable {
         let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
         let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
 
-        // Roll the per-field stats up to top-level columns: every field id in a
-        // column's subtree (struct/list children) maps back to the root column
-        // name. Columns are seeded at 0 so an empty or legacy-storage column
-        // still appears in the map rather than being absent.
-        let mut field_to_column: HashMap<u32, &str> = HashMap::new();
+        // One entry per field at every nesting level, keyed by dotted path
+        // ("meta", "meta.geo", "meta.geo.lat"). Each entry is the field's own
+        // bytes plus its whole subtree, so a struct reports its total while its
+        // children report the breakdown. Every field gets an entry even when
+        // the stats report no bytes for it (empty table, legacy storage), so
+        // columns appear as 0 rather than being absent.
+        let bytes_by_id: HashMap<u32, u64> = ds_stats
+            .fields
+            .iter()
+            .map(|f| (f.id, f.bytes_on_disk))
+            .collect();
+        fn subtree_bytes(
+            field: &lance_core::datatypes::Field,
+            path: String,
+            bytes_by_id: &HashMap<u32, u64>,
+            column_bytes: &mut HashMap<String, u64>,
+        ) -> u64 {
+            let mut total = bytes_by_id.get(&(field.id as u32)).copied().unwrap_or(0);
+            for child in &field.children {
+                total += subtree_bytes(
+                    child,
+                    format!("{path}.{}", child.name),
+                    bytes_by_id,
+                    column_bytes,
+                );
+            }
+            column_bytes.insert(path, total);
+            total
+        }
         let mut column_bytes: HashMap<String, u64> = HashMap::new();
         for column in &ds.schema().fields {
-            column_bytes.insert(column.name.clone(), 0);
-            let mut subtree = vec![column];
-            while let Some(field) = subtree.pop() {
-                field_to_column.insert(field.id as u32, column.name.as_str());
-                subtree.extend(field.children.iter());
-            }
-        }
-        for field_stats in &ds_stats.fields {
-            if let Some(column) = field_to_column.get(&field_stats.id) {
-                *column_bytes.entry((*column).to_string()).or_insert(0) +=
-                    field_stats.bytes_on_disk;
-            }
+            subtree_bytes(column, column.name.clone(), &bytes_by_id, &mut column_bytes);
         }
 
         let frags = ds.get_fragments();
@@ -3558,9 +3571,12 @@ pub struct TableStatistics {
     /// Statistics on table fragments
     pub fragment_stats: FragmentStatistics,
 
-    /// The compressed on-disk bytes of each top-level column, with nested
-    /// fields summed into their root column. Counts data-file bytes only:
-    /// blob sidecar payloads and index files are not included, and blob
+    /// The compressed on-disk bytes of each column, keyed by dotted field
+    /// path ("meta", "meta.geo", "meta.geo.lat"). Every nesting level gets an
+    /// entry covering the field's own bytes plus its whole subtree, so a
+    /// struct reports its total while its children report the breakdown (the
+    /// top-level entries alone sum to `total_bytes`). Counts data-file bytes
+    /// only: blob sidecar payloads and index files are not included, and blob
     /// columns therefore report just their descriptor bytes. `None` when the
     /// backend provides no per-column breakdown (e.g. older remote servers).
     #[serde(default)]
@@ -3603,7 +3619,8 @@ mod tests {
     use std::time::Duration;
 
     use arrow_array::{
-        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+        ArrayRef, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+        StructArray,
     };
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -5118,5 +5135,61 @@ mod tests {
                 ])),
             }
         )
+    }
+
+    #[tokio::test]
+    pub async fn test_stats_nested_column_bytes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let inner_fields = vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Utf8, true),
+        ];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("meta", DataType::Struct(inner_fields.clone().into()), true),
+        ]));
+        let meta = StructArray::new(
+            inner_fields.into(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)) as ArrayRef,
+                Arc::new(StringArray::from_iter_values(
+                    (0..100).map(|i| format!("value-{i}")),
+                )) as ArrayRef,
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(meta),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("nested_stats", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.stats().await.unwrap();
+        let column_bytes = stats.column_bytes.unwrap();
+
+        // Nested fields get their own dotted-path entries.
+        assert!(column_bytes["meta.a"] > 0);
+        assert!(column_bytes["meta.b"] > 0);
+        // A struct's entry covers its whole subtree (its own validity bytes
+        // plus every child).
+        assert!(column_bytes["meta"] >= column_bytes["meta.a"] + column_bytes["meta.b"]);
+        // Top-level entries alone sum to the table total.
+        assert_eq!(
+            column_bytes["id"] + column_bytes["meta"],
+            stats.total_bytes as u64
+        );
+        // Exactly the four expected paths, nothing else.
+        assert_eq!(column_bytes.len(), 4);
     }
 }
