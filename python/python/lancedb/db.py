@@ -688,11 +688,7 @@ class LanceDBConnection(DBConnection):
         return cls(None, _inner=inner)
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(uri={self._conn.uri!r}"
-        if self.read_consistency_interval is not None:
-            val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
-        val += ")"
-        return val
+        return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
 
     @override
     def serialize(self) -> str:

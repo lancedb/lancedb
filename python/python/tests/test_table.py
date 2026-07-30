@@ -3087,9 +3087,6 @@ def test_consistency(tmp_path, consistency_interval):
 
     db2 = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
     table2 = db2.open_table("my_table")
-    if consistency_interval is not None:
-        assert "read_consistency_interval=datetime.timedelta(" in repr(db2)
-        assert "read_consistency_interval=datetime.timedelta(" in repr(table2)
     assert table2.version == table.version
 
     table.add([{"id": 1}])
