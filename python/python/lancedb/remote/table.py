@@ -20,6 +20,7 @@ from typing import (
 import warnings
 
 from lancedb import __version__
+from lancedb._blob import BlobFile
 
 from lancedb._lancedb import (
     AddColumnsResult,
@@ -1037,22 +1038,22 @@ class RemoteTable(Table):
         )
 
     def blob_columns(self) -> list[str]:
-        raise NotImplementedError(
-            "blob_columns() is not yet supported on the LanceDB Cloud"
-        )
+        return LOOP.run(self._table.blob_columns())
 
-    def fetch_blobs(self, column: str, row_ids) -> pa.LargeBinaryArray:
-        raise NotImplementedError("fetch_blobs() is not supported on LanceDB Cloud")
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_ranges(self, column: str, requests) -> pa.LargeBinaryArray:
         raise NotImplementedError(
             "fetch_blob_ranges() is not supported on LanceDB Cloud"
         )
 
-    def fetch_blob_files(self, column: str, row_ids):
-        raise NotImplementedError(
-            "fetch_blob_files() is not supported on LanceDB Cloud"
-        )
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
     def head(self, n=5) -> pa.Table:
         """

@@ -79,6 +79,10 @@ impl ServerVersion {
     pub fn support_multipart_write(&self) -> bool {
         self.0 >= semver::Version::new(0, 4, 0)
     }
+
+    pub fn support_blobs(&self) -> bool {
+        self.0 >= semver::Version::new(0, 5, 0)
+    }
 }
 
 pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
@@ -661,6 +665,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
+            let describe_body = rsp.text().await.ok();
             let table_identifier = build_table_identifier(
                 &request.name,
                 &request.namespace_path,
@@ -673,6 +678,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 table_identifier,
                 version,
             ));
+            // This describe already carries the schema, so hand it to the table
+            // instead of making the first schema read fetch it again. A version or
+            // branch pin applied after this invalidates the cache.
+            if let Some(body) = &describe_body {
+                table.seed_schema(body);
+            }
             let cache_key = build_cache_key(&request.name, &request.namespace_path);
             self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
@@ -923,6 +934,7 @@ impl From<StorageOptions> for RemoteOptions {
 mod tests {
     use super::{NamespaceHeaderProviderContext, build_cache_key};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch};
@@ -1070,6 +1082,46 @@ mod tests {
             .execute()
             .await
             .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_open_table_seeds_the_schema_from_its_describe() {
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let counted = describe_calls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            counted.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "id", "type": {"type": "int64"}, "nullable": false}
+                    ]}}"#
+                        .to_string(),
+                )
+                .unwrap()
+        });
+
+        let table = conn.open_table("table1").execute().await.unwrap();
+        let schema = table.schema().await.unwrap();
+
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(describe_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_open_table_survives_a_describe_body_it_cannot_parse() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"table": "table1"}"#.to_string())
+                .unwrap()
+        });
+
+        let table = conn.open_table("table1").execute().await.unwrap();
+
         assert_eq!(table.name(), "table1");
     }
 

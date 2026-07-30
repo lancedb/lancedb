@@ -14,7 +14,6 @@ pub(crate) mod table;
 pub(crate) mod util;
 
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
-#[cfg(test)]
 const ARROW_FILE_CONTENT_TYPE: &str = "application/vnd.apache.arrow.file";
 #[cfg(test)]
 const JSON_CONTENT_TYPE: &str = "application/json";
