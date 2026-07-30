@@ -21,3 +21,4 @@ from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
 from .colpali import ColPaliEmbeddings
 from .siglip import SigLipEmbeddings
+from .twelvelabs import TwelveLabsEmbeddingFunction
