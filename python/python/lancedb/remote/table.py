@@ -544,6 +544,7 @@ class RemoteTable(Table):
         column: str,
         *,
         config: IndexConfigType,
+        replace: Optional[bool] = None,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
@@ -557,6 +558,7 @@ class RemoteTable(Table):
             LOOP.run(
                 self._table.create_index_async(
                     column,
+                    replace=replace,
                     config=config,
                     wait_timeout=wait_timeout,
                     name=name,
