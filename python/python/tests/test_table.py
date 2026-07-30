@@ -1407,6 +1407,7 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job = table.create_index_async("id", config=BTree())
     assert job.id is None
     job.wait()
+    assert len(table.list_indices()) == 1
     job.cancel()
 
 

@@ -854,6 +854,7 @@ describe("When creating an index", () => {
     const job = await tbl.createIndexAsync("vec");
     expect(job.id).toBeNull();
     await job.wait();
+    // Cancelling a job that already finished succeeds and does nothing.
     await job.cancel();
 
     // check index directory
