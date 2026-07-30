@@ -544,6 +544,122 @@ mod tests {
         job.cancel().await.unwrap();
     }
 
+    /// Concurrent waiters, and a wait issued after the job settled, all
+    /// succeed once the build does.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_success_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        let waiters = (0..4)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            waiter.await.unwrap().unwrap();
+        }
+        // A wait after the job settled still reports the same outcome.
+        job.wait().await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 1);
+    }
+
+    /// Every waiter sees a failure, not just the first: a waiter that missed
+    /// the outcome would be told the job succeeded.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_failure_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Rebuilding the same index without replace fails once the build
+        // starts, so the failure reaches the job rather than execute_async.
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .replace(false)
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        let waiters = (0..3)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            waiter
+                .await
+                .unwrap()
+                .expect_err("every waiter must see the failure");
+        }
+        job.wait().await.expect_err("a later wait still fails");
+    }
+
+    /// Every waiter sees the cancellation, including ones that were already
+    /// waiting when the cancel landed.
+    #[tokio::test]
+    async fn test_execute_async_job_reports_cancellation_to_every_waiter() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+
+        let job = Arc::new(
+            table
+                .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+                .execute_async()
+                .await
+                .unwrap(),
+        );
+        // Cancel before yielding, so the build cannot have started and the
+        // outcome is always the cancellation.
+        job.cancel().await.unwrap();
+
+        let waiters = (0..2)
+            .map(|_| {
+                let job = job.clone();
+                tokio::spawn(async move { job.wait().await })
+            })
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            match waiter.await.unwrap() {
+                Err(crate::Error::JobCancelled { .. }) => {}
+                other => panic!("expected the cancellation, got {other:?}"),
+            }
+        }
+        match job.wait().await {
+            Err(crate::Error::JobCancelled { .. }) => {}
+            other => panic!("expected the cancellation, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_execute_async_job_cancel_stops_local_build() {
         let tmp_dir = tempdir().unwrap();

@@ -4,7 +4,7 @@
 //! Handles to operations a server may run asynchronously.
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::error::{Error, Result};
@@ -50,10 +50,7 @@ impl Job {
 
     /// A job running as a task in this process.
     pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
-        Self::new(Box::new(SpawnedJob {
-            abort: task.abort_handle(),
-            task: Mutex::new(Some(task)),
-        }))
+        Self::new(Box::new(SpawnedJob::new(task)))
     }
 
     /// Identifies the operation on the server that is running it.
@@ -88,26 +85,66 @@ impl Job {
     }
 }
 
-/// Tracks an operation running as a task in this process. `wait` consumes the
-/// task, so only the first call reports its outcome.
+/// How an in-process operation ended. Cloneable so every waiter can be given
+/// the outcome; [`Error`] is not, so failures carry their message instead.
+#[derive(Clone)]
+enum Outcome {
+    Succeeded,
+    Failed(String),
+    Cancelled,
+}
+
+impl Outcome {
+    fn into_result(self) -> Result<()> {
+        match self {
+            Self::Succeeded => Ok(()),
+            Self::Failed(message) => Err(Error::JobFailed {
+                job_id: None,
+                message,
+            }),
+            Self::Cancelled => Err(Error::JobCancelled { job_id: None }),
+        }
+    }
+}
+
+/// Tracks an operation running as a task in this process. A second task
+/// watches the first so that aborting it still produces an outcome, and so
+/// that every caller of `wait` observes the same one.
 struct SpawnedJob {
-    task: Mutex<Option<JoinHandle<Result<()>>>>,
+    outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
+}
+
+impl SpawnedJob {
+    fn new(task: JoinHandle<Result<()>>) -> Self {
+        let abort = task.abort_handle();
+        let (tx, outcome) = watch::channel(None);
+        tokio::spawn(async move {
+            let outcome = match task.await {
+                Ok(Ok(())) => Outcome::Succeeded,
+                Ok(Err(err)) => Outcome::Failed(err.to_string()),
+                Err(err) if err.is_cancelled() => Outcome::Cancelled,
+                Err(err) => Outcome::Failed(format!("index job task failed: {err}")),
+            };
+            let _ = tx.send(Some(outcome));
+        });
+        Self { outcome, abort }
+    }
 }
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
     async fn wait(&self) -> Result<()> {
-        let Some(task) = self.task.lock().await.take() else {
-            return Ok(());
-        };
-        match task.await {
-            Ok(result) => result,
-            Err(err) if err.is_cancelled() => Err(Error::JobCancelled { job_id: None }),
-            Err(err) => Err(Error::Runtime {
-                message: format!("index job task failed: {err}"),
-            }),
-        }
+        let mut outcome = self.outcome.clone();
+        let settled = outcome
+            .wait_for(|outcome| outcome.is_some())
+            .await
+            .map_err(|_| Error::Runtime {
+                message: "index job outcome was dropped before it completed".to_string(),
+            })?
+            .clone()
+            .expect("wait_for returns once an outcome is set");
+        settled.into_result()
     }
 
     async fn cancel(&self) -> Result<()> {
