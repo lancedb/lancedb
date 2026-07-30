@@ -5,14 +5,13 @@ mod blobs;
 pub mod insert;
 
 use self::insert::{RemoteWriteExec, WriteOp};
-use crate::blob::BlobFile;
-use crate::expr::expr_to_sql_string;
-use crate::table::write_progress::FinishOnDrop;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
 use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
+use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
+use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
@@ -29,6 +28,7 @@ use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
+use crate::table::write_progress::FinishOnDrop;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
@@ -2999,11 +2999,9 @@ mod tests {
     use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::builder::LargeBinaryBuilder;
-    use arrow_array::{
-        BinaryArray, Int32Array, RecordBatch, RecordBatchIterator, record_batch,
-    };
     use arrow_array::Array;
+    use arrow_array::builder::LargeBinaryBuilder;
+    use arrow_array::{BinaryArray, Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
