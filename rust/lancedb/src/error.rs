@@ -18,6 +18,10 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String, source: BoxError },
+    #[snafu(display(
+        "Table '{name}' exists but could not be loaded (it may be corrupt or incomplete): {source}"
+    ))]
+    TableCorrupted { name: String, source: BoxError },
     #[snafu(display("Database '{name}' was not found"))]
     DatabaseNotFound { name: String },
     #[snafu(display("Database '{name}' already exists."))]

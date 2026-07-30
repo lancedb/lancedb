@@ -50,6 +50,7 @@ use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
+use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -144,6 +145,55 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
+}
+
+/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
+///
+/// Lance reports "there is nothing at this location" and "there is a table directory
+/// here but nothing loadable inside it" with the same error. Only the first is a
+/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
+/// re-create is still reported by `Connection::table_names`, so callers need to be able
+/// to tell "never existed" from "exists but is broken".
+///
+/// See <https://github.com/lancedb/lancedb/issues/3127>.
+async fn map_dataset_not_found(
+    uri: &str,
+    name: &str,
+    params: ReadParams,
+    err: lance::Error,
+) -> Error {
+    let name = name.to_string();
+    let source = Box::new(err);
+    if table_dir_exists(uri, params).await.unwrap_or(false) {
+        Error::TableCorrupted { name, source }
+    } else {
+        Error::TableNotFound { name, source }
+    }
+}
+
+/// Whether a table directory is present at `uri`, even though no dataset could be
+/// loaded from it.
+///
+/// This looks for a `<name>.lance` entry in the parent directory, which is exactly what
+/// `ListingDatabase::table_names` lists, so the two APIs agree on whether a table is
+/// present. Probing `uri` itself would not work: object stores have no empty
+/// directories to probe, and on a local filesystem the interesting case is precisely an
+/// empty directory.
+async fn table_dir_exists(uri: &str, params: ReadParams) -> Result<bool> {
+    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
+        .with_read_params(params)
+        .build_object_store()
+        .await?;
+    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
+    // the list-then-open mismatch this guards against.
+    if path.extension() != Some(LANCE_FILE_EXTENSION) {
+        return Ok(false);
+    }
+    let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
+        return Ok(false);
+    };
+    let entries = object_store.read_dir(parent).await?;
+    Ok(entries.iter().any(|entry| entry.as_str() == dir_name))
 }
 
 /// Defines the type of column
@@ -2240,6 +2290,8 @@ impl NativeTable {
             None => false,
         };
 
+        // Kept so that a `DatasetNotFound` can be re-checked against storage below.
+        let recovery_params = params.clone();
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
@@ -2255,13 +2307,13 @@ impl NativeTable {
             builder = builder.with_commit_handler(commit_handler);
         }
 
-        let dataset = builder.load().await.map_err(|e| match e {
-            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                name: name.to_string(),
-                source: Box::new(e),
-            },
-            e => e.into(),
-        })?;
+        let dataset = match builder.load().await {
+            Ok(dataset) => dataset,
+            Err(e @ lance::Error::DatasetNotFound { .. }) => {
+                return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -3582,6 +3634,103 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let table = NativeTable::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_open_not_found_missing_lance_dir() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
+    ///
+    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
+    /// empty); otherwise only the manifests are removed, leaving the data files behind.
+    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
+        let dataset_path = dir.join("test.lance");
+        let uri = dataset_path.to_str().unwrap().to_string();
+
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, &uri, None).await.unwrap();
+
+        if remove_all {
+            for entry in std::fs::read_dir(&dataset_path).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    std::fs::remove_dir_all(entry.path()).unwrap();
+                } else {
+                    std::fs::remove_file(entry.path()).unwrap();
+                }
+            }
+            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
+        } else {
+            let versions = dataset_path.join("_versions");
+            assert!(versions.is_dir(), "expected manifests under {versions:?}");
+            std::fs::remove_dir_all(&versions).unwrap();
+            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
+        }
+
+        uri
+    }
+
+    #[tokio::test]
+    async fn test_open_corrupt_empty_dir() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+
+        let err = NativeTable::open(&uri).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_corrupt_missing_manifest() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+
+        let err = NativeTable::open(&uri).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    /// A table listed by `table_names()` must not be reported as missing by
+    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    #[tokio::test]
+    async fn test_open_table_corrupt_is_still_listed() {
+        let tmp_dir = tempdir().unwrap();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        write_then_corrupt_table(tmp_dir.path(), true).await;
+
+        assert_eq!(
+            db.table_names().execute().await.unwrap(),
+            vec!["test".to_string()]
+        );
+        let err = db.open_table("test").execute().await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("exists but could not be loaded"),
+            "got {err}"
+        );
     }
 
     #[test]
