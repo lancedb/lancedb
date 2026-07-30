@@ -12,6 +12,10 @@ use crate::error::{Error, Result};
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
 pub(crate) trait JobHandle: Send + Sync {
+    /// Server-assigned id, when the backend has one.
+    fn id(&self) -> Option<&str> {
+        None
+    }
     async fn wait(&self) -> Result<()>;
     async fn cancel(&self) -> Result<()>;
 }
@@ -26,6 +30,7 @@ pub struct Job {
 impl std::fmt::Debug for Job {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
+            .field("id", &self.id())
             .field("done", &self.handle.is_none())
             .finish()
     }
@@ -49,6 +54,16 @@ impl Job {
             abort: task.abort_handle(),
             task: Mutex::new(Some(task)),
         }))
+    }
+
+    /// Identifies the operation on the server that is running it.
+    ///
+    /// Returned for correlating with server logs or the jobs API. Operations
+    /// that run in this process have no server id and return `None`. The
+    /// value is opaque: parsing it or storing it to resume the job later is
+    /// not supported.
+    pub fn id(&self) -> Option<&str> {
+        self.handle.as_ref().and_then(|handle| handle.id())
     }
 
     /// Waits until the operation reaches a terminal state.

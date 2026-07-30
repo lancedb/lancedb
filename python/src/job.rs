@@ -23,6 +23,11 @@ impl Job {
 
 #[pymethods]
 impl Job {
+    #[getter]
+    pub fn id(&self) -> Option<String> {
+        self.inner.id().map(str::to_string)
+    }
+
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {

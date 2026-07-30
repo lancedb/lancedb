@@ -534,6 +534,8 @@ mod tests {
             .execute_async()
             .await
             .unwrap();
+        // Local jobs run in this process and have no server id.
+        assert_eq!(job.id(), None);
         // The build runs as a task, so the index need not exist yet; it must
         // once the job resolves.
         job.wait().await.unwrap();

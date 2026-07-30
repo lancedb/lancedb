@@ -4671,6 +4671,7 @@ mod tests {
             .execute_async()
             .await
             .unwrap();
+        assert_eq!(job.id(), Some("job-123"));
         job.wait().await.unwrap();
         assert_eq!(describe_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         job.cancel().await.unwrap();

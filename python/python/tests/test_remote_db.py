@@ -867,6 +867,7 @@ def test_remote_create_index_async_returns_job():
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
         job = table.create_index_async("id", config=BTree())
+        assert job.id == "job-1"
         job.wait(timeout=timedelta(seconds=30))
         assert len(describe_calls) == 2
         job.cancel()

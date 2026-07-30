@@ -69,6 +69,10 @@ impl<S: HttpSend> RemoteJob<S> {
 
 #[async_trait]
 impl<S: HttpSend> JobHandle for RemoteJob<S> {
+    fn id(&self) -> Option<&str> {
+        Some(&self.job_id)
+    }
+
     async fn wait(&self) -> Result<()> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {

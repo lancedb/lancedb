@@ -23,6 +23,13 @@ impl Job {
 
 #[napi]
 impl Job {
+    /// Identifies the operation on the server that is running it. Operations
+    /// that run in this process have no server id. The value is opaque.
+    #[napi(getter)]
+    pub fn id(&self) -> Option<String> {
+        self.inner.id().map(str::to_string)
+    }
+
     /// Wait until the operation reaches a terminal state.
     #[napi(catch_unwind)]
     pub async fn wait(&self) -> napi::Result<()> {

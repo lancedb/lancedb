@@ -20,6 +20,21 @@ new Job(): Job
 
 [`Job`](Job.md)
 
+## Accessors
+
+### id
+
+```ts
+get id(): null | string
+```
+
+Identifies the operation on the server that is running it. Operations
+that run in this process have no server id. The value is opaque.
+
+#### Returns
+
+`null` \| `string`
+
 ## Methods
 
 ### cancel()

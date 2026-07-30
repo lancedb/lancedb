@@ -21,6 +21,17 @@ class AsyncJob:
     def __init__(self, inner: Optional["_lancedb.Job"]):
         self._inner = inner
 
+    @property
+    def id(self) -> Optional[str]:
+        """Identifies the operation on the server that is running it.
+
+        Returned for correlating with server logs or the jobs API. Operations
+        that run in this process have no server id and return `None`. The value
+        is opaque: parsing it or storing it to resume the job later is not
+        supported.
+        """
+        return self._inner.id if self._inner is not None else None
+
     async def wait(self, timeout: Optional[timedelta] = None):
         """Wait until the operation reaches a terminal state.
 
@@ -46,6 +57,14 @@ class Job:
 
     def __init__(self, inner: Optional[AsyncJob]):
         self._inner = inner
+
+    @property
+    def id(self) -> Optional[str]:
+        """Identifies the operation on the server that is running it.
+
+        See :attr:`AsyncJob.id`.
+        """
+        return self._inner.id if self._inner is not None else None
 
     def wait(self, timeout: Optional[timedelta] = None):
         """Block until the operation reaches a terminal state.

@@ -852,6 +852,7 @@ describe("When creating an index", () => {
 
   it("should create a vector index on vector columns", async () => {
     const job = await tbl.createIndexAsync("vec");
+    expect(job.id).toBeNull();
     await job.wait();
     await job.cancel();
 
