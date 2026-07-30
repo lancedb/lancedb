@@ -3389,7 +3389,7 @@ class LanceTable(Table):
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
-        and [full-text search][search].
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         Examples
         --------
@@ -3419,8 +3419,9 @@ class LanceTable(Table):
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/[where][sql]/limit clauses are applied
-            to filter the table
+            - If None then the
+            select/[where][lancedb.query.LanceQueryBuilder.where]/limit clauses
+            are applied to filter the table
         vector_column_name: str, optional
             The name of the vector column to search.
 

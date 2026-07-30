@@ -651,7 +651,8 @@ class Query(pydantic.BaseModel):
     distance_type : Optional[str]
         the distance type to use for vector search
 
-        This can be l2 (default), cosine and dot.  See [metric definitions][search] for
+        This can be l2 (default), cosine and dot.  See
+        [metric definitions](https://lancedb.com/docs/search/vector-search/) for
         more details.
 
         If this is not a vector search this will be None.
@@ -3381,8 +3382,9 @@ class AsyncQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Vector searches always have a
+        [limit][lancedb.query.AsyncVectorQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors. When multiple vectors are passed in, if the vector
@@ -3513,8 +3515,9 @@ class AsyncFTSQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Hybrid searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Hybrid searches always have a
+        [limit][lancedb.query.AsyncHybridQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest

@@ -642,7 +642,8 @@ class RemoteTable(Table):
         fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
+        of the given query vector. We currently support
+        [vector search](https://lancedb.com/docs/search/vector-search/)
 
         All query options are defined in
         [LanceVectorQueryBuilder][lancedb.query.LanceVectorQueryBuilder].
