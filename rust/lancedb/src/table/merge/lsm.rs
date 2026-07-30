@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::table::merge::{MergeInsertBuilder, MergeResult};
-use crate::table::{LsmWriteSpec, NativeTable};
+use crate::table::{BaseTable, LsmWriteSpec, NativeTable};
 
 /// Spec id of the sole sharding spec installed by [`set_lsm_write_spec`].
 /// Must match Lance's `InitializeMemWalBuilder` (`SHARDING_SPEC_ID`).
@@ -80,32 +80,36 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         }
     }
 
+    // Resolved before the builder takes its mutable borrow of the dataset
+    // clone, and against the same table the spec is about to be committed to.
+    let maintained_indexes = resolve_maintained_indexes(table, spec.maintained_indexes()).await?;
+
     let mut dataset = (*table.dataset.get().await?).clone();
     let mut builder = dataset.initialize_mem_wal();
-    let (maintained_indexes, writer_config_defaults) = match spec {
+    let writer_config_defaults = match spec {
         LsmWriteSpec::Bucket {
             column,
             num_buckets,
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.bucket_sharding(column, num_buckets);
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
         LsmWriteSpec::Identity {
             column,
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.identity_sharding(column);
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
         LsmWriteSpec::Unsharded {
-            maintained_indexes,
             writer_config_defaults,
+            ..
         } => {
             builder = builder.unsharded();
-            (maintained_indexes, writer_config_defaults)
+            writer_config_defaults
         }
     };
     builder = builder.maintained_indexes(maintained_indexes);
@@ -115,6 +119,51 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     builder.execute().await?;
     table.dataset.update(dataset);
     Ok(())
+}
+
+/// Resolve a spec's maintained-index selection against the table's committed
+/// indexes.
+///
+/// `None` snapshots every index the MemWAL can maintain as of now — indexes
+/// created after this call are not picked up. An explicit list is checked both
+/// for names that do not exist and for types the memtable cannot build; the
+/// latter would otherwise commit cleanly and then fail every memtable claim,
+/// leaving the table unwritable far from the call that caused it.
+async fn resolve_maintained_indexes(
+    table: &NativeTable,
+    requested: Option<&[String]>,
+) -> Result<Vec<String>> {
+    // `list_indices` reports one entry per index name, merging an index's
+    // segments, so the resolved list needs no dedup.
+    let indices = table.list_indices().await?;
+    let Some(requested) = requested else {
+        return Ok(indices
+            .into_iter()
+            .filter(|index| index.is_memwal_maintainable())
+            .map(|index| index.name)
+            .collect());
+    };
+    for name in requested {
+        let index = indices
+            .iter()
+            .find(|index| &index.name == name)
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!(
+                    "set_lsm_write_spec: maintained index '{}' does not exist on this table",
+                    name
+                ),
+            })?;
+        if !index.is_memwal_maintainable() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "set_lsm_write_spec: maintained index '{}' has type {}, which the MemWAL \
+                     cannot maintain; supported types are BTREE, FTS, and IVF vector indexes",
+                    name, index.index_type
+                ),
+            });
+        }
+    }
+    Ok(requested.to_vec())
 }
 
 // =============================================================================

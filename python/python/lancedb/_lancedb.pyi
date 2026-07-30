@@ -608,8 +608,13 @@ class LsmWriteSpec:
     @staticmethod
     def unsharded() -> "LsmWriteSpec": ...
     def with_maintained_indexes(self, indexes: List[str]) -> "LsmWriteSpec":
-        """Return a copy of this spec asking the MemWAL to keep the named
-        indexes up to date as rows are appended."""
+        """Return a copy of this spec asking the MemWAL to keep exactly the
+        named indexes up to date as rows are appended, replacing the default
+        of every index the MemWAL supports."""
+        ...
+    def with_no_maintained_indexes(self) -> "LsmWriteSpec":
+        """Return a copy of this spec asking the MemWAL to maintain no
+        indexes at all."""
         ...
     def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "LsmWriteSpec":
         """Return a copy of this spec recording the given default
@@ -624,7 +629,10 @@ class LsmWriteSpec:
     @property
     def num_buckets(self) -> Optional[int]: ...
     @property
-    def maintained_indexes(self) -> List[str]: ...
+    def maintained_indexes(self) -> Optional[List[str]]:
+        """Names of indexes the MemWAL keeps up to date, or None when the spec
+        asks for every index the MemWAL supports."""
+        ...
     @property
     def writer_config_defaults(self) -> Dict[str, str]: ...
 

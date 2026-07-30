@@ -449,6 +449,22 @@ pub struct IndexConfig {
     pub index_details: Option<String>,
 }
 
+impl IndexConfig {
+    /// Whether Lance's MemWAL can maintain this index on a memtable, and so
+    /// whether it may appear in an
+    /// [`LsmWriteSpec`](crate::table::LsmWriteSpec)'s maintained set.
+    ///
+    /// Support is defined by lance, which rejects an unmaintainable index when
+    /// a shard writer is opened — long after the spec commits — so callers
+    /// filter on this first. `false` when [`Self::type_url`] is absent, as it
+    /// is for remote tables, where the server resolves the set instead.
+    pub fn is_memwal_maintainable(&self) -> bool {
+        self.type_url
+            .as_deref()
+            .is_some_and(lance::dataset::mem_wal::is_maintainable_index_type)
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexMetadata {

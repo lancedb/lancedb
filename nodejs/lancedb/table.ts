@@ -197,7 +197,13 @@ export interface LsmWriteSpec {
   column?: string;
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
-  /** Names of indexes the MemWAL should keep up to date during writes. */
+  /**
+   * Names of indexes the MemWAL should keep up to date during writes.
+   *
+   * Omit to maintain every index the MemWAL supports, resolved when the spec
+   * is installed — a snapshot, not a subscription: indexes created afterwards
+   * are not maintained. Pass `[]` to maintain none.
+   */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
@@ -595,6 +601,12 @@ export abstract class Table {
    * All variants require the table to have an unenforced primary key
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
+   *
+   * Omitting `maintainedIndexes` maintains every index the MemWAL supports,
+   * resolved here — a snapshot, so an index created afterwards is not
+   * maintained until the spec is unset and set again. Naming them instead
+   * pins an exact set, and a still-building index is rejected rather than
+   * quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
