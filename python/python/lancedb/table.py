@@ -978,6 +978,24 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        Takes the same arguments as :meth:`create_index`. The job may already
+        be complete when returned; callers must not assume the index exists
+        until :meth:`Job.wait` returns.
+        """
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
