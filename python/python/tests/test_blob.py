@@ -226,13 +226,13 @@ def test_fetch_blob_ranges_validates_requests():
     table = _blob_table("range_validation", [{"id": 1, "image": b"abc"}])
     row_id = _row_ids_by_id(table)[1]
 
-    with pytest.raises(RuntimeError, match="exceeds blob size"):
+    with pytest.raises(ValueError, match="exceeds blob size"):
         table.fetch_blob_ranges("image", [(row_id, 2, 2)])
 
-    with pytest.raises(RuntimeError, match="offset \\+ length overflowed"):
+    with pytest.raises(ValueError, match="offset \\+ length overflowed"):
         table.fetch_blob_ranges("image", [(row_id, 2**64 - 1, 1)])
 
-    with pytest.raises(ValueError, match="row ids"):
+    with pytest.raises(ValueError, match="row IDs"):
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
 
 

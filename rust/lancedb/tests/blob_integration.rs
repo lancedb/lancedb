@@ -647,7 +647,7 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
         .await
         .unwrap_err();
     assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row ids"));
+    assert!(err.to_string().contains("row IDs"));
     Ok(())
 }
 
@@ -680,7 +680,7 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
     let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
-    assert!(err.to_string().contains("row ids"));
+    assert!(err.to_string().contains("row IDs"));
     Ok(())
 }
 
@@ -694,11 +694,11 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
 
     let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
     assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row ids"));
+    assert!(err.to_string().contains("row IDs"));
 
     let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
     assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row ids"));
+    assert!(err.to_string().contains("row IDs"));
 
     let requests = row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1));
     let err = table
@@ -706,7 +706,7 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
         .await
         .unwrap_err();
     assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row ids"));
+    assert!(err.to_string().contains("row IDs"));
     Ok(())
 }
 
