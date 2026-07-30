@@ -4677,6 +4677,53 @@ mod tests {
         job.cancel().await.unwrap();
     }
 
+    /// An unrecognized state is treated as still running, so the client keeps
+    /// polling rather than reporting a wrong terminal outcome.
+    #[tokio::test]
+    async fn test_job_wait_treats_unknown_state_as_running() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_in_handler = calls.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-unknown"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let state = if calls_in_handler
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        "SOMETHING_NEW"
+                    } else {
+                        "DONE"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(format!(
+                            r#"{{"job_id": "job-unknown", "job_state": "{state}"}}"#
+                        ))
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn test_job_wait_surfaces_failure() {
         let table =

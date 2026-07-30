@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::time::sleep;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, Result};
 use crate::job::JobHandle;
@@ -18,19 +18,33 @@ use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 const INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum JobState {
-    #[serde(rename = "IN_PROGRESS")]
     InProgress,
-    #[serde(rename = "CANCELLED")]
     Cancelled,
-    #[serde(rename = "FAILED")]
     Failed,
-    #[serde(rename = "DONE")]
     Done,
-    /// A state this client version does not know; treated as still running.
-    #[serde(other)]
-    Other,
+    /// A state this client version does not know; treated as still running
+    /// and reported as-is if the job never settles.
+    Other(String),
+}
+
+impl<'de> Deserialize<'de> for JobState {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        Ok(Self::from(String::deserialize(deserializer)?.as_str()))
+    }
+}
+
+impl From<&str> for JobState {
+    fn from(state: &str) -> Self {
+        match state {
+            "IN_PROGRESS" => Self::InProgress,
+            "CANCELLED" => Self::Cancelled,
+            "FAILED" => Self::Failed,
+            "DONE" => Self::Done,
+            other => Self::Other(other.to_string()),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -89,7 +103,10 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                         job_id: Some(self.job_id.clone()),
                     });
                 }
-                JobState::InProgress | JobState::Other => {}
+                JobState::InProgress => {}
+                JobState::Other(ref state) => {
+                    log::debug!("job {} is in unrecognized state {state}", self.job_id)
+                }
             }
             sleep(interval).await;
             interval = (interval * 2).min(MAX_POLL_INTERVAL);
