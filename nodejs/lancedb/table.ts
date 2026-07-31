@@ -30,6 +30,7 @@ import {
   DropColumnsResult,
   IndexConfig,
   IndexStatistics,
+  Job,
   Branches as NativeBranches,
   OptimizeStats,
   TableStatistics,
@@ -357,6 +358,17 @@ export abstract class Table {
     column: string,
     options?: Partial<IndexOptions>,
   ): Promise<void>;
+
+  /**
+   * Create an index, returning a handle to the indexing job.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the index exists until {@link Job.wait} resolves.
+   */
+  abstract createIndexAsync(
+    column: string,
+    options?: Partial<IndexOptions>,
+  ): Promise<Job>;
 
   /**
    * Drop an index from the table.
@@ -931,6 +943,22 @@ export class LocalTable extends Table {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
     await this.inner.createIndex(
+      nativeIndex,
+      column,
+      options?.replace,
+      options?.waitTimeoutSeconds,
+      options?.name,
+      options?.train,
+    );
+  }
+
+  async createIndexAsync(
+    column: string,
+    options?: Partial<IndexOptions>,
+  ): Promise<Job> {
+    // biome-ignore lint/suspicious/noExplicitAny: skip
+    const nativeIndex = (options?.config as any)?.inner;
+    return await this.inner.createIndexAsync(
       nativeIndex,
       column,
       options?.replace,

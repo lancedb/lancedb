@@ -15,7 +15,9 @@ use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
+use crate::job::Job;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::BranchDiff;
@@ -290,6 +292,120 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+
+        let column = match index.columns.len() {
+            0 => {
+                return Err(Error::InvalidInput {
+                    message: "No columns specified".into(),
+                });
+            }
+            1 => index.columns.pop().unwrap(),
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Indices over multiple columns not yet supported".into(),
+                });
+            }
+        };
+        let schema = self.schema().await?;
+        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
+        let mut body = serde_json::json!({
+            "column": canonical_column
+        });
+
+        // Add name parameter if provided (for backwards compatibility, only include if Some)
+        if let Some(ref name) = index.name {
+            body["name"] = serde_json::Value::String(name.clone());
+        }
+
+        // Warn if train=false is specified since it's not meaningful
+        if !index.train {
+            log::warn!(
+                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+            );
+        }
+
+        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
+            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                message: format!("failed to serialize index params {:?}", e),
+            })
+        }
+
+        // Map each Index variant to its wire type name and serializable params.
+        // Auto is special-cased since it needs schema inspection.
+        let (index_type_str, params) = match &index.index {
+            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
+            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
+            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
+            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
+            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
+            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
+            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
+            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
+            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
+            Index::Fm(p) => ("FM", Some(to_json(p)?)),
+            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
+            Index::Auto => {
+                if supported_vector_data_type(field.data_type()) {
+                    body[METRIC_TYPE_KEY] =
+                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
+                    ("IVF_PQ", None)
+                } else if supported_btree_data_type(field.data_type()) {
+                    ("BTREE", None)
+                } else {
+                    return Err(Error::NotSupported {
+                        message: format!(
+                            "there are no indices supported for the field `{}` with the data type {}",
+                            field.name(),
+                            field.data_type()
+                        ),
+                    });
+                }
+            }
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Index type not supported".into(),
+                });
+            }
+        };
+
+        body[INDEX_TYPE_KEY] = index_type_str.into();
+        if let Some(params) = params {
+            for (key, value) in params.as_object().expect("params should be a JSON object") {
+                body[key] = value.clone();
+            }
+        }
+        self.apply_branch_body(&mut body);
+
+        let request = request.json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+        let job_id = response
+            .text()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|value| {
+                value
+                    .get("job_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+
+        if let Some(wait_timeout) = index.wait_timeout {
+            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+            self.wait_for_index(&[&index_name], wait_timeout).await?;
+        }
+
+        Ok(job_id)
+    }
+
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
@@ -2259,107 +2375,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(delete_response)
     }
 
-    async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
-        self.check_mutable().await?;
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+    async fn create_index(&self, index: IndexBuilder) -> Result<()> {
+        self.submit_create_index(index).await.map(|_| ())
+    }
 
-        let column = match index.columns.len() {
-            0 => {
-                return Err(Error::InvalidInput {
-                    message: "No columns specified".into(),
-                });
-            }
-            1 => index.columns.pop().unwrap(),
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Indices over multiple columns not yet supported".into(),
-                });
-            }
-        };
-        let schema = self.schema().await?;
-        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
-        let mut body = serde_json::json!({
-            "column": canonical_column
-        });
-
-        // Add name parameter if provided (for backwards compatibility, only include if Some)
-        if let Some(ref name) = index.name {
-            body["name"] = serde_json::Value::String(name.clone());
-        }
-
-        // Warn if train=false is specified since it's not meaningful
-        if !index.train {
-            log::warn!(
-                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
-            );
-        }
-
-        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
-            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
-                message: format!("failed to serialize index params {:?}", e),
-            })
-        }
-
-        // Map each Index variant to its wire type name and serializable params.
-        // Auto is special-cased since it needs schema inspection.
-        let (index_type_str, params) = match &index.index {
-            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
-            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
-            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
-            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
-            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
-            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
-            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
-            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
-            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
-            Index::Fm(p) => ("FM", Some(to_json(p)?)),
-            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
-            Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
-                    body[METRIC_TYPE_KEY] =
-                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
-                    ("IVF_PQ", None)
-                } else if supported_btree_data_type(field.data_type()) {
-                    ("BTREE", None)
-                } else {
-                    return Err(Error::NotSupported {
-                        message: format!(
-                            "there are no indices supported for the field `{}` with the data type {}",
-                            field.name(),
-                            field.data_type()
-                        ),
-                    });
-                }
-            }
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Index type not supported".into(),
-                });
-            }
-        };
-
-        body[INDEX_TYPE_KEY] = index_type_str.into();
-        if let Some(params) = params {
-            for (key, value) in params.as_object().expect("params should be a JSON object") {
-                body[key] = value.clone();
-            }
-        }
-        self.apply_branch_body(&mut body);
-
-        let request = request.json(&body);
-
-        let (request_id, response) = self.send(request, true).await?;
-
-        self.check_table_response(&request_id, response).await?;
-
-        if let Some(wait_timeout) = index.wait_timeout {
-            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
-            self.wait_for_index(&[&index_name], wait_timeout).await?;
-        }
-
-        Ok(())
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job> {
+        Ok(match self.submit_create_index(index).await? {
+            Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            None => Job::new_done(),
+        })
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -5152,6 +5176,224 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_returns_job() {
+        let describe_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let describe_calls_in_handler = describe_calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-123"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["job_id"], "job-123");
+                    let state = if describe_calls_in_handler
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        "IN_PROGRESS"
+                    } else {
+                        "DONE"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(format!(
+                            r#"{{"job_id": "job-123", "job_state": "{state}"}}"#
+                        ))
+                        .unwrap()
+                }
+                "/v1/jobs/cancel" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["job_id"], "job-123");
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("job-123"));
+        job.wait().await.unwrap();
+        assert_eq!(describe_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        job.cancel().await.unwrap();
+    }
+
+    /// An unrecognized state is treated as still running, so the client keeps
+    /// polling rather than reporting a wrong terminal outcome.
+    #[tokio::test]
+    async fn test_job_wait_treats_unknown_state_as_running() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_in_handler = calls.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-unknown"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let state = if calls_in_handler
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        "SOMETHING_NEW"
+                    } else {
+                        "DONE"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(format!(
+                            r#"{{"job_id": "job-unknown", "job_state": "{state}"}}"#
+                        ))
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_job_wait_surfaces_failure() {
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err", "job_state": "FAILED"}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let err = job.wait().await.unwrap_err();
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        // The server said only that it failed, so nothing may be invented.
+        assert!(failure.message.is_none(), "{failure:?}");
+        assert!(failure.phase.is_none(), "{failure:?}");
+        assert!(failure.retryable.is_none(), "{failure:?}");
+        assert_eq!(err.to_string(), "Job job-err failed");
+    }
+
+    /// A server that reports why the job failed has that reason surfaced
+    /// verbatim rather than replaced with a generic message.
+    #[tokio::test]
+    async fn test_job_wait_reports_the_server_failure_reason() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-err", "job_state": "FAILED", "failure": {"phase": "commit", "message": "preempted", "retryable": true}}"#
+                            .to_string(),
+                    )
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let err = job.wait().await.unwrap_err();
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        assert_eq!(failure.message.as_deref(), Some("preempted"));
+        assert_eq!(failure.phase.as_deref(), Some("commit"));
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(err.to_string(), "Job job-err failed: preempted (in commit)");
+    }
+
+    /// Servers that return no job id (e.g. an empty create-index response)
+    /// yield an already-done job.
+    #[tokio::test]
+    async fn test_create_index_without_job_id_is_done() {
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+        job.cancel().await.unwrap();
     }
 
     #[tokio::test]

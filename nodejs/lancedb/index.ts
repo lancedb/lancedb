@@ -85,7 +85,7 @@ export {
   RenameTableOptions,
 } from "./connection";
 
-export { Session } from "./native.js";
+export { Job, Session } from "./native.js";
 
 export {
   ExecutableQuery,

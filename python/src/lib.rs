@@ -25,6 +25,7 @@ pub mod error;
 pub mod expr;
 pub mod header;
 pub mod index;
+pub mod job;
 pub mod namespace;
 pub mod oauth;
 pub mod otel;
@@ -44,6 +45,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<crate::job::Job>()?;
     m.add_class::<PyBlobFile>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;

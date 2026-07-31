@@ -25,6 +25,7 @@
 - [Connection](classes/Connection.md)
 - [HeaderProvider](classes/HeaderProvider.md)
 - [Index](classes/Index.md)
+- [Job](classes/Job.md)
 - [MakeArrowTableOptions](classes/MakeArrowTableOptions.md)
 - [MatchQuery](classes/MatchQuery.md)
 - [MergeInsertBuilder](classes/MergeInsertBuilder.md)

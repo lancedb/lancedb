@@ -102,6 +102,18 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
                 }),
+                LanceError::JobFailed { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobFailedError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                }),
+                LanceError::JobCancelled { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobCancelledError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                }),
                 _ => self.runtime_error(),
             },
         }

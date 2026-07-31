@@ -8,6 +8,7 @@
 
 pub(crate) mod client;
 pub(crate) mod db;
+pub(crate) mod job;
 pub mod oauth;
 mod retry;
 pub(crate) mod table;

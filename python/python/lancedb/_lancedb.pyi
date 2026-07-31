@@ -209,6 +209,12 @@ class BlobFile:
     def read_range(self, offset: int, length: int) -> bytes: ...
     def read_up_to(self, length: int) -> bytes: ...
 
+class Job:
+    @property
+    def id(self) -> Optional[str]: ...
+    async def wait(self) -> None: ...
+    async def cancel(self) -> None: ...
+
 class Table:
     def name(self) -> str: ...
     def __repr__(self) -> str: ...
@@ -248,6 +254,28 @@ class Table:
         name: Optional[str],
         train: Optional[bool],
     ): ...
+    async def create_index_async(
+        self,
+        column: str,
+        index: Union[
+            IvfFlat,
+            IvfSq,
+            IvfPq,
+            HnswPq,
+            HnswSq,
+            HnswFlat,
+            BTree,
+            Bitmap,
+            LabelList,
+            Fm,
+            FTS,
+        ],
+        replace: Optional[bool],
+        wait_timeout: Optional[object],
+        *,
+        name: Optional[str],
+        train: Optional[bool],
+    ) -> Job: ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
     async def checkout(self, version: Union[int, str]): ...

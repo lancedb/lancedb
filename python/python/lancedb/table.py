@@ -40,6 +40,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
+from lancedb.job import AsyncJob, Job
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -974,6 +975,24 @@ class Table(ABC):
         >>> table.create_index(  # doctest: +SKIP
         ...     "l2", vector_column_name="vector"
         ... )
+        """
+        raise NotImplementedError
+
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        Takes the same arguments as :meth:`create_index`. The job may already
+        be complete when returned; callers must not assume the index exists
+        until :meth:`Job.wait` returns.
         """
         raise NotImplementedError
 
@@ -2777,6 +2796,34 @@ class LanceTable(Table):
                 wait_timeout=wait_timeout,
                 name=name,
                 train=train,
+            )
+        )
+
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        The job may already be complete when returned; callers must not assume
+        the index exists until :meth:`Job.wait` returns.
+        """
+        return Job(
+            LOOP.run(
+                self._table.create_index_async(
+                    column,
+                    replace=replace,
+                    config=config,
+                    wait_timeout=wait_timeout,
+                    name=name,
+                    train=train,
+                )
             )
         )
 
@@ -4866,6 +4913,46 @@ class AsyncTable:
                     language=config.language,
                 )
             raise e
+
+    async def create_index_async(
+        self,
+        column: str,
+        *,
+        replace: Optional[bool] = None,
+        config: Optional[
+            Union[
+                IvfFlat,
+                IvfPq,
+                IvfRq,
+                HnswPq,
+                HnswSq,
+                HnswFlat,
+                BTree,
+                Bitmap,
+                LabelList,
+                Fm,
+                FTS,
+            ]
+        ] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> AsyncJob:
+        """Create an index, returning a handle to the indexing job.
+
+        Takes the same arguments as :meth:`create_index`. The job may already
+        be complete when returned; callers must not assume the index exists
+        until :meth:`AsyncJob.wait` resolves.
+        """
+        job = await self._inner.create_index_async(
+            column,
+            index=config,
+            replace=replace,
+            wait_timeout=wait_timeout,
+            name=name,
+            train=train,
+        )
+        return AsyncJob(job)
 
     async def drop_index(self, name: str) -> None:
         """
