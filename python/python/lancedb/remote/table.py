@@ -63,7 +63,16 @@ from ..query import (
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    IndexStatistics,
+    Query,
+    Table,
+    TableStatistics,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -1010,7 +1019,7 @@ class RemoteTable(Table):
     ):
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
-    def stats(self):
+    def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
 
     @property

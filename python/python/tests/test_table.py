@@ -24,7 +24,12 @@ from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
-from lancedb.table import LanceTable
+from lancedb.table import (
+    FragmentStatistics,
+    FragmentSummaryStats,
+    LanceTable,
+    TableStatistics,
+)
 from pydantic import BaseModel
 
 
@@ -3393,26 +3398,25 @@ def test_stats(mem_db: DBConnection):
     assert len(table) == 2
     stats = table.stats()
     print(f"{stats=}")
-    assert stats == {
-        "total_bytes": 60,
-        "num_rows": 2,
-        "num_indices": 0,
-        "fragment_stats": {
-            "num_fragments": 1,
-            "num_small_fragments": 1,
-            "lengths": {
-                "min": 2,
-                "max": 2,
-                "mean": 2,
-                "p25": 2,
-                "p50": 2,
-                "p75": 2,
-                "p99": 2,
-            },
-        },
+    assert stats == TableStatistics(
+        total_bytes=60,
+        num_rows=2,
+        num_indices=0,
+        fragment_stats=FragmentStatistics(
+            num_fragments=1,
+            num_small_fragments=1,
+            lengths=FragmentSummaryStats(
+                min=2, max=2, mean=2, p25=2, p50=2, p75=2, p99=2
+            ),
+        ),
         # Both columns are counted, and the two together make up total_bytes.
-        "column_bytes": {"text": 34, "id": 26},
-    }
+        column_bytes={"text": 34, "id": 26},
+    )
+    # Subscript access still works, for callers written against the older API
+    # that returned a plain dictionary.
+    assert stats["total_bytes"] == stats.total_bytes == 60
+    assert stats["fragment_stats"]["lengths"]["p99"] == 2
+    assert stats["column_bytes"] == stats.column_bytes
 
 
 def test_stats_column_bytes_nested(mem_db: DBConnection):
@@ -3430,7 +3434,8 @@ def test_stats_column_bytes_nested(mem_db: DBConnection):
         data=[{"id": i, "meta": {"a": i, "b": f"value-{i}"}} for i in range(100)],
         schema=schema,
     )
-    column_bytes = table.stats()["column_bytes"]
+    stats = table.stats()
+    column_bytes = stats.column_bytes
 
     # Nested fields get their own dotted-path entries.
     assert set(column_bytes) == {"id", "meta", "meta.a", "meta.b"}
@@ -3439,7 +3444,63 @@ def test_stats_column_bytes_nested(mem_db: DBConnection):
     # A struct's entry covers its whole subtree.
     assert column_bytes["meta"] >= column_bytes["meta.a"] + column_bytes["meta.b"]
     # Top-level entries alone sum to the table total.
-    assert column_bytes["id"] + column_bytes["meta"] == table.stats()["total_bytes"]
+    assert column_bytes["id"] + column_bytes["meta"] == stats.total_bytes
+
+
+def test_stats_column_bytes_list_elements_not_broken_out(mem_db: DBConnection):
+    """A list's element is an encoding detail, not a column, so it must not
+    appear as a redundant ``tags.item`` entry duplicating ``tags``."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field("tags", pa.list_(pa.utf8())),
+            pa.field("vector", pa.list_(pa.float32(), 4)),
+        ]
+    )
+    table = mem_db.create_table(
+        "list_stats",
+        data=[
+            {"id": i, "tags": [f"tag-{i}", "shared"], "vector": [0.1] * 4}
+            for i in range(100)
+        ],
+        schema=schema,
+    )
+    stats = table.stats()
+
+    assert set(stats.column_bytes) == {"id", "tags", "vector"}
+    # The element bytes are rolled into the list column, not dropped.
+    assert stats.column_bytes["tags"] > 0
+    assert sum(stats.column_bytes.values()) == stats.total_bytes
+
+
+def test_stats_column_bytes_dotted_field_name(mem_db: DBConnection):
+    """A subfield whose name contains a dot is backtick-quoted so it stays
+    distinguishable from the nested path that spells the same way."""
+    schema = pa.schema(
+        [
+            pa.field(
+                "meta",
+                pa.struct(
+                    [
+                        pa.field("a.b", pa.int32()),
+                        pa.field("a", pa.struct([pa.field("b", pa.int32())])),
+                    ]
+                ),
+            )
+        ]
+    )
+    table = mem_db.create_table(
+        "dotted_stats",
+        data=[{"meta": {"a.b": i, "a": {"b": i * 1000}}} for i in range(100)],
+        schema=schema,
+    )
+    stats = table.stats()
+
+    # All four fields are present; naive dotted keying would collide the leaf
+    # named "a.b" with the meta -> a -> b path and silently lose one.
+    assert set(stats.column_bytes) == {"meta", "meta.`a.b`", "meta.a", "meta.a.b"}
+    assert stats.column_bytes["meta.a"] == stats.column_bytes["meta.a.b"]
+    assert stats.column_bytes["meta"] == stats.total_bytes
 
 
 @pytest.mark.asyncio
@@ -3449,8 +3510,8 @@ async def test_stats_column_bytes_async(mem_db_async: AsyncConnection):
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
     stats = await table.stats()
-    assert set(stats["column_bytes"]) == {"text", "id"}
-    assert sum(stats["column_bytes"].values()) == stats["total_bytes"]
+    assert set(stats.column_bytes) == {"text", "id"}
+    assert sum(stats.column_bytes.values()) == stats.total_bytes
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):

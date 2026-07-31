@@ -270,6 +270,23 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(columnBytes["id"] + columnBytes["meta"]).toBe(stats.totalBytes);
     });
 
+    it("should not break out list elements as their own column", async () => {
+      const conn = await connect(tmpDir.name);
+      const lists = await conn.createTable("list_stats", [
+        { id: 1, tags: ["a", "b"] },
+        { id: 2, tags: ["c", "d"] },
+      ]);
+      const stats = await lists.stats();
+      const columnBytes = stats.columnBytes!;
+
+      // A list's element is an encoding detail, not a column, so there is no
+      // redundant "tags.item" entry duplicating "tags".
+      expect(Object.keys(columnBytes).sort()).toEqual(["id", "tags"]);
+      // The element bytes are rolled into the list column, not dropped.
+      expect(columnBytes["tags"]).toBeGreaterThan(0);
+      expect(columnBytes["id"] + columnBytes["tags"]).toBe(stats.totalBytes);
+    });
+
     it("should overwrite data if asked", async () => {
       const addRes = await table.add([{ id: 1 }, { id: 2 }]);
       expect(addRes).toHaveProperty("version");

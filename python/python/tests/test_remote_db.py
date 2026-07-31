@@ -20,6 +20,7 @@ from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.query import ColumnOrdering
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
+from lancedb.table import TableStatistics
 import pytest
 import pyarrow as pa
 
@@ -1009,9 +1010,9 @@ def test_stats():
         table = db.create_table("test", [{"id": 1}])
         res = table.stats()
         print(f"{res=}")
-        # A server that omits the per-column breakdown reports it as None
-        # rather than leaving the key out.
-        assert res == {**stats, "column_bytes": None}
+        # A server that omits the per-column breakdown reports it as None.
+        assert res == TableStatistics._from_dict({**stats, "column_bytes": None})
+        assert res.column_bytes is None
 
 
 def test_stats_column_bytes():
@@ -1053,7 +1054,11 @@ def test_stats_column_bytes():
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
-        assert table.stats() == stats
+        res = table.stats()
+        # The dotted paths are opaque to the client: whatever breakdown the
+        # server sends is passed through verbatim.
+        assert res == TableStatistics._from_dict(stats)
+        assert res.column_bytes == stats["column_bytes"]
 
 
 @contextlib.contextmanager

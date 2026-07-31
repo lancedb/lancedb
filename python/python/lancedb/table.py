@@ -1018,6 +1018,13 @@ class Table(ABC):
     def stats(self) -> TableStatistics:
         """
         Retrieve table and fragment statistics.
+
+        Returns
+        -------
+        TableStatistics
+            Subscript access (``stats["total_bytes"]``) is still supported for
+            backwards compatibility with the older API, which returned a
+            dictionary.
         """
         raise NotImplementedError
 
@@ -4948,8 +4955,15 @@ class AsyncTable:
     async def stats(self) -> TableStatistics:
         """
         Retrieve table and fragment statistics.
+
+        Returns
+        -------
+        TableStatistics
+            Subscript access (``stats["total_bytes"]``) is still supported for
+            backwards compatibility with the older API, which returned a
+            dictionary.
         """
-        return await self._inner.stats()
+        return TableStatistics._from_dict(await self._inner.stats())
 
     async def uri(self) -> str:
         """
@@ -6146,13 +6160,19 @@ class TableStatistics:
         Statistics about fragments in the table.
     column_bytes: dict[str, int] | None
         The compressed on-disk bytes of each column, keyed by dotted field path
-        ("meta", "meta.geo", "meta.geo.lat"). Every nesting level gets an entry
-        covering the field's own bytes plus its whole subtree, so a struct
-        reports its total while its children report the breakdown (the
-        top-level entries alone sum to ``total_bytes``). Counts data-file bytes
-        only: blob sidecar payloads and index files are not included, and blob
-        columns therefore report just their descriptor bytes. ``None`` when the
-        backend provides no per-column breakdown (e.g. older remote servers).
+        ("meta", "meta.geo", "meta.geo.lat"). A struct's subfields each get their
+        own entry, and every entry covers the field's own bytes plus its whole
+        subtree, so a struct reports its total while its children report the
+        breakdown (the top-level entries alone sum to ``total_bytes``). List
+        elements are not broken out: a list column reports a single total with
+        its element bytes rolled in. Path segments containing anything other
+        than letters, digits, or ``_`` are backtick-quoted, so a subfield named
+        ``a.b`` under ``meta`` is keyed as ``meta.`a.b```.
+
+        Counts data-file bytes only: blob sidecar payloads and index files are
+        not included, and blob columns therefore report just their descriptor
+        bytes. ``None`` when the backend provides no per-column breakdown (e.g.
+        older remote servers).
     """
 
     total_bytes: int
@@ -6160,6 +6180,26 @@ class TableStatistics:
     num_indices: int
     fragment_stats: FragmentStatistics
     column_bytes: Optional[Dict[str, int]] = None
+
+    @classmethod
+    def _from_dict(cls, stats: Dict[str, Any]) -> TableStatistics:
+        fragment_stats = stats["fragment_stats"]
+        return cls(
+            total_bytes=stats["total_bytes"],
+            num_rows=stats["num_rows"],
+            num_indices=stats["num_indices"],
+            fragment_stats=FragmentStatistics(
+                num_fragments=fragment_stats["num_fragments"],
+                num_small_fragments=fragment_stats["num_small_fragments"],
+                lengths=FragmentSummaryStats(**fragment_stats["lengths"]),
+            ),
+            column_bytes=stats.get("column_bytes"),
+        )
+
+    # This exists for backwards compatibility with an older API, which returned
+    # a dictionary instead of a class.
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 @dataclass
@@ -6181,6 +6221,11 @@ class FragmentStatistics:
     num_fragments: int
     num_small_fragments: int
     lengths: FragmentSummaryStats
+
+    # This exists for backwards compatibility with an older API, which returned
+    # a dictionary instead of a class.
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 @dataclass
@@ -6213,6 +6258,11 @@ class FragmentSummaryStats:
     p50: int
     p75: int
     p99: int
+
+    # This exists for backwards compatibility with an older API, which returned
+    # a dictionary instead of a class.
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 class Tags:

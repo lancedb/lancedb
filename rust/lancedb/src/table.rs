@@ -23,6 +23,7 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_core::datatypes::{Field as LanceField, format_field_path};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
@@ -3471,38 +3472,17 @@ impl BaseTable for NativeTable {
         let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
         let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
 
-        // One entry per field at every nesting level, keyed by dotted path
-        // ("meta", "meta.geo", "meta.geo.lat"). Each entry is the field's own
-        // bytes plus its whole subtree, so a struct reports its total while its
-        // children report the breakdown. Every field gets an entry even when
-        // the stats report no bytes for it (empty table, legacy storage), so
-        // columns appear as 0 rather than being absent.
         let bytes_by_id: HashMap<u32, u64> = ds_stats
             .fields
             .iter()
             .map(|f| (f.id, f.bytes_on_disk))
             .collect();
-        fn subtree_bytes(
-            field: &lance_core::datatypes::Field,
-            path: String,
-            bytes_by_id: &HashMap<u32, u64>,
-            column_bytes: &mut HashMap<String, u64>,
-        ) -> u64 {
-            let mut total = bytes_by_id.get(&(field.id as u32)).copied().unwrap_or(0);
-            for child in &field.children {
-                total += subtree_bytes(
-                    child,
-                    format!("{path}.{}", child.name),
-                    bytes_by_id,
-                    column_bytes,
-                );
-            }
-            column_bytes.insert(path, total);
-            total
-        }
         let mut column_bytes: HashMap<String, u64> = HashMap::new();
+        let mut path = Vec::new();
         for column in &ds.schema().fields {
-            subtree_bytes(column, column.name.clone(), &bytes_by_id, &mut column_bytes);
+            path.push(column.name.as_str());
+            record_column_bytes(column, &mut path, &bytes_by_id, &mut column_bytes);
+            path.pop();
         }
 
         let frags = ds.get_fragments();
@@ -3573,6 +3553,54 @@ impl BaseTable for NativeTable {
     }
 }
 
+/// The bytes stored for `field` itself plus every field nested beneath it, at
+/// any depth.
+///
+/// Fields the stats don't mention count as 0, so a column on an empty table (or
+/// on legacy storage, where `bytes_on_disk` is always 0) reports 0 rather than
+/// being left out of the breakdown entirely.
+fn subtree_bytes(field: &LanceField, bytes_by_id: &HashMap<u32, u64>) -> u64 {
+    let own = u32::try_from(field.id)
+        .ok()
+        .and_then(|id| bytes_by_id.get(&id).copied())
+        .unwrap_or(0);
+    own + field
+        .children
+        .iter()
+        .map(|child| subtree_bytes(child, bytes_by_id))
+        .sum::<u64>()
+}
+
+/// Records one [`TableStatistics::column_bytes`] entry for `field` — keyed by
+/// the dotted path in `path` — and one for each of its named subfields,
+/// recursively.
+///
+/// Only a struct's children are named: a list's element is an encoding detail
+/// with no user-facing name, so its bytes roll up into the list column itself
+/// instead of appearing under a redundant `tags.item` key. Every entry covers
+/// the field's whole subtree either way, so a struct reports its total while
+/// its children report the breakdown.
+///
+/// Paths go through [`format_field_path`], which backtick-quotes any segment
+/// that needs it. Without that, a leaf named `a.b` under `meta` and the path
+/// `meta` -> `a` -> `b` would both key on `meta.a.b` and one would silently
+/// overwrite the other.
+fn record_column_bytes<'a>(
+    field: &'a LanceField,
+    path: &mut Vec<&'a str>,
+    bytes_by_id: &HashMap<u32, u64>,
+    column_bytes: &mut HashMap<String, u64>,
+) {
+    column_bytes.insert(format_field_path(path), subtree_bytes(field, bytes_by_id));
+    if field.logical_type.is_struct() {
+        for child in &field.children {
+            path.push(child.name.as_str());
+            record_column_bytes(child, path, bytes_by_id, column_bytes);
+            path.pop();
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
@@ -3589,13 +3617,20 @@ pub struct TableStatistics {
     pub fragment_stats: FragmentStatistics,
 
     /// The compressed on-disk bytes of each column, keyed by dotted field
-    /// path ("meta", "meta.geo", "meta.geo.lat"). Every nesting level gets an
-    /// entry covering the field's own bytes plus its whole subtree, so a
-    /// struct reports its total while its children report the breakdown (the
-    /// top-level entries alone sum to `total_bytes`). Counts data-file bytes
-    /// only: blob sidecar payloads and index files are not included, and blob
-    /// columns therefore report just their descriptor bytes. `None` when the
-    /// backend provides no per-column breakdown (e.g. older remote servers).
+    /// path ("meta", "meta.geo", "meta.geo.lat"). A struct's subfields each
+    /// get their own entry, and every entry covers the field's own bytes plus
+    /// its whole subtree, so a struct reports its total while its children
+    /// report the breakdown (the top-level entries alone sum to
+    /// `total_bytes`). List elements are not broken out: a list column
+    /// reports a single total with its element bytes rolled in. Path segments
+    /// containing anything other than letters, digits, or `_` are
+    /// backtick-quoted, so a subfield named `a.b` under `meta` is keyed as
+    /// ``meta.`a.b` ``.
+    ///
+    /// Counts data-file bytes only: blob sidecar payloads and index files are
+    /// not included, and blob columns therefore report just their descriptor
+    /// bytes. `None` when the backend provides no per-column breakdown (e.g.
+    /// older remote servers).
     #[serde(default)]
     pub column_bytes: Option<HashMap<String, u64>>,
 }
@@ -3635,9 +3670,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
+    use arrow_array::builder::{ListBuilder, StringBuilder};
     use arrow_array::{
-        ArrayRef, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
-        StructArray,
+        ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, StructArray,
     };
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -5208,5 +5244,136 @@ mod tests {
         );
         // Exactly the four expected paths, nothing else.
         assert_eq!(column_bytes.len(), 4);
+    }
+
+    /// A list's element child is an encoding detail, not a column, so it must
+    /// not show up as a redundant `tags.item` entry duplicating `tags`.
+    #[tokio::test]
+    pub async fn test_stats_column_bytes_list_elements_not_broken_out() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                true,
+            ),
+        ]));
+        let mut tags = ListBuilder::new(StringBuilder::new());
+        for i in 0..100 {
+            tags.values().append_value(format!("tag-{i}"));
+            tags.values().append_value("shared");
+            tags.append(true);
+        }
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(tags.finish()),
+                Arc::new(
+                    FixedSizeListArray::try_new(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                        Arc::new(Float32Array::from_iter_values(
+                            (0..400).map(|i| i as f32 / 10.0),
+                        )),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("list_stats", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.stats().await.unwrap();
+        let column_bytes = stats.column_bytes.unwrap();
+
+        // One entry per column: no `tags.item`, no `vector.item`.
+        assert_eq!(
+            column_bytes.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["id".to_string(), "tags".to_string(), "vector".to_string()])
+        );
+        // The element bytes are rolled into the list column, not dropped.
+        assert!(column_bytes["tags"] > 0);
+        assert!(column_bytes["vector"] > 0);
+        assert_eq!(
+            column_bytes["id"] + column_bytes["tags"] + column_bytes["vector"],
+            stats.total_bytes as u64
+        );
+    }
+
+    /// A subfield whose name contains a dot must not collide with the nested
+    /// path that spells the same way. Here `meta` has both a leaf named `a.b`
+    /// and a struct `a` containing `b`; naive `format!("{path}.{name}")` keying
+    /// would produce `meta.a.b` twice and silently lose one field.
+    #[tokio::test]
+    pub async fn test_stats_column_bytes_dotted_field_name() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let a_fields = vec![Field::new("b", DataType::Int32, true)];
+        let meta_fields = vec![
+            Field::new("a.b", DataType::Int32, true),
+            Field::new("a", DataType::Struct(a_fields.clone().into()), true),
+        ];
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            DataType::Struct(meta_fields.clone().into()),
+            true,
+        )]));
+        let meta = StructArray::new(
+            meta_fields.into(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)) as ArrayRef,
+                Arc::new(StructArray::new(
+                    a_fields.into(),
+                    vec![
+                        Arc::new(Int32Array::from_iter_values((0..100).map(|i| i * 1000)))
+                            as ArrayRef,
+                    ],
+                    None,
+                )) as ArrayRef,
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(meta)]).unwrap();
+        let table = conn
+            .create_table("dotted_stats", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.stats().await.unwrap();
+        let column_bytes = stats.column_bytes.unwrap();
+
+        // All four fields are present, with the dotted name backtick-quoted so
+        // it stays distinguishable from the `meta` -> `a` -> `b` path.
+        assert_eq!(
+            column_bytes.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from([
+                "meta".to_string(),
+                "meta.`a.b`".to_string(),
+                "meta.a".to_string(),
+                "meta.a.b".to_string(),
+            ])
+        );
+        assert!(column_bytes["meta.`a.b`"] > 0);
+        assert!(column_bytes["meta.a.b"] > 0);
+        assert_eq!(column_bytes["meta.a"], column_bytes["meta.a.b"]);
+        assert_eq!(column_bytes["meta"], stats.total_bytes as u64);
     }
 }
