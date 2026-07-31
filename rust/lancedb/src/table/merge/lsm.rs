@@ -82,10 +82,9 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         }
     }
 
-    // Resolved before the builder takes its mutable borrow of the dataset
-    // clone, and against the same table the spec is about to be committed to.
-    // `list_indices` reports one entry per index name, merging an index's
-    // segments, so the resolved list needs no dedup.
+    // Before the builder borrows the dataset clone, and against the table the
+    // spec commits to. `list_indices` merges an index's segments into one
+    // entry, so the result needs no dedup.
     let maintained_indexes =
         resolve_maintained_indexes(&table.list_indices().await?, spec.maintained_indexes())?;
 
@@ -126,24 +125,22 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     Ok(())
 }
 
-/// Resolve an [`LsmWriteSpec`]'s maintained-index selection against a table's
-/// committed indexes, as reported by
-/// [`Table::list_indices`](crate::Table::list_indices).
+/// Resolve a spec's maintained-index selection against `indices`, as reported
+/// by [`Table::list_indices`](crate::Table::list_indices).
 ///
-/// `None` snapshots every index the MemWAL can maintain right now — indexes
-/// created after this call are not picked up. A list is checked both for names
-/// that do not exist and for types the memtable cannot build; the latter would
-/// otherwise commit cleanly and then fail every memtable claim, leaving the
-/// table unwritable far from the call that caused it.
+/// `None` snapshots every maintainable index now; indexes created later are not
+/// picked up. A list is checked for missing names and for types the memtable
+/// cannot build — the latter would commit cleanly, then fail every memtable
+/// claim far from the call that caused it.
 ///
-/// Public so a server installing specs on a caller's behalf resolves them the
-/// same way `set_lsm_write_spec` does, rather than reimplementing the rules.
+/// Public so a server installing specs on a caller's behalf shares these rules
+/// instead of reimplementing them.
 pub fn resolve_maintained_indexes(
     indices: &[IndexConfig],
     requested: Option<&[String]>,
 ) -> Result<Vec<String>> {
+    // `type_url` is absent for remote tables, where the server resolves instead.
     let maintainable = |index: &IndexConfig| {
-        // Absent for remote tables, where the server resolves the set instead.
         index
             .type_url
             .as_deref()
@@ -181,7 +178,7 @@ pub fn resolve_maintained_indexes(
     Ok(requested.to_vec())
 }
 
-/// Render a table's index names for an error message.
+/// Index names for an error message.
 fn index_name_list(indices: &[IndexConfig]) -> String {
     if indices.is_empty() {
         return "no indexes".to_string();

@@ -2472,11 +2472,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
-        // tagged on `mode` to mirror sophon's `Sharding` enum;
-        // `writer_config_defaults` is sent verbatim. `maintained_indexes` is
-        // sent as null to have the server resolve every index it can maintain
-        // at HEAD, or as a list taken verbatim — an empty one meaning "no
-        // maintained indexes".
+        // tagged on `mode` to mirror sophon's `Sharding` enum. A null
+        // `maintained_indexes` asks the server to resolve every maintainable
+        // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
             LsmWriteSpec::Bucket {
                 column,
@@ -6554,8 +6552,7 @@ mod tests {
                 body["sharding"],
                 serde_json::json!({ "mode": "bucket", "column": "id", "num_buckets": 16 })
             );
-            // A spec that has not pinned a maintained set sends null, asking
-            // the server to resolve every index it can maintain at HEAD.
+            // An unpinned maintained set sends null: resolve server-side.
             assert_eq!(body["maintained_indexes"], serde_json::Value::Null);
             http::Response::builder().status(200).body("{}").unwrap()
         });
@@ -6565,8 +6562,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Opting out of maintained indexes must stay distinguishable on the wire
-    /// from leaving them to the server: `[]` means none, null means all.
+    /// `[]` (none) must stay distinguishable on the wire from null (all).
     #[tokio::test]
     async fn test_set_lsm_write_spec_no_maintained_indexes() {
         let table = Table::new_with_handler("my_table", |request| {

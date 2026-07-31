@@ -768,9 +768,8 @@ pub struct LsmWriteSpec {
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Names of indexes the MemWAL should keep up to date during writes.
-    /// Omitted means every index the MemWAL can maintain, resolved when the
-    /// spec is installed; an empty array means none.
+    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
@@ -805,8 +804,6 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
                 )));
             }
         };
-        // An omitted `maintainedIndexes` is the spec's default of "every
-        // index the MemWAL can maintain".
         Ok(spec
             .with_maintained_indexes(value.maintained_indexes)
             .with_writer_config_defaults(writer_config_defaults))

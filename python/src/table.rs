@@ -185,8 +185,8 @@ impl From<lancedb::table::MergeResult> for MergeResult {
     }
 }
 
-/// Render a spec's maintained-index selection for `__repr__`, where the
-/// inferred default reads as Python's `None` rather than Rust's `Some([..])`.
+/// Render for `__repr__`, so the default reads as Python's `None` rather than
+/// Rust's `Some([..])`.
 fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
     match maintained {
         Some(names) => format!("{:?}", names),
@@ -199,9 +199,8 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
-/// `with_writer_config_defaults(...)`.
-/// A freshly constructed spec maintains every index the MemWAL supports,
-/// resolved when the spec is installed.
+/// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
+/// MemWAL supports, resolved on install.
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -241,12 +240,9 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains.
-    ///
-    /// `None` — the default — maintains every index the MemWAL supports,
-    /// resolved when the spec is installed. A list is taken verbatim:
-    /// every name must already exist on the table and be a type the
-    /// MemWAL can maintain, and an empty list maintains nothing.
+    /// Set which indexes the MemWAL maintains. `None` (the default)
+    /// resolves every supported index on install; a list is verbatim,
+    /// and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
     pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
@@ -327,8 +323,7 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Names of indexes the MemWAL should keep up to date during writes, or
-    /// `None` when the spec asks for every index the MemWAL supports.
+    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
     #[getter]
     pub fn maintained_indexes(&self) -> Option<Vec<String>> {
         self.inner.maintained_indexes().map(<[String]>::to_vec)

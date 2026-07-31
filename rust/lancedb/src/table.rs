@@ -367,8 +367,7 @@ pub use self::merge::lsm::resolve_maintained_indexes;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// A freshly constructed spec maintains **every** index the MemWAL supports,
-/// resolved when the spec is installed.
+/// A fresh spec maintains every index the MemWAL supports, resolved on install.
 ///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
@@ -384,14 +383,11 @@ pub enum LsmWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index the MemWAL can maintain, resolved when
-        /// the spec is installed. That is a snapshot, not a subscription:
-        /// indexes created afterwards are not maintained, and the set can
-        /// only be changed by unsetting and re-setting the spec. `Some([])`
-        /// maintains nothing — a scan/filter-only WAL table.
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -402,28 +398,22 @@ pub enum LsmWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index the MemWAL can maintain, resolved when
-        /// the spec is installed. That is a snapshot, not a subscription:
-        /// indexes created afterwards are not maintained, and the set can
-        /// only be changed by unsetting and re-setting the spec. `Some([])`
-        /// maintains nothing — a scan/filter-only WAL table.
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
     /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
     Unsharded {
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index the MemWAL can maintain, resolved when
-        /// the spec is installed. That is a snapshot, not a subscription:
-        /// indexes created afterwards are not maintained, and the set can
-        /// only be changed by unsetting and re-setting the spec. `Some([])`
-        /// maintains nothing — a scan/filter-only WAL table.
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -469,10 +459,9 @@ impl LsmWriteSpec {
 
     /// Set which indexes the MemWAL maintains.
     ///
-    /// `None` — the default — maintains every index the MemWAL supports,
-    /// resolved when the spec is installed. A list is taken verbatim: every
-    /// name must reference an index that already exists on the table, of a
-    /// type the MemWAL can maintain, and an empty list maintains nothing.
+    /// `None` (the default) resolves every supported index on install. A list
+    /// is verbatim: each name must already exist and be a maintainable type,
+    /// and an empty list maintains nothing.
     ///
     /// ```
     /// # use lancedb::table::LsmWriteSpec;
