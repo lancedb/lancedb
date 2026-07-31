@@ -11,6 +11,9 @@ from lancedb import __version__
 from .header import HeaderProvider
 from .oauth import OAuthConfig, OAuthFlowType
 
+# The API reference renders this module with a single mkdocstrings directive,
+# which only picks up names listed here. New public names must be added to this
+# list, or they will silently go undocumented.
 __all__ = [
     "TimeoutConfig",
     "RetryConfig",

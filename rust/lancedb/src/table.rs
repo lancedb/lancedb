@@ -21,6 +21,7 @@ use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
+use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
@@ -46,14 +47,17 @@ use std::sync::Arc;
 use crate::connection::NamespaceClientPushdownOperation;
 
 use crate::DistanceType;
+use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
+use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
+use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
@@ -142,6 +146,55 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
+}
+
+/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
+///
+/// Lance reports "there is nothing at this location" and "there is a table directory
+/// here but nothing loadable inside it" with the same error. Only the first is a
+/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
+/// re-create is still reported by `Connection::table_names`, so callers need to be able
+/// to tell "never existed" from "exists but is broken".
+///
+/// See <https://github.com/lancedb/lancedb/issues/3127>.
+async fn map_dataset_not_found(
+    uri: &str,
+    name: &str,
+    params: ReadParams,
+    err: lance::Error,
+) -> Error {
+    let name = name.to_string();
+    let source = Box::new(err);
+    if table_dir_exists(uri, params).await.unwrap_or(false) {
+        Error::TableCorrupted { name, source }
+    } else {
+        Error::TableNotFound { name, source }
+    }
+}
+
+/// Whether a table directory is present at `uri`, even though no dataset could be
+/// loaded from it.
+///
+/// This looks for a `<name>.lance` entry in the parent directory, which is exactly what
+/// `ListingDatabase::table_names` lists, so the two APIs agree on whether a table is
+/// present. Probing `uri` itself would not work: object stores have no empty
+/// directories to probe, and on a local filesystem the interesting case is precisely an
+/// empty directory.
+async fn table_dir_exists(uri: &str, params: ReadParams) -> Result<bool> {
+    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
+        .with_read_params(params)
+        .build_object_store()
+        .await?;
+    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
+    // the list-then-open mismatch this guards against.
+    if path.extension() != Some(LANCE_FILE_EXTENSION) {
+        return Ok(false);
+    }
+    let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
+        return Ok(false);
+    };
+    let entries = object_store.read_dir(parent).await?;
+    Ok(entries.iter().any(|entry| entry.as_str() == dir_name))
 }
 
 /// Defines the type of column
@@ -561,6 +614,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+
+    /// Starts index creation, returning a handle to the resulting job.
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job>;
     /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
@@ -644,6 +700,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
             message: "fetch_blobs is not supported on this table type".into(),
+        })
+    }
+    /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
+    async fn fetch_blob_ranges(
+        &self,
+        _column: &str,
+        _requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        Err(Error::NotSupported {
+            message: "fetch_blob_ranges is not supported on this table type".into(),
         })
     }
     /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
@@ -1019,8 +1085,9 @@ impl Table {
 
     /// Materialize blob bytes for the given row ids.
     ///
-    /// Output matches `row_ids` in length and order. Null and zero-length rows
-    /// are null. Prefer [`Self::fetch_blob_files`] for large selections.
+    /// Output matches `row_ids` in length and order. Null blobs are null;
+    /// valid empty blobs contain empty byte strings. Prefer
+    /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1053,6 +1120,47 @@ impl Table {
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
         self.inner.fetch_blobs(column.as_ref(), row_ids).await
+    }
+
+    /// Materialize row-specific ranges from a blob v2 column.
+    ///
+    /// Each request contains a row id and a blob-local offset and length.
+    /// Requests may be duplicated or reordered, including multiple
+    /// ranges for the same blob. The output has the same length and order as
+    /// the requests. Null blobs produce null output slots; empty ranges on
+    /// non-null blobs produce empty byte strings.
+    ///
+    /// ```
+    /// use lancedb::blob::BlobRangeRequest;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn read_ranges(table: &Table, row_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+    /// let ranges = table
+    ///     .fetch_blob_ranges(
+    ///         "image",
+    ///         [
+    ///             BlobRangeRequest::new(row_id, 0, 1024),
+    ///             BlobRangeRequest::new(row_id, 4096, 1024),
+    ///         ],
+    ///     )
+    ///     .await?;
+    /// # let _ = ranges;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Returns an error when a range is invalid, a requested row id does not
+    /// exist, or the column is not a blob v2 column. Returns
+    /// [`Error::NotSupported`] on table types without blob support.
+    pub async fn fetch_blob_ranges(
+        &self,
+        column: impl AsRef<str>,
+        requests: impl IntoIterator<Item = BlobRangeRequest>,
+    ) -> Result<LargeBinaryArray> {
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        self.inner
+            .fetch_blob_ranges(column.as_ref(), &requests)
+            .await
     }
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
@@ -2186,6 +2294,8 @@ impl NativeTable {
             None => false,
         };
 
+        // Kept so that a `DatasetNotFound` can be re-checked against storage below.
+        let recovery_params = params.clone();
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
@@ -2201,13 +2311,13 @@ impl NativeTable {
             builder = builder.with_commit_handler(commit_handler);
         }
 
-        let dataset = builder.load().await.map_err(|e| match e {
-            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                name: name.to_string(),
-                source: Box::new(e),
-            },
-            e => e.into(),
-        })?;
+        let dataset = match builder.load().await {
+            Ok(dataset) => dataset,
+            Err(e @ lance::Error::DatasetNotFound { .. }) => {
+                return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -2955,29 +3065,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        if opts.columns.len() != 1 {
-            return Err(Error::Schema {
-                message: "Multi-column (composite) indices are not yet supported".to_string(),
-            });
-        }
-        self.dataset.ensure_mutable()?;
-        let mut dataset = (*self.dataset.get().await?).clone();
-        let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
+        let prepared = self.prepare_index(&opts).await?;
+        self.build_index(opts, prepared).await
+    }
 
-        let lance_idx_params = self.make_index_params(&field, opts.index.clone()).await?;
-        let index_type = self.get_index_type_for_field(&field, &opts.index);
-        let columns = [column.as_str()];
-        let mut builder = dataset
-            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
-            .train(opts.train)
-            .replace(opts.replace);
-
-        if let Some(name) = opts.name {
-            builder = builder.name(name);
-        }
-        builder.await?;
-        self.dataset.update(dataset);
-        Ok(())
+    async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
+        // Prepare before spawning so bad input is reported by this call rather
+        // than only by the job.
+        let prepared = self.prepare_index(&opts).await?;
+        let table = self.clone();
+        Ok(Job::spawned(tokio::spawn(async move {
+            table.build_index(opts, prepared).await
+        })))
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
@@ -3070,6 +3169,15 @@ impl BaseTable for NativeTable {
         crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
     }
 
+    async fn fetch_blob_ranges(
+        &self,
+        column: &str,
+        requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
+    }
+
     async fn fetch_blob_files(
         &self,
         column: &str,
@@ -3131,10 +3239,9 @@ impl BaseTable for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let total_rows = dataset.count_rows(None).await? as u64;
-        let indices = dataset
-            .describe_indices(None)
-            .await?
-            .into_iter()
+        let descriptions = dataset.describe_indices(None).await?;
+        let mut indices: Vec<IndexConfig> = descriptions
+            .iter()
             .filter_map(|idx_desc| {
                 let index_type: crate::index::IndexType = idx_desc
                     .index_type()
@@ -3192,6 +3299,31 @@ impl BaseTable for NativeTable {
                 })
             })
             .collect();
+
+        for index in indices
+            .iter_mut()
+            .filter(|index| index.index_type == crate::index::IndexType::FTS)
+        {
+            let Some(description) = descriptions
+                .iter()
+                .find(|description| description.name() == index.name)
+            else {
+                continue;
+            };
+            let segments = description.segments();
+            let Some(segment) = segments.first() else {
+                continue;
+            };
+            let params = load_segment_params(&dataset, segment).await?;
+            let details = serde_json::to_string(&params).map_err(|source| Error::Other {
+                message: format!(
+                    "Failed to serialize full text search configuration for index '{}'",
+                    index.name
+                ),
+                source: Some(Box::new(source)),
+            })?;
+            index.index_details = Some(details);
+        }
         Ok(indices)
     }
 
@@ -3495,6 +3627,103 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let table = NativeTable::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_open_not_found_missing_lance_dir() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
+    ///
+    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
+    /// empty); otherwise only the manifests are removed, leaving the data files behind.
+    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
+        let dataset_path = dir.join("test.lance");
+        let uri = dataset_path.to_str().unwrap().to_string();
+
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, &uri, None).await.unwrap();
+
+        if remove_all {
+            for entry in std::fs::read_dir(&dataset_path).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    std::fs::remove_dir_all(entry.path()).unwrap();
+                } else {
+                    std::fs::remove_file(entry.path()).unwrap();
+                }
+            }
+            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
+        } else {
+            let versions = dataset_path.join("_versions");
+            assert!(versions.is_dir(), "expected manifests under {versions:?}");
+            std::fs::remove_dir_all(&versions).unwrap();
+            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
+        }
+
+        uri
+    }
+
+    #[tokio::test]
+    async fn test_open_corrupt_empty_dir() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+
+        let err = NativeTable::open(&uri).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_corrupt_missing_manifest() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+
+        let err = NativeTable::open(&uri).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+    }
+
+    /// A table listed by `table_names()` must not be reported as missing by
+    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    #[tokio::test]
+    async fn test_open_table_corrupt_is_still_listed() {
+        let tmp_dir = tempdir().unwrap();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        write_then_corrupt_table(tmp_dir.path(), true).await;
+
+        assert_eq!(
+            db.table_names().execute().await.unwrap(),
+            vec!["test".to_string()]
+        );
+        let err = db.open_table("test").execute().await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("exists but could not be loaded"),
+            "got {err}"
+        );
     }
 
     #[test]
@@ -4049,10 +4278,10 @@ mod tests {
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
     }
 
-    // Windows does not support precise sleep durations due to timer resolution limitations.
-    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_read_consistency_interval() {
+        use crate::utils::background_cache::clock;
+
         let intervals = vec![
             None,
             Some(0),
@@ -4079,6 +4308,12 @@ mod tests {
             let conn2 = conn2.execute().await.unwrap();
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
 
+            // Freeze the consistency clock now that `table2` has seeded its cache, so the
+            // interval only elapses when this test advances it. Otherwise the write and
+            // count_rows calls below race the real 100ms interval, which a loaded CI
+            // runner loses. Must come after open_table: creating the cache clears the mock.
+            clock::pin();
+
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
@@ -4096,7 +4331,7 @@ mod tests {
                 }
                 Some(100) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    clock::advance_by(Duration::from_millis(100));
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 _ => unreachable!(),
@@ -4498,7 +4733,7 @@ mod tests {
                 .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
-            assert!(matches!(err, Error::Lance { .. }), "got {:?}", err);
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
         }
 
         // Happy path: install spec; verify MemWAL details record it.

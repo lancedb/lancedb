@@ -21,3 +21,32 @@ from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
 from .colpali import ColPaliEmbeddings
 from .siglip import SigLipEmbeddings
+
+# The API reference renders this package with a single mkdocstrings directive,
+# which only picks up names listed here. New embedding functions must be added
+# to both the imports above and this list, or they will silently go undocumented.
+__all__ = [
+    "EmbeddingFunction",
+    "EmbeddingFunctionConfig",
+    "TextEmbeddingFunction",
+    "EmbeddingFunctionRegistry",
+    "get_registry",
+    "register",
+    "SentenceTransformerEmbeddings",
+    "OpenAIEmbeddings",
+    "OpenClipEmbeddings",
+    "BedRockText",
+    "CohereEmbeddingFunction",
+    "GeminiText",
+    "GteEmbeddings",
+    "InstructorEmbeddingFunction",
+    "JinaEmbeddings",
+    "OllamaEmbeddings",
+    "TransformersEmbeddingFunction",
+    "ColbertEmbeddings",
+    "VoyageAIEmbeddingFunction",
+    "WatsonxEmbeddings",
+    "ColPaliEmbeddings",
+    "ImageBindEmbeddings",
+    "SigLipEmbeddings",
+]

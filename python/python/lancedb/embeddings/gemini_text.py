@@ -48,16 +48,16 @@ class GeminiText(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "gemini-embedding-001"
+    name : str, default "gemini-embedding-001"
         The name of the model to use. Supported models include:
         - "gemini-embedding-001" (768 dimensions)
 
         Note: The legacy "models/embedding-001" format is also supported but
         "gemini-embedding-001" is recommended.
 
-    query_task_type: str, default "retrieval_query"
+    query_task_type : str, default "retrieval_query"
         Sets the task type for the queries.
-    source_task_type: str, default "retrieval_document"
+    source_task_type : str, default "retrieval_document"
         Sets the task type for ingestion.
 
     Examples

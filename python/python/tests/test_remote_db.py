@@ -771,6 +771,7 @@ def test_table_create_indices():
                 "text",
                 wait_timeout=timedelta(seconds=2),
                 block_size=256,
+                custom_stop_words=["cloud"],
                 name="custom_fts_idx",
             )
 
@@ -795,6 +796,7 @@ def test_table_create_indices():
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
         assert fts_req["block_size"] == 256
+        assert fts_req["custom_stop_words"] == ["cloud"]
 
         # Check vector index request has custom name
         vector_req = received_requests[2]
@@ -808,6 +810,121 @@ def test_table_create_indices():
         table.drop_index("custom_vector_idx")
         table.drop_index("custom_scalar_idx")
         table.drop_index("custom_fts_idx")
+
+
+def test_remote_create_index_async_returns_job():
+    from lancedb.index import BTree
+
+    describe_calls = []
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/create_index/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "job-1"
+            describe_calls.append(1)
+            state = "IN_PROGRESS" if len(describe_calls) == 1 else "DONE"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(dict(job_id="job-1", job_state=state)).encode()
+            )
+        elif request.path == "/v1/jobs/cancel":
+            assert json.loads(body)["job_id"] == "job-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.create_index_async("id", config=BTree())
+        assert job.id == "job-1"
+        job.wait(timeout=timedelta(seconds=30))
+        assert len(describe_calls) == 2
+        job.cancel()
+
+
+def test_remote_job_wait_raises_on_failure():
+    from lancedb.exceptions import JobFailedError
+    from lancedb.index import BTree
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        if request.path == "/v1/table/test/create_index/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-2"}')
+        elif request.path == "/v1/jobs/describe":
+            assert json.loads(body)["job_id"] == "job-2"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(dict(job_id="job-2", job_state="FAILED")).encode()
+            )
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        version=1,
+                        schema=dict(
+                            fields=[
+                                dict(name="id", type={"type": "int64"}, nullable=False),
+                            ]
+                        ),
+                    )
+                ).encode()
+            )
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        job = table.create_index_async("id", config=BTree())
+        with pytest.raises(JobFailedError, match="job-2"):
+            job.wait()
 
 
 def test_remote_create_index_new_api():
@@ -1018,7 +1135,7 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
-            request.wfile.write(b"{}")
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length"))
             body = request.rfile.read(content_len)
@@ -1856,3 +1973,299 @@ def test_inherited_remote_table_reopens_after_fork():
     finally:
         server.shutdown()
         server_thread.join()
+
+
+BLOB_DESCRIBE_RESPONSE = {
+    "table": "test",
+    "version": 1,
+    "schema": {
+        "fields": [
+            {"name": "id", "type": {"type": "int64"}, "nullable": False},
+            {
+                "name": "image",
+                "type": {
+                    "type": "struct",
+                    "fields": [
+                        {
+                            "name": "data",
+                            "type": {"type": "large_binary"},
+                            "nullable": True,
+                        },
+                        {"name": "uri", "type": {"type": "string"}, "nullable": True},
+                    ],
+                },
+                "nullable": True,
+                "metadata": {
+                    "ARROW:extension:name": "lance.blob.v2",
+                    "ARROW:extension:metadata": "",
+                },
+            },
+        ]
+    },
+}
+
+
+def blob_query_response_table():
+    image_field = pa.field(
+        "image",
+        pa.struct(
+            [
+                pa.field("kind", pa.uint8(), nullable=False),
+                pa.field("position", pa.uint64(), nullable=False),
+                pa.field("size", pa.uint64(), nullable=False),
+                pa.field("blob_id", pa.uint32(), nullable=False),
+                pa.field("blob_uri", pa.string(), nullable=False),
+            ]
+        ),
+        metadata={"lance-encoding:blob": "true"},
+    )
+    images = pa.StructArray.from_arrays(
+        [
+            pa.array([1, 0, 0], type=pa.uint8()),
+            pa.array([0, 0, 0], type=pa.uint64()),
+            pa.array([5, 0, 5], type=pa.uint64()),
+            pa.array([1, 0, 2], type=pa.uint32()),
+            pa.array(["", "", ""], type=pa.string()),
+        ],
+        fields=image_field.type,
+        mask=pa.array([False, True, False]),
+    )
+    return pa.Table.from_arrays(
+        [
+            pa.array([1, 2, 3], type=pa.int64()),
+            images,
+            pa.array([10, 20, 30], type=pa.uint64()),
+        ],
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64(), nullable=False),
+                image_field,
+                pa.field("_rowid", pa.uint64()),
+            ]
+        ),
+    )
+
+
+@contextlib.contextmanager
+def blob_remote_table(*, server_version=Version("0.5.0")):
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.send_header("phalanx-version", str(server_version))
+            request.end_headers()
+            request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+        elif request.path == "/v1/table/test/query/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len))
+            assert body["columns"] == ["id", "image"]
+            assert body["with_row_id"] is True
+            response_table = blob_query_response_table()
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
+        elif request.path == "/v1/table/test/fetch_blobs/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            body = json.loads(request.rfile.read(content_len))
+            assert body["column"] == "image"
+            assert body["row_ids"] == [10, 20, 30]
+            response_table = pa.table(
+                {"image": pa.array([b"alpha", None, b"gamma"], type=pa.large_binary())}
+            )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            with pa.ipc.new_stream(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def test_remote_blob_columns_and_fetch():
+    with blob_remote_table() as table:
+        assert table.blob_columns() == ["image"]
+        blobs = table.fetch_blobs("image", [10, 20, 30])
+        assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+        with pytest.raises(NotImplementedError, match="Use fetch_blobs for full bytes"):
+            table.fetch_blob_files("image", [10, 20, 30])
+
+
+def test_remote_blob_fetch_accepts_query_table():
+    hits = pa.table({"_rowid": pa.array([10, 20, 30], type=pa.uint64())})
+
+    with blob_remote_table() as table:
+        blobs = table.fetch_blobs("image", hits)
+
+    assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+def test_remote_blob_query_stashes_row_ids_for_fetch():
+    with blob_remote_table() as table:
+        hits = table.search().select(["id", "image"]).limit(3).to_arrow()
+        assert "_rowid" not in hits.column_names
+        assert "_lance_row_id" in hits.schema.field("image").type.names
+        blobs = table.fetch_blobs("image", hits)
+
+    assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.send_header("phalanx-version", "0.5.0")
+            request.end_headers()
+            request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+        elif request.path == "/v1/table/test/query/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            assert json.loads(request.rfile.read(content_len))["with_row_id"] is True
+            response_table = blob_query_response_table().drop_columns(["_rowid"])
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
+                writer.write_table(response_table)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        hits = table.search().select(["id", "image"]).limit(3).to_arrow()
+
+        assert hits.column_names == ["id", "image"]
+        assert "_lance_row_id" not in hits.schema.field("image").type.names
+        with pytest.raises(ValueError, match="pass a list of row ids"):
+            table.fetch_blobs("image", hits)
+
+
+def test_remote_blob_byte_apis_not_supported_on_old_server():
+    with blob_remote_table(server_version=Version("0.1.0")) as table:
+        assert table.blob_columns() == ["image"]
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.fetch_blobs("image", [1])
+        with pytest.raises(NotImplementedError, match="not supported"):
+            table.fetch_blob_files("image", [1])
+
+
+def test_remote_connection_jobs_surface():
+    from lancedb.exceptions import JobFailedError
+
+    schema = pa.schema([("state", pa.string())])
+    batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    events_body = sink.getvalue().to_pybytes()
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path == "/v1/jobs/list":
+            if payload.get("page_token") is None:
+                rsp = dict(
+                    jobs=[
+                        dict(
+                            job_id="job-1",
+                            table="t1",
+                            job_type="create_index",
+                            state="in_progress",
+                            created_at_millis=1000,
+                        )
+                    ],
+                    page_token="next",
+                )
+            else:
+                assert payload["page_token"] == "next"
+                rsp = dict(
+                    jobs=[
+                        dict(
+                            job_id="job-2",
+                            table="t2",
+                            job_type="create_index",
+                            state="succeeded",
+                            created_at_millis=2000,
+                        )
+                    ]
+                )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(rsp).encode())
+        elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        job_id="job-1",
+                        job_type="create_index",
+                        job_state="FAILED",
+                        creation_ms=1000,
+                        spec=dict(column="vec"),
+                        failure=dict(
+                            phase="execute", message="worker died", retryable=True
+                        ),
+                    )
+                ).encode()
+            )
+        elif request.path == "/v1/jobs/cancel":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/query_events":
+            assert payload["job_id"] == "job-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            request.wfile.write(events_body)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        jobs = db.list_jobs()
+        assert [job.job_id for job in jobs] == ["job-1", "job-2"]
+        assert jobs[0].state == "running"
+        assert jobs[0].table == "t1"
+        assert jobs[1].state == "finished"
+
+        description = db.get_job("job-1")
+        assert description.job_type == "create_index"
+        assert description.state == "failed"
+        assert json.loads(description.spec_json) == {"column": "vec"}
+        assert description.failure.message == "worker died"
+        assert description.failure.retryable is True
+        assert db.get_job("missing") is None
+
+        assert db.cancel_job("job-1") is True
+        assert db.cancel_job("missing") is False
+
+        batches = db.job_history("job-1")
+        assert len(batches) == 1
+        assert batches[0].num_rows == 2
+        assert batches[0].column("state").to_pylist() == ["created", "done"]
+
+        job = db.job("job-1")
+        assert job.id == "job-1"
+        assert job.status() == "failed"
+        with pytest.raises(JobFailedError, match="worker died"):
+            job.wait(timeout=timedelta(seconds=5))

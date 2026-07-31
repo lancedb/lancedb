@@ -51,6 +51,11 @@ plugins:
           paths: [../python/python]
           options:
             docstring_style: numpy
+            docstring_options:
+              # Attributes documented in a `Parameters` section, and pydantic
+              # dataclasses whose `__init__` griffe cannot see statically, both
+              # trip this check. It reports nothing actionable here.
+              warn_unknown_params: false
             heading_level: 3
             show_signature_annotations: true
             show_root_heading: true

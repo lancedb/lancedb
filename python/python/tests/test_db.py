@@ -62,6 +62,21 @@ def test_basic(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
+def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
+    from lancedb.background_loop import LOOP
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", data=[{"id": 1}])
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("repr should not use the Python background loop")
+
+    monkeypatch.setattr(LOOP, "run", fail_run)
+
+    assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
+    assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
+
+
 def test_ingest_pd(tmp_path):
     db = lancedb.connect(tmp_path)
 

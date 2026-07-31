@@ -92,6 +92,8 @@ Python bindings changes:
     * Should use `LOOP.run()` to call the corresponding `AsyncTable` method.
 6. Add concrete sync method to `RemoteTable` class in `python/python/lancedb/remote/table.py`.
 7. Add unit test in `python/tests/test_table.py`.
+8. If you added a new public class or module-level function (not just a method on an
+   existing class), expose it in the API reference. See "Python API reference" below.
 
 TypeScript bindings changes:
 
@@ -102,6 +104,33 @@ TypeScript bindings changes:
     * Note: despite the name, this class is also used for remote tables.
 5. Add test in `nodejs/__test__/table.test.ts`.
 6. Run `npm run docs` to generate TypeScript documentation.
+
+## Python API reference
+
+`docs/src/python/python.md` is the entire Python API reference. It is maintained by
+hand, and anything not listed there is not rendered at all, so new public classes and
+module-level functions have to be added explicitly. How depends on the module:
+
+* `lancedb.index`, `lancedb.embeddings`, `lancedb.remote`, and `lancedb.rerankers` are
+  rendered by a single directive each, driven by the module's `__all__`. Add the new
+  name to `__all__` and it appears; forget, and it is silently omitted.
+* Everything else (`lancedb`, `lancedb.table`, `lancedb.query`, `lancedb.db`, ...) is
+  listed symbol by symbol. Add a `::: lancedb.<module>.<Name>` line to the matching
+  section, and remember that the page separates synchronous and asynchronous APIs.
+
+Deliberately undocumented: concrete implementations reached through an abstract base
+(`LanceTable`, `LanceDBConnection`, `RemoteDBConnection`), query base classes already
+covered by `inherited_members`, and internal helpers.
+
+Cross-references in docstrings use mkdocstrings syntax, `[text][lancedb.table.Table]`.
+Plain relative links such as `[Table](Table)` do not resolve. To check your work:
+
+```shell
+pip install -r docs/requirements.txt
+cd docs && PYTHONPATH=. mkdocs build
+```
+
+The docs site only builds on pushes to `main`, so this is not covered by PR CI.
 
 ## Review Guidelines
 

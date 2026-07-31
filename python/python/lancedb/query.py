@@ -52,7 +52,6 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
-    supports_blob_auto_row_id,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -651,7 +650,8 @@ class Query(pydantic.BaseModel):
     distance_type : Optional[str]
         the distance type to use for vector search
 
-        This can be l2 (default), cosine and dot.  See [metric definitions][search] for
+        This can be l2 (default), cosine and dot.  See
+        [metric definitions](https://lancedb.com/docs/search/vector-search/) for
         more details.
 
         If this is not a vector search this will be None.
@@ -664,8 +664,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     refine_factor : Optional[int]
@@ -673,8 +674,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     lower_bound : Optional[float]
@@ -1277,10 +1279,7 @@ class LanceQueryBuilder(ABC):
         return self._with_row_id is True
 
     def _blob_auto_row_id_enabled(self) -> bool:
-        if not supports_blob_auto_row_id(self._table):
-            return False
         return blob_auto_row_id_for_scan(
-            self._table,
             self._table.schema,
             self._columns,
             with_row_id=self._with_row_id,
@@ -1651,8 +1650,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         This method sets both the minimum and maximum number of probes to the same
         value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
@@ -1752,8 +1751,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         As an example, a refine factor of 2 will sample 2x as many vectors as
         requested, re-ranks them, and returns the top half most relevant results.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         Parameters
         ----------
@@ -2771,7 +2770,7 @@ class AsyncQueryBase(object):
         )
 
     async def _maybe_add_blob_row_id(self) -> None:
-        if self._table is None or not supports_blob_auto_row_id(self._table):
+        if self._table is None:
             self._blob_auto_row_id = False
             self._blob_paths = ()
             return
@@ -2779,7 +2778,6 @@ class AsyncQueryBase(object):
         req = self._inner.to_query_request()
         schema = await self._table.schema()
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             req.select,
             with_row_id=self._with_row_id,
@@ -3031,7 +3029,6 @@ class AsyncQueryBase(object):
 
         schema = await self._table.schema()
         blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             query.columns,
             with_row_id=self._with_row_id,
@@ -3041,7 +3038,7 @@ class AsyncQueryBase(object):
             if blob_mode == "bytes"
             else {}
         )
-        dataset = await self._table._to_lance()
+        dataset = await self._table.to_lance()
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
                 query,
@@ -3379,8 +3376,9 @@ class AsyncQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Vector searches always have a
+        [limit][lancedb.query.AsyncVectorQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors. When multiple vectors are passed in, if the vector
@@ -3511,8 +3509,9 @@ class AsyncFTSQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Hybrid searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Hybrid searches always have a
+        [limit][lancedb.query.AsyncHybridQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
@@ -3875,10 +3874,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
         blob_paths: tuple[str, ...] = ()
-        if self._table is not None and supports_blob_auto_row_id(self._table):
+        if self._table is not None:
             schema = await self._table.schema()
             blob_auto_row_id = blob_auto_row_id_for_scan(
-                self._table,
                 schema,
                 req.select,
                 with_row_id=self._with_row_id,

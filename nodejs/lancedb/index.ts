@@ -85,7 +85,13 @@ export {
   RenameTableOptions,
 } from "./connection";
 
-export { Session } from "./native.js";
+export {
+  Job,
+  JobDescription,
+  JobFailureInfo,
+  JobInfo,
+  Session,
+} from "./native.js";
 
 export {
   ExecutableQuery,
@@ -194,6 +200,16 @@ export interface TokenizeOptions {
   /** Whether to remove stop words. */
   removeStopWords?: boolean;
 
+  /**
+   * Custom stop words that replace the built-in list for `language`.
+   *
+   * This option only affects tokenization when `removeStopWords` is true.
+   *
+   * `undefined` keeps the built-in language list. An empty array explicitly
+   * replaces it with no stop words.
+   */
+  customStopWords?: string[];
+
   /** Whether to fold ASCII characters. */
   asciiFolding?: boolean;
 
@@ -225,6 +241,7 @@ export async function tokenize(
     options?.lowercase,
     options?.stem,
     options?.removeStopWords,
+    options?.customStopWords,
     options?.asciiFolding,
     options?.ngramMinLength,
     options?.ngramMaxLength,

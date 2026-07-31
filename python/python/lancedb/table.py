@@ -20,6 +20,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Tuple,
     Union,
     overload,
@@ -39,6 +40,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
+from lancedb.job import AsyncJob, Job
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -976,6 +978,24 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        Takes the same arguments as :meth:`create_index`. The job may already
+        be complete when returned; callers must not assume the index exists
+        until :meth:`Job.wait` returns.
+        """
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
@@ -1102,6 +1122,7 @@ class Table(ABC):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
+        custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -1169,6 +1190,9 @@ class Table(ABC):
         remove_stop_words : bool, default True
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
+        custom_stop_words : list of str, optional
+            Custom words that replace the built-in language stop words. ``None``
+            uses the built-in list; an empty list explicitly uses no stop words.
         ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
@@ -1206,7 +1230,7 @@ class Table(ABC):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [Table][lancedb.table.Table].
 
         Parameters
         ----------
@@ -1338,8 +1362,8 @@ class Table(ABC):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in
         [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
@@ -1538,8 +1562,28 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
+        The result has the same length and order as ``row_ids``. Null blobs
+        produce null slots; valid empty blobs produce ``b""``.
+
         Convenience for small payloads. For large values use
         :meth:`fetch_blob_files`.
+        """
+
+    @abstractmethod
+    def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        """Materialize row-specific byte ranges from a blob v2 column.
+
+        Each request is a ``(row_id, offset, length)`` tuple. Requests may be
+        repeated or reordered, including multiple ranges for the same blob.
+        The result has the same length and order as ``requests``; null blobs
+        produce null slots and empty ranges on non-null blobs produce ``b""``.
+
+        Row IDs can be obtained from a query with ``with_row_id(True)``. This
+        API is currently supported only by local tables.
         """
 
     @abstractmethod
@@ -1549,8 +1593,10 @@ class Table(ABC):
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
-        a ``list[int]`` or query ``pyarrow.Table`` with ``_rowid`` (or stashed
-        row-id metadata). Null rows are ``None``. Local tables only.
+        a ``list[int]`` or a query ``pyarrow.Table`` carrying row identity via
+        ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
+        rows are ``None``. Unsupported on LanceDB Cloud, where
+        :meth:`fetch_blobs` returns full bytes instead.
         """
 
     @abstractmethod
@@ -1753,7 +1799,7 @@ class Table(ABC):
         for faster reads.
 
         Arguments are passed onto Lance's
-        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
+        `lance.dataset.DatasetOptimizer.compact_files`.
         For most cases, the default should be fine.
 
         See Also
@@ -1807,6 +1853,8 @@ class Table(ABC):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -1961,15 +2009,14 @@ class Table(ABC):
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
 
     @abstractmethod
@@ -2265,6 +2312,13 @@ class LanceTable(Table):
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
+    def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
+
     def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
@@ -2436,13 +2490,7 @@ class LanceTable(Table):
         return LOOP.run(self._table.count_rows(filter))
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(name={self.name!r}"
-        if self._conn.read_consistency_interval is not None:
-            val += ", read_consistency_interval={!r}".format(
-                self._conn.read_consistency_interval
-            )
-        val += f", _conn={self._conn!r})"
-        return val
+        return f"{self.__class__.__name__}(name={self.name!r}, _conn={self._conn!r})"
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -2751,6 +2799,34 @@ class LanceTable(Table):
             )
         )
 
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        The job may already be complete when returned; callers must not assume
+        the index exists until :meth:`Job.wait` returns.
+        """
+        return Job(
+            LOOP.run(
+                self._table.create_index_async(
+                    column,
+                    replace=replace,
+                    config=config,
+                    wait_timeout=wait_timeout,
+                    name=name,
+                    train=train,
+                )
+            )
+        )
+
     def _is_legacy_create_index_call(
         self,
         first_arg: str,
@@ -3027,6 +3103,7 @@ class LanceTable(Table):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
+        custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -3073,6 +3150,7 @@ class LanceTable(Table):
                 "lower_case": lower_case,
                 "stem": stem,
                 "remove_stop_words": remove_stop_words,
+                "custom_stop_words": custom_stop_words,
                 "ascii_folding": ascii_folding,
                 "ngram_min_length": ngram_min_length,
                 "ngram_max_length": ngram_max_length,
@@ -3080,6 +3158,7 @@ class LanceTable(Table):
             }
         else:
             tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
+            tokenizer_configs["custom_stop_words"] = custom_stop_words
 
         config = FTS(block_size=block_size, **tokenizer_configs)
 
@@ -3352,8 +3431,8 @@ class LanceTable(Table):
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         Examples
         --------
@@ -3383,8 +3462,9 @@ class LanceTable(Table):
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/[where][sql]/limit clauses are applied
-            to filter the table
+            - If None then the
+            select/[where][lancedb.query.LanceQueryBuilder.where]/limit clauses
+            are applied to filter the table
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -3778,6 +3858,8 @@ class LanceTable(Table):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -4650,7 +4732,24 @@ class AsyncTable:
         """
         return AsyncQuery(self._inner.query(), self)
 
-    async def _to_lance(self, **kwargs) -> lance.LanceDataset:
+    async def to_lance(self, **kwargs) -> lance.LanceDataset:
+        """Return the Lance dataset backing this table.
+
+        Parameters
+        ----------
+        **kwargs
+            Forwarded to `lance.dataset`.
+
+        Returns
+        -------
+        lance.LanceDataset
+            The Lance dataset at this table handle's version and branch.
+
+        Examples
+        --------
+        >>> async def get_lance_dataset(table):
+        ...     return await table.to_lance()
+        """
         try:
             import lance
         except ImportError:
@@ -4700,7 +4799,7 @@ class AsyncTable:
             return (await self.to_arrow()).to_pandas(**kwargs)
         if blob_mode == "bytes" and blob_v2_column_paths(schema):
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
-        return (await self._to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
+        return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
@@ -4814,6 +4913,46 @@ class AsyncTable:
                     language=config.language,
                 )
             raise e
+
+    async def create_index_async(
+        self,
+        column: str,
+        *,
+        replace: Optional[bool] = None,
+        config: Optional[
+            Union[
+                IvfFlat,
+                IvfPq,
+                IvfRq,
+                HnswPq,
+                HnswSq,
+                HnswFlat,
+                BTree,
+                Bitmap,
+                LabelList,
+                Fm,
+                FTS,
+            ]
+        ] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> AsyncJob:
+        """Create an index, returning a handle to the indexing job.
+
+        Takes the same arguments as :meth:`create_index`. The job may already
+        be complete when returned; callers must not assume the index exists
+        until :meth:`AsyncJob.wait` resolves.
+        """
+        job = await self._inner.create_index_async(
+            column,
+            index=config,
+            replace=replace,
+            wait_timeout=wait_timeout,
+            name=name,
+            train=train,
+        )
+        return AsyncJob(job)
 
     async def drop_index(self, name: str) -> None:
         """
@@ -4958,7 +5097,7 @@ class AsyncTable:
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table).
+        """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
         Parameters
         ----------
@@ -5160,8 +5299,8 @@ class AsyncTable:
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
+        of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
+        and [full-text search](https://lancedb.com/docs/search/full-text-search/).
 
         All query options are defined in [AsyncQuery][lancedb.query.AsyncQuery].
 
@@ -5722,15 +5861,14 @@ class AsyncTable:
         change permanent you can use the `[Self::restore]` method.
 
         Any operation that modifies the table will fail while the table is in a checked
-        out state.
+        out state. To return the table to a normal state use
+        `[Self::checkout_latest]`.
 
         Parameters
         ----------
         version: int | str,
             The version to check out. A version number (`int`) or a tag
             (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
         """
         try:
             await self._inner.checkout(version)
@@ -5829,6 +5967,13 @@ class AsyncTable:
             column, _normalize_blob_row_ids(row_ids, column)
         )
 
+    async def fetch_blob_ranges(
+        self,
+        column: str,
+        requests: Sequence[Tuple[int, int, int]],
+    ) -> pa.LargeBinaryArray:
+        return await self._inner.fetch_blob_ranges(column, list(requests))
+
     async def fetch_blob_files(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> "list[Optional[BlobFile]]":
@@ -5907,6 +6052,8 @@ class AsyncTable:
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
+        Notes
+        -----
         The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -6287,6 +6434,8 @@ class Branches:
         dry_run: bool, default False
             When True, only preview. When False, attempt the merge.
 
+        Notes
+        -----
         A rejected merge returns ``status="rejected"`` instead of raising.
         """
         return LOOP.run(self._table.branches.merge(from_branch, dry_run))

@@ -14,6 +14,9 @@ from .answerdotai import AnswerdotaiRerankers
 from .voyageai import VoyageAIReranker
 from .watsonx import WatsonxReranker
 
+# The API reference renders this module with a single mkdocstrings directive,
+# which only picks up names listed here. New public names must be added to this
+# list, or they will silently go undocumented.
 __all__ = [
     "Reranker",
     "CrossEncoderReranker",

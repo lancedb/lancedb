@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { tableFromIPC } from "apache-arrow";
 import {
   Data,
   SchemaLike,
@@ -20,6 +21,9 @@ import type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
+  Job,
+  JobDescription,
+  JobInfo,
   ListNamespacesResponse,
 } from "./native";
 export type {
@@ -436,6 +440,40 @@ export abstract class Connection {
     newName: string,
     options?: RenameTableOptions,
   ): Promise<void>;
+
+  /**
+   * A {@link Job} handle for a server-side job by id.
+   *
+   * The handle is constructed without a server round trip; an unknown id
+   * surfaces when the handle is used. Dropping the handle has no effect on
+   * the job itself.
+   */
+  abstract job(jobId: string): Job;
+
+  /** List server-side jobs across the database's tables. */
+  abstract listJobs(): Promise<JobInfo[]>;
+
+  /**
+   * Describe a single server-side job by id.
+   *
+   * Resolves to `null` when the server has no such job.
+   */
+  abstract getJob(jobId: string): Promise<JobDescription | null>;
+
+  /**
+   * Request cancellation of a server-side job by id.
+   *
+   * Resolves to true if the server accepted the cancellation, false if no
+   * such job exists. Cancelling an already-terminal job is a no-op success.
+   */
+  abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * The lifecycle event history of a server-side job, as an Arrow table.
+   *
+   * Lists history across all jobs when `jobId` is omitted.
+   */
+  abstract jobHistory(jobId?: string): Promise<ArrowTable>;
 }
 
 /** @hideconstructor */
@@ -721,6 +759,30 @@ export class LocalConnection extends Connection {
       options?.namespacePath ?? [],
       options?.newNamespacePath,
     );
+  }
+
+  job(jobId: string): Job {
+    return this.inner.job(jobId);
+  }
+
+  async listJobs(): Promise<JobInfo[]> {
+    return this.inner.listJobs();
+  }
+
+  async getJob(jobId: string): Promise<JobDescription | null> {
+    return this.inner.getJob(jobId);
+  }
+
+  async cancelJob(jobId: string): Promise<boolean> {
+    return this.inner.cancelJob(jobId);
+  }
+
+  async jobHistory(jobId?: string): Promise<ArrowTable> {
+    const buf = await this.inner.jobHistory(jobId);
+    if (buf.length === 0) {
+      return new ArrowTable();
+    }
+    return tableFromIPC(buf);
   }
 }
 

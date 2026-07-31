@@ -44,7 +44,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         The token pooling strategy to use, by default "hierarchical".
         - "hierarchical": Progressively pools tokens to reduce sequence length.
         - "lambda": A simpler pooling that uses a custom `pooling_func`.
-    pooling_func: typing.Callable, optional
+    pooling_func : typing.Callable, optional
         A function to use for pooling when `pooling_strategy` is "lambda".
     pool_factor : int
         Factor to reduce sequence length if token pooling is enabled (default 2).
@@ -52,7 +52,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Quantization configuration for the model. (default None, bitsandbytes needed)
     batch_size : int
         Batch size for processing inputs (default 2).
-    offload_folder: str, optional
+    offload_folder : str, optional
         Folder to offload model weights if using CPU offloading (default None). This is
         useful for large models that do not fit in memory.
     """

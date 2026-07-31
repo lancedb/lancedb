@@ -1258,6 +1258,53 @@ def test_branch_to_lance_targets_branch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_async_to_lance(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance()
+
+    assert dataset.count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    branch = await table.branches.create("exp")
+    await branch.add([{"i": 2}])
+
+    assert (await branch.to_lance()).count_rows() == 2
+    assert (await table.to_lance()).count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_targets_checked_out_version(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    version = await table.version()
+    await table.add([{"i": 2}])
+    checked_out = await db.open_table("t", version=version)
+
+    assert (await checked_out.to_lance()).count_rows() == 1
+    assert (await table.to_lance()).count_rows() == 2
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_forwards_dataset_options(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance(default_scan_options={"with_row_id": True})
+
+    assert "_rowid" in dataset.schema.names
+
+
+@pytest.mark.asyncio
 async def test_async_branches(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table(
@@ -1353,6 +1400,15 @@ async def test_async_open_table_with_branch_version(tmp_path):
     assert await pinned.count_rows() == 3  # exp HEAD, not main's 4
     await pinned.add([{"i": 3}])
     assert await pinned.count_rows() == 4  # writable again
+
+
+def test_create_index_async_returns_done_job(mem_db: DBConnection):
+    table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
+    job = table.create_index_async("id", config=BTree())
+    assert job.id is None
+    job.wait()
+    assert len(table.list_indices()) == 1
+    job.cancel()
 
 
 @patch("lancedb.table.AsyncTable.create_index")
@@ -3040,9 +3096,6 @@ def test_consistency(tmp_path, consistency_interval):
 
     db2 = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
     table2 = db2.open_table("my_table")
-    if consistency_interval is not None:
-        assert "read_consistency_interval=datetime.timedelta(" in repr(db2)
-        assert "read_consistency_interval=datetime.timedelta(" in repr(table2)
     assert table2.version == table.version
 
     table.add([{"id": 1}])

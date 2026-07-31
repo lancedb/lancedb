@@ -453,6 +453,16 @@ paths:
                     The metric type to use for the index. l2, Cosine, Dot are supported.
                 index_type:
                   type: string
+                custom_stop_words:
+                  type: [array, "null"]
+                  items:
+                    type: string
+                  description: |
+                    The custom stop-word list for an FTS index. A non-null
+                    array replaces the language's built-in stop-word list and is only
+                    applied when remove_stop_words is enabled. Null uses the built-in
+                    language list, while an empty array explicitly replaces it with no
+                    stop words.
       responses:
         "200":
           description: Index successfully created

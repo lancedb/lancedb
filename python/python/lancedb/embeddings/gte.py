@@ -26,13 +26,13 @@ class GteEmbeddings(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "thenlper/gte-large"
+    name : str, default "thenlper/gte-large"
         The name of the model to use.
-    device: str, default "cpu"
+    device : str, default "cpu"
         Sets the device type for the model.
-    normalize: str, default "True"
+    normalize : str, default "True"
         Controls normalize param in encode function for the transformer.
-    mlx: bool, default False
+    mlx : bool, default False
         Controls which model to use. False for gte-large,True for the mlx version.
 
     Examples

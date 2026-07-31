@@ -20,6 +20,7 @@ from typing import (
 import warnings
 
 from lancedb import __version__
+from lancedb._blob import BlobFile
 
 from lancedb._lancedb import (
     AddColumnsResult,
@@ -47,6 +48,7 @@ from lancedb.index import (
     IvfSq,
     LabelList,
 )
+from lancedb.job import Job
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -340,6 +342,7 @@ class RemoteTable(Table):
         lower_case: bool = True,
         stem: bool = True,
         remove_stop_words: bool = True,
+        custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
@@ -361,6 +364,7 @@ class RemoteTable(Table):
             lower_case=lower_case,
             stem=stem,
             remove_stop_words=remove_stop_words,
+            custom_stop_words=custom_stop_words,
             ascii_folding=ascii_folding,
             ngram_min_length=ngram_min_length,
             ngram_max_length=ngram_max_length,
@@ -538,6 +542,34 @@ class RemoteTable(Table):
             )
         )
 
+    def create_index_async(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: Optional[bool] = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
+    ) -> Job:
+        """Create an index, returning a handle to the indexing job.
+
+        The job may already be complete when returned; callers must not assume
+        the index exists until :meth:`Job.wait` returns.
+        """
+        return Job(
+            LOOP.run(
+                self._table.create_index_async(
+                    column,
+                    replace=replace,
+                    config=config,
+                    wait_timeout=wait_timeout,
+                    name=name,
+                    train=train,
+                )
+            )
+        )
+
     def _is_legacy_create_index_call(
         self,
         first_arg: str,
@@ -578,8 +610,9 @@ class RemoteTable(Table):
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
     ) -> AddResult:
-        """Add more data to the [Table](Table). It has the same API signature as
-        the OSS version.
+        """Add more data to the [Table][lancedb.table.Table].
+
+        It has the same API signature as the OSS version.
 
         Parameters
         ----------
@@ -639,7 +672,8 @@ class RemoteTable(Table):
         fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
+        of the given query vector. We currently support
+        [vector search](https://lancedb.com/docs/search/vector-search/)
 
         All query options are defined in
         [LanceVectorQueryBuilder][lancedb.query.LanceVectorQueryBuilder].
@@ -1035,17 +1069,22 @@ class RemoteTable(Table):
         )
 
     def blob_columns(self) -> list[str]:
+        return LOOP.run(self._table.blob_columns())
+
+    def fetch_blobs(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> pa.LargeBinaryArray:
+        return LOOP.run(self._table.fetch_blobs(column, row_ids))
+
+    def fetch_blob_ranges(self, column: str, requests) -> pa.LargeBinaryArray:
         raise NotImplementedError(
-            "blob_columns() is not yet supported on the LanceDB Cloud"
+            "fetch_blob_ranges() is not supported on LanceDB Cloud"
         )
 
-    def fetch_blobs(self, column: str, row_ids) -> pa.LargeBinaryArray:
-        raise NotImplementedError("fetch_blobs() is not supported on LanceDB Cloud")
-
-    def fetch_blob_files(self, column: str, row_ids):
-        raise NotImplementedError(
-            "fetch_blob_files() is not supported on LanceDB Cloud"
-        )
+    def fetch_blob_files(
+        self, column: str, row_ids: Union[list[int], pa.Table]
+    ) -> "list[Optional[BlobFile]]":
+        return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
     def head(self, n=5) -> pa.Table:
         """

@@ -295,6 +295,29 @@ await table.createIndex("my_float_col");
 
 ***
 
+### createIndexAsync()
+
+```ts
+abstract createIndexAsync(column, options?): Promise<Job>
+```
+
+Create an index, returning a handle to the indexing job.
+
+The job may already be complete when returned; callers must not assume
+the index exists until [Job.wait](Job.md#wait) resolves.
+
+#### Parameters
+
+* **column**: `string`
+
+* **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### currentBranch()
 
 ```ts

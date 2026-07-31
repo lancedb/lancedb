@@ -53,9 +53,9 @@ class RetryError(LanceDBClientError):
     """An error that occurs when the client has exceeded the maximum number of retries.
 
     The retry strategy can be adjusted by setting the
-    [retry_config](lancedb.remote.ClientConfig.retry_config) in the client
+    [retry_config][lancedb.remote.ClientConfig.retry_config] in the client
     configuration. This is passed in the `client_config` argument of
-    [connect](lancedb.connect) and [connect_async](lancedb.connect_async).
+    [connect][lancedb.connect] and [connect_async][lancedb.connect_async].
 
     The __cause__ attribute of this exception will be the last exception that
     caused the retry to fail. It will be an

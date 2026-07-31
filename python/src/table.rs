@@ -17,7 +17,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::BlobFile;
+use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
@@ -520,6 +520,7 @@ impl From<LanceDbFtsToken> for FtsToken {
     lower_case = true,
     stem = true,
     remove_stop_words = true,
+    custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
@@ -534,6 +535,7 @@ pub fn tokenize(
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
@@ -555,7 +557,8 @@ pub fn tokenize(
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
-        .ngram_prefix_only(prefix_only);
+        .ngram_prefix_only(prefix_only)
+        .custom_stop_words(custom_stop_words);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -799,6 +802,37 @@ impl Table {
         future_into_py(self_.py(), async move {
             op.execute().await.infer_error()?;
             Ok(())
+        })
+    }
+
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    pub fn create_index_async<'a>(
+        self_: PyRef<'a, Self>,
+        column: String,
+        index: Option<Bound<'_, PyAny>>,
+        replace: Option<bool>,
+        wait_timeout: Option<Bound<'_, PyAny>>,
+        name: Option<String>,
+        train: Option<bool>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let index = extract_index_params(&index)?;
+        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let mut op = self_
+            .inner_ref()?
+            .create_index_with_timeout(&[column], index, timeout);
+        if let Some(replace) = replace {
+            op = op.replace(replace);
+        }
+        if let Some(name) = name {
+            op = op.name(name);
+        }
+        if let Some(train) = train {
+            op = op.train(train);
+        }
+
+        future_into_py(self_.py(), async move {
+            let job = op.execute_async().await.infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 
@@ -1095,6 +1129,27 @@ impl Table {
         future_into_py(self_.py(), async move {
             let blobs: LargeBinaryArray = inner
                 .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .infer_error()?;
+            Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    /// Read row-specific blob-local byte ranges in one planned operation.
+    #[pyo3(signature = (column, requests))]
+    pub fn fetch_blob_ranges(
+        self_: PyRef<'_, Self>,
+        column: String,
+        requests: Vec<(u64, u64, u64)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let requests = requests
+                .into_iter()
+                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
+                .collect::<Vec<_>>();
+            let blobs: LargeBinaryArray = inner
+                .fetch_blob_ranges(column, requests)
                 .await
                 .infer_error()?;
             Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))

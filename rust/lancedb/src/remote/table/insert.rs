@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! DataFusion ExecutionPlan for inserting data into remote LanceDB tables.
+//! DataFusion ExecutionPlan for streaming writes (add / merge_insert) to
+//! remote LanceDB tables.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,28 +24,57 @@ use lance::io::exec::utils::InstrumentedRecordBatchStreamAdapter;
 use crate::Error;
 use crate::remote::ARROW_STREAM_CONTENT_TYPE;
 use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
-use crate::remote::table::RemoteTable;
-use crate::table::AddResult;
+use crate::remote::table::{MergeInsertRequest, REQUEST_TIMEOUT_HEADER, RemoteTable};
 use crate::table::datafusion::insert::COUNT_SCHEMA;
 use crate::table::write_progress::WriteProgressTracker;
+use crate::table::{AddResult, MergeResult};
 
-/// ExecutionPlan for inserting data into a remote LanceDB table.
+/// The write operation a [`RemoteWriteExec`] performs. Both variants share the
+/// same Arrow-IPC streaming body and error side-channel; only the target
+/// endpoint, query parameters, and parsed result type differ.
+#[derive(Debug, Clone)]
+pub enum WriteOp {
+    /// `add`: stream to `/v1/table/{id}/insert/`, optionally overwriting.
+    Insert { overwrite: bool },
+    /// `merge_insert`: stream to `/v1/table/{id}/merge_insert/` with the merge
+    /// parameters carried as query params. Multipart is not supported for this
+    /// operation (the server has no multipart merge_insert endpoint), so an
+    /// `upload_id` combined with this op is a programming error.
+    MergeInsert {
+        query: MergeInsertRequest,
+        timeout: Option<Duration>,
+    },
+}
+
+/// The parsed server response for a completed write, discriminated by the
+/// operation that produced it.
+#[derive(Debug, Clone)]
+pub enum WriteResult {
+    Add(AddResult),
+    Merge(MergeResult),
+}
+
+/// ExecutionPlan for streaming a write (add or merge_insert) to a remote
+/// LanceDB table.
 ///
-/// Streams data as Arrow IPC to `/v1/table/{id}/insert/` endpoint.
+/// Streams data as Arrow IPC to the endpoint selected by [`WriteOp`]. Both
+/// operations reuse the same error side-channel so an input stream error (e.g.
+/// NaN rejection) surfaces with its original message rather than the masked
+/// HTTP error Hyper produces when a request body stream fails under HTTP2.
 ///
 /// When `upload_id` is set, inserts are staged as part of a multipart write
 /// session and the plan supports multiple partitions for parallel uploads.
 /// Without `upload_id`, the plan requires a single partition and commits
-/// immediately.
+/// immediately. Multipart applies to `add` only.
 #[derive(Debug)]
-pub struct RemoteInsertExec<S: HttpSend = Sender> {
+pub struct RemoteWriteExec<S: HttpSend = Sender> {
     table_name: String,
     identifier: String,
     client: RestfulLanceDbClient<S>,
     input: Arc<dyn ExecutionPlan>,
-    overwrite: bool,
+    op: WriteOp,
     properties: Arc<PlanProperties>,
-    add_result: Arc<Mutex<Option<AddResult>>>,
+    result: Arc<Mutex<Option<WriteResult>>>,
     metrics: ExecutionPlanMetricsSet,
     upload_id: Option<String>,
     tracker: Option<Arc<WriteProgressTracker>>,
@@ -61,27 +91,28 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     max_request_duration: Option<Duration>,
 }
 
-impl<S: HttpSend + 'static> RemoteInsertExec<S> {
-    /// Create a new single-partition RemoteInsertExec.
+impl<S: HttpSend + 'static> RemoteWriteExec<S> {
+    /// Create a new single-partition RemoteWriteExec.
     pub fn new(
         table_name: String,
         identifier: String,
         client: RestfulLanceDbClient<S>,
         input: Arc<dyn ExecutionPlan>,
-        overwrite: bool,
+        op: WriteOp,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
     ) -> Self {
         Self::new_inner(
-            table_name, identifier, client, input, overwrite, None, tracker, branch, None, None,
+            table_name, identifier, client, input, op, None, tracker, branch, None, None,
         )
     }
 
-    /// Create a multi-partition RemoteInsertExec for use with multipart writes.
+    /// Create a multi-partition RemoteWriteExec for use with multipart writes.
     ///
     /// Each partition's insert is staged under the given `upload_id` without
     /// committing. The caller is responsible for calling the complete (or abort)
-    /// endpoint after all partitions finish.
+    /// endpoint after all partitions finish. Multipart is insert-only, so the
+    /// op is fixed to [`WriteOp::Insert`].
     #[allow(clippy::too_many_arguments)]
     pub fn new_multipart(
         table_name: String,
@@ -100,7 +131,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             identifier,
             client,
             input,
-            overwrite,
+            WriteOp::Insert { overwrite },
             Some(upload_id),
             tracker,
             branch,
@@ -115,7 +146,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         identifier: String,
         client: RestfulLanceDbClient<S>,
         input: Arc<dyn ExecutionPlan>,
-        overwrite: bool,
+        op: WriteOp,
         upload_id: Option<String>,
         tracker: Option<Arc<WriteProgressTracker>>,
         branch: Option<String>,
@@ -140,9 +171,9 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             identifier,
             client,
             input,
-            overwrite,
+            op,
             properties: Arc::new(properties),
-            add_result: Arc::new(Mutex::new(None)),
+            result: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             upload_id,
             tracker,
@@ -152,14 +183,30 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         }
     }
 
-    /// Get the add result after execution.
-    // TODO: this will be used when we wire this up to Table::add().
-    #[allow(dead_code)]
+    /// Get the add result after execution, if this exec ran an insert.
     pub fn add_result(&self) -> Option<AddResult> {
-        self.add_result
+        match self
+            .result
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+        {
+            Some(WriteResult::Add(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Get the merge result after execution, if this exec ran a merge_insert.
+    pub fn merge_result(&self) -> Option<MergeResult> {
+        match self
+            .result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            Some(WriteResult::Merge(r)) => Some(r),
+            _ => None,
+        }
     }
 
     /// Stream the input into an HTTP body as an Arrow IPC stream, capturing any
@@ -464,24 +511,24 @@ impl<S: HttpSend + 'static> PartRequestCtx<'_, S> {
     }
 }
 
-impl<S: HttpSend + 'static> DisplayAs for RemoteInsertExec<S> {
+impl<S: HttpSend + 'static> DisplayAs for RemoteWriteExec<S> {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(
-                    f,
-                    "RemoteInsertExec: table={}, overwrite={}",
-                    self.table_name, self.overwrite
-                )
+                write!(f, "RemoteWriteExec: table={}, op=", self.table_name)?;
+                match &self.op {
+                    WriteOp::Insert { overwrite } => write!(f, "insert, overwrite={}", overwrite),
+                    WriteOp::MergeInsert { .. } => write!(f, "merge_insert"),
+                }
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "RemoteInsertExec")
+                write!(f, "RemoteWriteExec")
             }
         }
     }
 }
 
-impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
+impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
     fn name(&self) -> &str {
         Self::static_name()
     }
@@ -516,15 +563,18 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if children.len() != 1 {
             return Err(DataFusionError::Internal(
-                "RemoteInsertExec requires exactly one child".to_string(),
+                "RemoteWriteExec requires exactly one child".to_string(),
             ));
         }
+        // Building a fresh exec (with a new, empty `result`) is what makes the
+        // outer rescannable retry loop work: `reset_state()` clears the captured
+        // result so a re-execution starts clean.
         Ok(Arc::new(Self::new_inner(
             self.table_name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             children[0].clone(),
-            self.overwrite,
+            self.op.clone(),
             self.upload_id.clone(),
             self.tracker.clone(),
             self.branch.clone(),
@@ -540,8 +590,16 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
     ) -> DataFusionResult<SendableRecordBatchStream> {
         if self.upload_id.is_none() && partition != 0 {
             return Err(DataFusionError::Internal(
-                "RemoteInsertExec only supports single partition execution without upload_id"
+                "RemoteWriteExec only supports single partition execution without upload_id"
                     .to_string(),
+            ));
+        }
+
+        // Multipart is insert-only: the server has no multipart merge_insert
+        // endpoint, so a merge_insert with an upload_id is a programming error.
+        if self.upload_id.is_some() && matches!(self.op, WriteOp::MergeInsert { .. }) {
+            return Err(DataFusionError::Internal(
+                "merge_insert does not support multipart (upload_id) writes".to_string(),
             ));
         }
 
@@ -556,8 +614,8 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             ));
         let client = self.client.clone();
         let identifier = self.identifier.clone();
-        let overwrite = self.overwrite;
-        let add_result = self.add_result.clone();
+        let op = self.op.clone();
+        let result_slot = self.result.clone();
         let table_name = self.table_name.clone();
         let upload_id = self.upload_id.clone();
         let tracker = self.tracker.clone();
@@ -568,10 +626,12 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         let stream = futures::stream::once(async move {
             // Multipart writes with a byte budget split the partition into
             // several bounded, still-streamed requests so no single request
-            // stays open long enough to hit the client read timeout.
+            // stays open long enough to hit the client read timeout. This path
+            // is insert-only (guarded above).
             if let (Some(upload_id), Some(max_bytes)) =
                 (upload_id.as_deref(), max_bytes_per_request)
             {
+                let overwrite = matches!(op, WriteOp::Insert { overwrite: true });
                 let ctx = PartRequestCtx {
                     client: &client,
                     identifier: &identifier,
@@ -592,16 +652,36 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                 )?);
             }
 
-            let mut request = client
-                .post(&format!("/v1/table/{}/insert/", identifier))
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+            // Build the request for the selected operation. Both endpoints take
+            // an Arrow-IPC streaming body and reuse the same error side-channel.
+            let mut request = match &op {
+                WriteOp::Insert { overwrite } => {
+                    let mut request = client
+                        .post(&format!("/v1/table/{}/insert/", identifier))
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+                    if *overwrite {
+                        request = request.query(&[("mode", "overwrite")]);
+                    }
+                    if let Some(ref uid) = upload_id {
+                        request = request.query(&[("upload_id", uid.as_str())]);
+                    }
+                    request
+                }
+                WriteOp::MergeInsert { query, timeout } => {
+                    let mut request = client
+                        .post(&format!("/v1/table/{}/merge_insert/", identifier))
+                        .query(query)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+                    if let Some(timeout) = timeout {
+                        // (If it doesn't fit into u64, it's not worth sending anyways.)
+                        if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
+                            request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+                        }
+                    }
+                    request
+                }
+            };
 
-            if overwrite {
-                request = request.query(&[("mode", "overwrite")]);
-            }
-            if let Some(ref uid) = upload_id {
-                request = request.query(&[("upload_id", uid.as_str())]);
-            }
             if let Some(ref b) = branch {
                 request = request.query(&[("branch", b.as_str())]);
             }
@@ -635,6 +715,8 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
 
             // If the request failed due to an input stream error, surface the
             // original error (e.g. NaN rejection) instead of the HTTP error.
+            // This is the crux of the #2339 fix: Hyper silently swallows body
+            // stream errors under HTTP2, so we recover the original here.
             if let Ok(stream_err) = error_rx.try_recv() {
                 return Err(stream_err);
             }
@@ -642,7 +724,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             let (request_id, response) = result?;
 
             // For multipart writes, the staging response is not the final
-            // version. Only parse AddResult for non-multipart inserts.
+            // version. Only parse the result for non-multipart writes.
             if upload_id.is_none() {
                 let body_text = response.text().await.map_err(|e| {
                     DataFusionError::External(Box::new(Error::Http {
@@ -652,21 +734,44 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                     }))
                 })?;
 
-                let parsed_result = if body_text.trim().is_empty() {
-                    // Backward compatible with old servers
-                    AddResult { version: 0 }
-                } else {
-                    serde_json::from_str(&body_text).map_err(|e| {
-                        DataFusionError::External(Box::new(Error::Http {
-                            source: format!("Failed to parse add response: {}", e).into(),
-                            request_id: request_id.clone(),
-                            status_code: None,
-                        }))
-                    })?
+                let parsed_result = match &op {
+                    WriteOp::Insert { .. } => {
+                        let add = if body_text.trim().is_empty() {
+                            // Backward compatible with old servers
+                            AddResult { version: 0 }
+                        } else {
+                            serde_json::from_str(&body_text).map_err(|e| {
+                                DataFusionError::External(Box::new(Error::Http {
+                                    source: format!("Failed to parse add response: {}", e).into(),
+                                    request_id: request_id.clone(),
+                                    status_code: None,
+                                }))
+                            })?
+                        };
+                        WriteResult::Add(add)
+                    }
+                    WriteOp::MergeInsert { .. } => {
+                        let merge = if body_text.trim().is_empty() {
+                            // Backward compatible with old servers
+                            MergeResult::default()
+                        } else {
+                            serde_json::from_str(&body_text).map_err(|e| {
+                                DataFusionError::External(Box::new(Error::Http {
+                                    source: format!("Failed to parse merge_insert response: {}", e)
+                                        .into(),
+                                    request_id: request_id.clone(),
+                                    status_code: None,
+                                }))
+                            })?
+                        };
+                        WriteResult::Merge(merge)
+                    }
                 };
 
-                let mut res_lock = add_result.lock().map_err(|_| {
-                    DataFusionError::Execution("Failed to acquire lock for add_result".to_string())
+                let mut res_lock = result_slot.lock().map_err(|_| {
+                    DataFusionError::Execution(
+                        "Failed to acquire lock for write result".to_string(),
+                    )
                 })?;
                 *res_lock = Some(parsed_result);
             } else {
@@ -680,7 +785,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                 })?;
             }
 
-            // Return a single batch with count 0 (actual count is tracked in add_result)
+            // Return a single batch with count 0 (actual count is tracked in result)
             let count_array: ArrayRef = Arc::new(UInt64Array::from(vec![0u64]));
             let batch = RecordBatch::try_new(COUNT_SCHEMA.clone(), vec![count_array])?;
             Ok::<_, DataFusionError>(batch)
@@ -711,9 +816,11 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use super::RemoteInsertExec;
+    use super::RemoteWriteExec;
+    use super::WriteOp;
     use crate::Table;
     use crate::remote::ARROW_STREAM_CONTENT_TYPE;
+    use crate::remote::table::MergeInsertRequest;
     use crate::table::datafusion::BaseTableAdapter;
 
     fn schema_json() -> &'static str {
@@ -1028,7 +1135,7 @@ mod tests {
         let input = input_plan_from_batches(schema, batches).await;
 
         // A 1-byte budget forces every batch into its own part.
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1068,7 +1175,7 @@ mod tests {
 
         // A large byte budget and no time limit keep the whole partition in a
         // single part.
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1109,7 +1216,7 @@ mod tests {
         // A large byte budget but a tiny duration budget: writing and sending
         // one batch already takes longer than the limit, so each batch is cut
         // into its own part on the time check rather than the byte check.
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1144,7 +1251,7 @@ mod tests {
         // write relies on another partition having data to commit.
         let input = input_plan_from_batches(schema, vec![]).await;
 
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1184,7 +1291,7 @@ mod tests {
         let input = input_plan_from_batches(schema, batches).await;
 
         // A 1-byte budget forces every batch into its own part.
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1233,7 +1340,7 @@ mod tests {
         ];
         let input = input_plan_from_partitions(schema, partitions).await;
 
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1267,7 +1374,7 @@ mod tests {
         // A large byte budget keeps the good batch and the following error in
         // the same part, exercising the mid-part abort path.
         let input: Arc<dyn ExecutionPlan> = Arc::new(ErroringExec::new());
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,
@@ -1291,6 +1398,66 @@ mod tests {
 
         let err = err.expect("expected the input stream error to surface");
         // The original DataFusion error must win over the HTTP error it induces.
+        assert!(
+            err.to_string().contains("boom"),
+            "expected original input error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_input_error_surfaces_original() {
+        // Regression test for #2339 on the single-request merge_insert path.
+        // When the input stream errors mid-body, Hyper masks it under HTTP2 as a
+        // generic "stream error sent by user" message. The error side-channel
+        // must recover and surface the original DataFusion error instead.
+        use futures::StreamExt;
+
+        let client = crate::remote::client::test_utils::client_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 2, "num_updated_rows": 0, "num_inserted_rows": 0, "num_deleted_rows": 0}"#
+                        .to_string(),
+                )
+                .unwrap()
+        });
+
+        let query = MergeInsertRequest {
+            on: "id".to_string(),
+            when_matched_update_all: false,
+            when_matched_update_all_filt: None,
+            when_not_matched_insert_all: false,
+            when_not_matched_by_source_delete: false,
+            when_not_matched_by_source_delete_filt: None,
+            use_index: true,
+            use_lsm: None,
+        };
+
+        let input: Arc<dyn ExecutionPlan> = Arc::new(ErroringExec::new());
+        let exec = RemoteWriteExec::new(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            WriteOp::MergeInsert {
+                query,
+                timeout: None,
+            },
+            None,
+            None,
+        );
+
+        let mut stream = exec.execute(0, Arc::new(TaskContext::default())).unwrap();
+        let mut err = None;
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                err = Some(e);
+                break;
+            }
+        }
+
+        let err = err.expect("expected the input stream error to surface");
         assert!(
             err.to_string().contains("boom"),
             "expected original input error, got: {err}"
@@ -1327,7 +1494,7 @@ mod tests {
         // A large byte budget keeps all three batches in one part; smooth
         // progress therefore requires bytes to be reported per chunk rather than
         // once when the part completes.
-        let exec = RemoteInsertExec::new_multipart(
+        let exec = RemoteWriteExec::new_multipart(
             "my_table".to_string(),
             "my_table".to_string(),
             client,

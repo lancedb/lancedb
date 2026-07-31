@@ -20,6 +20,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector, BlobType
+from .job import AsyncJob, Job
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -258,6 +259,7 @@ def tokenize(
     lower_case: bool = True,
     stem: bool = True,
     remove_stop_words: bool = True,
+    custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
@@ -265,9 +267,10 @@ def tokenize(
 ) -> Iterable[FtsToken]:
     """Tokenize a full-text search query using an explicit tokenizer.
 
-    This does not require a table or FTS index. The tokenizer options match
-    :class:`lancedb.index.FTS`.
+    This does not require an FTS index. The tokenizer options match
+    :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
     """
+
     return _tokenize(
         query,
         base_tokenizer=base_tokenizer,
@@ -276,6 +279,7 @@ def tokenize(
         lower_case=lower_case,
         stem=stem,
         remove_stop_words=remove_stop_words,
+        custom_stop_words=custom_stop_words,
         ascii_folding=ascii_folding,
         ngram_min_length=ngram_min_length,
         ngram_max_length=ngram_max_length,
@@ -497,6 +501,7 @@ __all__ = [
     "connect_namespace",
     "connect_namespace_async",
     "AsyncConnection",
+    "AsyncJob",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "FtsToken",
@@ -510,6 +515,7 @@ __all__ = [
     "BlobType",
     "vector",
     "DBConnection",
+    "Job",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
     "RemoteDBConnection",
