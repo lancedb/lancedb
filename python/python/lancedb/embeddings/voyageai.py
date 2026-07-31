@@ -40,7 +40,7 @@ VOYAGE_TOTAL_TOKEN_LIMITS = {
 BATCH_SIZE = 1000
 
 
-def is_valid_url(text):
+def _is_valid_url(text):
     try:
         parsed = urlparse(text)
         return bool(parsed.scheme) and bool(parsed.netloc)
@@ -51,23 +51,23 @@ def is_valid_url(text):
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".gif"}
 
 
-def is_video_url(url: str) -> bool:
+def _is_video_url(url: str) -> bool:
     """Check if URL points to a video file based on extension."""
     parsed = urlparse(url)
     path = parsed.path.lower()
     return any(path.endswith(ext) for ext in VIDEO_EXTENSIONS)
 
 
-def is_video_path(path: Path) -> bool:
+def _is_video_path(path: Path) -> bool:
     """Check if file path is a video file based on extension."""
     return path.suffix.lower() in VIDEO_EXTENSIONS
 
 
-def transform_input(input_data: Union[str, bytes, Path]):
+def _transform_input(input_data: Union[str, bytes, Path]):
     PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
     if isinstance(input_data, str):
-        if is_valid_url(input_data):
-            if is_video_url(input_data):
+        if _is_valid_url(input_data):
+            if _is_video_url(input_data):
                 content = {"type": "video_url", "video_url": input_data}
             else:
                 content = {"type": "image_url", "image_url": input_data}
@@ -91,7 +91,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
             "image_base64": "data:image/jpeg;base64," + img_str,
         }
     elif isinstance(input_data, Path):
-        if is_video_path(input_data):
+        if _is_video_path(input_data):
             # Read video file and encode as base64
             with open(input_data, "rb") as f:
                 video_bytes = f.read()
@@ -115,7 +115,7 @@ def transform_input(input_data: Union[str, bytes, Path]):
     return {"content": [content]}
 
 
-def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
+def _sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     """
     Sanitize the input to the embedding function.
     """
@@ -136,10 +136,10 @@ def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     if not all(isinstance(x, (str, bytes, Path, PIL_Image.Image)) for x in inputs):
         raise ValueError("Each input should be either str, bytes, Path or Image.")
 
-    return [transform_input(i) for i in inputs]
+    return [_transform_input(i) for i in inputs]
 
 
-def sanitize_text_input(inputs: TEXT) -> List[str]:
+def _sanitize_text_input(inputs: TEXT) -> List[str]:
     """
     Sanitize the input to the embedding function.
     """
@@ -336,7 +336,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
         # For multimodal models, check if inputs contain images
         if self._is_multimodal_model(self.name):
-            sanitized = sanitize_multimodal_input(inputs)
+            sanitized = _sanitize_multimodal_input(inputs)
             has_images = any(
                 inp["content"][0].get("type") != "text" for inp in sanitized
             )
@@ -350,7 +350,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             # Extract texts for batching
             inputs = [inp["content"][0]["text"] for inp in sanitized]
         else:
-            inputs = sanitize_text_input(inputs)
+            inputs = _sanitize_text_input(inputs)
 
         # Use batching for all text inputs
         return self._embed_with_batching(
@@ -428,7 +428,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             multimodal_kwargs = self._get_multimodal_kwargs(**kwargs)
 
             def embed_batch(batch: List[str]) -> List[np.array]:
-                batch_inputs = sanitize_multimodal_input(batch)
+                batch_inputs = _sanitize_multimodal_input(batch)
                 result = client.multimodal_embed(
                     inputs=batch_inputs,
                     model=self.name,

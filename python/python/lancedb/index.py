@@ -9,7 +9,7 @@ from ._lancedb import (
 )
 from .types import BaseTokenizerType
 
-lang_mapping = {
+_lang_mapping = {
     "ar": "Arabic",
     "da": "Danish",
     "du": "Dutch",

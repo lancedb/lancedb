@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 API_URL = "https://api.jina.ai/v1/embeddings"
 
 
-def is_valid_url(text):
+def _is_valid_url(text):
     try:
         parsed = urlparse(text)
         return bool(parsed.scheme) and bool(parsed.netloc)
@@ -129,7 +129,7 @@ class JinaEmbeddings(EmbeddingFunction):
             The query to embed. A query can be either text or an image.
         """
         if isinstance(query, str):
-            if not is_valid_url(query):
+            if not _is_valid_url(query):
                 return self.generate_text_embeddings([query])
             else:
                 return [self.generate_image_embedding(query)]
@@ -155,7 +155,7 @@ class JinaEmbeddings(EmbeddingFunction):
 
         def process_input(input, model_inputs, image_inputs):
             if isinstance(input, str):
-                if not is_valid_url(input):
+                if not _is_valid_url(input):
                     model_inputs.append({"text": input})
                 else:
                     image_inputs += 1

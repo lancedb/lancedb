@@ -41,7 +41,7 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
+from .schema import _is_blob_like_field, _schema_has_blob_field
 from .util import flatten_columns
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -97,7 +97,7 @@ class _LanceScanner(Protocol):
 
 
 def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
-    return blob_mode in BLOB_MODE_TO_HANDLING and schema_has_blob_field(schema)
+    return blob_mode in BLOB_MODE_TO_HANDLING and _schema_has_blob_field(schema)
 
 
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
@@ -219,11 +219,11 @@ def _scanner_fragments_for_query(query: Query, dataset: Optional[Any]) -> Option
 def _ensure_lazy_blob_frame(
     df: "pd.DataFrame", schema: pa.Schema, blob_mode: BlobMode
 ) -> "pd.DataFrame":
-    if blob_mode != "lazy" or not schema_has_blob_field(schema) or len(df) == 0:
+    if blob_mode != "lazy" or not _schema_has_blob_field(schema) or len(df) == 0:
         return df
 
     for field in schema:
-        if not is_blob_like_field(field) or field.name not in df.columns:
+        if not _is_blob_like_field(field) or field.name not in df.columns:
             continue
         value = df[field.name].iloc[0]
         if value is not None and not hasattr(value, "readall"):
@@ -266,7 +266,7 @@ def _scanner_to_pandas(
         return df
 
     tbl = _scanner_to_table(scanner)
-    if blob_mode == "lazy" and schema_has_blob_field(tbl.schema):
+    if blob_mode == "lazy" and _schema_has_blob_field(tbl.schema):
         raise _unsupported_blob_pandas_error(
             "the Lance scanner does not expose to_pandas"
         )
@@ -332,7 +332,7 @@ async def _finish_plain_scan_pandas_async(
 
 
 # Pydantic validation function for vector queries
-def ensure_vector_query(
+def _ensure_vector_query(
     val: Any,
 ) -> Union[List[float], List[List[float]], pa.Array, List[pa.Array]]:
     if isinstance(val, list):
@@ -722,7 +722,7 @@ class Query(pydantic.BaseModel):
     # path though in the future we should unify this to pa.Array everywhere
     vector: Annotated[
         Optional[Union[List[float], List[List[float]], pa.Array, List[pa.Array]]],
-        ensure_vector_query,
+        _ensure_vector_query,
     ] = None
 
     # sql filter or type-safe Expr to refine the query with

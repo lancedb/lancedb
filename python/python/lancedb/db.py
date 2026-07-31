@@ -49,7 +49,7 @@ from .table import (
     AsyncTable,
     LanceTable,
     Table,
-    sanitize_create_table,
+    _sanitize_create_table,
 )
 from .util import (
     get_uri_scheme,
@@ -1597,7 +1597,7 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
+        data, schema = _sanitize_create_table(
             data, schema, metadata, on_bad_vectors, fill_value
         )
         validate_schema(schema)

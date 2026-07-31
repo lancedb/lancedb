@@ -118,9 +118,11 @@ module-level functions have to be added explicitly. How depends on the module:
   listed symbol by symbol. Add a `::: lancedb.<module>.<Name>` line to the matching
   section, and remember that the page separates synchronous and asynchronous APIs.
 
-Deliberately undocumented: concrete implementations reached through an abstract base
-(`LanceTable`, `LanceDBConnection`, `RemoteDBConnection`), query base classes already
-covered by `inherited_members`, and internal helpers.
+`python/python/tests/test_api_reference.py` enforces this and will fail if you miss a
+symbol. Anything deliberately left out belongs in that test's
+`INTENTIONALLY_UNDOCUMENTED` set, with a reason: concrete implementations reached
+through an abstract base (`LanceTable`, `LanceDBConnection`, `RemoteDBConnection`),
+query base classes already covered by `inherited_members`, and internal helpers.
 
 Cross-references in docstrings use mkdocstrings syntax, `[text][lancedb.table.Table]`.
 Plain relative links such as `[Table](Table)` do not resolve. To check your work:

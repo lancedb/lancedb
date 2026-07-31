@@ -272,7 +272,7 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif py_type is date:
         return pa.date32()
     elif py_type is datetime:
-        tz = get_extras(field, "tz")
+        tz = _get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         # A bare, unparameterised ``typing.List`` / ``typing.Tuple`` matches this
@@ -382,7 +382,7 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     return _pydantic_type_to_arrow_type(field.annotation, field)
 
 
-def is_nullable(field: FieldInfo) -> bool:
+def _is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
     if _unwrap_optional_annotation(field.annotation) is not None:
         return True
@@ -409,7 +409,7 @@ def is_nullable(field: FieldInfo) -> bool:
 def _pydantic_to_field(name: str, field: FieldInfo) -> pa.Field:
     """Convert a Pydantic field to a PyArrow Field."""
     dt = _pydantic_to_arrow_type(field)
-    return pa.field(name, dt, is_nullable(field))
+    return pa.field(name, dt, _is_nullable(field))
 
 
 def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
@@ -512,14 +512,14 @@ class LanceModel(pydantic.BaseModel):
 
         vec_and_function = []
         for name, field_info in cls.safe_get_fields().items():
-            func = get_extras(field_info, "vector_column_for")
+            func = _get_extras(field_info, "vector_column_for")
             if func is not None:
                 vec_and_function.append([name, func])
 
         configs = []
         for vec, func in vec_and_function:
             for source, field_info in cls.safe_get_fields().items():
-                src_func = get_extras(field_info, "source_column_for")
+                src_func = _get_extras(field_info, "source_column_for")
                 if src_func is func:
                     # note we can't use == here since the function is a pydantic
                     # model so two instances of the same function are ==, so if you
@@ -534,7 +534,7 @@ class LanceModel(pydantic.BaseModel):
         return configs
 
 
-def get_extras(field_info: FieldInfo, key: str) -> Any:
+def _get_extras(field_info: FieldInfo, key: str) -> Any:
     """
     Get the extra metadata from a Pydantic FieldInfo.
     """
@@ -545,7 +545,7 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
 
 if PYDANTIC_VERSION.major < 2:
 
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+    def _model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
         """
         Convert a Pydantic model to a dictionary.
         """
@@ -553,7 +553,7 @@ if PYDANTIC_VERSION.major < 2:
 
 else:
 
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+    def _model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
         """
         Convert a Pydantic model to a dictionary.
         """
