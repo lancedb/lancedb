@@ -4752,7 +4752,57 @@ mod tests {
             .await
             .unwrap();
         let err = job.wait().await.unwrap_err();
-        assert!(matches!(err, crate::Error::JobFailed { .. }), "{err:?}");
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        // The server said only that it failed, so nothing may be invented.
+        assert!(failure.message.is_none(), "{failure:?}");
+        assert!(failure.phase.is_none(), "{failure:?}");
+        assert!(failure.retryable.is_none(), "{failure:?}");
+        assert_eq!(err.to_string(), "Job job-err failed");
+    }
+
+    /// A server that reports why the job failed has that reason surfaced
+    /// verbatim rather than replaced with a generic message.
+    #[tokio::test]
+    async fn test_job_wait_reports_the_server_failure_reason() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-err", "job_state": "FAILED", "failure": {"phase": "commit", "message": "preempted", "retryable": true}}"#
+                            .to_string(),
+                    )
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let err = job.wait().await.unwrap_err();
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        assert_eq!(failure.message.as_deref(), Some("preempted"));
+        assert_eq!(failure.phase.as_deref(), Some("commit"));
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(err.to_string(), "Job job-err failed: preempted (in commit)");
     }
 
     /// Servers that return no job id (e.g. an empty create-index response)

@@ -204,7 +204,7 @@ use serde::{Deserialize, Serialize};
 
 pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
-pub use error::{Error, Result};
+pub use error::{Error, JobFailure, Result};
 pub use job::Job;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;

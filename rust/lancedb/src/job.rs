@@ -3,11 +3,13 @@
 
 //! Handles to operations a server may run asynchronously.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, JobFailure, Result};
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
@@ -86,11 +88,11 @@ impl Job {
 }
 
 /// How an in-process operation ended. Cloneable so every waiter can be given
-/// the outcome; [`Error`] is not, so failures carry their message instead.
+/// the outcome; [`Error`] is not, so failures share one behind an [`Arc`].
 #[derive(Clone)]
 enum Outcome {
     Succeeded,
-    Failed(String),
+    Failed(Arc<Error>),
     Cancelled,
 }
 
@@ -98,9 +100,9 @@ impl Outcome {
     fn into_result(self) -> Result<()> {
         match self {
             Self::Succeeded => Ok(()),
-            Self::Failed(message) => Err(Error::JobFailed {
+            Self::Failed(source) => Err(Error::JobFailed {
                 job_id: None,
-                message,
+                failure: JobFailure::from_source(source),
             }),
             Self::Cancelled => Err(Error::JobCancelled { job_id: None }),
         }
@@ -122,9 +124,11 @@ impl SpawnedJob {
         tokio::spawn(async move {
             let outcome = match task.await {
                 Ok(Ok(())) => Outcome::Succeeded,
-                Ok(Err(err)) => Outcome::Failed(err.to_string()),
+                Ok(Err(err)) => Outcome::Failed(Arc::new(err)),
                 Err(err) if err.is_cancelled() => Outcome::Cancelled,
-                Err(err) => Outcome::Failed(format!("index job task failed: {err}")),
+                Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
+                    message: format!("index job task failed: {err}"),
+                })),
             };
             let _ = tx.send(Some(outcome));
         });

@@ -10,7 +10,7 @@ use tokio::time::sleep;
 
 use serde::{Deserialize, Deserializer};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, JobFailure, Result};
 use crate::job::JobHandle;
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
@@ -47,9 +47,20 @@ impl From<&str> for JobState {
     }
 }
 
+/// The server's account of why a job failed. Absent from older servers, which
+/// report only the terminal state.
+#[derive(Deserialize)]
+struct ReportedFailure {
+    phase: String,
+    message: String,
+    retryable: bool,
+}
+
 #[derive(Deserialize)]
 struct DescribeJobResponse {
     job_state: JobState,
+    #[serde(default)]
+    failure: Option<ReportedFailure>,
 }
 
 pub struct RemoteJob<S: HttpSend> {
@@ -62,8 +73,8 @@ impl<S: HttpSend> RemoteJob<S> {
         Self { client, job_id }
     }
 
-    /// One `/v1/jobs/describe` round trip, returning the job state.
-    async fn describe_state(&self) -> Result<JobState> {
+    /// One `/v1/jobs/describe` round trip.
+    async fn describe(&self) -> Result<DescribeJobResponse> {
         let request = self
             .client
             .post("/v1/jobs/describe")
@@ -77,7 +88,7 @@ impl<S: HttpSend> RemoteJob<S> {
                 request_id,
                 status_code: None,
             })?;
-        Ok(description.job_state)
+        Ok(description)
     }
 }
 
@@ -90,12 +101,21 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
     async fn wait(&self) -> Result<()> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
-            match self.describe_state().await? {
+            let description = self.describe().await?;
+            match description.job_state {
                 JobState::Done => return Ok(()),
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
-                        message: "job reached the FAILED state".to_string(),
+                        failure: description
+                            .failure
+                            .map(|reported| JobFailure {
+                                phase: Some(reported.phase),
+                                message: Some(reported.message),
+                                retryable: Some(reported.retryable),
+                                source: None,
+                            })
+                            .unwrap_or_default(),
                     });
                 }
                 JobState::Cancelled => {

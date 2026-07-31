@@ -619,6 +619,43 @@ mod tests {
         job.wait().await.expect_err("a later wait still fails");
     }
 
+    /// A local failure keeps the error it failed with, so a caller can match on
+    /// the original variant rather than parse a message.
+    #[tokio::test]
+    async fn test_execute_async_failure_keeps_the_source_error() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, (0..512).collect::<Vec<_>>())).unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let job = table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .replace(false)
+            .execute_async()
+            .await
+            .unwrap();
+
+        let crate::Error::JobFailed { failure, .. } = job.wait().await.unwrap_err() else {
+            panic!("a failed job reports JobFailed");
+        };
+        let source = failure.source.expect("a local failure carries its error");
+        assert_eq!(
+            failure.message.as_deref(),
+            Some(source.to_string()).as_deref()
+        );
+        // Nothing local can report these, so they must be absent rather than invented.
+        assert!(failure.phase.is_none());
+        assert!(failure.retryable.is_none());
+    }
+
     /// Every waiter sees the cancellation, including ones that were already
     /// waiting when the cancel landed.
     #[tokio::test]
