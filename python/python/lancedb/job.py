@@ -32,6 +32,18 @@ class AsyncJob:
         """
         return self._inner.id if self._inner is not None else None
 
+    async def status(self) -> str:
+        """The operation's current lifecycle state: "running", "finished",
+        "failed", or "cancelled".
+
+        A point snapshot; unlike `wait` it does not block or raise on a
+        terminal failure state. States a newer server reports that this
+        client version does not know pass through as-is.
+        """
+        if self._inner is None:
+            return "finished"
+        return await self._inner.status()
+
     async def wait(self, timeout: Optional[timedelta] = None):
         """Wait until the operation reaches a terminal state.
 
@@ -65,6 +77,16 @@ class Job:
         See :attr:`AsyncJob.id`.
         """
         return self._inner.id if self._inner is not None else None
+
+    def status(self) -> str:
+        """The operation's current lifecycle state: "running", "finished",
+        "failed", or "cancelled".
+
+        See :meth:`AsyncJob.status`.
+        """
+        if self._inner is None:
+            return "finished"
+        return LOOP.run(self._inner.status())
 
     def wait(self, timeout: Optional[timedelta] = None):
         """Block until the operation reaches a terminal state.

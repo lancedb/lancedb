@@ -45,6 +45,7 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
+from .job import AsyncJob, Job
 from .table import (
     AsyncTable,
     LanceTable,
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
 
     from ._lancedb import Connection as LanceDbConnection
+    from ._lancedb import JobDescription, JobInfo
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
@@ -607,6 +609,46 @@ class DBConnection(EnforceOverrides):
             Serialized representation of this connection.
         """
         raise NotImplementedError("serialize is not supported for this connection type")
+
+    def job(self, job_id: str) -> Job:
+        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+
+        The handle is constructed without a server round trip; an unknown id
+        surfaces when the handle is used. Dropping the handle has no effect
+        on the job itself.
+        """
+        raise NotImplementedError("job is not supported for this connection type")
+
+    def list_jobs(self) -> List[JobInfo]:
+        """List server-side jobs across the database's tables."""
+        raise NotImplementedError("list_jobs is not supported for this connection type")
+
+    def get_job(self, job_id: str) -> Optional[JobDescription]:
+        """Describe a single server-side job by id.
+
+        Returns None when the server has no such job.
+        """
+        raise NotImplementedError("get_job is not supported for this connection type")
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a server-side job by id.
+
+        Returns True if the server accepted the cancellation, False if no
+        such job exists. Cancelling an already-terminal job is a no-op
+        success.
+        """
+        raise NotImplementedError(
+            "cancel_job is not supported for this connection type"
+        )
+
+    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
+        """The lifecycle event history of a server-side job, as Arrow batches.
+
+        Lists history across all jobs when `job_id` is None.
+        """
+        raise NotImplementedError(
+            "job_history is not supported for this connection type"
+        )
 
 
 class LanceDBConnection(DBConnection):
@@ -1169,6 +1211,47 @@ class LanceDBConnection(DBConnection):
                 new_namespace_path=new_namespace_path,
             )
         )
+
+    @override
+    def job(self, job_id: str) -> Job:
+        """A [Job][lancedb.job.Job] handle for a server-side job by id.
+
+        The handle is constructed without a server round trip; an unknown id
+        surfaces when the handle is used. Dropping the handle has no effect
+        on the job itself.
+        """
+        return Job(self._conn.job(job_id))
+
+    @override
+    def list_jobs(self) -> List[JobInfo]:
+        """List server-side jobs across the database's tables."""
+        return LOOP.run(self._conn.list_jobs())
+
+    @override
+    def get_job(self, job_id: str) -> Optional[JobDescription]:
+        """Describe a single server-side job by id.
+
+        Returns None when the server has no such job.
+        """
+        return LOOP.run(self._conn.get_job(job_id))
+
+    @override
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a server-side job by id.
+
+        Returns True if the server accepted the cancellation, False if no
+        such job exists. Cancelling an already-terminal job is a no-op
+        success.
+        """
+        return LOOP.run(self._conn.cancel_job(job_id))
+
+    @override
+    def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
+        """The lifecycle event history of a server-side job, as Arrow batches.
+
+        Lists history across all jobs when `job_id` is None.
+        """
+        return LOOP.run(self._conn.job_history(job_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -1878,6 +1961,43 @@ class AsyncConnection(object):
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
+
+    def job(self, job_id: str) -> AsyncJob:
+        """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job
+        by id.
+
+        The handle is constructed without a server round trip; an unknown id
+        surfaces when the handle is used. Dropping the handle has no effect
+        on the job itself.
+        """
+        return AsyncJob(self._inner.job(job_id))
+
+    async def list_jobs(self) -> List[JobInfo]:
+        """List server-side jobs across the database's tables."""
+        return await self._inner.list_jobs()
+
+    async def get_job(self, job_id: str) -> Optional[JobDescription]:
+        """Describe a single server-side job by id.
+
+        Returns None when the server has no such job.
+        """
+        return await self._inner.get_job(job_id)
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a server-side job by id.
+
+        Returns True if the server accepted the cancellation, False if no
+        such job exists. Cancelling an already-terminal job is a no-op
+        success.
+        """
+        return await self._inner.cancel_job(job_id)
+
+    async def job_history(self, job_id: Optional[str] = None) -> List[pa.RecordBatch]:
+        """The lifecycle event history of a server-side job, as Arrow batches.
+
+        Lists history across all jobs when `job_id` is None.
+        """
+        return await self._inner.job_history(job_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

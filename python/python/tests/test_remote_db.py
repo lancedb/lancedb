@@ -2153,3 +2153,119 @@ def test_remote_blob_byte_apis_not_supported_on_old_server():
             table.fetch_blobs("image", [1])
         with pytest.raises(NotImplementedError, match="not supported"):
             table.fetch_blob_files("image", [1])
+
+
+def test_remote_connection_jobs_surface():
+    from lancedb.exceptions import JobFailedError
+
+    schema = pa.schema([("state", pa.string())])
+    batch = pa.record_batch([pa.array(["created", "done"])], schema=schema)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema) as writer:
+        writer.write_batch(batch)
+    events_body = sink.getvalue().to_pybytes()
+
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path == "/v1/jobs/list":
+            if payload.get("page_token") is None:
+                rsp = dict(
+                    jobs=[
+                        dict(
+                            job_id="job-1",
+                            table="t1",
+                            job_type="create_index",
+                            state="in_progress",
+                            created_at_millis=1000,
+                        )
+                    ],
+                    page_token="next",
+                )
+            else:
+                assert payload["page_token"] == "next"
+                rsp = dict(
+                    jobs=[
+                        dict(
+                            job_id="job-2",
+                            table="t2",
+                            job_type="create_index",
+                            state="succeeded",
+                            created_at_millis=2000,
+                        )
+                    ]
+                )
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(rsp).encode())
+        elif request.path == "/v1/jobs/describe":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(
+                json.dumps(
+                    dict(
+                        job_id="job-1",
+                        job_type="create_index",
+                        job_state="FAILED",
+                        creation_ms=1000,
+                        spec=dict(column="vec"),
+                        failure=dict(
+                            phase="execute", message="worker died", retryable=True
+                        ),
+                    )
+                ).encode()
+            )
+        elif request.path == "/v1/jobs/cancel":
+            if payload["job_id"] != "job-1":
+                request.send_response(404)
+                request.end_headers()
+                return
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"job_id": "job-1"}')
+        elif request.path == "/v1/jobs/query_events":
+            assert payload["job_id"] == "job-1"
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            request.wfile.write(events_body)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        jobs = db.list_jobs()
+        assert [job.job_id for job in jobs] == ["job-1", "job-2"]
+        assert jobs[0].state == "running"
+        assert jobs[0].table == "t1"
+        assert jobs[1].state == "finished"
+
+        description = db.get_job("job-1")
+        assert description.job_type == "create_index"
+        assert description.state == "failed"
+        assert json.loads(description.spec_json) == {"column": "vec"}
+        assert description.failure.message == "worker died"
+        assert description.failure.retryable is True
+        assert db.get_job("missing") is None
+
+        assert db.cancel_job("job-1") is True
+        assert db.cancel_job("missing") is False
+
+        batches = db.job_history("job-1")
+        assert len(batches) == 1
+        assert batches[0].num_rows == 2
+        assert batches[0].column("state").to_pylist() == ["created", "done"]
+
+        job = db.job("job-1")
+        assert job.id == "job-1"
+        assert job.status() == "failed"
+        with pytest.raises(JobFailedError, match="worker died"):
+            job.wait(timeout=timedelta(seconds=5))
