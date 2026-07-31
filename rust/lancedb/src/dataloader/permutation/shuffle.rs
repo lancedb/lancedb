@@ -11,7 +11,9 @@ use lance_core::{cache::LanceCache, utils::futures::FinallyStreamExt};
 use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::{
     reader::{FileReader, FileReaderOptions},
-    writer::{FileWriter, FileWriterOptions},
+    version::ConcreteFileVersion,
+    versions,
+    writer::FileWriterOptions,
 };
 use lance_io::{
     ReadBatchParams,
@@ -152,8 +154,12 @@ impl Shuffler {
                     source: None,
                 })?;
             let object_writer = object_store.create(&path).await?;
-            let writer =
-                FileWriter::try_new(object_writer, schema.clone(), FileWriterOptions::default())?;
+            let writer = versions::create_writer(
+                ConcreteFileVersion::V2_1,
+                object_writer,
+                schema.clone(),
+                FileWriterOptions::default(),
+            )?;
             file_writers.push(writer);
         }
 
