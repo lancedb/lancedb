@@ -173,7 +173,9 @@ class LanceMergeInsertBuilder(object):
             can be anything you use for [`add`][lancedb.table.Table.add]
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null", "keep". With "keep", vectors
+            containing NaNs are kept unchanged; wrong-size vectors still raise
+            an error.
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         timeout: Optional[timedelta], default None

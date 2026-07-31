@@ -1766,6 +1766,61 @@ def test_add_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+def test_add_with_nans_keep(mem_db: DBConnection):
+    """on_bad_vectors="keep" adds NaN vectors unchanged (issue #3153)."""
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("item", pa.string(), nullable=True),
+        ],
+    )
+    table = mem_db.create_table("test", schema=schema)
+
+    table.add(
+        [
+            {"vector": [3.1, 4.1], "item": "good"},
+            {"vector": [np.nan, 5.0], "item": "nan"},
+        ],
+        on_bad_vectors="keep",
+    )
+    assert len(table) == 2
+    vectors = {row["item"]: row["vector"] for row in table.to_arrow().to_pylist()}
+    assert np.allclose(vectors["good"], np.array([3.1, 4.1]))
+    assert np.isnan(vectors["nan"][0])
+    assert vectors["nan"][1] == 5.0
+
+    # Wrong-size vectors are still rejected with "keep". The error is raised
+    # while the record batch reader is consumed, so Arrow may surface it as a
+    # RuntimeError wrapping the original ValueError.
+    with pytest.raises((ValueError, RuntimeError), match="variable length"):
+        table.add([{"vector": [5.0], "item": "short"}], on_bad_vectors="keep")
+
+
+def test_add_with_nans_keep_unclassified_vector_column(mem_db: DBConnection):
+    """Fixed-size-list float columns too small to be classified as vector
+    columns can also carry NaN with on_bad_vectors="keep" (issue #3153)."""
+    schema = pa.schema([pa.field("data", pa.list_(pa.float32(), 2))])
+    table = mem_db.create_table("test", schema=schema)
+    batch = pa.table(
+        {
+            "data": pa.array(
+                [np.array([np.nan, 1.0], dtype=np.float32)],
+                type=schema.field("data").type,
+            )
+        },
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="NaN"):
+        table.add(batch)
+
+    table.add(batch, on_bad_vectors="keep")
+    assert len(table) == 1
+    values = table.to_arrow()["data"].to_pylist()[0]
+    assert np.isnan(values[0])
+    assert values[1] == 1.0
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str

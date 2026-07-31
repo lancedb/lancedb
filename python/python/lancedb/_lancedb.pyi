@@ -227,6 +227,7 @@ class Table:
         mode: Literal["append", "overwrite"],
         progress: Optional[Any] = None,
         write_parallelism: Optional[int] = None,
+        on_nan_vectors: Optional[Literal["error", "keep"]] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]
