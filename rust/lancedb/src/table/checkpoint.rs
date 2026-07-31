@@ -169,19 +169,28 @@ pub(crate) const CODE_INVALID_TABLE_STATE: u64 = 19;
 pub(crate) fn classify_lsm_fault(status: u16, body: &str) -> LsmFault {
     match status {
         429 => LsmFault::Retry,
-        404 => LsmFault::ReissueFromFlush,
-        503 => {
-            let code = serde_json::from_str::<HashMap<String, serde_json::Value>>(body)
-                .ok()
-                .and_then(|m| m.get("code").and_then(|c| c.as_u64()));
-            if code == Some(CODE_INVALID_TABLE_STATE) {
-                LsmFault::Draining
-            } else {
-                LsmFault::Retry
-            }
-        }
+        // A 404 is a registry miss only when the body says so. Left
+        // unchecked, a typo'd table name — also a 404 — is read as "the
+        // node lost its claim", and the loop re-issues from flush until the
+        // cap and then blames a crash loop for a name that never existed.
+        // `send_lsm_route` turns the other 404 into `TableNotFound` before
+        // this is reached; the check stays so a direct caller cannot
+        // reintroduce the confusion.
+        404 if body_code(body) == Some(CODE_INVALID_TABLE_STATE) => LsmFault::ReissueFromFlush,
+        404 => LsmFault::Fatal,
+        503 if body_code(body) == Some(CODE_INVALID_TABLE_STATE) => LsmFault::Draining,
+        503 => LsmFault::Retry,
         _ => LsmFault::Fatal,
     }
+}
+
+/// The lance-namespace error code from a JSON error body, if it parses.
+/// Absent, truncated, or non-numeric ⇒ `None`, which every caller reads as
+/// the *less* terminal branch.
+fn body_code(body: &str) -> Option<u64> {
+    serde_json::from_str::<HashMap<String, serde_json::Value>>(body)
+        .ok()
+        .and_then(|m| m.get("code").and_then(|c| c.as_u64()))
 }
 
 /// How long the loop waits between `get_lsm_stats` polls. A pass over a
@@ -231,20 +240,25 @@ pub(crate) enum CheckpointOutcome {
     ReissueFromFlush,
 }
 
-/// Decide what a failed LSM request means for the loop. Returns `Err` for
-/// genuinely terminal faults — a draining node, a dropping table, a table
-/// with no LSM write path, anything unrecognized — which are errors the
-/// caller should see rather than outcomes to keep looping on.
+/// Decide what a failed LSM request means for the loop. Returns `Err` with
+/// the original error for genuinely terminal faults — a draining node, a
+/// dropping table, a missing table, anything unrecognized — which the
+/// caller should see rather than keep looping on.
+///
+/// Takes the error by value so a terminal one propagates *as itself*.
+/// Classifying from a borrow meant rebuilding it, and anything that was
+/// not an `LsmRoute` (a `TableNotFound`, say) got flattened to a generic
+/// runtime message on the way out.
 ///
 /// Draining is terminal by design: the drain gate is a one-way latch that
 /// never releases until the process restarts, so retrying against that
 /// node spins forever when the truthful answer was in the first response.
 pub(crate) fn checkpoint_fault(
-    e: &crate::Error,
+    e: crate::Error,
     attempt: usize,
 ) -> crate::Result<CheckpointControl> {
     #[cfg(feature = "remote")]
-    let fault = match e {
+    let fault = match &e {
         crate::Error::LsmRoute { fault, .. } => Some(*fault),
         _ => None,
     };
@@ -256,29 +270,7 @@ pub(crate) fn checkpoint_fault(
         Some(LsmFault::ReissueFromFlush) if attempt < MAX_REISSUES => {
             Ok(CheckpointControl::ReissueFromFlush)
         }
-        _ => Err(clone_lsm_error(e)),
-    }
-}
-
-/// `crate::Error` is not `Clone`, and the loop borrows the error to
-/// classify it before deciding whether to surface it. Rebuild the variant
-/// that matters and fall back to a flattened message for the rest.
-fn clone_lsm_error(e: &crate::Error) -> crate::Error {
-    #[cfg(feature = "remote")]
-    if let crate::Error::LsmRoute {
-        fault,
-        status,
-        message,
-    } = e
-    {
-        return crate::Error::LsmRoute {
-            fault: *fault,
-            status: *status,
-            message: message.clone(),
-        };
-    }
-    crate::Error::Runtime {
-        message: e.to_string(),
+        _ => Err(e),
     }
 }
 
@@ -303,8 +295,14 @@ mod tests {
             "fenced / no-slot / transport stay retryable"
         );
         assert_eq!(
+            classify_lsm_fault(404, r#"{"code":19}"#),
+            LsmFault::ReissueFromFlush,
+            "a registry miss says InvalidTableState and must re-claim"
+        );
+        assert_eq!(
             classify_lsm_fault(404, r#"{"code":4}"#),
-            LsmFault::ReissueFromFlush
+            LsmFault::Fatal,
+            "a table that does not exist must not be retried as a lost claim"
         );
         assert_eq!(classify_lsm_fault(409, r#"{"code":14}"#), LsmFault::Fatal);
         assert_eq!(classify_lsm_fault(400, r#"{"code":13}"#), LsmFault::Fatal);

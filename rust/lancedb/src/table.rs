@@ -1692,7 +1692,7 @@ impl Table {
             // no-op, so a re-issue does not churn empty generations.
             match self.flush_lsm().await {
                 Ok(()) => {}
-                Err(e) => match checkpoint_fault(&e, attempt)? {
+                Err(e) => match checkpoint_fault(e, attempt)? {
                     CheckpointControl::Retry | CheckpointControl::ReissueFromFlush => {
                         backoff(attempt).await;
                         continue;
@@ -1780,7 +1780,7 @@ impl Table {
             if !all_compacting {
                 match self.compact_lsm().await {
                     Ok(()) => {}
-                    Err(e) => match checkpoint_fault(&e, attempt)? {
+                    Err(e) => match checkpoint_fault(e, attempt)? {
                         // Every bucket busy (429) is the state the poll
                         // above already handles; fall through and re-read.
                         CheckpointControl::Retry => {}

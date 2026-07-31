@@ -27,7 +27,7 @@ use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::checkpoint::{GetLsmStatsResponse, classify_lsm_fault};
+use crate::table::checkpoint::{CODE_INVALID_TABLE_STATE, GetLsmStatsResponse, classify_lsm_fault};
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
@@ -909,6 +909,17 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    /// Whether a 404 body is a registry miss (`InvalidTableState`) rather
+    /// than the table not existing (`TableNotFound`). An unparseable body
+    /// reads as "not a miss", so the ambiguous case surfaces as the plain
+    /// not-found error instead of driving a re-claim loop.
+    fn is_registry_miss(body: &str) -> bool {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.get("code").and_then(|c| c.as_u64()))
+            == Some(CODE_INVALID_TABLE_STATE)
+    }
+
     /// Send an LSM operator request and decode its JSON body, classifying
     /// a failure into an [`Error::LsmRoute`] the checkpoint loop can act on.
     ///
@@ -934,6 +945,20 @@ impl<S: HttpSend> RemoteTable<S> {
         let status = response.status();
         let body = response.text().await.err_to_http(request_id.clone())?;
         if !status.is_success() {
+            // A 404 that is not a registry miss means the table does not
+            // exist, and must arrive as the same error every other route
+            // reports. These routes bypass `check_table_response`, so
+            // `handle_table_not_found` never runs for them.
+            if status == StatusCode::NOT_FOUND && !Self::is_registry_miss(&body) {
+                return Err(Error::TableNotFound {
+                    name: self.name.clone(),
+                    source: Box::new(Error::Http {
+                        source: body.into(),
+                        request_id,
+                        status_code: Some(status),
+                    }),
+                });
+            }
             return Err(Error::LsmRoute {
                 fault: classify_lsm_fault(status.as_u16(), &body),
                 status: status.as_u16(),
@@ -6161,6 +6186,66 @@ mod tests {
         // brute-force" — an absent index name is the whole explanation.
         let memtables = bucket.memtables.as_ref().unwrap();
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
+    }
+
+    /// A 404 for a table that does not exist must arrive as
+    /// `TableNotFound`, like every other route — not as a lost claim the
+    /// loop re-issues from flush until its cap, then blames on a crash
+    /// loop. The two are distinguished only by the body's `code`.
+    #[tokio::test(start_paused = true)]
+    async fn test_missing_table_is_not_read_as_a_lost_claim() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(404)
+                .body(r#"{"code":4,"error":"Not found: Table not found: my_table"}"#.to_string())
+                .unwrap()
+        });
+
+        let err = table.checkpoint_lsm().await.unwrap_err();
+        assert!(
+            matches!(err, Error::TableNotFound { .. }),
+            "a missing table must say so: {err:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no point re-claiming a table that does not exist"
+        );
+    }
+
+    /// The other 404: the node lost its claim mid-loop. That one *does*
+    /// re-issue from flush, which is the call that re-claims and replays.
+    #[tokio::test(start_paused = true)]
+    async fn test_registry_miss_reissues_from_flush() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if path.contains("flush_lsm") {
+                // First flush lands; the claim is then lost, and the
+                // re-issued flush succeeds.
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                if n < 4 {
+                    return http::Response::builder()
+                        .status(404)
+                        .body(r#"{"code":19,"error":"WAL table not claimed"}"#.to_string())
+                        .unwrap();
+                }
+                return accepted();
+            }
+            ok_json(stats_body(if n < 6 { &[1] } else { &[] }, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a lost claim must be recovered by re-flushing, not surfaced");
     }
 
     #[tokio::test]
