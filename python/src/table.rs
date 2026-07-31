@@ -57,58 +57,30 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
             "wal_entry_position_last_seen",
             b.wal_entry_position_last_seen,
         )?;
-        e.set_item("wal_lag", b.wal_lag)?;
-        e.set_item("l0_bytes", b.l0_bytes)?;
-        e.set_item("fenced", b.fenced)?;
-        e.set_item("compaction_in_progress", b.compaction_in_progress)?;
 
         let generations = PyList::empty(py);
         for g in &b.generations {
             let ge = PyDict::new(py);
             ge.set_item("generation", g.generation)?;
-            ge.set_item("path", &g.path)?;
             ge.set_item("bytes", g.bytes)?;
             ge.set_item("rows", g.rows)?;
             generations.append(ge)?;
         }
         e.set_item("generations", generations)?;
 
-        let memtable = |m: &lancedb::table::MemtableStats| -> PyResult<Py<PyDict>> {
-            let d = PyDict::new(py);
-            d.set_item("generation", m.generation)?;
-            d.set_item("rows", m.rows)?;
-            d.set_item("bytes", m.bytes)?;
-            d.set_item("batches", m.batches)?;
-            Ok(d.unbind())
-        };
         e.set_item(
-            "active_memtable",
-            b.active_memtable.as_ref().map(memtable).transpose()?,
-        )?;
-        e.set_item(
-            "frozen_memtables",
-            b.frozen_memtables
+            "memtables",
+            b.memtables
                 .as_ref()
-                .map(|fs| {
+                .map(|ms| {
                     let l = PyList::empty(py);
-                    for m in fs {
-                        l.append(memtable(m)?)?;
-                    }
-                    PyResult::Ok(l.unbind())
-                })
-                .transpose()?,
-        )?;
-        e.set_item(
-            "memtable_indexes",
-            b.memtable_indexes
-                .as_ref()
-                .map(|ixs| {
-                    let l = PyList::empty(py);
-                    for i in ixs {
+                    for m in ms {
                         let d = PyDict::new(py);
-                        d.set_item("name", &i.name)?;
-                        d.set_item("kind", &i.kind)?;
-                        d.set_item("column", &i.column)?;
+                        d.set_item("generation", m.generation)?;
+                        d.set_item("rows", m.rows)?;
+                        d.set_item("bytes", m.bytes)?;
+                        d.set_item("batches", m.batches)?;
+                        d.set_item("indexes", m.indexes.clone())?;
                         l.append(d)?;
                     }
                     PyResult::Ok(l.unbind())
@@ -118,10 +90,6 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
         buckets.append(e)?;
     }
     out.set_item("buckets", buckets)?;
-    out.set_item("bucket_count", stats.bucket_count)?;
-    out.set_item("generations_total", stats.generations_total)?;
-    out.set_item("l0_bytes_total", stats.l0_bytes_total)?;
-    out.set_item("memtable_rows_total", stats.memtable_rows_total)?;
     Ok(out.unbind())
 }
 
@@ -1473,17 +1441,10 @@ impl Table {
     }
 
     /// Live LSM state, or `None` when the LSM write path is not enabled.
-    #[pyo3(signature = (include_generation_rows=false))]
-    pub fn get_lsm_stats(
-        self_: PyRef<'_, Self>,
-        include_generation_rows: bool,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    pub fn get_lsm_stats(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let opts = lancedb::table::LsmStatsOptions {
-            include_generation_rows,
-        };
         future_into_py(self_.py(), async move {
-            let stats = inner.get_lsm_stats(opts).await.infer_error()?;
+            let stats = inner.get_lsm_stats().await.infer_error()?;
             Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
         })
     }

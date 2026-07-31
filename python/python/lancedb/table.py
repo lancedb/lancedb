@@ -3903,12 +3903,10 @@ class LanceTable(Table):
             )
         )
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_lsm_stats(self) -> Optional[dict]:
         """Synchronous version of
         [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
-        return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
-        )
+        return LOOP.run(self._table.get_lsm_stats())
 
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
@@ -4676,10 +4674,8 @@ class AsyncTable:
         """
         return await self._inner.compact_lsm(max_generations_per_bucket)
 
-    async def get_lsm_stats(
-        self, *, include_generation_rows: bool = False
-    ) -> Optional[dict]:
-        """Read live LSM state: per-bucket detail plus a table-level aggregate.
+    async def get_lsm_stats(self) -> Optional[dict]:
+        """Read live per-bucket LSM state.
 
         Answers "how far behind is my fresh tier", "which bucket is hot", and
         "why is my fresh-tier vector search brute-force". Mutates no table
@@ -4688,14 +4684,8 @@ class AsyncTable:
 
         Returns ``None`` — and only — when the LSM write path is not enabled
         for the table.
-
-        Parameters
-        ----------
-        include_generation_rows
-            Report row counts per L0 generation. Off by default: each costs
-            one Lance manifest read.
         """
-        return await self._inner.get_lsm_stats(include_generation_rows)
+        return await self._inner.get_lsm_stats()
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.

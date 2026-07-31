@@ -31,7 +31,7 @@ use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
-use crate::table::{CompactOptions, CompactReport, FlushReport, LsmStats, LsmStatsOptions};
+use crate::table::{CompactOptions, CompactReport, FlushReport, LsmStats};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
@@ -2418,13 +2418,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.send_lsm_route(request, "compact_lsm").await
     }
 
-    async fn get_lsm_stats(&self, opts: LsmStatsOptions) -> Result<Option<LsmStats>> {
+    async fn get_lsm_stats(&self) -> Result<Option<LsmStats>> {
         // Read-semantics POST, like `get_lsm_write_spec`.
-        let request = self
-            .post_read(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
-            .json(&serde_json::json!({
-                "include_generation_rows": opts.include_generation_rows,
-            }));
+        let request = self.post_read(&format!("/v1/table/{}/get_lsm_stats/", self.identifier));
         let parsed: GetLsmStatsResponse = self.send_lsm_route(request, "get_lsm_stats").await?;
         // `null` — and only — when the table has no LSM write path.
         Ok(parsed.lsm_stats)
@@ -6009,18 +6005,11 @@ mod tests {
     }
 
     /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
-    /// defaulting to a zero it did not measure. `include_generation_rows`
-    /// is off by default.
+    /// defaulting to a zero it did not measure.
     #[tokio::test]
     async fn test_get_lsm_stats_round_trip() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.url().path(), "/v1/table/my_table/get_lsm_stats/");
-            let body = request.body().unwrap().as_bytes().unwrap();
-            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(
-                body["include_generation_rows"], false,
-                "generation rows cost a manifest read each and must be opt-in"
-            );
             let response = serde_json::json!({
                 "lsm_stats": {
                     "buckets": [{
@@ -6031,21 +6020,12 @@ mod tests {
                         "current_generation": 9,
                         "replay_after_wal_entry_position": 100,
                         "wal_entry_position_last_seen": 140,
-                        "wal_lag": 40,
-                        "generations": [{ "generation": 8, "path": "ab_gen_8", "bytes": 4096 }],
-                        "l0_bytes": 4096,
-                        "fenced": false,
-                        "compaction_in_progress": false,
-                        "active_memtable": { "generation": 9, "rows": 12, "bytes": 900, "batches": 2 },
-                        "frozen_memtables": [],
-                        "memtable_indexes": [
-                            { "name": "vec_idx", "kind": "hnsw", "column": "vector" }
+                        "generations": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
+                        "memtables": [
+                            { "generation": 9, "rows": 12, "bytes": 900, "batches": 2,
+                              "indexes": ["vec_idx"] }
                         ],
                     }],
-                    "bucket_count": 1,
-                    "generations_total": 1,
-                    "l0_bytes_total": 4096,
-                    "memtable_rows_total": 12,
                 }
             });
             http::Response::builder()
@@ -6055,25 +6035,19 @@ mod tests {
         });
 
         let stats = table
-            .get_lsm_stats(crate::table::LsmStatsOptions::default())
+            .get_lsm_stats()
             .await
             .unwrap()
             .expect("a WAL-backed table reports Some");
-        assert_eq!(stats.bucket_count, 1);
-        assert_eq!(stats.l0_bytes_total, 4096);
-        assert_eq!(stats.memtable_rows_total, 12);
         let bucket = &stats.buckets[0];
-        assert_eq!(bucket.wal_lag, 40);
+        assert_eq!(bucket.replay_after_wal_entry_position, 100);
+        assert_eq!(bucket.wal_entry_position_last_seen, 140);
         assert_eq!(bucket.generations[0].generation, 8);
-        assert!(
-            bucket.generations[0].rows.is_none(),
-            "rows are absent unless asked for"
-        );
-        // The row that answers "why is my fresh-tier vector search
-        // brute-force" — an absent hnsw entry is the whole explanation.
-        let indexes = bucket.memtable_indexes.as_ref().unwrap();
-        assert_eq!(indexes[0].kind, "hnsw");
-        assert_eq!(indexes[0].column, "vector");
+        assert_eq!(bucket.generations[0].rows, 30);
+        // The line that answers "why is my fresh-tier vector search
+        // brute-force" — an absent index name is the whole explanation.
+        let memtables = bucket.memtables.as_ref().unwrap();
+        assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 
     #[tokio::test]
@@ -6084,13 +6058,7 @@ mod tests {
                 .body(serde_json::json!({ "lsm_stats": null }).to_string())
                 .unwrap()
         });
-        assert!(
-            table
-                .get_lsm_stats(crate::table::LsmStatsOptions::default())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(table.get_lsm_stats().await.unwrap().is_none());
     }
 
     #[tokio::test]

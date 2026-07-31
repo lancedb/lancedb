@@ -86,7 +86,7 @@ pub use branch_merge::{
 pub use checkpoint::{
     BucketStats, CheckpointOptions, CheckpointReport, CheckpointStopReason, CompactBucketReport,
     CompactOptions, CompactReport, FlushBucketReport, FlushReport, GenerationStats, LsmFault,
-    LsmStats, LsmStatsOptions, MemIndexStats, MemtableStats,
+    LsmStats, MemtableStats,
 };
 use checkpoint::{CheckpointControl, checkpoint_fault};
 pub use chrono::Duration;
@@ -654,7 +654,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// enabled for this table.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn get_lsm_stats(&self, _opts: LsmStatsOptions) -> Result<Option<LsmStats>> {
+    async fn get_lsm_stats(&self) -> Result<Option<LsmStats>> {
         Err(Error::NotSupported {
             message: "get_lsm_stats is not supported on this table type".into(),
         })
@@ -1760,7 +1760,7 @@ impl Table {
         }
 
         if opts.include_stats {
-            report.stats = self.get_lsm_stats(LsmStatsOptions::default()).await?;
+            report.stats = self.get_lsm_stats().await?;
         }
         Ok(report)
     }
@@ -1787,8 +1787,7 @@ impl Table {
         self.inner.compact_lsm(opts).await
     }
 
-    /// Read live LSM state: per-bucket fresh-tier detail plus a table-level
-    /// aggregate.
+    /// Read live per-bucket LSM state.
     ///
     /// Answers "how far behind is my fresh tier", "which bucket is hot",
     /// and "why is my fresh-tier vector search brute-force". Mutates no
@@ -1797,14 +1796,13 @@ impl Table {
     ///
     /// `Ok(None)` — and only — when the LSM write path is not enabled for
     /// the table, matching [`Table::get_lsm_write_spec`]. Stats is
-    /// fresh-tier only, so with the WAL off there is no bucket count, no
-    /// manifest, and no watermark; a struct of zeros would read as
-    /// measurements.
+    /// fresh-tier only, so with the WAL off there is no manifest and no
+    /// watermark; a struct of zeros would read as measurements.
     ///
     /// Do not build a checkpoint's termination on this: the completion
     /// predicate lives in the `flush` and `compact` responses.
-    pub async fn get_lsm_stats(&self, opts: LsmStatsOptions) -> Result<Option<LsmStats>> {
-        self.inner.get_lsm_stats(opts).await
+    pub async fn get_lsm_stats(&self) -> Result<Option<LsmStats>> {
+        self.inner.get_lsm_stats().await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.

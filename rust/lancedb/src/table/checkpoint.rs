@@ -44,7 +44,7 @@ pub struct CheckpointOptions {
     /// Per-request, per-bucket bound on generations merged. `None` uses the
     /// server's `compact_prefix_max`. Note this is **per bucket**: an
     /// N-bucket table admits `N × max_generations_per_bucket` merges per
-    /// request. [`LsmStats::bucket_count`] reports N.
+    /// request. [`LsmStats::buckets`] has one entry per bucket.
     pub max_generations_per_bucket: Option<usize>,
     /// Collect a [`LsmStats`] block into the report when the loop ends.
     pub include_stats: bool,
@@ -165,24 +165,12 @@ pub struct CompactReport {
     pub highest_wal_entry_position: u64,
 }
 
-/// Options for [`crate::Table::get_lsm_stats`].
-#[derive(Debug, Clone, Default)]
-pub struct LsmStatsOptions {
-    /// Report `rows` per L0 generation. Off by default: the shard manifest
-    /// stores only `{generation, path}`, so rows cost one Lance manifest
-    /// read per generation.
-    pub include_generation_rows: bool,
-}
-
 /// One flushed L0 generation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GenerationStats {
     pub generation: u64,
-    pub path: String,
     pub bytes: u64,
-    /// Present only when [`LsmStatsOptions::include_generation_rows`] was set.
-    #[serde(default)]
-    pub rows: Option<u64>,
+    pub rows: u64,
 }
 
 /// One in-memory memtable.
@@ -192,22 +180,18 @@ pub struct MemtableStats {
     pub rows: u64,
     pub bytes: u64,
     pub batches: u64,
-}
-
-/// An index the memtable carries. An absent `hnsw` entry on a vector
-/// column is the whole answer to "why is my fresh-tier vector search
-/// brute-force".
-#[derive(Debug, Clone, Deserialize)]
-pub struct MemIndexStats {
-    pub name: String,
-    /// `btree` | `hnsw` | `fts`.
-    pub kind: String,
-    pub column: String,
+    /// Names of the indexes this memtable carries. An absent name is the
+    /// whole answer to "why is my fresh-tier search on that column
+    /// brute-force"; cross-reference `list_indices` for its kind and column.
+    pub indexes: Vec<String>,
 }
 
 /// Live state of one bucket. A table is N buckets on one node; flattening
 /// to a single number hides the one hot bucket that is usually why someone
 /// opened this endpoint.
+///
+/// Nothing here is derived — sums and differences (total L0 bytes, WAL lag)
+/// are the caller's to compute from measured fields.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BucketStats {
     pub shard_id: String,
@@ -218,22 +202,14 @@ pub struct BucketStats {
     pub current_generation: u64,
     pub replay_after_wal_entry_position: u64,
     pub wal_entry_position_last_seen: u64,
-    /// Accepted WAL entries not yet covered by a flush.
-    pub wal_lag: u64,
     pub generations: Vec<GenerationStats>,
-    pub l0_bytes: u64,
-    pub fenced: bool,
-    pub compaction_in_progress: bool,
-    /// Absent for a `Sealed` bucket, whose in-memory state is torn down.
+    /// Oldest first, active last. Absent for a `Sealed` bucket, whose
+    /// in-memory state is torn down.
     #[serde(default)]
-    pub active_memtable: Option<MemtableStats>,
-    #[serde(default)]
-    pub frozen_memtables: Option<Vec<MemtableStats>>,
-    #[serde(default)]
-    pub memtable_indexes: Option<Vec<MemIndexStats>>,
+    pub memtables: Option<Vec<MemtableStats>>,
 }
 
-/// Live LSM state: per-bucket detail plus a table-level aggregate.
+/// Live LSM state, one entry per bucket.
 ///
 /// Every field is measured. There is no "WAL is off" shape here — that
 /// case is `None` from [`crate::Table::get_lsm_stats`], because a struct of
@@ -241,10 +217,6 @@ pub struct BucketStats {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LsmStats {
     pub buckets: Vec<BucketStats>,
-    pub bucket_count: usize,
-    pub generations_total: usize,
-    pub l0_bytes_total: u64,
-    pub memtable_rows_total: u64,
 }
 
 /// Server-side JSON envelope for `get_lsm_stats`. `lsm_stats` is null when
