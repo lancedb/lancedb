@@ -3410,7 +3410,47 @@ def test_stats(mem_db: DBConnection):
                 "p99": 2,
             },
         },
+        # Both columns are counted, and the two together make up total_bytes.
+        "column_bytes": {"text": 34, "id": 26},
     }
+
+
+def test_stats_column_bytes_nested(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "meta",
+                pa.struct([pa.field("a", pa.int32()), pa.field("b", pa.utf8())]),
+            ),
+        ]
+    )
+    table = mem_db.create_table(
+        "nested_stats",
+        data=[{"id": i, "meta": {"a": i, "b": f"value-{i}"}} for i in range(100)],
+        schema=schema,
+    )
+    column_bytes = table.stats()["column_bytes"]
+
+    # Nested fields get their own dotted-path entries.
+    assert set(column_bytes) == {"id", "meta", "meta.a", "meta.b"}
+    assert column_bytes["meta.a"] > 0
+    assert column_bytes["meta.b"] > 0
+    # A struct's entry covers its whole subtree.
+    assert column_bytes["meta"] >= column_bytes["meta.a"] + column_bytes["meta.b"]
+    # Top-level entries alone sum to the table total.
+    assert column_bytes["id"] + column_bytes["meta"] == table.stats()["total_bytes"]
+
+
+@pytest.mark.asyncio
+async def test_stats_column_bytes_async(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    stats = await table.stats()
+    assert set(stats["column_bytes"]) == {"text", "id"}
+    assert sum(stats["column_bytes"].values()) == stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):

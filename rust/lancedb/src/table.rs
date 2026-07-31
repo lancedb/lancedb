@@ -2096,6 +2096,23 @@ impl Table {
     }
 
     /// Retrieve statistics on the table
+    ///
+    /// See [`TableStatistics`] for the full breakdown, including
+    /// [`TableStatistics::column_bytes`] for the on-disk size of each column.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn column_sizes(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let stats = table.stats().await?;
+    /// println!("{} bytes total", stats.total_bytes);
+    /// if let Some(column_bytes) = &stats.column_bytes {
+    ///     for (path, bytes) in column_bytes {
+    ///         println!("  {path}: {bytes} bytes");
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
     }

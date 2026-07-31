@@ -944,6 +944,10 @@ impl Table {
                 fragment_stats.set_item("lengths", fragment_lengths)?;
                 dict.set_item("fragment_stats", fragment_stats)?;
 
+                // `None` when the backend reports no per-column breakdown
+                // (e.g. an older remote server).
+                dict.set_item("column_bytes", stats.column_bytes)?;
+
                 Ok(Some(dict.unbind()))
             })
         })

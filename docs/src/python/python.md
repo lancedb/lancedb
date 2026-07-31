@@ -30,6 +30,8 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.table.Table
 
+::: lancedb.table.TableStatistics
+
 ::: lancedb.table.FragmentStatistics
 
 ::: lancedb.table.FragmentSummaryStats

@@ -1009,7 +1009,51 @@ def test_stats():
         table = db.create_table("test", [{"id": 1}])
         res = table.stats()
         print(f"{res=}")
-        assert res == stats
+        # A server that omits the per-column breakdown reports it as None
+        # rather than leaving the key out.
+        assert res == {**stats, "column_bytes": None}
+
+
+def test_stats_column_bytes():
+    stats = {
+        "total_bytes": 38,
+        "num_rows": 2,
+        "num_indices": 0,
+        "fragment_stats": {
+            "num_fragments": 1,
+            "num_small_fragments": 1,
+            "lengths": {
+                "min": 2,
+                "max": 2,
+                "mean": 2,
+                "p25": 2,
+                "p50": 2,
+                "p75": 2,
+                "p99": 2,
+            },
+        },
+        "column_bytes": {"id": 20, "meta": 18, "meta.a": 18},
+    }
+
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/stats/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(stats).encode())
+        else:
+            print(request.path)
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        assert table.stats() == stats
 
 
 @contextlib.contextmanager

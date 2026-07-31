@@ -1017,6 +1017,17 @@ pub struct TableStatistics {
 
     /// Statistics on table fragments
     pub fragment_stats: FragmentStatistics,
+
+    /// The compressed on-disk bytes of each column, keyed by dotted field path
+    /// ("meta", "meta.geo", "meta.geo.lat"). Every nesting level gets an entry
+    /// covering the field's own bytes plus its whole subtree, so a struct
+    /// reports its total while its children report the breakdown (the
+    /// top-level entries alone sum to `totalBytes`). Counts data-file bytes
+    /// only: blob sidecar payloads and index files are not included, and blob
+    /// columns therefore report just their descriptor bytes. Undefined when
+    /// the backend provides no per-column breakdown (e.g. older remote
+    /// servers).
+    pub column_bytes: Option<HashMap<String, i64>>,
 }
 
 #[napi(object)]
@@ -1074,6 +1085,12 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
                     p99: v.fragment_stats.lengths.p99 as i64,
                 },
             },
+            column_bytes: v.column_bytes.map(|columns| {
+                columns
+                    .into_iter()
+                    .map(|(path, bytes)| (path, bytes as i64))
+                    .collect()
+            }),
         }
     }
 }

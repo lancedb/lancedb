@@ -240,7 +240,34 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         numIndices: 0,
         numRows: 3,
         totalBytes: 44,
+        columnBytes: { id: 44 },
       });
+    });
+
+    it("should report per-column bytes, including nested fields", async () => {
+      const conn = await connect(tmpDir.name);
+      const nested = await conn.createTable("nested_stats", [
+        { id: 1, meta: { a: 1, b: "one" } },
+        { id: 2, meta: { a: 2, b: "two" } },
+      ]);
+      const stats = await nested.stats();
+      const columnBytes = stats.columnBytes!;
+
+      // Nested fields get their own dotted-path entries.
+      expect(Object.keys(columnBytes).sort()).toEqual([
+        "id",
+        "meta",
+        "meta.a",
+        "meta.b",
+      ]);
+      expect(columnBytes["meta.a"]).toBeGreaterThan(0);
+      expect(columnBytes["meta.b"]).toBeGreaterThan(0);
+      // A struct's entry covers its whole subtree.
+      expect(columnBytes["meta"]).toBeGreaterThanOrEqual(
+        columnBytes["meta.a"] + columnBytes["meta.b"],
+      );
+      // Top-level entries alone sum to the table total.
+      expect(columnBytes["id"] + columnBytes["meta"]).toBe(stats.totalBytes);
     });
 
     it("should overwrite data if asked", async () => {

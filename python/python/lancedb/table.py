@@ -6144,12 +6144,22 @@ class TableStatistics:
         The total number of indices in the table.
     fragment_stats: FragmentStatistics
         Statistics about fragments in the table.
+    column_bytes: dict[str, int] | None
+        The compressed on-disk bytes of each column, keyed by dotted field path
+        ("meta", "meta.geo", "meta.geo.lat"). Every nesting level gets an entry
+        covering the field's own bytes plus its whole subtree, so a struct
+        reports its total while its children report the breakdown (the
+        top-level entries alone sum to ``total_bytes``). Counts data-file bytes
+        only: blob sidecar payloads and index files are not included, and blob
+        columns therefore report just their descriptor bytes. ``None`` when the
+        backend provides no per-column breakdown (e.g. older remote servers).
     """
 
     total_bytes: int
     num_rows: int
     num_indices: int
     fragment_stats: FragmentStatistics
+    column_bytes: Optional[Dict[str, int]] = None
 
 
 @dataclass

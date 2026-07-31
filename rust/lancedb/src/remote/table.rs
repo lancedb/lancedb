@@ -9764,4 +9764,53 @@ mod tests {
             .unwrap();
         branch.stats().await.unwrap();
     }
+
+    fn stats_handler(body: &'static str) -> Table {
+        Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/stats/");
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        })
+    }
+
+    #[tokio::test]
+    async fn test_stats_column_bytes() {
+        // The dotted paths are opaque to the client: whatever breakdown the
+        // server sends is passed through verbatim, nesting levels and all.
+        let stats = stats_handler(
+            r#"{"total_bytes":56,"num_rows":2,"num_indices":0,"fragment_stats":{"num_fragments":1,"num_small_fragments":1,"lengths":{"min":2,"max":2,"mean":2,"p25":2,"p50":2,"p75":2,"p99":2}},"column_bytes":{"id":20,"meta":36,"meta.a":16,"meta.b":18}}"#,
+        )
+        .stats()
+        .await
+        .unwrap();
+
+        let column_bytes = stats.column_bytes.unwrap();
+        assert_eq!(column_bytes.len(), 4);
+        assert_eq!(column_bytes["id"], 20);
+        assert_eq!(column_bytes["meta"], 36);
+        assert_eq!(column_bytes["meta.a"], 16);
+        assert_eq!(column_bytes["meta.b"], 18);
+        // Top-level entries alone account for the table total.
+        assert_eq!(
+            column_bytes["id"] + column_bytes["meta"],
+            stats.total_bytes as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stats_column_bytes_absent() {
+        // An older server omits the field entirely. That must degrade to `None`
+        // rather than failing the whole stats response.
+        let stats = stats_handler(
+            r#"{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":{"num_fragments":1,"num_small_fragments":0,"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}"#,
+        )
+        .stats()
+        .await
+        .unwrap();
+
+        assert!(stats.column_bytes.is_none());
+        assert_eq!(stats.num_rows, 3);
+    }
 }
