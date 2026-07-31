@@ -51,6 +51,25 @@ Request cancellation. Cancelling a finished operation is a no-op.
 
 ***
 
+### status()
+
+```ts
+status(): Promise<string>
+```
+
+The operation's current lifecycle state: "running", "finished",
+"failed", or "cancelled".
+
+A point snapshot; unlike [Job.wait](Job.md#wait) it does not block or reject
+on a terminal failure state. States a newer server reports that this
+client version does not know pass through as-is.
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+***
+
 ### wait()
 
 ```ts

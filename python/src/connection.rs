@@ -13,7 +13,11 @@ use crate::{
     runtime::future_into_py,
     table::Table,
 };
-use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
+use arrow::{
+    datatypes::Schema,
+    ffi_stream::ArrowArrayStreamReader,
+    pyarrow::{FromPyArrow, ToPyArrow},
+};
 use lancedb::{
     connection::Connection as LanceConnection,
     connection::NamespaceClientPushdownOperation,
@@ -24,7 +28,7 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyDict, PyDictMethods},
+    types::{PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
 #[pyclass]
@@ -533,6 +537,55 @@ impl Connection {
                 dict.set_item("impl", impl_type)?;
                 dict.set_item("properties", properties)?;
                 Ok(dict.unbind())
+            })
+        })
+    }
+
+    pub fn job(&self, job_id: String) -> PyResult<crate::job::Job> {
+        let inner = self.get_inner()?.clone();
+        Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
+    }
+
+    pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let jobs = inner.list_jobs().await.infer_error()?;
+            Ok(jobs
+                .into_iter()
+                .map(crate::job::JobInfo::from)
+                .collect::<Vec<_>>())
+        })
+    }
+
+    pub fn get_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let description = inner.get_job(&job_id).await.infer_error()?;
+            Ok(description.map(crate::job::JobDescription::from))
+        })
+    }
+
+    pub fn cancel_job(self_: PyRef<'_, Self>, job_id: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.cancel_job(&job_id).await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (job_id=None))]
+    pub fn job_history(
+        self_: PyRef<'_, Self>,
+        job_id: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let batches = inner.job_history(job_id.as_deref()).await.infer_error()?;
+            Python::attach(|py| {
+                let list = PyList::empty(py);
+                for batch in batches {
+                    list.append(batch.to_pyarrow(py)?)?;
+                }
+                Ok(list.unbind())
             })
         })
     }
