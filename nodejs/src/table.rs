@@ -805,13 +805,11 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
                 )));
             }
         };
-        // An omitted `maintainedIndexes` keeps the spec's default of "every
+        // An omitted `maintainedIndexes` is the spec's default of "every
         // index the MemWAL can maintain".
-        let spec = match value.maintained_indexes {
-            Some(names) => spec.with_maintained_indexes(names),
-            None => spec,
-        };
-        Ok(spec.with_writer_config_defaults(writer_config_defaults))
+        Ok(spec
+            .with_maintained_indexes(value.maintained_indexes)
+            .with_writer_config_defaults(writer_config_defaults))
     }
 }
 

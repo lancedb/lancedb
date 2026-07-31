@@ -29,6 +29,7 @@ use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
+    is_maintainable_index_type,
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
@@ -37,6 +38,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
+use crate::index::IndexConfig;
 use crate::table::merge::{MergeInsertBuilder, MergeResult};
 use crate::table::{BaseTable, LsmWriteSpec, NativeTable};
 
@@ -82,7 +84,10 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
 
     // Resolved before the builder takes its mutable borrow of the dataset
     // clone, and against the same table the spec is about to be committed to.
-    let maintained_indexes = resolve_maintained_indexes(table, spec.maintained_indexes()).await?;
+    // `list_indices` reports one entry per index name, merging an index's
+    // segments, so the resolved list needs no dedup.
+    let maintained_indexes =
+        resolve_maintained_indexes(&table.list_indices().await?, spec.maintained_indexes())?;
 
     let mut dataset = (*table.dataset.get().await?).clone();
     let mut builder = dataset.initialize_mem_wal();
@@ -121,26 +126,35 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     Ok(())
 }
 
-/// Resolve a spec's maintained-index selection against the table's committed
-/// indexes.
+/// Resolve an [`LsmWriteSpec`]'s maintained-index selection against a table's
+/// committed indexes, as reported by
+/// [`Table::list_indices`](crate::Table::list_indices).
 ///
-/// `None` snapshots every index the MemWAL can maintain as of now — indexes
-/// created after this call are not picked up. An explicit list is checked both
-/// for names that do not exist and for types the memtable cannot build; the
-/// latter would otherwise commit cleanly and then fail every memtable claim,
-/// leaving the table unwritable far from the call that caused it.
-async fn resolve_maintained_indexes(
-    table: &NativeTable,
+/// `None` snapshots every index the MemWAL can maintain right now — indexes
+/// created after this call are not picked up. A list is checked both for names
+/// that do not exist and for types the memtable cannot build; the latter would
+/// otherwise commit cleanly and then fail every memtable claim, leaving the
+/// table unwritable far from the call that caused it.
+///
+/// Public so a server installing specs on a caller's behalf resolves them the
+/// same way `set_lsm_write_spec` does, rather than reimplementing the rules.
+pub fn resolve_maintained_indexes(
+    indices: &[IndexConfig],
     requested: Option<&[String]>,
 ) -> Result<Vec<String>> {
-    // `list_indices` reports one entry per index name, merging an index's
-    // segments, so the resolved list needs no dedup.
-    let indices = table.list_indices().await?;
+    let maintainable = |index: &IndexConfig| {
+        // Absent for remote tables, where the server resolves the set instead.
+        index
+            .type_url
+            .as_deref()
+            .is_some_and(is_maintainable_index_type)
+    };
+
     let Some(requested) = requested else {
         return Ok(indices
-            .into_iter()
-            .filter(|index| index.is_memwal_maintainable())
-            .map(|index| index.name)
+            .iter()
+            .filter(|index| maintainable(index))
+            .map(|index| index.name.clone())
             .collect());
     };
     for name in requested {
@@ -149,21 +163,32 @@ async fn resolve_maintained_indexes(
             .find(|index| &index.name == name)
             .ok_or_else(|| Error::InvalidInput {
                 message: format!(
-                    "set_lsm_write_spec: maintained index '{}' does not exist on this table",
-                    name
+                    "maintained index '{}' does not exist on this table; it has {}",
+                    name,
+                    index_name_list(indices),
                 ),
             })?;
-        if !index.is_memwal_maintainable() {
+        if !maintainable(index) {
             return Err(Error::InvalidInput {
                 message: format!(
-                    "set_lsm_write_spec: maintained index '{}' has type {}, which the MemWAL \
-                     cannot maintain; supported types are BTREE, FTS, and IVF vector indexes",
+                    "maintained index '{}' has type {}, which the MemWAL cannot maintain; \
+                     supported types are BTREE, FTS, and IVF vector indexes",
                     name, index.index_type
                 ),
             });
         }
     }
     Ok(requested.to_vec())
+}
+
+/// Render a table's index names for an error message.
+fn index_name_list(indices: &[IndexConfig]) -> String {
+    if indices.is_empty() {
+        return "no indexes".to_string();
+    }
+    let mut names: Vec<&str> = indices.iter().map(|index| index.name.as_str()).collect();
+    names.sort_unstable();
+    format!("[{}]", names.join(", "))
 }
 
 // =============================================================================

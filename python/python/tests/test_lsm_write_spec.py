@@ -85,7 +85,7 @@ def test_lsm_write_spec_repr():
     assert s.num_buckets == 4
     # A fresh spec defers its maintained set to install time.
     assert s.maintained_indexes is None
-    assert s.with_no_maintained_indexes().maintained_indexes == []
+    assert s.with_maintained_indexes([]).maintained_indexes == []
     assert "bucket" in repr(s)
     assert "id" in repr(s)
     assert "4" in repr(s)
@@ -183,7 +183,7 @@ def test_get_lsm_write_spec(tmp_path):
 
     # Unsharded round-trips (no routing column). Opting out is distinct from
     # the inferred default.
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_no_maintained_indexes())
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
     spec = table.get_lsm_write_spec()
     assert spec.spec_type == "unsharded"
     assert spec.column is None

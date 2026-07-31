@@ -6535,7 +6535,7 @@ mod tests {
                 .unwrap()
         });
         let spec = crate::table::LsmWriteSpec::unsharded()
-            .with_maintained_indexes(["id_idx"])
+            .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
         table.set_lsm_write_spec(spec).await.unwrap();
     }
@@ -6577,7 +6577,7 @@ mod tests {
         });
         table
             .set_lsm_write_spec(
-                crate::table::LsmWriteSpec::bucket("id", 16).with_no_maintained_indexes(),
+                crate::table::LsmWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
             )
             .await
             .unwrap();

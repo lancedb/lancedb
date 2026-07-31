@@ -198,8 +198,8 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// `merge_insert`.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
-/// classmethods, then optionally chain `with_maintained_indexes(...)` /
-/// `with_no_maintained_indexes()` and `with_writer_config_defaults(...)`.
+/// classmethods, then optionally chain `with_maintained_indexes(...)` and
+/// `with_writer_config_defaults(...)`.
 /// A freshly constructed spec maintains every index the MemWAL supports,
 /// resolved when the spec is installed.
 #[pyclass(from_py_object)]
@@ -241,21 +241,16 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Maintain exactly `indexes`, replacing the default of "every index
-    /// the MemWAL supports". Each name must reference an index that
-    /// already exists on the table, of a type the MemWAL can maintain,
-    /// at the time `set_lsm_write_spec` is called.
-    pub fn with_maintained_indexes(&self, indexes: Vec<String>) -> Self {
+    /// Set which indexes the MemWAL maintains.
+    ///
+    /// `None` — the default — maintains every index the MemWAL supports,
+    /// resolved when the spec is installed. A list is taken verbatim:
+    /// every name must already exist on the table and be a type the
+    /// MemWAL can maintain, and an empty list maintains nothing.
+    #[pyo3(signature = (indexes))]
+    pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
             inner: self.inner.clone().with_maintained_indexes(indexes),
-        }
-    }
-
-    /// Maintain no indexes at all — the memtable serves scans and filters
-    /// without any in-memory index.
-    pub fn with_no_maintained_indexes(&self) -> Self {
-        Self {
-            inner: self.inner.clone().with_no_maintained_indexes(),
         }
     }
 

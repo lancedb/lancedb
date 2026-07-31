@@ -607,14 +607,13 @@ class LsmWriteSpec:
     def identity(column: str) -> "LsmWriteSpec": ...
     @staticmethod
     def unsharded() -> "LsmWriteSpec": ...
-    def with_maintained_indexes(self, indexes: List[str]) -> "LsmWriteSpec":
-        """Return a copy of this spec asking the MemWAL to keep exactly the
-        named indexes up to date as rows are appended, replacing the default
-        of every index the MemWAL supports."""
-        ...
-    def with_no_maintained_indexes(self) -> "LsmWriteSpec":
-        """Return a copy of this spec asking the MemWAL to maintain no
-        indexes at all."""
+    def with_maintained_indexes(
+        self, indexes: Optional[List[str]]
+    ) -> "LsmWriteSpec":
+        """Return a copy of this spec setting which indexes the MemWAL keeps
+        up to date. None maintains every index the MemWAL supports, resolved
+        when the spec is installed; a list is taken verbatim, and an empty
+        list maintains none."""
         ...
     def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "LsmWriteSpec":
         """Return a copy of this spec recording the given default

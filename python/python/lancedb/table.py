@@ -4637,8 +4637,8 @@ class AsyncTable:
         subscription: an index created afterwards is not maintained until the
         spec is unset and set again. Use ``with_maintained_indexes`` to pin an
         exact set — names must already be committed, so a still-building index
-        is rejected rather than quietly omitted — or
-        ``with_no_maintained_indexes`` to maintain none.
+        is rejected rather than quietly omitted — or pass an empty list to
+        maintain none.
 
         Parameters
         ----------
