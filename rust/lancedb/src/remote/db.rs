@@ -20,7 +20,7 @@ use lance_namespace::models::{
 use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
@@ -432,6 +432,73 @@ fn build_cache_key(name: &str, namespace: &[String]) -> String {
     key.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+#[derive(serde::Deserialize)]
+struct RemoteListJobRow {
+    job_id: String,
+    #[serde(default)]
+    table: String,
+    #[serde(default)]
+    job_type: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    created_at_millis: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListJobsResponse {
+    #[serde(default)]
+    jobs: Vec<RemoteListJobRow>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+/// The server's account of why a job failed. Absent from older servers,
+/// which report only the terminal state.
+#[derive(serde::Deserialize)]
+struct RemoteReportedFailure {
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    retryable: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteDescribeJobResponse {
+    job_id: String,
+    #[serde(default)]
+    job_type: String,
+    job_state: String,
+    #[serde(default)]
+    creation_ms: i64,
+    #[serde(default)]
+    spec: serde_json::Value,
+    #[serde(default)]
+    failure: Option<RemoteReportedFailure>,
+}
+
+/// Server job states -> the client vocabulary ("running" / "finished" /
+/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
+/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
+/// (in_progress / succeeded / failed / canceled / timed_out). States this
+/// client version does not know (e.g. created, queued) pass through as-is.
+fn job_state_to_client(state: &str) -> String {
+    match state {
+        "IN_PROGRESS" | "in_progress" => "running",
+        "DONE" | "done" | "succeeded" => "finished",
+        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
+        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
+        other => other,
+    }
+    .to_string()
+}
+
+/// Bound on `list_jobs` page walking; a warning is logged when the listing
+/// is truncated at this many pages.
+const MAX_LIST_JOBS_PAGES: usize = 100;
+
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
     fn uri(&self) -> &str {
@@ -443,6 +510,108 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Getting the read consistency of a remote database is not yet supported"
                 .to_string(),
         })
+    }
+
+    fn job(&self, job_id: &str) -> Result<crate::job::Job> {
+        Ok(crate::job::Job::new(Box::new(super::job::RemoteJob::new(
+            self.client.clone(),
+            job_id.to_string(),
+        ))))
+    }
+
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        let mut out = Vec::new();
+        let mut page_token: Option<String> = None;
+        for page in 0..MAX_LIST_JOBS_PAGES {
+            let mut body = serde_json::json!({});
+            if let Some(token) = &page_token {
+                body["page_token"] = serde_json::Value::String(token.clone());
+            }
+            let req = self.client.post("/v1/jobs/list").json(&body);
+            let (request_id, rsp) = self.client.send(req).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
+            let body: RemoteListJobsResponse = rsp.json().await.err_to_http(request_id)?;
+            out.extend(body.jobs.into_iter().map(|row| JobInfo {
+                job_id: row.job_id,
+                table: row.table,
+                job_type: row.job_type,
+                state: job_state_to_client(&row.state),
+                created_at_millis: row.created_at_millis,
+            }));
+            page_token = body.page_token;
+            if page_token.is_none() {
+                break;
+            }
+            if page + 1 == MAX_LIST_JOBS_PAGES {
+                log::warn!(
+                    "list_jobs truncated after {} pages ({} jobs)",
+                    MAX_LIST_JOBS_PAGES,
+                    out.len()
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    async fn get_job(&self, job_id: &str) -> Result<Option<JobDescription>> {
+        let req = self
+            .client
+            .post("/v1/jobs/describe")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = match self.client.check_response(&request_id, rsp).await {
+            Ok(rsp) => rsp,
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let body: RemoteDescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        Ok(Some(JobDescription {
+            job_id: body.job_id,
+            job_type: body.job_type,
+            state: job_state_to_client(&body.job_state),
+            creation_ms: body.creation_ms,
+            spec: body.spec,
+            failure: body.failure.map(|reported| crate::error::JobFailure {
+                phase: reported.phase,
+                message: reported.message,
+                retryable: reported.retryable,
+                source: None,
+            }),
+        }))
+    }
+
+    async fn cancel_job(&self, job_id: &str) -> Result<bool> {
+        let req = self
+            .client
+            .post("/v1/jobs/cancel")
+            .json(&serde_json::json!({ "job_id": job_id }));
+        let (request_id, rsp) = self.client.send(req).await?;
+        match self.client.check_response(&request_id, rsp).await {
+            Ok(_) => Ok(true),
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<arrow_array::RecordBatch>> {
+        let mut body = serde_json::json!({});
+        if let Some(job_id) = job_id {
+            body["job_id"] = serde_json::Value::String(job_id.to_string());
+        }
+        let req = self.client.post("/v1/jobs/query_events").json(&body);
+        let (request_id, rsp) = self.client.send(req).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let bytes = rsp.bytes().await.err_to_http(request_id)?;
+        let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)?;
+        reader
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -2093,5 +2262,166 @@ mod tests {
             assert!(list_response.tables.contains(&"table2".to_string()));
             assert!(list_response.tables.contains(&"table3".to_string()));
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_jobs_paginates() {
+        let page = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/list");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            match page.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(body.get("page_token").is_none());
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"jobs": [{"job_id": "job-1", "table": "t1", "job_type": "create_index", "state": "in_progress", "created_at_millis": 1000}], "page_token": "next"}"#,
+                        )
+                        .unwrap()
+                }
+                _ => {
+                    assert_eq!(body["page_token"], "next");
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"jobs": [{"job_id": "job-2", "table": "t2", "job_type": "create_index", "state": "succeeded", "created_at_millis": 2000}, {"job_id": "job-3", "table": "t3", "job_type": "create_index", "state": "timed_out", "created_at_millis": 3000}]}"#,
+                        )
+                        .unwrap()
+                }
+            }
+        });
+        let jobs = conn.list_jobs().await.unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].job_id, "job-1");
+        assert_eq!(jobs[0].table, "t1");
+        assert_eq!(jobs[0].state, "running");
+        assert_eq!(jobs[1].job_id, "job-2");
+        assert_eq!(jobs[1].state, "finished");
+        assert_eq!(jobs[1].created_at_millis, 2000);
+        assert_eq!(jobs[2].job_id, "job-3");
+        assert_eq!(jobs[2].state, "failed");
+    }
+
+    #[tokio::test]
+    async fn test_get_job() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["job_id"], "job-1");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id": "job-1", "job_type": "create_index", "job_state": "FAILED", "creation_ms": 1000, "spec": {"column": "vec"}, "failure": {"phase": "execute", "message": "worker died", "retryable": true}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.get_job("job-1").await.unwrap().unwrap();
+        assert_eq!(job.job_id, "job-1");
+        assert_eq!(job.job_type, "create_index");
+        assert_eq!(job.state, "failed");
+        assert_eq!(job.creation_ms, 1000);
+        assert_eq!(job.spec["column"], "vec");
+        let failure = job.failure.unwrap();
+        assert_eq!(failure.phase.as_deref(), Some("execute"));
+        assert_eq!(failure.message.as_deref(), Some("worker died"));
+        assert_eq!(failure.retryable, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_get_job_missing_is_none() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("no such job")
+                .unwrap()
+        });
+        assert!(conn.get_job("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_job() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/cancel");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id": "job-1"}"#)
+                .unwrap()
+        });
+        assert!(conn.cancel_job("job-1").await.unwrap());
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("no such job")
+                .unwrap()
+        });
+        assert!(!conn.cancel_job("nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_job_history_parses_arrow_stream() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "state",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::StringArray::from(vec![
+                "created", "done",
+            ]))],
+        )
+        .unwrap();
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/query_events");
+            let req_body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(req_body["job_id"], "job-1");
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        let batches = conn.job_history(Some("job-1")).await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_conn_job_waits_to_done() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let polls_ref = polls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            let state = if polls_ref.fetch_add(1, Ordering::SeqCst) == 0 {
+                "IN_PROGRESS"
+            } else {
+                "DONE"
+            };
+            http::Response::builder()
+                .status(200)
+                .body(format!(
+                    r#"{{"job_id": "job-1", "job_type": "create_index", "job_state": "{}", "creation_ms": 1}}"#,
+                    state
+                ))
+                .unwrap()
+        });
+        let job = conn.job("job-1").unwrap();
+        assert_eq!(job.id(), Some("job-1"));
+        assert_eq!(job.status().await.unwrap(), "running");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert!(polls.load(Ordering::SeqCst) >= 3);
     }
 }

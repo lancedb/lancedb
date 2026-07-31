@@ -35,12 +35,28 @@ impl<'de> Deserialize<'de> for JobState {
     }
 }
 
+impl JobState {
+    /// The client vocabulary label for this state.
+    fn client_label(&self) -> String {
+        match self {
+            Self::InProgress => "running".to_string(),
+            Self::Done => "finished".to_string(),
+            Self::Failed => "failed".to_string(),
+            Self::Cancelled => "cancelled".to_string(),
+            Self::Other(state) => state.clone(),
+        }
+    }
+}
+
 impl From<&str> for JobState {
     fn from(state: &str) -> Self {
         match state {
             "IN_PROGRESS" => Self::InProgress,
             "CANCELLED" => Self::Cancelled,
-            "FAILED" => Self::Failed,
+            // The server reports a timed-out job as FAILED on describe;
+            // accept the raw registry state too in case a future server
+            // stops folding it.
+            "FAILED" | "TIMED_OUT" => Self::Failed,
             "DONE" => Self::Done,
             other => Self::Other(other.to_string()),
         }
@@ -51,9 +67,12 @@ impl From<&str> for JobState {
 /// report only the terminal state.
 #[derive(Deserialize)]
 struct ReportedFailure {
-    phase: String,
-    message: String,
-    retryable: bool,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    retryable: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -98,6 +117,10 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Some(&self.job_id)
     }
 
+    async fn status(&self) -> Result<String> {
+        Ok(self.describe().await?.job_state.client_label())
+    }
+
     async fn wait(&self) -> Result<()> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
@@ -110,9 +133,9 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                         failure: description
                             .failure
                             .map(|reported| JobFailure {
-                                phase: Some(reported.phase),
-                                message: Some(reported.message),
-                                retryable: Some(reported.retryable),
+                                phase: reported.phase,
+                                message: reported.message,
+                                retryable: reported.retryable,
                                 source: None,
                             })
                             .unwrap_or_default(),

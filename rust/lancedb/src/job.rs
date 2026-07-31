@@ -18,6 +18,7 @@ pub(crate) trait JobHandle: Send + Sync {
     fn id(&self) -> Option<&str> {
         None
     }
+    async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<()>;
     async fn cancel(&self) -> Result<()>;
 }
@@ -63,6 +64,19 @@ impl Job {
     /// not supported.
     pub fn id(&self) -> Option<&str> {
         self.handle.as_ref().and_then(|handle| handle.id())
+    }
+
+    /// The operation's current lifecycle state: "running", "finished",
+    /// "failed", or "cancelled".
+    ///
+    /// A point snapshot; unlike [`Job::wait`] it does not block, raise on a
+    /// terminal failure state, or retry. States a newer server reports that
+    /// this client version does not know pass through as-is.
+    pub async fn status(&self) -> Result<String> {
+        match &self.handle {
+            None => Ok("finished".to_string()),
+            Some(handle) => handle.status().await,
+        }
     }
 
     /// Waits until the operation reaches a terminal state.
@@ -138,6 +152,16 @@ impl SpawnedJob {
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
+    async fn status(&self) -> Result<String> {
+        let label = match &*self.outcome.borrow() {
+            None => "running",
+            Some(Outcome::Succeeded) => "finished",
+            Some(Outcome::Failed(_)) => "failed",
+            Some(Outcome::Cancelled) => "cancelled",
+        };
+        Ok(label.to_string())
+    }
+
     async fn wait(&self) -> Result<()> {
         let mut outcome = self.outcome.clone();
         let settled = outcome
