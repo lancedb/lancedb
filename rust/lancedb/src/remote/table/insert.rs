@@ -33,7 +33,7 @@ use crate::table::{AddResult, MergeResult};
 /// same Arrow-IPC streaming body and error side-channel; only the target
 /// endpoint, query parameters, and parsed result type differ.
 #[derive(Debug, Clone)]
-pub enum WriteOp {
+pub(crate) enum WriteOp {
     /// `add`: stream to `/v1/table/{id}/insert/`, optionally overwriting.
     Insert { overwrite: bool },
     /// `merge_insert`: stream to `/v1/table/{id}/merge_insert/` with the merge
@@ -49,7 +49,7 @@ pub enum WriteOp {
 /// The parsed server response for a completed write, discriminated by the
 /// operation that produced it.
 #[derive(Debug, Clone)]
-pub enum WriteResult {
+pub(crate) enum WriteResult {
     Add(AddResult),
     Merge(MergeResult),
 }
