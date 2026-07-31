@@ -83,12 +83,11 @@ pub use branch_merge::{
     BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
     MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
 };
-pub use checkpoint::{
-    BucketStats, CheckpointOptions, CheckpointReport, CheckpointStopReason, CompactBucketReport,
-    CompactOptions, CompactReport, FlushBucketReport, FlushReport, GenerationStats, LsmFault,
-    LsmStats, MemtableStats,
+pub use checkpoint::{BucketStats, GenerationStats, LsmFault, LsmStats, MemtableStats};
+use checkpoint::{
+    CheckpointControl, CheckpointOutcome, MAX_IDLE_POLLS, MAX_REISSUES, POLL_INTERVAL, backoff,
+    checkpoint_fault,
 };
-use checkpoint::{CheckpointControl, checkpoint_fault};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -637,15 +636,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Seal every bucket's active memtable into L0.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn flush_lsm(&self) -> Result<FlushReport> {
+    async fn flush_lsm(&self) -> Result<()> {
         Err(Error::NotSupported {
             message: "flush_lsm is not supported on this table type".into(),
         })
     }
-    /// Run one bounded L0 → base compaction pass per bucket.
+    /// Trigger a background L0 → base compaction pass per bucket.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn compact_lsm(&self, _opts: CompactOptions) -> Result<CompactReport> {
+    async fn compact_lsm(&self) -> Result<()> {
         Err(Error::NotSupported {
             message: "compact_lsm is not supported on this table type".into(),
         })
@@ -654,7 +653,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// enabled for this table.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn get_lsm_stats(&self) -> Result<Option<LsmStats>> {
+    async fn get_lsm_stats(&self, _include_generation_rows: bool) -> Result<Option<LsmStats>> {
         Err(Error::NotSupported {
             message: "get_lsm_stats is not supported on this table type".into(),
         })
@@ -1654,115 +1653,145 @@ impl Table {
 
     /// Converge this table's LSM write path into its base table.
     ///
-    /// One `flush` (seal every memtable into L0), then `compact` until L0
-    /// is empty. The loop runs here, in the client: each request does a
-    /// bounded unit of work and reports what is left, so there is no held
-    /// socket, no server-side task, and nothing to reconcile if you drop
-    /// this future partway through.
+    /// One `flush` to seal every memtable into L0, then compaction
+    /// triggers until every generation that existed at that moment has
+    /// reached base. The loop runs here, in the client: `compact_lsm`
+    /// dispatches a pass and returns, and progress is read from generation
+    /// numbers via `get_lsm_stats`, so there is no held socket, no
+    /// server-side task, and nothing to reconcile if you drop this future
+    /// partway through.
     ///
-    /// **Best-effort.** Nothing is frozen, so with writes flowing there may
-    /// be new rows by the time it returns — `converged` means L0 was empty
-    /// as of the last pass. Idempotent and safe to run on a cadence: an
-    /// already-converged table costs one round trip and zero compaction
-    /// passes, because the opening flush reports an empty L0 and the loop
-    /// is never entered.
+    /// **Best-effort.** Nothing is frozen. Generations created *after* the
+    /// opening flush are deliberately not waited on — that is what lets
+    /// this terminate on a table taking writes, where "L0 is empty" never
+    /// becomes true. Idempotent and safe to run on a cadence: an
+    /// already-converged table costs two round trips and triggers nothing.
     ///
-    /// Two independent bounds end the loop: `generations_remaining == 0`
-    /// and [`CheckpointOptions::deadline`]. A table under sustained write
-    /// load exits on the deadline with `converged: false` — a *result*, not
-    /// an error.
+    /// **No deadline.** It returns when the target generations are gone, or
+    /// errors after [`MAX_IDLE_POLLS`] polls with neither progress nor a
+    /// running pass — a fenced bucket, a saturated compactor pool, a
+    /// failing merge. Wrap it in `tokio::time::timeout` if you need a
+    /// wall-clock bound.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use lancedb::table::{Table, CheckpointOptions};
+    /// # use lancedb::Table;
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// let report = table.checkpoint_lsm(CheckpointOptions::default()).await?;
-    /// if !report.converged {
-    ///     println!("stopped early: {:?}", report.stop_reason);
-    /// }
+    /// let before = table.get_lsm_stats(false).await?;
+    /// table.checkpoint_lsm().await?;
+    /// let after = table.get_lsm_stats(false).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn checkpoint_lsm(&self, opts: CheckpointOptions) -> Result<CheckpointReport> {
-        let started = std::time::Instant::now();
-        let expired = |elapsed: std::time::Duration| {
-            opts.deadline.is_some_and(|deadline| elapsed >= deadline)
-        };
-
-        // Cap re-issues from `flush` after a 404. A node in a crash loop
-        // otherwise turns flush → compact → 404 → flush into a spin that
-        // burns the whole deadline making no progress and reports nothing
-        // useful about why.
-        const MAX_REISSUES: usize = 3;
-
-        let mut report = CheckpointReport {
-            converged: false,
-            stop_reason: None,
-            rows_sealed: 0,
-            generations_compacted: 0,
-            rows_merged: 0,
-            generations_remaining: 0,
-            compact_calls: 0,
-            stats: None,
-        };
-        let compact_opts = CompactOptions {
-            max_generations_per_bucket: opts.max_generations_per_bucket,
-        };
-
-        'reissue: for attempt in 0..=MAX_REISSUES {
-            let flushed = match self.flush_lsm().await {
-                Ok(f) => f,
-                Err(e) => match checkpoint_fault(e, &mut report, attempt, MAX_REISSUES).await? {
-                    // A retryable flush is just re-issued; the seal is
-                    // idempotent (sealing an empty active memtable is a
-                    // no-op, so repeats do not churn empty generations).
+    pub async fn checkpoint_lsm(&self) -> Result<()> {
+        for attempt in 0..=MAX_REISSUES {
+            // The seal is what turns everything written before this call
+            // into a generation, so the watermark has to be read after it.
+            // It is also idempotent: sealing an empty active memtable is a
+            // no-op, so a re-issue does not churn empty generations.
+            match self.flush_lsm().await {
+                Ok(()) => {}
+                Err(e) => match checkpoint_fault(&e, attempt)? {
                     CheckpointControl::Retry | CheckpointControl::ReissueFromFlush => {
-                        continue 'reissue;
+                        backoff(attempt).await;
+                        continue;
                     }
-                    CheckpointControl::Stop => break 'reissue,
                 },
+            }
+
+            let Some(stats) = self.get_lsm_stats(false).await? else {
+                // Not WAL-backed: nothing to converge, and `flush_lsm`
+                // would have errored first on every path but a race.
+                return Ok(());
             };
-            // Only the first flush's seal counts toward `rows_sealed`; a
-            // re-issue after a 404 re-seals rows a previous attempt already
-            // reported.
-            if attempt == 0 {
-                report.rows_sealed = flushed.rows_sealed;
+            let targets: HashMap<String, u64> = stats
+                .buckets
+                .iter()
+                .filter_map(|b| Some((b.shard_id.clone(), b.newest_generation()?)))
+                .collect();
+            if targets.is_empty() {
+                return Ok(());
             }
-            report.generations_remaining = flushed.generations_remaining;
-            report.converged = flushed.generations_remaining == 0;
 
-            while !report.converged {
-                if expired(started.elapsed()) {
-                    report.stop_reason = Some(CheckpointStopReason::DeadlineExceeded);
-                    break 'reissue;
-                }
-                let compacted = match self.compact_lsm(compact_opts.clone()).await {
-                    Ok(c) => c,
-                    // A retryable fault re-enters this loop; a 404 restarts
-                    // from `flush`, which is the call that re-claims and
-                    // replays.
-                    Err(e) => {
-                        match checkpoint_fault(e, &mut report, attempt, MAX_REISSUES).await? {
-                            CheckpointControl::Retry => continue,
-                            CheckpointControl::ReissueFromFlush => continue 'reissue,
-                            CheckpointControl::Stop => break 'reissue,
-                        }
-                    }
+            match self.drain_to_targets(&targets, attempt).await? {
+                CheckpointOutcome::Done => return Ok(()),
+                CheckpointOutcome::ReissueFromFlush => continue,
+            }
+        }
+        Err(Error::Runtime {
+            message: "checkpoint_lsm: the owning node kept losing its claim; \
+                      re-issued from flush the maximum number of times"
+                .into(),
+        })
+    }
+
+    /// Trigger and poll until no bucket holds a generation at or below its
+    /// target. Split out so the flush re-issue path above stays readable.
+    async fn drain_to_targets(
+        &self,
+        targets: &HashMap<String, u64>,
+        attempt: usize,
+    ) -> Result<CheckpointOutcome> {
+        let mut idle_polls = 0;
+        let mut last_outstanding = usize::MAX;
+        loop {
+            let Some(stats) = self.get_lsm_stats(false).await? else {
+                return Ok(CheckpointOutcome::Done);
+            };
+            let mut outstanding = 0;
+            let mut buckets_left = 0;
+            let mut all_compacting = true;
+            for b in &stats.buckets {
+                let Some(target) = targets.get(&b.shard_id) else {
+                    continue;
                 };
-                report.compact_calls += 1;
-                report.generations_compacted += compacted.generations_consumed;
-                report.rows_merged += compacted.rows_merged;
-                report.generations_remaining = compacted.generations_remaining;
-                report.converged = compacted.generations_remaining == 0;
+                let n = b.outstanding_generations(*target);
+                if n > 0 {
+                    outstanding += n;
+                    buckets_left += 1;
+                    all_compacting &= b.compacting;
+                }
             }
-            break;
-        }
+            if outstanding == 0 {
+                return Ok(CheckpointOutcome::Done);
+            }
 
-        if opts.include_stats {
-            report.stats = self.get_lsm_stats().await?;
+            // Progress, not time, is the bound. A pass already running on
+            // every outstanding bucket counts as progress: piling on would
+            // only collect 429s, and the latch it would contend for is the
+            // one doing the work.
+            if outstanding < last_outstanding || all_compacting {
+                idle_polls = 0;
+            } else {
+                idle_polls += 1;
+                if idle_polls >= MAX_IDLE_POLLS {
+                    return Err(Error::Runtime {
+                        message: format!(
+                            "checkpoint_lsm: {outstanding} generation(s) across {buckets_left} \
+                             bucket(s) stopped making progress with no compaction running; the \
+                             compactor pool may be saturated or the writer fenced"
+                        ),
+                    });
+                }
+            }
+            last_outstanding = outstanding;
+
+            if !all_compacting {
+                match self.compact_lsm().await {
+                    Ok(()) => {}
+                    Err(e) => match checkpoint_fault(&e, attempt)? {
+                        // Every bucket busy (429) is the state the poll
+                        // above already handles; fall through and re-read.
+                        CheckpointControl::Retry => {}
+                        CheckpointControl::ReissueFromFlush => {
+                            return Ok(CheckpointOutcome::ReissueFromFlush);
+                        }
+                    },
+                }
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
-        Ok(report)
     }
 
     /// Seal every bucket's active memtable into L0 without touching the
@@ -1773,7 +1802,7 @@ impl Table {
     /// (after a restart, say) this claims it and replays its WAL log first —
     /// reporting "nothing to flush" without replaying would be lying about
     /// durable data.
-    pub async fn flush_lsm(&self) -> Result<FlushReport> {
+    pub async fn flush_lsm(&self) -> Result<()> {
         self.inner.flush_lsm().await
     }
 
@@ -1783,8 +1812,8 @@ impl Table {
     /// One pass, not convergence: that is what makes each request's cost
     /// bounded and gives a caller driving its own cadence a progress signal
     /// per round trip.
-    pub async fn compact_lsm(&self, opts: CompactOptions) -> Result<CompactReport> {
-        self.inner.compact_lsm(opts).await
+    pub async fn compact_lsm(&self) -> Result<()> {
+        self.inner.compact_lsm().await
     }
 
     /// Read live per-bucket LSM state.
@@ -1794,6 +1823,10 @@ impl Table {
     /// table state, though on a node that has not claimed this table it
     /// claims it — exactly as a read would.
     ///
+    /// `include_generation_rows` reports a row count per L0 generation. Off
+    /// by default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_lsm` polls this method needing only generation numbers.
+    ///
     /// `Ok(None)` — and only — when the LSM write path is not enabled for
     /// the table, matching [`Table::get_lsm_write_spec`]. Stats is
     /// fresh-tier only, so with the WAL off there is no manifest and no
@@ -1801,8 +1834,8 @@ impl Table {
     ///
     /// Do not build a checkpoint's termination on this: the completion
     /// predicate lives in the `flush` and `compact` responses.
-    pub async fn get_lsm_stats(&self) -> Result<Option<LsmStats>> {
-        self.inner.get_lsm_stats().await
+    pub async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        self.inner.get_lsm_stats(include_generation_rows).await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.

@@ -3,24 +3,26 @@
 
 //! Converging a table's LSM write path into its base table.
 //!
-//! `checkpoint_lsm` is `flush` then `compact`, repeated until the fresh
-//! tier is empty — and the loop runs **here, in the client**, not on the
-//! server. Putting it server-side would mean a background task, which
-//! means a single-flight intent, an intent that leaks on panic, a
-//! bounded-iteration policy, an "is it done" observable, and a story for
-//! every way a client can vanish mid-operation. None of that exists in
-//! this shape.
+//! `checkpoint_lsm` seals once, then triggers compaction and watches
+//! generation numbers until the L0 that existed at the start is gone. The
+//! loop runs **here, in the client**, not on the server: putting it
+//! server-side would mean a background task, a single-flight intent, an
+//! intent that leaks on panic, an "is it done" observable, and a story for
+//! every way a client can vanish mid-operation.
 //!
 //! Three properties follow:
 //!
-//! * **No held socket.** Each request does a bounded unit of work and
-//!   returns. Nothing sits on a connection for minutes waiting on a merge.
-//! * **Termination is structural.** Each `compact` drains at most one
-//!   prefix per bucket and reports what is left. A caller that wants to
-//!   stop, stops.
-//! * **Completion is carried in the responses, not inferred.** A poll-a
-//!   -shared-counter design cannot distinguish "converged" from "hasn't
-//!   started yet"; being *told* `generations_remaining == 0` can.
+//! * **No held socket.** `compact_lsm` dispatches a pass and returns; the
+//!   merge runs on the server's compactor pool. Nothing sits on a
+//!   connection for minutes.
+//! * **The predicate is durable state, not a response body.** Completion
+//!   is read from generation numbers in the shard manifest via
+//!   `get_lsm_stats`. A count carried back in a compact response is stale
+//!   the moment a concurrent write lands; a generation number is not.
+//! * **Termination is reachable under write load.** The target set is
+//!   fixed at the start, so generations created *during* the checkpoint
+//!   are ignored. A predicate of "L0 is empty" chases a moving target on a
+//!   table taking writes and only ever exits on a timeout.
 //!
 //! **Best-effort by construction.** Nothing is frozen, so a checkpoint
 //! converges the fresh tier *as of some instant*; with writes flowing
@@ -34,143 +36,16 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// Options for [`crate::Table::checkpoint_lsm`].
-#[derive(Debug, Clone)]
-pub struct CheckpointOptions {
-    /// Stop and report `converged: false` once this much wall-clock has
-    /// elapsed. `None` runs until the table converges or a terminal error
-    /// arrives — safe only on a table you know is not under write load.
-    pub deadline: Option<Duration>,
-    /// Per-request, per-bucket bound on generations merged. `None` uses the
-    /// server's `compact_prefix_max`. Note this is **per bucket**: an
-    /// N-bucket table admits `N × max_generations_per_bucket` merges per
-    /// request. [`LsmStats::buckets`] has one entry per bucket.
-    pub max_generations_per_bucket: Option<usize>,
-    /// Collect a [`LsmStats`] block into the report when the loop ends.
-    pub include_stats: bool,
-}
-
-impl Default for CheckpointOptions {
-    fn default() -> Self {
-        Self {
-            deadline: Some(Duration::from_secs(300)),
-            max_generations_per_bucket: None,
-            include_stats: false,
-        }
-    }
-}
-
-/// Why a checkpoint stopped short of convergence. Absent ⇒ it converged.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CheckpointStopReason {
-    /// The caller's deadline elapsed with generations still in L0. A
-    /// *result*, not an error: a table under sustained write load may
-    /// legitimately never reach zero. Callers on a cadence ignore it;
-    /// callers about to disable the WAL check it.
-    DeadlineExceeded,
-    /// The owning node is draining. **Terminal** — the drain gate is a
-    /// one-way latch that never releases until the process restarts, so
-    /// retrying against that node spins until the deadline and then reports
-    /// failure when the truthful answer was available on the first
-    /// response. It resolves only when the ring changes.
-    ///
-    /// Stopping is also the *correct* answer: a node drain is a checkpoint
-    /// of every claimed table on the pod, driven by something that will
-    /// finish it.
-    NodeDraining,
-    /// The registry entry vanished repeatedly under pod restarts. A pod in
-    /// a crash loop would otherwise turn flush → compact → 404 → flush into
-    /// a spin that burns the whole deadline making no progress.
-    RepeatedlyUnclaimed,
-}
-
-/// Outcome of a [`crate::Table::checkpoint_lsm`] run.
-#[derive(Debug, Clone)]
-pub struct CheckpointReport {
-    /// L0 was empty across every bucket as of the last pass.
-    ///
-    /// Precisely: the loop seals once at the top, so rows written *during*
-    /// the loop sit in the active memtable and are not sealed again.
-    /// Writes are never blocked to make this look better — a caller who
-    /// wants a quiescent table quiesces it.
-    pub converged: bool,
-    /// Set when `converged` is false.
-    pub stop_reason: Option<CheckpointStopReason>,
-    /// Rows sealed out of the memtables by the single opening flush.
-    pub rows_sealed: u64,
-    /// L0 generations merged into base across every pass.
-    pub generations_compacted: usize,
-    /// Rows merged into base across every pass.
-    pub rows_merged: u64,
-    /// Generations still in L0 as of the last response.
-    pub generations_remaining: usize,
-    /// Number of `compact` round trips issued. Zero when the opening flush
-    /// landed in an empty L0 — the common case on a cadence.
-    pub compact_calls: usize,
-    /// Present when [`CheckpointOptions::include_stats`] was set.
-    pub stats: Option<LsmStats>,
-}
-
-/// Per-bucket result of one flush.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FlushBucketReport {
-    pub shard_id: String,
-    /// `None` when the bucket's active memtable was already empty.
-    #[serde(default)]
-    pub sealed_generation: Option<u64>,
-    pub rows_sealed: u64,
-    pub generations_remaining: usize,
-}
-
-/// Result of [`crate::Table::flush_lsm`]: everything written before the
-/// seal is now in L0.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FlushReport {
-    pub buckets: Vec<FlushBucketReport>,
-    pub rows_sealed: u64,
-    /// Summed across buckets, so `== 0` means every bucket is empty. This
-    /// is what lets an already-converged table cost one round trip and zero
-    /// compaction passes.
-    pub generations_remaining: usize,
-}
-
-/// Options for [`crate::Table::compact_lsm`].
-#[derive(Debug, Clone, Default)]
-pub struct CompactOptions {
-    /// See [`CheckpointOptions::max_generations_per_bucket`].
-    pub max_generations_per_bucket: Option<usize>,
-}
-
-/// Per-bucket result of one compaction pass.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CompactBucketReport {
-    pub shard_id: String,
-    pub generations_consumed: usize,
-    pub rows_merged: u64,
-    pub generations_remaining: usize,
-}
-
-/// Result of [`crate::Table::compact_lsm`]: one bounded L0 → base pass per
-/// bucket.
-///
-/// The per-bucket list is authoritative; the table-level fields are a
-/// convenience. Consumed/merged/remaining are **sums**;
-/// `highest_wal_entry_position` is a **max**, since it is a watermark.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CompactReport {
-    pub buckets: Vec<CompactBucketReport>,
-    pub generations_consumed: usize,
-    pub rows_merged: u64,
-    pub generations_remaining: usize,
-    pub highest_wal_entry_position: u64,
-}
-
 /// One flushed L0 generation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GenerationStats {
     pub generation: u64,
     pub bytes: u64,
-    pub rows: u64,
+    /// Present only when `include_generation_rows` was requested. Off by
+    /// default because each count opens an uncached Lance dataset, and the
+    /// checkpoint loop polls this route needing only generation numbers.
+    #[serde(default)]
+    pub rows: Option<u64>,
 }
 
 /// One in-memory memtable.
@@ -203,10 +78,37 @@ pub struct BucketStats {
     pub replay_after_wal_entry_position: u64,
     pub wal_entry_position_last_seen: u64,
     pub generations: Vec<GenerationStats>,
+    /// Whether a pass owns this bucket's compaction latch right now. Says
+    /// *a* driver is running, not *whose*: the server's periodic trigger
+    /// competes for the same latch, so a caller that dispatched a compact
+    /// cannot read this as "mine is progressing", only as "do not pile on".
+    pub compacting: bool,
     /// Oldest first, active last. Absent for a `Sealed` bucket, whose
     /// in-memory state is torn down.
     #[serde(default)]
     pub memtables: Option<Vec<MemtableStats>>,
+}
+
+impl BucketStats {
+    /// The newest flushed generation, or `None` when L0 is empty.
+    pub(crate) fn newest_generation(&self) -> Option<u64> {
+        self.generations.iter().map(|g| g.generation).max()
+    }
+
+    /// How many generations at or below `target` are still in L0.
+    ///
+    /// A *count*, not a boolean: it is the checkpoint's progress metric,
+    /// and one pass drains a bounded prefix rather than the whole target
+    /// set. A per-bucket boolean would read as "no progress" for every
+    /// pass but the last, so a bucket needing more passes than the idle
+    /// bound would fail a checkpoint that was working correctly.
+    /// Compaction drains oldest-first, so this decreases monotonically.
+    pub(crate) fn outstanding_generations(&self, target: u64) -> usize {
+        self.generations
+            .iter()
+            .filter(|g| g.generation <= target)
+            .count()
+    }
 }
 
 /// Live LSM state, one entry per bucket.
@@ -282,6 +184,37 @@ pub(crate) fn classify_lsm_fault(status: u16, body: &str) -> LsmFault {
     }
 }
 
+/// How long the loop waits between `get_lsm_stats` polls. A pass over a
+/// `prefix_max` prefix takes seconds, so a shorter interval only adds
+/// round trips.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Consecutive polls tolerated with no progress *and* no pass running
+/// before the checkpoint gives up. This is the bound in place of a
+/// deadline: a slow table waits (a running pass resets the counter) while
+/// a stuck one — a fenced bucket, a saturated compactor pool, a failing
+/// merge — fails loudly instead of spinning.
+pub(crate) const MAX_IDLE_POLLS: usize = 10;
+
+/// Cap on re-issues from `flush` after a 404. A node in a crash loop would
+/// otherwise turn flush → compact → 404 → flush into a spin.
+pub(crate) const MAX_REISSUES: usize = 3;
+
+/// Base backoff between retries, doubled per consecutive retry up to
+/// [`RETRY_BACKOFF_MAX`]. Latch contention clears in about the time one
+/// compaction pass takes, so starting small is right; a saturated pool
+/// wants the ceiling.
+pub(crate) const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
+pub(crate) const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(5);
+
+/// Sleep before re-issuing a retryable request.
+pub(crate) async fn backoff(attempt: usize) {
+    let delay = RETRY_BACKOFF_BASE
+        .saturating_mul(1u32 << attempt.min(8) as u32)
+        .min(RETRY_BACKOFF_MAX);
+    tokio::time::sleep(delay).await;
+}
+
 /// What the checkpoint loop should do next after a failed request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CheckpointControl {
@@ -289,29 +222,29 @@ pub(crate) enum CheckpointControl {
     Retry,
     /// Restart from `flush`, which is what re-claims and replays.
     ReissueFromFlush,
-    /// Stop; `report.stop_reason` has been set.
-    Stop,
 }
 
-/// Base backoff between retries, doubled per consecutive retry up to
-/// [`RETRY_BACKOFF_MAX`]. Latch contention clears in about the time one
-/// compaction pass takes, so starting small is right; a saturated pool
-/// wants the ceiling.
-const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(100);
-const RETRY_BACKOFF_MAX: Duration = Duration::from_secs(5);
+/// Whether the drain loop finished or needs the table re-claimed first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointOutcome {
+    Done,
+    ReissueFromFlush,
+}
 
-/// Decide what a failed LSM request means for the loop, recording the stop
-/// reason on `report` when it is terminal. Returns `Err` only for genuinely
-/// fatal faults (dropping table, not WAL-backed, anything unrecognized) —
-/// those are errors the caller should see, not outcomes.
-pub(crate) async fn checkpoint_fault(
-    e: crate::Error,
-    report: &mut CheckpointReport,
+/// Decide what a failed LSM request means for the loop. Returns `Err` for
+/// genuinely terminal faults — a draining node, a dropping table, a table
+/// with no LSM write path, anything unrecognized — which are errors the
+/// caller should see rather than outcomes to keep looping on.
+///
+/// Draining is terminal by design: the drain gate is a one-way latch that
+/// never releases until the process restarts, so retrying against that
+/// node spins forever when the truthful answer was in the first response.
+pub(crate) fn checkpoint_fault(
+    e: &crate::Error,
     attempt: usize,
-    max_reissues: usize,
 ) -> crate::Result<CheckpointControl> {
     #[cfg(feature = "remote")]
-    let fault = match &e {
+    let fault = match e {
         crate::Error::LsmRoute { fault, .. } => Some(*fault),
         _ => None,
     };
@@ -319,25 +252,33 @@ pub(crate) async fn checkpoint_fault(
     let fault: Option<LsmFault> = None;
 
     match fault {
-        Some(LsmFault::Retry) => {
-            let backoff = RETRY_BACKOFF_BASE
-                .saturating_mul(1u32 << attempt.min(8) as u32)
-                .min(RETRY_BACKOFF_MAX);
-            tokio::time::sleep(backoff).await;
-            Ok(CheckpointControl::Retry)
-        }
-        Some(LsmFault::ReissueFromFlush) if attempt < max_reissues => {
+        Some(LsmFault::Retry) => Ok(CheckpointControl::Retry),
+        Some(LsmFault::ReissueFromFlush) if attempt < MAX_REISSUES => {
             Ok(CheckpointControl::ReissueFromFlush)
         }
-        Some(LsmFault::ReissueFromFlush) => {
-            report.stop_reason = Some(CheckpointStopReason::RepeatedlyUnclaimed);
-            Ok(CheckpointControl::Stop)
-        }
-        Some(LsmFault::Draining) => {
-            report.stop_reason = Some(CheckpointStopReason::NodeDraining);
-            Ok(CheckpointControl::Stop)
-        }
-        Some(LsmFault::Fatal) | None => Err(e),
+        _ => Err(clone_lsm_error(e)),
+    }
+}
+
+/// `crate::Error` is not `Clone`, and the loop borrows the error to
+/// classify it before deciding whether to surface it. Rebuild the variant
+/// that matters and fall back to a flattened message for the rest.
+fn clone_lsm_error(e: &crate::Error) -> crate::Error {
+    #[cfg(feature = "remote")]
+    if let crate::Error::LsmRoute {
+        fault,
+        status,
+        message,
+    } = e
+    {
+        return crate::Error::LsmRoute {
+            fault: *fault,
+            status: *status,
+            message: message.clone(),
+        };
+    }
+    crate::Error::Runtime {
+        message: e.to_string(),
     }
 }
 
@@ -377,5 +318,69 @@ mod tests {
         assert_eq!(classify_lsm_fault(503, ""), LsmFault::Retry);
         assert_eq!(classify_lsm_fault(503, "gateway timeout"), LsmFault::Retry);
         assert_eq!(classify_lsm_fault(503, r#"{"code":"19"}"#), LsmFault::Retry);
+    }
+
+    fn bucket(shard: &str, generations: &[u64], compacting: bool) -> BucketStats {
+        BucketStats {
+            shard_id: shard.into(),
+            status: "Active".into(),
+            writer_epoch: 1,
+            manifest_version: 1,
+            current_generation: generations.iter().max().copied().unwrap_or(0) + 1,
+            replay_after_wal_entry_position: 0,
+            wal_entry_position_last_seen: 0,
+            generations: generations
+                .iter()
+                .map(|g| GenerationStats {
+                    generation: *g,
+                    bytes: 1,
+                    rows: None,
+                })
+                .collect(),
+            compacting,
+            memtables: None,
+        }
+    }
+
+    /// The target watermark is the newest generation at the start, and a
+    /// generation created *after* it must not hold the loop open — that is
+    /// the whole reason the predicate terminates under write load.
+    #[test]
+    fn newer_generations_do_not_extend_the_target() {
+        let start = bucket("b0", &[7, 8], false);
+        let target = start.newest_generation().expect("L0 is non-empty");
+        assert_eq!(target, 8);
+
+        // Compaction drained 7 and 8; 9 and 10 arrived while it ran.
+        let later = bucket("b0", &[9, 10], false);
+        assert_eq!(
+            later.outstanding_generations(target),
+            0,
+            "generations above the target are somebody else's problem"
+        );
+
+        // Still holding 8 means still outstanding.
+        assert_eq!(
+            bucket("b0", &[8, 9], false).outstanding_generations(target),
+            1
+        );
+    }
+
+    /// The progress metric counts generations, not buckets. A pass drains
+    /// a bounded prefix, so one bucket going 3 → 2 → 1 → 0 must read as
+    /// three steps of progress, not three idle polls.
+    #[test]
+    fn progress_is_measured_in_generations() {
+        let target = 3;
+        let counts: Vec<usize> = [&[1u64, 2, 3][..], &[2, 3][..], &[3][..], &[][..]]
+            .iter()
+            .map(|gens| bucket("b0", gens, false).outstanding_generations(target))
+            .collect();
+        assert_eq!(counts, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn empty_l0_has_no_target() {
+        assert!(bucket("b0", &[], false).newest_generation().is_none());
     }
 }
