@@ -10,7 +10,6 @@ use arrow_array::{Array, LargeBinaryArray};
 use arrow_schema::DataType;
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt};
-use object_store::path::Path;
 use reqwest::{Response, StatusCode, header};
 use tokio::sync::Mutex;
 
@@ -76,20 +75,18 @@ struct RemoteBlobState {
 
 /// Seekable Cloud blob handle over HTTP Range.
 #[derive(Debug)]
-pub struct RemoteBlobFile {
+pub(crate) struct RemoteBlobFile {
     requester: Arc<dyn BlobRangeRequester>,
     state: Mutex<RemoteBlobState>,
     size: u64,
-    path: Path,
 }
 
 impl RemoteBlobFile {
-    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64, path: Path) -> Self {
+    fn new(requester: Arc<dyn BlobRangeRequester>, size: u64) -> Self {
         Self {
             requester,
             state: Mutex::new(RemoteBlobState::default()),
             size,
-            path,
         }
     }
 
@@ -277,10 +274,6 @@ impl RemoteBlobFile {
     pub(crate) fn size(&self) -> u64 {
         self.size
     }
-
-    pub(crate) fn data_path(&self) -> &Path {
-        &self.path
-    }
 }
 
 fn remote_blob_error(error: impl std::fmt::Display) -> lance_core::Error {
@@ -446,10 +439,6 @@ impl<S: HttpSend> RemoteTable<S> {
                     "/v1/table/{}/blob/{encoded_column}/{row_id}/bytes",
                     self.identifier
                 );
-                let logical_path = Path::from(format!(
-                    "lancedb-cloud/{}/{encoded_column}/{row_id}",
-                    self.identifier
-                ));
                 let requester: Arc<dyn BlobRangeRequester> = Arc::new(TableBlobRangeRequester {
                     client: self.client.clone(),
                     path,
@@ -457,7 +446,7 @@ impl<S: HttpSend> RemoteTable<S> {
                     branch: self.branch.clone(),
                     freshness,
                 });
-                (requester, logical_path)
+                requester
             })
             .collect();
         probe_blob_files(probes).await
@@ -467,12 +456,9 @@ impl<S: HttpSend> RemoteTable<S> {
 /// Probe sizes for a row set, bounded to eight at a time with output order
 /// matching the input rows.
 async fn probe_blob_files(
-    probes: Vec<(Arc<dyn BlobRangeRequester>, Path)>,
+    probes: Vec<Arc<dyn BlobRangeRequester>>,
 ) -> Result<Vec<Option<BlobFile>>> {
-    let probe_futures: Vec<_> = probes
-        .into_iter()
-        .map(|(requester, logical_path)| probe_blob_file(requester, logical_path))
-        .collect();
+    let probe_futures: Vec<_> = probes.into_iter().map(probe_blob_file).collect();
     futures::stream::iter(probe_futures)
         .buffered(BLOB_SIZE_PROBE_CONCURRENCY)
         .try_collect()
@@ -486,10 +472,7 @@ const BLOB_SIZE_PROBE_CONCURRENCY: usize = 8;
 /// A null blob answers 204 and yields `None`. A zero-length blob cannot satisfy any
 /// byte range, so the server answers 416 with `Content-Range: bytes */0` and the
 /// handle is built with size 0.
-async fn probe_blob_file(
-    requester: Arc<dyn BlobRangeRequester>,
-    logical_path: Path,
-) -> Result<Option<BlobFile>> {
+async fn probe_blob_file(requester: Arc<dyn BlobRangeRequester>) -> Result<Option<BlobFile>> {
     let (request_id, response) = requester.request_range("bytes=0-0").await?;
     match response.status() {
         StatusCode::NO_CONTENT => {
@@ -522,7 +505,7 @@ async fn probe_blob_file(
                     });
                 }
             }
-            Ok(Some(RemoteBlobFile::new(requester, 0, logical_path).into()))
+            Ok(Some(RemoteBlobFile::new(requester, 0).into()))
         }
         StatusCode::PARTIAL_CONTENT => {
             let size = response
@@ -550,9 +533,7 @@ async fn probe_blob_file(
                     status_code: Some(StatusCode::PARTIAL_CONTENT),
                 });
             }
-            Ok(Some(
-                RemoteBlobFile::new(requester, size, logical_path).into(),
-            ))
+            Ok(Some(RemoteBlobFile::new(requester, size).into()))
         }
         status => Err(Error::Http {
             source: format!("blob size probe expected HTTP 206 Partial Content, got {status}")
@@ -999,7 +980,7 @@ mod tests {
                     in_flight: in_flight.clone(),
                     max_in_flight: max_in_flight.clone(),
                 });
-                (requester, Path::from(format!("probe/{index}")))
+                requester
             })
             .collect();
 
@@ -1014,5 +995,20 @@ mod tests {
             max <= BLOB_SIZE_PROBE_CONCURRENCY,
             "{max} probes in flight exceeds the bound"
         );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_file_metadata_reports_none() {
+        let requests = Arc::new(StdMutex::new(Vec::new()));
+        let table = mock_remote_blob_table(requests.clone());
+
+        let mut files = table.fetch_blob_files_impl("image", &[10]).await.unwrap();
+        let file = files.remove(0).unwrap();
+
+        assert_eq!(file.size(), PAYLOAD.len() as u64);
+        assert_eq!(file.position(), None);
+        assert_eq!(file.kind(), None);
+        assert_eq!(file.data_path(), None);
+        assert_eq!(file.uri(), None);
     }
 }

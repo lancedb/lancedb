@@ -175,31 +175,33 @@ impl BlobFile {
         }
     }
 
-    /// Physical offset, or zero for a remote logical resource.
-    pub fn position(&self) -> u64 {
+    /// Physical byte offset in the data file. `None` on remote handles. The
+    /// Cloud byte-range route does not expose storage layout.
+    pub fn position(&self) -> Option<u64> {
         match &self.inner {
-            BlobFileInner::Native(file) => file.position(),
+            BlobFileInner::Native(file) => Some(file.position()),
             #[cfg(feature = "remote")]
-            BlobFileInner::Remote(_) => 0,
+            BlobFileInner::Remote(_) => None,
         }
     }
 
-    /// Native path or remote logical path.
-    pub fn data_path(&self) -> &Path {
+    /// Path of the data file holding the blob. `None` on remote handles. The
+    /// Cloud byte-range route does not expose storage layout.
+    pub fn data_path(&self) -> Option<&Path> {
         match &self.inner {
-            BlobFileInner::Native(file) => file.data_path(),
+            BlobFileInner::Native(file) => Some(file.data_path()),
             #[cfg(feature = "remote")]
-            BlobFileInner::Remote(file) => file.data_path(),
+            BlobFileInner::Remote(_) => None,
         }
     }
 
-    /// Native storage layout. Remote handles report `Dedicated` because their
-    /// physical layout is hidden behind the byte-range endpoint.
-    pub fn kind(&self) -> lance_core::datatypes::BlobKind {
+    /// Native storage layout. `None` on remote handles. The Cloud byte-range
+    /// route does not expose layout.
+    pub fn kind(&self) -> Option<lance_core::datatypes::BlobKind> {
         match &self.inner {
-            BlobFileInner::Native(file) => file.kind(),
+            BlobFileInner::Native(file) => Some(file.kind()),
             #[cfg(feature = "remote")]
-            BlobFileInner::Remote(_) => lance_core::datatypes::BlobKind::Dedicated,
+            BlobFileInner::Remote(_) => None,
         }
     }
 
