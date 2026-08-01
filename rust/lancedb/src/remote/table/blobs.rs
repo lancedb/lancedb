@@ -1050,7 +1050,7 @@ mod tests {
         for error in [
             file.read().await.unwrap_err(),
             file.read_range(0..1).await.unwrap_err(),
-            file.read_ranges(&[0..1]).await.unwrap_err(),
+            file.read_ranges(&[0..1, 1..2]).await.unwrap_err(),
             file.read_up_to(1).await.unwrap_err(),
             file.seek(0).await.unwrap_err(),
             file.tell().await.unwrap_err(),
