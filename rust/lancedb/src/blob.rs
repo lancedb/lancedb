@@ -105,7 +105,7 @@ impl BlobFile {
         match &self.inner {
             BlobFileInner::Native(file) => file.is_closed().await,
             #[cfg(feature = "remote")]
-            BlobFileInner::Remote(file) => file.is_closed().await,
+            BlobFileInner::Remote(file) => file.is_closed(),
         }
     }
 
