@@ -23,7 +23,7 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::scalar::load_segment_params;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
-use lance_core::datatypes::{Field as LanceField, format_field_path};
+use lance_core::datatypes::{Field as LanceField, format_field_path_minimal};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::IndexCriteria;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
@@ -3581,17 +3581,26 @@ fn subtree_bytes(field: &LanceField, bytes_by_id: &HashMap<u32, u64>) -> u64 {
 /// the field's whole subtree either way, so a struct reports its total while
 /// its children report the breakdown.
 ///
-/// Paths go through [`format_field_path`], which backtick-quotes any segment
-/// that needs it. Without that, a leaf named `a.b` under `meta` and the path
-/// `meta` -> `a` -> `b` would both key on `meta.a.b` and one would silently
-/// overwrite the other.
+/// Paths go through [`format_field_path_minimal`], which quotes a segment only
+/// when it contains a `.` or a backtick. The quoting is what keeps a leaf named
+/// `a.b` under `meta` distinct from the path `meta` -> `a` -> `b`; without it
+/// both would key on `meta.a.b` and one would silently overwrite the other.
+/// Leaving everything else bare is deliberate: these keys are meant to be shown
+/// to people, so an ordinary name like `user-id` should not arrive wrapped in
+/// backticks. (The stricter [`format_field_path`] is for paths headed into a SQL
+/// expression, which these are not.)
+///
+/// [`format_field_path`]: lance_core::datatypes::format_field_path
 fn record_column_bytes<'a>(
     field: &'a LanceField,
     path: &mut Vec<&'a str>,
     bytes_by_id: &HashMap<u32, u64>,
     column_bytes: &mut HashMap<String, u64>,
 ) {
-    column_bytes.insert(format_field_path(path), subtree_bytes(field, bytes_by_id));
+    column_bytes.insert(
+        format_field_path_minimal(path),
+        subtree_bytes(field, bytes_by_id),
+    );
     if field.logical_type.is_struct() {
         for child in &field.children {
             path.push(child.name.as_str());
@@ -3620,12 +3629,13 @@ pub struct TableStatistics {
     /// path ("meta", "meta.geo", "meta.geo.lat"). A struct's subfields each
     /// get their own entry, and every entry covers the field's own bytes plus
     /// its whole subtree, so a struct reports its total while its children
-    /// report the breakdown (the top-level entries alone sum to
-    /// `total_bytes`). List elements are not broken out: a list column
-    /// reports a single total with its element bytes rolled in. Path segments
-    /// containing anything other than letters, digits, or `_` are
-    /// backtick-quoted, so a subfield named `a.b` under `meta` is keyed as
-    /// ``meta.`a.b` ``.
+    /// report the breakdown. Only the top-level entries sum to `total_bytes`;
+    /// summing every entry double-counts anything nested. List elements are
+    /// not broken out: a list column reports a single total with its element
+    /// bytes rolled in. A path segment is backtick-quoted only when it
+    /// contains a `.` or a backtick, so a subfield named `a.b` under `meta` is
+    /// keyed as ``meta.`a.b` `` while an ordinary name like `user-id` is left
+    /// bare.
     ///
     /// Counts data-file bytes only: blob sidecar payloads and index files are
     /// not included, and blob columns therefore report just their descriptor
@@ -5375,5 +5385,53 @@ mod tests {
         assert!(column_bytes["meta.a.b"] > 0);
         assert_eq!(column_bytes["meta.a"], column_bytes["meta.a.b"]);
         assert_eq!(column_bytes["meta"], stats.total_bytes as u64);
+    }
+
+    /// Quoting is reserved for names that would otherwise be ambiguous. A
+    /// hyphen or a space is not special to a field path, so such names stay
+    /// bare — these keys get shown to people, and `` `user-id` `` would read as
+    /// a formatting bug.
+    #[tokio::test]
+    pub async fn test_stats_column_bytes_names_are_not_over_quoted() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let inner_fields = vec![Field::new("first name", DataType::Utf8, true)];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("user-id", DataType::Int32, false),
+            Field::new("meta", DataType::Struct(inner_fields.clone().into()), true),
+        ]));
+        let meta = StructArray::new(
+            inner_fields.into(),
+            vec![Arc::new(StringArray::from_iter_values(
+                (0..100).map(|i| format!("name-{i}")),
+            )) as ArrayRef],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(meta),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("unquoted_stats", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let column_bytes = table.stats().await.unwrap().column_bytes.unwrap();
+
+        assert_eq!(
+            column_bytes.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from([
+                "user-id".to_string(),
+                "meta".to_string(),
+                "meta.first name".to_string(),
+            ])
+        );
     }
 }

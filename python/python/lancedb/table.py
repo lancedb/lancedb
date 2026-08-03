@@ -6160,19 +6160,15 @@ class TableStatistics:
         Statistics about fragments in the table.
     column_bytes: dict[str, int] | None
         The compressed on-disk bytes of each column, keyed by dotted field path
-        ("meta", "meta.geo", "meta.geo.lat"). A struct's subfields each get their
-        own entry, and every entry covers the field's own bytes plus its whole
-        subtree, so a struct reports its total while its children report the
-        breakdown (the top-level entries alone sum to ``total_bytes``). List
-        elements are not broken out: a list column reports a single total with
-        its element bytes rolled in. Path segments containing anything other
-        than letters, digits, or ``_`` are backtick-quoted, so a subfield named
-        ``a.b`` under ``meta`` is keyed as ``meta.`a.b```.
+        ("meta", "meta.geo", "meta.geo.lat"). A struct's subfields get their own
+        entries *in addition to* the struct's, so sum only the top-level entries
+        to reach ``total_bytes`` -- summing every entry double-counts. ``None``
+        when the backend provides no per-column breakdown (e.g. older remote
+        servers).
 
-        Counts data-file bytes only: blob sidecar payloads and index files are
-        not included, and blob columns therefore report just their descriptor
-        bytes. ``None`` when the backend provides no per-column breakdown (e.g.
-        older remote servers).
+        For the full contract -- path quoting, list elements, and which bytes
+        are excluded -- see ``TableStatistics::column_bytes`` at
+        https://docs.rs/lancedb/latest/lancedb/table/struct.TableStatistics.html
     """
 
     total_bytes: int
