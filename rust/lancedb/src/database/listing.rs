@@ -8,12 +8,15 @@ use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
+use futures::TryStreamExt;
 use lance::dataset::refs::Ref;
 use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
-use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::{
+    DirCursor, ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider,
+};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -718,6 +721,54 @@ impl ListingDatabase {
         self.namespace_database.clone()
     }
 
+    /// List up to `limit` table names, resuming after the table named `start_after`.
+    ///
+    /// The cursor and the page size go into the object store's list request rather than
+    /// being applied to a full listing, so the cost of a page is set by the size of the
+    /// page and not by the size of the database. Stores with no paginated list API fall
+    /// back to a full listing, which is what this did for every store before.
+    ///
+    /// Names come back in the order the store lists the directories in, which is by key:
+    /// `foo-bar` precedes `foo`, because the `-` of `foo-bar.lance` sorts below the `.` of
+    /// `foo.lance`. Pagination has to follow the order the cursor is pushed down in, so
+    /// that is the order both listing methods report and the order `start_after` resumes
+    /// in. It matches sorting by name except between a name and one that extends it.
+    async fn list_table_dirs(
+        &self,
+        start_after: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<String>> {
+        let dir_suffix = format!(".{}", LANCE_EXTENSION);
+        let options = ReadDirOptions {
+            // An empty name means "from the start": that is how comparing names against it
+            // behaved, and how a client looping on a page token spells its first request.
+            // Built into a cursor it would instead sit after every name below `.lance`.
+            resume_from: start_after
+                .filter(|name| !name.is_empty())
+                .map(|name| DirCursor::after_directory(format!("{name}{dir_suffix}"))),
+            page_size: limit,
+        };
+        let mut entries = self
+            .object_store
+            .read_dir_stream(self.base_path.clone(), options);
+
+        let mut names = Vec::new();
+        while limit.is_none_or(|limit| names.len() < limit) {
+            let Some(entry) = entries.try_next().await? else {
+                break;
+            };
+            // A table is the directory `<name>.lance`; anything else under the database
+            // prefix belongs to something other than a table.
+            if !entry.is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.name.strip_suffix(&dir_suffix) {
+                names.push(name.to_string());
+            }
+        }
+        Ok(names)
+    }
+
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
         let object_store_params = ObjectStoreParams {
             storage_options_accessor: if self.storage_options.is_empty() {
@@ -959,80 +1010,37 @@ impl Database for ListingDatabase {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().table_names(request).await;
         }
-        let mut f = self
-            .object_store
-            .read_dir(self.base_path.clone())
-            .await?
-            .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect::<Vec<String>>();
-        f.sort();
-        if let Some(start_after) = request.start_after {
-            let index = f
-                .iter()
-                .position(|name| name.as_str() > start_after.as_str())
-                .unwrap_or(f.len());
-            f.drain(0..index);
-        }
-        if let Some(limit) = request.limit {
-            f.truncate(limit as usize);
-        }
-        Ok(f)
+        self.list_table_dirs(
+            request.start_after.as_deref(),
+            request.limit.map(|limit| limit as usize),
+        )
+        .await
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return self.namespace_database().list_tables(request).await;
         }
-        let mut f = self
-            .object_store
-            .read_dir(self.base_path.clone())
-            .await?
-            .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect::<Vec<String>>();
-        f.sort();
+        let limit = request.limit.map(|limit| limit as usize);
+        // Reading one past the page is how we learn whether another page follows, without
+        // a second request. The extra name is dropped before the response goes out.
+        let mut tables = self
+            .list_table_dirs(
+                request.page_token.as_deref(),
+                limit.map(|limit| limit.saturating_add(1)),
+            )
+            .await?;
 
-        // Handle pagination with page_token
-        if let Some(ref page_token) = request.page_token {
-            let index = f
-                .iter()
-                .position(|name| name.as_str() > page_token.as_str())
-                .unwrap_or(f.len());
-            f.drain(0..index);
-        }
-
-        // Determine if there's a next page
-        let next_page_token = if let Some(limit) = request.limit {
-            if f.len() > limit as usize {
-                let token = f[limit as usize].clone();
-                f.truncate(limit as usize);
-                Some(token)
-            } else {
-                None
+        let next_page_token = match limit {
+            Some(limit) if tables.len() > limit => {
+                tables.truncate(limit);
+                tables.last().cloned()
             }
-        } else {
-            None
+            _ => None,
         };
 
         Ok(ListTablesResponse {
-            tables: f,
+            tables,
             page_token: next_page_token,
         })
     }
@@ -1320,6 +1328,130 @@ mod tests {
             .unwrap();
 
         (tempdir, db)
+    }
+
+    async fn create_tables(db: &ListingDatabase, names: &[&str]) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        for name in names {
+            db.create_table(CreateTableRequest {
+                name: name.to_string(),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Paging with the returned token has to visit every table exactly once. The token is
+    /// the last name of the page, which is what `page_token` resumes after.
+    #[tokio::test]
+    async fn test_list_tables_pages_over_every_table_once() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c", "d", "e"]).await;
+
+        let mut seen = Vec::new();
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    limit: Some(2),
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            match page.page_token {
+                Some(token) => page_token = Some(token),
+                None => break,
+            }
+        }
+
+        assert_eq!(seen, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// The last page reports no token, so a caller paging by token knows to stop without
+    /// asking for an empty page.
+    #[tokio::test]
+    async fn test_list_tables_exhausted_page_has_no_token() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+        assert_eq!(page.page_token, None);
+    }
+
+    /// Listing follows the order the object store lists directories in, so a name that
+    /// extends another comes first: `-` sorts below the `.` of `.lance`. Pagination pushes
+    /// its cursor into the list request, so it cannot report a different order than the
+    /// one it resumes in.
+    #[tokio::test]
+    async fn test_listing_order_follows_the_store_not_the_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["users", "users-archive", "users.old"]).await;
+
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert_eq!(names, vec!["users-archive", "users", "users.old"]);
+
+        // Resuming after a name skips everything the store lists before it, which is what
+        // paging by the previous page's last name relies on.
+        #[allow(deprecated)]
+        let after = db
+            .table_names(TableNamesRequest {
+                start_after: Some("users-archive".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(after, vec!["users", "users.old"]);
+    }
+
+    /// An empty `start_after` means "from the start". A name that sorts below `.lance` is
+    /// what disappears if it is treated as a cursor instead.
+    #[tokio::test]
+    async fn test_empty_start_after_lists_from_the_start() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["-dash", "alpha"]).await;
+
+        #[allow(deprecated)]
+        let names = db
+            .table_names(TableNamesRequest {
+                start_after: Some(String::new()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(names, vec!["-dash", "alpha"]);
+    }
+
+    /// Only directories named `<name>.lance` are tables; loose files and other directories
+    /// under the database prefix are not.
+    #[tokio::test]
+    async fn test_listing_ignores_non_table_children() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["real"]).await;
+        std::fs::write(tempdir.path().join("loose.lance"), b"not a table").unwrap();
+        create_dir_all(tempdir.path().join("scratch")).unwrap();
+
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+
+        assert_eq!(names, vec!["real"]);
     }
 
     #[tokio::test]
