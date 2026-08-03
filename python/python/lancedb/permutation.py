@@ -438,7 +438,8 @@ class Permutation:
         _reader: Optional[PermutationReader] = None,
     ):
         """
-        Internal constructor.  Use [from_tables](#from_tables) instead.
+        Internal constructor.  Use
+        [from_tables][lancedb.permutation.Permutation.from_tables] instead.
         """
         assert base_table is not None, "base_table is required"
         assert selection is not None, "selection is required"
@@ -985,8 +986,9 @@ class Permutation:
         types.  Conversion of strings, lists, and structs will require creating python
         objects and this is not zero-copy.
 
-        For custom formatting, use [with_transform](#with_transform) which overrides
-        this method.
+        For custom formatting, use
+        [with_transform][lancedb.permutation.Permutation.with_transform] which
+        overrides this method.
         """
         assert format is not None, "format is required"
         if format == "python":
@@ -1061,7 +1063,8 @@ class Permutation:
         Note: this method returns a new permutation and does not modify `self`
         It is provided for compatibility with the huggingface Dataset API.
 
-        Use [with_skip](#with_skip) instead to avoid confusion.
+        Use [with_skip][lancedb.permutation.Permutation.with_skip] instead to
+        avoid confusion.
         """
         return self.with_skip(skip)
 
@@ -1084,7 +1087,8 @@ class Permutation:
         Note: this method returns a new permutation and does not modify `self`
         It is provided for compatibility with the huggingface Dataset API.
 
-        Use [with_take](#with_take) instead to avoid confusion.
+        Use [with_take][lancedb.permutation.Permutation.with_take] instead to
+        avoid confusion.
         """
         return self.with_take(limit)
 
@@ -1107,7 +1111,8 @@ class Permutation:
         Note: this method returns a new permutation and does not modify `self`
         It is provided for compatibility with the huggingface Dataset API.
 
-        Use [with_repeat](#with_repeat) instead to avoid confusion.
+        Use [with_repeat][lancedb.permutation.Permutation.with_repeat] instead
+        to avoid confusion.
         """
         return self.with_repeat(times)
 

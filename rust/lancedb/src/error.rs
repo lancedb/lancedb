@@ -1,13 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::PoisonError;
+use std::fmt::{self, Display, Formatter};
+use std::sync::{Arc, PoisonError};
 
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
 use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Why a job failed, to whatever precision the backend provides.
+///
+/// A job run in this process carries the error it failed with in [`Self::source`].
+/// A job run remotely carries whatever the server reported, which older servers
+/// do not report at all. Every field is absent rather than invented when the
+/// backend does not supply it.
+#[derive(Debug, Clone, Default)]
+pub struct JobFailure {
+    /// The stage the job was in, when known.
+    pub phase: Option<String>,
+    /// A human-readable reason, when known.
+    pub message: Option<String>,
+    /// Whether a retry could clear the failure, when known.
+    pub retryable: Option<bool>,
+    /// The error the job failed with, when it ran in this process.
+    pub source: Option<Arc<Error>>,
+}
+
+impl JobFailure {
+    /// A failure whose only known detail is the error that caused it.
+    pub(crate) fn from_source(source: Arc<Error>) -> Self {
+        Self {
+            message: Some(source.to_string()),
+            source: Some(source),
+            ..Default::default()
+        }
+    }
+}
+
+impl Display for JobFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match (&self.message, &self.phase) {
+            (Some(message), Some(phase)) => write!(f, ": {message} (in {phase})"),
+            (Some(message), None) => write!(f, ": {message}"),
+            (None, Some(phase)) => write!(f, " in {phase}"),
+            (None, None) => Ok(()),
+        }
+    }
+}
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -18,6 +59,10 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String, source: BoxError },
+    #[snafu(display(
+        "Table '{name}' exists but could not be loaded (it may be corrupt or incomplete): {source}"
+    ))]
+    TableCorrupted { name: String, source: BoxError },
     #[snafu(display("Database '{name}' was not found"))]
     DatabaseNotFound { name: String },
     #[snafu(display("Database '{name}' already exists."))]
@@ -40,6 +85,13 @@ pub enum Error {
     Runtime { message: String },
     #[snafu(display("Timeout error: {message}"))]
     Timeout { message: String },
+    #[snafu(display("Job{} failed{failure}", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
+    JobFailed {
+        job_id: Option<String>,
+        failure: JobFailure,
+    },
+    #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
+    JobCancelled { job_id: Option<String> },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -139,6 +191,9 @@ impl From<lance::Error> for Error {
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
             lance::Error::External { source } => Self::from_box_error(source),
+            lance::Error::InvalidInput { source, .. } => Self::InvalidInput {
+                message: source.to_string(),
+            },
             _ => Self::Lance { source },
         }
     }

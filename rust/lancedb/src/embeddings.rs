@@ -264,7 +264,7 @@ pub fn compute_output_schema(
         let field_name = ed
             .dest_column
             .clone()
-            .unwrap_or_else(|| format!("{}_embedding", &ed.source_column));
+            .unwrap_or_else(|| format!("{}_embedding", ed.source_column));
 
         sb.push(Field::new(
             field_name,
@@ -291,7 +291,7 @@ pub fn compute_embeddings_for_batch(
         let dst_field_name = fld
             .dest_column
             .clone()
-            .unwrap_or_else(|| format!("{}_embedding", &fld.source_column));
+            .unwrap_or_else(|| format!("{}_embedding", fld.source_column));
 
         let dst_field = Field::new(
             dst_field_name,
@@ -315,7 +315,7 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
                 let field_name = ed
                     .dest_column
                     .clone()
-                    .unwrap_or_else(|| format!("{}_embedding", &ed.source_column));
+                    .unwrap_or_else(|| format!("{}_embedding", ed.source_column));
                 Ok(Field::new(
                     field_name,
                     func.dest_type()?.into_owned(),

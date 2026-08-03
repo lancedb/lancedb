@@ -23,8 +23,8 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, OpenTableRequest, ReadConsistency,
-    TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, JobDescription, JobInfo, OpenTableRequest,
+    ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -456,6 +456,10 @@ impl Connection {
     ///
     /// # Returns
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
+    /// If the table's storage is present but holds no readable dataset (for example a
+    /// `<name>.lance` directory left behind by an interrupted drop and re-create, which
+    /// [`Self::table_names`] still lists) this returns [`Error::TableCorrupted`]
+    /// instead.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),
@@ -511,6 +515,39 @@ impl Connection {
     /// Get the read consistency of the connection
     pub async fn read_consistency(&self) -> Result<ReadConsistency> {
         self.internal.read_consistency().await
+    }
+
+    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
+    /// waiting on or cancelling the job.
+    ///
+    /// The handle is constructed without a server round trip; an unknown id
+    /// surfaces when the handle is used. Only server-backed databases support
+    /// job handles by id.
+    pub fn job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
+        self.internal.job(job_id.as_ref())
+    }
+
+    /// List server-side jobs across the database's tables.
+    pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        self.internal.list_jobs().await
+    }
+
+    /// Describe a single server-side job by id. `None` when the server has no
+    /// such job.
+    pub async fn get_job(&self, job_id: impl AsRef<str>) -> Result<Option<JobDescription>> {
+        self.internal.get_job(job_id.as_ref()).await
+    }
+
+    /// Request cancellation of a server-side job by id. Returns true if the
+    /// server accepted the cancellation, false if no such job exists.
+    pub async fn cancel_job(&self, job_id: impl AsRef<str>) -> Result<bool> {
+        self.internal.cancel_job(job_id.as_ref()).await
+    }
+
+    /// The lifecycle event history of a server-side job (all jobs when
+    /// `job_id` is `None`), as recorded Arrow batches.
+    pub async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
+        self.internal.job_history(job_id).await
     }
 
     /// Drop a table in the database.

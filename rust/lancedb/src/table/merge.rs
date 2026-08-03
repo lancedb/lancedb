@@ -73,7 +73,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
-    pub(crate) use_lsm_write: Option<bool>,
+    pub(crate) use_lsm: Option<bool>,
     pub(crate) validate_single_shard: bool,
 }
 
@@ -89,7 +89,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
-            use_lsm_write: None,
+            use_lsm: None,
             validate_single_shard: true,
         }
     }
@@ -187,16 +187,17 @@ impl MergeInsertBuilder {
         self
     }
 
-    /// Controls whether `merge_insert` uses the MemWAL LSM write path.
+    /// Control MemWAL routing for this `merge_insert`.
     ///
     /// By default (unset), a `merge_insert` on a table with an
-    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through
-    /// Lance's MemWAL shard writer, and a table without one uses the standard
-    /// path. Calling this with `false` forces the standard path even when a
-    /// spec is set. Calling it with `true` requires a spec — `merge_insert`
-    /// errors if none is installed.
-    pub fn use_lsm_write(&mut self, use_lsm_write: bool) -> &mut Self {
-        self.use_lsm_write = Some(use_lsm_write);
+    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through Lance's
+    /// MemWAL shard writer; a table without one uses the standard path.
+    ///
+    /// - `use_lsm(true)` forces MemWAL routing and errors if the table has no
+    ///   LSM write spec.
+    /// - `use_lsm(false)` forces the standard write path even when a spec is set.
+    pub fn use_lsm(&mut self, enable: bool) -> &mut Self {
+        self.use_lsm = Some(enable);
         self
     }
 
@@ -626,7 +627,7 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_write_false_falls_back() {
+    async fn lsm_merge_insert_use_lsm_false_falls_back() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
@@ -634,9 +635,10 @@ mod lsm_tests {
             .await
             .unwrap();
 
-        // use_lsm_write(false) opts out: the standard path runs and commits.
+        // use_lsm(false) opts out: the standard path runs and commits even though
+        // a spec is installed.
         let mut builder = table.merge_insert(&["id"]);
-        builder.when_not_matched_insert_all().use_lsm_write(false);
+        builder.when_not_matched_insert_all().use_lsm(false);
         let result = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -644,6 +646,25 @@ mod lsm_tests {
 
         assert_eq!(result.num_inserted_rows, 2);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn lsm_merge_insert_use_lsm_true_without_spec_errors() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+
+        // use_lsm(true) demands MemWAL routing; without a write spec it errors
+        // rather than silently falling back to the standard path.
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .use_lsm(true);
+        let err = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
     }
 
     #[tokio::test]
@@ -754,18 +775,23 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_write_true_requires_spec() {
+    async fn lsm_merge_insert_no_spec_uses_standard_path() {
         let dir = tempdir().unwrap();
         // id_value_table sets a primary key but no LSM write spec.
         let table = id_value_table(&dir).await;
 
+        // Without a spec, a default merge_insert (use_lsm unset) simply uses
+        // the standard path and commits — no opt-out required, no error.
         let mut builder = table.merge_insert(&["id"]);
         builder
             .when_matched_update_all(None)
-            .when_not_matched_insert_all()
-            .use_lsm_write(true);
-        let err = builder.execute(id_value_reader(vec![4])).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            .when_not_matched_insert_all();
+        let result = builder
+            .execute(id_value_reader(vec![3, 4, 5]))
+            .await
+            .unwrap();
+        assert_eq!(result.num_inserted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
     }
 
     #[tokio::test]
@@ -817,5 +843,388 @@ mod lsm_tests {
             .execute(id_region_reader(vec![(4, "eu")]))
             .await
             .unwrap();
+    }
+
+    // ---------------------------------------------------------------------
+    // LSM read path
+    // ---------------------------------------------------------------------
+
+    use crate::arrow::SendableRecordBatchStream;
+    use crate::query::{ExecutableQuery, QueryBase};
+    use arrow::array::AsArray;
+    use arrow::datatypes::Int64Type;
+    use futures::TryStreamExt;
+
+    /// Collect `(id, value)` pairs from a result stream, sorted by id.
+    async fn collect_id_value(stream: SendableRecordBatchStream) -> Vec<(i64, i64)> {
+        let batches: Vec<_> = stream.try_collect().await.unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let ids = batch
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int64Type>();
+            let values = batch
+                .column_by_name("value")
+                .unwrap()
+                .as_primitive::<Int64Type>();
+            for i in 0..batch.num_rows() {
+                rows.push((ids.value(i), values.value(i)));
+            }
+        }
+        rows.sort();
+        rows
+    }
+
+    /// Upsert `ids` (value = 0..n) through the LSM `merge_insert` path.
+    async fn lsm_upsert(table: &Table, ids: Vec<i64>) {
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder.execute(id_value_reader(ids)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lsm_read_sees_active_memtable() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // base: ids 1,2,3 (value 0,1,2)
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Insert ids 4,5 into the active memtable (not committed to base).
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        // Default read auto-routes through the LSM scanner: base ∪ active memtable.
+        let lsm = table.query().execute().await.unwrap();
+        let rows = collect_id_value(lsm).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+
+        // use_lsm(false) bypasses the MemWAL and reads the base table only.
+        let base_only = table.query().use_lsm(false).execute().await.unwrap();
+        let rows = collect_id_value(base_only).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn lsm_read_dedup_newest_wins() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // base: id 2 -> value 1
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        // Upsert ids 2,3,4 with values 0,1,2. id 2 and 3 shadow the base rows.
+        lsm_upsert(&table, vec![2, 3, 4]).await;
+
+        let lsm = table.query().execute().await.unwrap();
+        let rows = collect_id_value(lsm).await;
+        // id 1 from base (value 0); ids 2,3,4 from memtable (values 0,1,2).
+        assert_eq!(rows, vec![(1, 0), (2, 0), (3, 1), (4, 2)]);
+    }
+
+    #[tokio::test]
+    async fn lsm_read_point_lookup_filter() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![2, 3, 4]).await; // id 2 -> value 0 (shadows base)
+
+        let lsm = table.query().only_if("id = 2").execute().await.unwrap();
+        let rows = collect_id_value(lsm).await;
+        assert_eq!(rows, vec![(2, 0)]);
+    }
+
+    #[tokio::test]
+    async fn lsm_read_multi_shard() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .await
+            .unwrap();
+
+        // Two single-row upserts that route to (likely) different buckets; each
+        // closes the writer so the next opens a fresh shard.
+        lsm_upsert(&table, vec![10]).await;
+        table.close_lsm_writers().await.unwrap();
+        lsm_upsert(&table, vec![11]).await;
+
+        let lsm = table.query().execute().await.unwrap();
+        let rows = collect_id_value(lsm).await;
+        let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+        // Base 1,2,3 + flushed/active shards for 10 and 11.
+        assert_eq!(ids, vec![1, 2, 3, 10, 11]);
+    }
+
+    #[tokio::test]
+    async fn lsm_read_after_close_sees_flushed() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+        // close flushes the active memtable to an on-disk generation and drops
+        // the cached writer; the read must still see those rows via the shard
+        // manifest snapshot.
+        table.close_lsm_writers().await.unwrap();
+
+        let lsm = table.query().execute().await.unwrap();
+        let ids: Vec<i64> = collect_id_value(lsm)
+            .await
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn lsm_read_without_spec_reads_base() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // no LSM write spec
+
+        // With no spec installed there is nothing to route: the default read and
+        // an explicit use_lsm(false) both read the base table without error.
+        for query in [table.query(), table.query().use_lsm(false)] {
+            let rows = collect_id_value(query.execute().await.unwrap()).await;
+            assert_eq!(
+                rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lsm_read_unsupported_shape_errors_without_use_lsm_false() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        // `with_row_id` is a shape the LSM scanner cannot honor. On a MemWAL
+        // table the default (auto-routed) read hard-errors rather than silently
+        // reading a stale base-only result that would exclude un-compacted row 4.
+        let err = table
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .err()
+            .expect("unsupported shape on a MemWAL table must error");
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+
+        // use_lsm(false) is the escape hatch: it reads the base table only.
+        let rows = collect_id_value(
+            table
+                .query()
+                .with_row_id()
+                .use_lsm(false)
+                .execute()
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    /// A reader of `[id: Int64, text: Utf8]` rows.
+    fn id_text_reader(rows: Vec<(i64, &str)>) -> Box<dyn RecordBatchReader + Send> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+        ]));
+        let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+        let texts: Vec<&str> = rows.iter().map(|(_, t)| *t).collect();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(ids)),
+                Arc::new(StringArray::from(texts)),
+            ],
+        )
+        .unwrap();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    #[tokio::test]
+    async fn lsm_read_full_text_search() {
+        use crate::index::Index;
+        use lance_index::scalar::FullTextSearchQuery;
+
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table(
+                "t",
+                id_text_reader(vec![(1, "alpha"), (2, "beta"), (3, "gamma")]),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        let fts_index = table.list_indices().await.unwrap()[0].name.clone();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([fts_index]))
+            .await
+            .unwrap();
+
+        // Insert a row whose term ("zebra") exists in no base row.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder
+            .execute(id_text_reader(vec![(99, "zebra")]))
+            .await
+            .unwrap();
+
+        let search = |term: &str| {
+            let q = FullTextSearchQuery::new(term.to_string())
+                .with_column("text".to_string())
+                .unwrap();
+            table.query().full_text_search(q)
+        };
+
+        // "zebra" lives only in the active memtable; LSM read finds it.
+        let stream = search("zebra").execute().await.unwrap();
+        let batches: Vec<_> = stream.try_collect().await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 1, "LSM FTS must surface the memtable row");
+
+        // A base-only term still matches the base table through the LSM scan.
+        let stream = search("alpha").execute().await.unwrap();
+        let batches: Vec<_> = stream.try_collect().await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 1, "LSM FTS must still see base rows");
+    }
+
+    #[tokio::test]
+    async fn lsm_read_vector_search() {
+        use crate::index::Index;
+        use crate::index::vector::IvfPqIndexBuilder;
+        use arrow::array::{FixedSizeListBuilder, Float32Builder};
+        use arrow::datatypes::Int64Type;
+
+        const DIM: i32 = 8;
+        const N: i64 = 256;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), DIM),
+                false,
+            ),
+        ]));
+        let make_batch = |rows: Vec<(i64, f32)>| -> RecordBatch {
+            let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+            let mut vb = FixedSizeListBuilder::new(Float32Builder::new(), DIM);
+            for (_, fill) in &rows {
+                for _ in 0..DIM {
+                    vb.values().append_value(*fill);
+                }
+                vb.append(true);
+            }
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(ids)), Arc::new(vb.finish())],
+            )
+            .unwrap()
+        };
+
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        // Base rows fill each vector with its own id (0..256); all far from 1000.
+        let base = make_batch((0..N).map(|i| (i, i as f32)).collect());
+        let base_reader: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
+        let table = conn.create_table("t", base_reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(
+                &["vec"],
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .num_partitions(1)
+                        .num_sub_vectors(2),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let vec_index = table.list_indices().await.unwrap()[0].name.clone();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([vec_index]))
+            .await
+            .unwrap();
+
+        // Insert a vector (filled with 1000) that is nearest to the query.
+        let mut builder = table.merge_insert(&[]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let insert_reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(make_batch(vec![(9999, 1000.0)]))],
+            schema.clone(),
+        ));
+        builder.execute(insert_reader).await.unwrap();
+
+        // KNN near [1000; DIM]: the default (auto-routed) read surfaces the
+        // memtable row.
+        let stream = table
+            .query()
+            .nearest_to(&[1000.0_f32; 8])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap();
+        let batches: Vec<_> = stream.try_collect().await.unwrap();
+        let ids: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| {
+                b.column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<Int64Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![9999],
+            "LSM vector search must rank the memtable row first"
+        );
     }
 }

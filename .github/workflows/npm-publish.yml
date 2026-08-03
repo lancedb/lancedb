@@ -10,10 +10,16 @@ permissions:
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
+  # The cross-compiled targets (musl especially) break from toolchain and
+  # dependency changes that nothing else in CI catches, and discovering that
+  # mid-release is expensive. A nightly run keeps that signal while dropping
+  # the full 8-target release matrix from all ~90 pushes to main each month.
+  # `report-failure` files an issue when a nightly breaks.
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
   pull_request:
     # This should trigger a dry run (we skip the final publish step)
     paths:
@@ -26,73 +32,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gh-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Extract version
-        id: extract_version
-        env:
-          GITHUB_REF: ${{ github.ref }}
-        run: |
-          set -e
-          echo "Extracting tag and version from $GITHUB_REF"
-          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
-            VERSION=${BASH_REMATCH[1]}
-            TAG=v$VERSION
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Failed to extract version from $GITHUB_REF"
-            exit 1
-          fi
-          echo "Extracted version $VERSION from $GITHUB_REF"
-          if [[ $VERSION =~ beta ]]; then
-            echo "This is a beta release"
-
-            # Get last release (that is not this one)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          else
-            echo "This is a stable release"
-            # Get last stable tag (ignore betas)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | grep -v beta \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          fi
-          echo "Found from tag $FROM_TAG"
-          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
-      - name: Create Release Notes
-        id: release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/release_notes.json
-          toTag: ${{ steps.extract_version.outputs.tag }}
-          fromTag: ${{ steps.extract_version.outputs.from_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create GH release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains('beta', github.ref) }}
-          tag_name: ${{ steps.extract_version.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
-          body: ${{ steps.release_notes.outputs.changelog }}
-
   build-lancedb:
     strategy:
       fail-fast: false
@@ -101,9 +40,18 @@ jobs:
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
-            pre_build: brew install protobuf
+            pre_build: |-
+              brew install protobuf
+              # Fat LTO (the workspace default in .cargo/config.toml) is
+              # single-threaded and is the peak-memory step of the build. On
+              # this runner it accounted for ~111 of the job's ~113 minutes,
+              # making it the critical path of the entire publish pipeline.
+              # ThinLTO parallelizes it across the runner's cores, for a few
+              # percent of runtime performance.
+              export CARGO_PROFILE_RELEASE_LTO=thin
+              export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-pc-windows-msvc
-            host: windows-2025-8x-x64
+            host: windows-2025
             features: ","
             pre_build: |-
               choco install --no-progress protoc ninja nasm
@@ -111,19 +59,19 @@ jobs:
               # There is an issue where choco doesn't add nasm to the path
               export PATH="$PATH:/c/Program Files/NASM"
               nasm -v
-              # Fat LTO of the cdylib is single-threaded and the peak-memory
-              # step of the build, and had started hitting rustc-LLVM OOM on the
-              # Windows runners. ThinLTO parallelizes it across the runner's
-              # cores and keeps peak memory well under the limit.
+              # See the ThinLTO note on aarch64-apple-darwin above. Keeping
+              # peak memory down is also what lets this run on the standard
+              # 4-core runner: the 8-core larger runner was only needed to
+              # stop fat LTO from OOMing rustc-LLVM.
               export CARGO_PROFILE_RELEASE_LTO=thin
               export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: aarch64-pc-windows-msvc
-            host: windows-2025-8x-x64
+            host: windows-2025
             features: ","
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
-                # See ThinLTO note on the x86_64-pc-windows-msvc target above.
+                # See the ThinLTO note on aarch64-apple-darwin above.
                 export CARGO_PROFILE_RELEASE_LTO=thin
                 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           - target: x86_64-unknown-linux-gnu
@@ -198,16 +146,49 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
-      - name: Cache cargo
-        uses: actions/cache@v5
+      # These builds were entirely uncached: the old key was static, so
+      # `actions/cache` (which only writes on a miss) could never refresh it,
+      # and the multi-GB whole-`target/` copy it tried to store never fit the
+      # repo's cache budget, so no entry was ever saved. rust-cache prunes
+      # `target/` to dependency artifacts and keys on Cargo.lock plus the rustc
+      # version, which both fixes the key and keeps entries a sane size.
+      #
+      # This caches dependency *compilation* only. The LTO link of the cdylib
+      # re-runs regardless, since the local crate changes every time, so the
+      # win is larger on the non-LTO jobs than here.
+      - name: Cache cargo (native builds)
+        uses: Swatinem/rust-cache@v2
+        if: ${{ !matrix.settings.docker }}
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            .cargo-cache
-            target/
-          key: nodejs-${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+          # The release profile and per-target dirs differ from what the test
+          # workflows cache, so these need to be separate entries.
+          key: release-${{ matrix.settings.target }}
+          # Only the nightly run on main writes, so tag and PR runs restore a
+          # warm entry without every dependabot PR writing its own (which would
+          # be unreadable elsewhere anyway, since GitHub scopes caches to the
+          # creating ref). The nightly cadence also keeps entries inside
+          # GitHub's 7-day eviction window, which a tag-only trigger would not.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Docker builds can use rust-cache too. `target/` already lives on the
+      # host because the whole workspace is bind-mounted into the container, and
+      # rust-cache's prune and save run host-side, so they can manage it -- which
+      # is what keeps the entry to dependency artifacts rather than a multi-GB
+      # copy of everything.
+      #
+      # Two differences from the native builds. The container's CARGO_HOME is
+      # bind-mounted from `.cargo-cache` rather than the host's ~/.cargo, so that
+      # has to be cached explicitly. And the key is derived from the *host* rustc
+      # version, which is not the compiler that produced these artifacts; that is
+      # safe because cargo fingerprints the real compiler and rebuilds on a
+      # mismatch, it just means a base-image toolchain bump costs one cold build
+      # instead of invalidating the key.
+      - name: Cache cargo (docker builds)
+        uses: Swatinem/rust-cache@v2
+        if: ${{ matrix.settings.docker }}
+        with:
+          key: docker-${{ matrix.settings.target }}
+          cache-directories: .cargo-cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Zig
@@ -225,9 +206,13 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
+          # All three mounts must live under `.cargo-cache`, which is what the
+          # cache step above saves. Previously the registry mounts pointed at
+          # `.cargo/...`, a path nothing cached, so the container re-downloaded
+          # the whole crate registry on every run.
           options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
-                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
-                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+                    -v ${{ github.workspace }}/.cargo-cache/registry/cache:/usr/local/cargo/registry/cache \
+                    -v ${{ github.workspace }}/.cargo-cache/registry/index:/usr/local/cargo/registry/index \
                     -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
@@ -239,6 +224,16 @@ jobs:
               --js ../lancedb/native.js \
               --strip \
               --output-dir dist/
+      # The container runs as root (`--user 0:0`), so everything it wrote to the
+      # mounted cache dirs is root-owned. rust-cache's post step runs as the
+      # runner user and has to both read these and delete from them while
+      # pruning, so hand them back before it runs.
+      - name: Take ownership of docker build output
+        if: ${{ matrix.settings.docker }}
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "${{ github.workspace }}/.cargo-cache" \
+            "${{ github.workspace }}/target"
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
@@ -251,6 +246,15 @@ jobs:
               $EXTRA_ARGS \
               --output-dir dist/
         if: ${{ !matrix.settings.docker }}
+        shell: bash
+      # The standard Windows runners have ~14 GB free, and a release `target/`
+      # for this workspace is a large fraction of that. Report the remaining
+      # headroom so a build that only just fits is visible before a dependency
+      # bump turns it into a failed release. `always()` so the numbers are
+      # still there when the build is what ran out of space.
+      - name: Report disk headroom
+        if: always()
+        run: df -h
         shell: bash
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -402,7 +406,9 @@ jobs:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
     needs: [build-lancedb, test-lancedb, publish]
-    if: always() && failure() && startsWith(github.ref, 'refs/tags/v')
+    # Nightly runs are the only thing watching the cross-compiled targets now,
+    # so they have to report failures too or the signal is silently lost.
+    if: always() && failure() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule')
     permissions:
       contents: read
       issues: write

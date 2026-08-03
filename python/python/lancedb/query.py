@@ -52,7 +52,6 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
-    supports_blob_auto_row_id,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -651,7 +650,8 @@ class Query(pydantic.BaseModel):
     distance_type : Optional[str]
         the distance type to use for vector search
 
-        This can be l2 (default), cosine and dot.  See [metric definitions][search] for
+        This can be l2 (default), cosine and dot.  See
+        [metric definitions](https://lancedb.com/docs/search/vector-search/) for
         more details.
 
         If this is not a vector search this will be None.
@@ -664,8 +664,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     refine_factor : Optional[int]
@@ -673,8 +674,9 @@ class Query(pydantic.BaseModel):
 
         - A higher number makes search more accurate but also slower.
 
-        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
-          tuning advice.
+        - See discussion in
+          [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+          for tuning advice.
 
         Will be None if this is not a vector search.
     lower_bound : Optional[float]
@@ -778,6 +780,11 @@ class Query(pydantic.BaseModel):
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
+    # MemWAL LSM read routing: None auto-routes when the table carries a write
+    # spec, True forces the LSM scanner (errors without a spec), False reads the
+    # base table only
+    use_lsm: Optional[bool] = None
+
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
 
@@ -795,6 +802,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
+        # use_lsm is a genuine tri-state (None / True / False); preserve it as-is
+        # so a round-tripped query keeps an explicit False.
+        query.use_lsm = req.use_lsm
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -967,6 +977,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
+        self._use_lsm = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -1268,10 +1279,7 @@ class LanceQueryBuilder(ABC):
         return self._with_row_id is True
 
     def _blob_auto_row_id_enabled(self) -> bool:
-        if not supports_blob_auto_row_id(self._table):
-            return False
         return blob_auto_row_id_for_scan(
-            self._table,
             self._table.schema,
             self._columns,
             with_row_id=self._with_row_id,
@@ -1324,6 +1332,30 @@ class LanceQueryBuilder(ABC):
     def fragment_ids(self, fragment_ids: List[int]) -> Self:
         """Set the Lance fragment ids to scan for plain scanner-backed queries."""
         self._fragment_ids = fragment_ids
+        return self
+
+    def use_lsm(self, enable: bool) -> Self:
+        """Control MemWAL LSM read routing for this query.
+
+        By default (unset), a query against a table with an LSM write spec is
+        routed through the LSM scanner so it also returns data written via the
+        ``merge_insert`` LSM path that has not yet been compacted into the base
+        table (active/frozen memtables + flushed generations); a table without a
+        spec reads the base table.
+
+        Parameters
+        ----------
+        enable : bool
+            ``True`` forces the LSM scanner and errors if the table has no LSM
+            write spec. ``False`` bypasses the MemWAL and reads the base table
+            only, even when a spec is present.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._use_lsm = enable
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1618,8 +1650,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         This method sets both the minimum and maximum number of probes to the same
         value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
@@ -1719,8 +1751,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         As an example, a refine factor of 2 will sample 2x as many vectors as
         requested, re-ranks them, and returns the top half most relevant results.
 
-        See discussion in [Querying an ANN Index][querying-an-ann-index] for
-        tuning advice.
+        See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
+        for tuning advice.
 
         Parameters
         ----------
@@ -1788,6 +1820,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -2012,6 +2045,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             full_text_query=FullTextSearchQuery(
                 query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
@@ -2078,6 +2112,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
+            use_lsm=self._use_lsm,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2655,11 +2690,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
+        if self._use_lsm is not None:
+            self._vector_query.use_lsm(self._use_lsm)
+            self._fts_query.use_lsm(self._use_lsm)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
-        if self._minimum_nprobes:
+        if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
             self._vector_query.maximum_nprobes(self._maximum_nprobes)
@@ -2732,7 +2770,7 @@ class AsyncQueryBase(object):
         )
 
     async def _maybe_add_blob_row_id(self) -> None:
-        if self._table is None or not supports_blob_auto_row_id(self._table):
+        if self._table is None:
             self._blob_auto_row_id = False
             self._blob_paths = ()
             return
@@ -2740,7 +2778,6 @@ class AsyncQueryBase(object):
         req = self._inner.to_query_request()
         schema = await self._table.schema()
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             req.select,
             with_row_id=self._with_row_id,
@@ -2992,7 +3029,6 @@ class AsyncQueryBase(object):
 
         schema = await self._table.schema()
         blob_auto_row_id = blob_auto_row_id_for_scan(
-            self._table,
             schema,
             query.columns,
             with_row_id=self._with_row_id,
@@ -3002,7 +3038,7 @@ class AsyncQueryBase(object):
             if blob_mode == "bytes"
             else {}
         )
-        dataset = await self._table._to_lance()
+        dataset = await self._table.to_lance()
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
                 query,
@@ -3231,6 +3267,27 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.fast_search()
         return self
 
+    def use_lsm(self, enable: bool) -> Self:
+        """
+        Control MemWAL LSM read routing for this query.
+
+        By default (unset), a query against a table with an LSM write spec (see
+        [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec])
+        is routed through the LSM scanner so it also returns data written via the
+        ``merge_insert`` LSM path that has not yet been compacted into the base
+        table (the active/frozen in-memory memtables and the flushed generations),
+        deduplicated by primary key; a table without a spec reads the base table.
+
+        Parameters
+        ----------
+        enable : bool
+            ``True`` forces the LSM scanner and errors if the table has no LSM
+            write spec. ``False`` bypasses the MemWAL and reads the base table
+            only, even when a spec is present.
+        """
+        self._inner.use_lsm(enable)
+        return self
+
     def postfilter(self) -> Self:
         """
         If this is called then filtering will happen after the search instead of
@@ -3319,8 +3376,9 @@ class AsyncQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Vector searches always have a
+        [limit][lancedb.query.AsyncVectorQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors. When multiple vectors are passed in, if the vector
@@ -3451,8 +3509,9 @@ class AsyncFTSQuery(AsyncStandardQuery):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Hybrid searches always have a [limit][].  If `limit` has not been called then
-        a default `limit` of 10 will be used.
+        Hybrid searches always have a
+        [limit][lancedb.query.AsyncHybridQuery.limit].  If `limit` has not been
+        called then a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
@@ -3815,10 +3874,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
         blob_paths: tuple[str, ...] = ()
-        if self._table is not None and supports_blob_auto_row_id(self._table):
+        if self._table is not None:
             schema = await self._table.schema()
             blob_auto_row_id = blob_auto_row_id_for_scan(
-                self._table,
                 schema,
                 req.select,
                 with_row_id=self._with_row_id,
@@ -3944,6 +4002,15 @@ class AsyncTakeQuery(AsyncQueryBase):
     def __init__(self, inner: LanceTakeQuery, table: Optional["AsyncTable"] = None):
         super().__init__(inner, table)
 
+    def use_lsm(self, enable: bool) -> "AsyncTakeQuery":
+        """Control MemWAL LSM read routing for this take query.
+
+        ``False`` bypasses the MemWAL and reads the base table only — the escape
+        hatch, since take-by-row-id/offset is not supported on the LSM scanner.
+        """
+        self._inner.use_lsm(enable)
+        return self
+
     async def _plain_scan_to_pandas(
         self,
         blob_mode: BlobMode,
@@ -4000,6 +4067,16 @@ class BaseQueryBuilder(object):
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
+        return self
+
+    def use_lsm(self, enable: bool) -> Self:
+        """
+        Control MemWAL LSM read routing for this query.
+
+        ``False`` bypasses the MemWAL and reads the base table only, the escape
+        hatch for shapes the LSM scanner cannot honor (e.g. take-by-row-id).
+        """
+        self._inner.use_lsm(enable)
         return self
 
     def with_row_address(self, with_row_address: bool = True) -> Self:

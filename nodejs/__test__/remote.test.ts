@@ -226,7 +226,7 @@ describe("remote connection", () => {
     );
   });
 
-  it("sends the FTS posting block size to remote tables", async () => {
+  it("sends FTS options to remote tables", async () => {
     let createIndexBody: Record<string, unknown> | undefined;
 
     await withMockDatabase(
@@ -264,7 +264,11 @@ describe("remote connection", () => {
       async (db) => {
         const table = await db.openTable("t");
         await table.createIndex("text", {
-          config: Index.fts({ blockSize: 256 }),
+          config: Index.fts({
+            blockSize: 256,
+            removeStopWords: true,
+            customStopWords: ["the"],
+          }),
         });
       },
     );
@@ -272,6 +276,7 @@ describe("remote connection", () => {
     expect(createIndexBody?.["column"]).toBe("text");
     expect(createIndexBody?.["index_type"]).toBe("FTS");
     expect(createIndexBody?.["block_size"]).toBe(256);
+    expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
   it("diffs and merges remote branches", async () => {
@@ -870,5 +875,98 @@ describe("remote connection", () => {
         new_namespace: ["ns2"],
       });
     });
+  });
+});
+
+describe("remote connection jobs surface", () => {
+  it("lists, describes, cancels, and reads history", async () => {
+    const { tableFromArrays, tableToIPC } = await import("apache-arrow");
+    const eventsTable = tableFromArrays({ state: ["created", "succeeded"] });
+    const eventsBody = Buffer.from(tableToIPC(eventsTable, "stream"));
+
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          const payload = body.length > 0 ? JSON.parse(body) : {};
+          if (req.url === "/v1/jobs/list") {
+            if (payload["page_token"] === undefined) {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"jobs": [{"job_id": "job-1", "table": "t1", ' +
+                    '"job_type": "create_index", "state": "in_progress", ' +
+                    '"created_at_millis": 1000}], "page_token": "next"}',
+                );
+            } else {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
+                    '"job_type": "create_index", "state": "succeeded", ' +
+                    '"created_at_millis": 2000}]}',
+                );
+            }
+          } else if (req.url === "/v1/jobs/describe") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(
+                '{"job_id": "job-1", "job_type": "create_index", ' +
+                  '"job_state": "FAILED", "creation_ms": 1000, ' +
+                  '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
+                  '"message": "worker died", "retryable": true}}',
+              );
+          } else if (req.url === "/v1/jobs/cancel") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1"}');
+          } else if (req.url === "/v1/jobs/query_events") {
+            res
+              .writeHead(200, {
+                "Content-Type": "application/vnd.apache.arrow.stream",
+              })
+              .end(eventsBody);
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const jobs = await db.listJobs();
+        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs[0].state).toEqual("running");
+        expect(jobs[1].state).toEqual("finished");
+
+        const description = await db.getJob("job-1");
+        expect(description?.state).toEqual("failed");
+        expect(JSON.parse(description?.specJson ?? "")).toEqual({
+          column: "vec",
+        });
+        expect(description?.failure?.message).toEqual("worker died");
+        expect(await db.getJob("missing")).toBeNull();
+
+        expect(await db.cancelJob("job-1")).toBe(true);
+        expect(await db.cancelJob("missing")).toBe(false);
+
+        const history = await db.jobHistory("job-1");
+        expect(history.numRows).toEqual(2);
+
+        const job = db.job("job-1");
+        expect(job.id).toEqual("job-1");
+        expect(await job.status()).toEqual("failed");
+        await expect(job.wait()).rejects.toThrow("worker died");
+      },
+    );
   });
 });

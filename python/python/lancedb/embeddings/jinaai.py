@@ -40,10 +40,10 @@ class JinaEmbeddings(EmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "jina-clip-v1". Note that some models support both image
+    name : str, default "jina-clip-v1". Note that some models support both image
         and text embeddings and some just text embedding
 
-    api_key: str, default None
+    api_key : str, default None
         The api key to access Jina API. If you pass None, you can set JINA_API_KEY
         environment variable
 

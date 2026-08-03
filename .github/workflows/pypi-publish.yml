@@ -3,7 +3,7 @@ name: PyPI Publish
 on:
   push:
     tags:
-      - 'python-v*'
+      - 'v*'
   pull_request:
     # This should trigger a dry run (we skip the final publish step)
     paths:
@@ -19,6 +19,12 @@ env:
 
 permissions:
   contents: read
+
+# Without this, a force-push to a PR leaves the previous run going -- including
+# a ~74 minute Windows job and a billed arm64 wheel build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
@@ -72,7 +78,7 @@ jobs:
           package-name: ${{ matrix.config.package_name }}
           rustflags: ${{ matrix.config.rustflags }}
       - uses: actions/upload-artifact@v7
-        if: startsWith(github.ref, 'refs/tags/python-v')
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: wheels-linux-${{ matrix.config.package_name }}-${{ matrix.config.platform }}-${{ matrix.config.manylinux }}
           path: target/wheels/*.whl
@@ -101,7 +107,7 @@ jobs:
           python-minor-version: 10
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: actions/upload-artifact@v7
-        if: startsWith(github.ref, 'refs/tags/python-v')
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: wheels-mac-${{ matrix.config.target }}
           path: target/wheels/lancedb-*.whl
@@ -122,19 +128,26 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      # NOTE: caching cargo here would be a no-op. This workflow only runs on
+      # tags and PRs, and GitHub only lets a run restore caches from its own ref
+      # or the default branch -- so with no run on main there is nothing that
+      # can populate an entry the release build would be allowed to read. Fixing
+      # this needs a main/nightly trigger (which would also catch wheel-build
+      # breakage before a release); the ~74 minutes here is otherwise dominated
+      # by the fat-LTO link, which no cache avoids.
       - uses: ./.github/workflows/build_windows_wheel
         with:
           python-minor-version: 10
           args: "--release --strip"
       - uses: actions/upload-artifact@v7
-        if: startsWith(github.ref, 'refs/tags/python-v')
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: wheels-windows
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
   publish:
     name: Publish wheels
-    if: startsWith(github.ref, 'refs/tags/python-v')
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux, mac, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -183,72 +196,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: target/wheels/
-  gh-release:
-    if: startsWith(github.ref, 'refs/tags/python-v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Extract version
-        id: extract_version
-        env:
-          GITHUB_REF: ${{ github.ref }}
-        run: |
-          set -e
-          echo "Extracting tag and version from $GITHUB_REF"
-          if [[ $GITHUB_REF =~ refs/tags/python-v(.*) ]]; then
-            VERSION=${BASH_REMATCH[1]}
-            TAG=python-v$VERSION
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Failed to extract version from $GITHUB_REF"
-            exit 1
-          fi
-          echo "Extracted version $VERSION from $GITHUB_REF"
-          if [[ $VERSION =~ beta ]]; then
-            echo "This is a beta release"
-
-            # Get last release (that is not this one)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^python-v \
-              | grep -vF "$TAG" \
-              | python ci/semver_sort.py python-v \
-              | tail -n 1)
-          else
-            echo "This is a stable release"
-            # Get last stable tag (ignore betas)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^python-v \
-              | grep -vF "$TAG" \
-              | grep -v beta \
-              | python ci/semver_sort.py python-v \
-              | tail -n 1)
-          fi
-          echo "Found from tag $FROM_TAG"
-          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
-      - name: Create Python Release Notes
-        id: python_release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/release_notes.json
-          toTag: ${{ steps.extract_version.outputs.tag }}
-          fromTag: ${{ steps.extract_version.outputs.from_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create Python GH release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains('beta', github.ref) }}
-          tag_name: ${{ steps.extract_version.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Python LanceDB v${{ steps.extract_version.outputs.version }}
-          body: ${{ steps.python_release_notes.outputs.changelog }}
   report-failure:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
@@ -256,7 +203,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    if: always() && failure() && startsWith(github.ref, 'refs/tags/python-v')
+    if: always() && failure() && startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/create-failure-issue

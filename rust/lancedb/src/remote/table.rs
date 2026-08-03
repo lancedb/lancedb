@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+pub mod blobs;
 pub mod insert;
 
-use self::insert::RemoteInsertExec;
-use crate::expr::expr_to_sql_string;
-use crate::table::write_progress::FinishOnDrop;
-
-use super::ARROW_STREAM_CONTENT_TYPE;
+use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
+use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
+use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
+use crate::expr::expr_to_sql_string;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
+use crate::job::Job;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::BranchDiff;
@@ -31,6 +33,7 @@ use crate::table::checkpoint::classify_lsm_fault;
 use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
+use crate::table::write_progress::FinishOnDrop;
 use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
@@ -47,9 +50,9 @@ use crate::{
         merge::MergeInsertBuilder,
     },
 };
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_ipc::reader::FileReader;
-use arrow_schema::{DataType, SchemaRef};
+use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
+use arrow_ipc::reader::{FileReader, StreamReader};
+use arrow_schema::{ArrowError, DataType, SchemaRef};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion_common::DataFusionError;
@@ -292,6 +295,120 @@ impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn submit_create_index(&self, mut index: IndexBuilder) -> Result<Option<String>> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+
+        let column = match index.columns.len() {
+            0 => {
+                return Err(Error::InvalidInput {
+                    message: "No columns specified".into(),
+                });
+            }
+            1 => index.columns.pop().unwrap(),
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Indices over multiple columns not yet supported".into(),
+                });
+            }
+        };
+        let schema = self.schema().await?;
+        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
+        let mut body = serde_json::json!({
+            "column": canonical_column
+        });
+
+        // Add name parameter if provided (for backwards compatibility, only include if Some)
+        if let Some(ref name) = index.name {
+            body["name"] = serde_json::Value::String(name.clone());
+        }
+
+        // Warn if train=false is specified since it's not meaningful
+        if !index.train {
+            log::warn!(
+                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+            );
+        }
+
+        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
+            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                message: format!("failed to serialize index params {:?}", e),
+            })
+        }
+
+        // Map each Index variant to its wire type name and serializable params.
+        // Auto is special-cased since it needs schema inspection.
+        let (index_type_str, params) = match &index.index {
+            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
+            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
+            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
+            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
+            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
+            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
+            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
+            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
+            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
+            Index::Fm(p) => ("FM", Some(to_json(p)?)),
+            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
+            Index::Auto => {
+                if supported_vector_data_type(field.data_type()) {
+                    body[METRIC_TYPE_KEY] =
+                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
+                    ("IVF_PQ", None)
+                } else if supported_btree_data_type(field.data_type()) {
+                    ("BTREE", None)
+                } else {
+                    return Err(Error::NotSupported {
+                        message: format!(
+                            "there are no indices supported for the field `{}` with the data type {}",
+                            field.name(),
+                            field.data_type()
+                        ),
+                    });
+                }
+            }
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Index type not supported".into(),
+                });
+            }
+        };
+
+        body[INDEX_TYPE_KEY] = index_type_str.into();
+        if let Some(params) = params {
+            for (key, value) in params.as_object().expect("params should be a JSON object") {
+                body[key] = value.clone();
+            }
+        }
+        self.apply_branch_body(&mut body);
+
+        let request = request.json(&body);
+
+        let (request_id, response) = self.send(request, true).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+        let job_id = response
+            .text()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|value| {
+                value
+                    .get("job_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+
+        if let Some(wait_timeout) = index.wait_timeout {
+            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+            self.wait_for_index(&[&index_name], wait_timeout).await?;
+        }
+
+        Ok(job_id)
+    }
+
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
@@ -310,6 +427,20 @@ impl<S: HttpSend> RemoteTable<S> {
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             freshness: Mutex::new(FreshnessState::default()),
             branch: None,
+        }
+    }
+
+    /// Seed the schema cache from a `describe` body the caller already fetched.
+    ///
+    /// Best effort. `open_table` succeeds today without reading this body, so a
+    /// body we cannot parse leaves the cache empty and the next schema read
+    /// fetches it again through the path that reports a real error.
+    pub(crate) fn seed_schema(&self, describe_body: &str) {
+        let Ok(description) = serde_json::from_str::<TableDescription>(describe_body) else {
+            return;
+        };
+        if let Ok(schema) = arrow_schema::Schema::try_from(description.schema) {
+            self.schema_cache.seed(Arc::new(schema));
         }
     }
 
@@ -458,84 +589,12 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(
-            Vec::new(),
-            &RecordBatchReader::schema(&*data),
-        )?;
-
-        //  Mutex is just here to make it sync. We shouldn't have any contention.
-        let mut data = Mutex::new(data);
-        let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
-            Some(Ok(batch)) => {
-                writer.write(&batch).ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-            Some(Err(e)) => Some(Err(e)),
-            None => {
-                writer.finish().ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-        });
-        let body_stream = futures::stream::iter(body_iter);
-        Ok(reqwest::Body::wrap_stream(body_stream))
-    }
-
-    /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
-        reader: &mut R,
-    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
-        let schema = reader.schema();
-        let mut batches = Vec::new();
-        for batch in reader {
-            batches.push(batch?);
-        }
-        Ok((schema, batches))
-    }
-
-    /// Create a new RecordBatchReader from buffered data
-    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
-        let iter = batches.into_iter().map(Ok);
-        RecordBatchIterator::new(iter, schema)
-    }
-
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
         let res = if with_retry {
             self.client.send_with_retry(req, None, true).await?
         } else {
             self.client.send(req).await?
         };
-        Ok(res)
-    }
-
-    /// Send the request with streaming body.
-    /// This will use retries if with_retry is set and the number of configured retries is > 0.
-    /// If retries are enabled, the stream will be buffered into memory.
-    async fn send_streaming(
-        &self,
-        req: RequestBuilder,
-        mut data: Box<dyn RecordBatchReader + Send>,
-        with_retry: bool,
-    ) -> Result<(String, Response)> {
-        if !with_retry || self.client.retry_config.retries == 0 {
-            let body = Self::reader_as_body(data)?;
-            return self.client.send(req.body(body)).await;
-        }
-
-        // to support retries, buffer into memory and clone the batches on each retry
-        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-        let make_body = Box::new(move || {
-            let reader = Self::make_reader(schema.clone(), batches.clone());
-            Self::reader_as_body(Box::new(reader))
-        });
-        let res = self
-            .client
-            .send_with_retry(req, Some(make_body), false)
-            .await?;
-
         Ok(res)
     }
 
@@ -597,19 +656,39 @@ impl<S: HttpSend> RemoteTable<S> {
         result
     }
 
-    async fn read_arrow_stream(
+    async fn read_arrow_response(
         &self,
         request_id: &str,
         response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
         let response = self.check_table_response(request_id, response).await?;
 
-        // There isn't a way to actually stream this data yet. I have an upstream issue:
-        // https://github.com/apache/arrow-rs/issues/6420
+        // The header has to be read before the body, which consumes the response.
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let framing = resolve_arrow_ipc_framing(content_type.as_deref(), request_id)?;
+
+        // Buffer the whole body. File framing keeps its footer at the end, so /query
+        // cannot decode incrementally. Stream framing could, via
+        // arrow_ipc::reader::StreamDecoder, but fetch_blobs concatenates every batch
+        // before returning, so no caller would see data sooner.
         let body = response.bytes().await.err_to_http(request_id.into())?;
-        let reader = FileReader::try_new(Cursor::new(body), None)?;
-        let schema = reader.schema();
-        let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
+        type IpcBatchIterator =
+            Box<dyn Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send>;
+        let (schema, batches): (SchemaRef, IpcBatchIterator) = match framing {
+            ArrowIpcFraming::Stream => {
+                let reader = StreamReader::try_new(Cursor::new(body), None)?;
+                (reader.schema(), Box::new(reader))
+            }
+            ArrowIpcFraming::File => {
+                let reader = FileReader::try_new(Cursor::new(body), None)?;
+                (reader.schema(), Box::new(reader))
+            }
+        };
+        let stream = futures::stream::iter(batches).map_err(DataFusionError::from);
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
@@ -620,6 +699,11 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<()> {
         params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
+        // Only forward use_lsm when explicitly set; a server that predates it
+        // ignores the field and routes as it would by default.
+        if let Some(use_lsm) = params.use_lsm {
+            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
@@ -1041,7 +1125,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let futures = requests.into_iter().map(|req| async move {
             let (request_id, response) = self.send(req, true).await?;
             self.track_read_version_from_headers(response.headers());
-            self.read_arrow_stream(&request_id, response).await
+            self.read_arrow_response(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures);
 
@@ -1105,6 +1189,47 @@ struct TableDescription {
     version: u64,
     schema: JsonSchema,
     location: Option<String>,
+}
+
+/// How a response body frames its Arrow IPC payload. `/query` answers with file framing
+/// and `fetch_blobs` with stream framing, so the reader is picked per response.
+enum ArrowIpcFraming {
+    File,
+    Stream,
+}
+
+/// A response with no `Content-Type` uses file framing, preserving this helper's
+/// behavior before `fetch_blobs` introduced stream responses.
+fn resolve_arrow_ipc_framing(
+    content_type: Option<&str>,
+    request_id: &str,
+) -> Result<ArrowIpcFraming> {
+    let Some(media_type) = content_type.map(base_media_type) else {
+        return Ok(ArrowIpcFraming::File);
+    };
+    if media_type.eq_ignore_ascii_case(ARROW_STREAM_CONTENT_TYPE) {
+        return Ok(ArrowIpcFraming::Stream);
+    }
+    if media_type.eq_ignore_ascii_case(ARROW_FILE_CONTENT_TYPE) {
+        return Ok(ArrowIpcFraming::File);
+    }
+    Err(Error::Http {
+        source: format!(
+            "Expected an Arrow IPC response with Content-Type '{ARROW_STREAM_CONTENT_TYPE}' \
+            or '{ARROW_FILE_CONTENT_TYPE}', got '{media_type}'"
+        )
+        .into(),
+        request_id: request_id.into(),
+        status_code: None,
+    })
+}
+
+/// Strip media-type parameters before matching against the Arrow content types.
+fn base_media_type(content_type: &str) -> &str {
+    match content_type.split_once(';') {
+        Some((media_type, _parameters)) => media_type.trim(),
+        None => content_type.trim(),
+    }
 }
 
 /// Extract an Error from Arc<Error>, reconstructing if the Arc is shared.
@@ -1301,12 +1426,14 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
         let _guard = output.tracker.as_ref().map(|t| t.track_task());
 
-        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             output.plan,
-            output.overwrite,
+            WriteOp::Insert {
+                overwrite: output.overwrite,
+            },
             output.tracker.clone(),
             self.branch.clone(),
         ));
@@ -1321,7 +1448,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             match result {
                 Ok(_) => {
                     let add_result = (insert.as_ref() as &dyn std::any::Any)
-                        .downcast_ref::<RemoteInsertExec<S>>()
+                        .downcast_ref::<RemoteWriteExec<S>>()
                         .and_then(|i| i.add_result())
                         .unwrap_or(AddResult { version: 0 });
 
@@ -1422,7 +1549,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             )?,
         ) as Arc<dyn ExecutionPlan>;
 
-        let insert = Arc::new(RemoteInsertExec::new_multipart(
+        let insert = Arc::new(RemoteWriteExec::new_multipart(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
@@ -1694,9 +1821,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
+        // Servers report the creation time either as an RFC 3339 `timestamp`
+        // (direct-table path) or as `timestamp_millis` in milliseconds since
+        // epoch (namespace-backed path), and may omit `metadata`.
+        #[derive(Deserialize)]
+        struct VersionEntry {
+            version: u64,
+            timestamp: Option<DateTime<Utc>>,
+            timestamp_millis: Option<i64>,
+            #[serde(default)]
+            metadata: std::collections::BTreeMap<String, String>,
+        }
+
         #[derive(Deserialize)]
         struct ListVersionsResponse {
-            versions: Vec<Version>,
+            versions: Vec<VersionEntry>,
         }
 
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -1707,11 +1846,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     err, body
                 )
                 .into(),
-                request_id,
+                request_id: request_id.clone(),
                 status_code: None,
             })?;
 
-        Ok(body.versions)
+        body.versions
+            .into_iter()
+            .map(|entry| {
+                let timestamp = entry
+                    .timestamp
+                    .or_else(|| {
+                        entry
+                            .timestamp_millis
+                            .and_then(DateTime::<Utc>::from_timestamp_millis)
+                    })
+                    .ok_or_else(|| Error::Http {
+                        source: format!(
+                            "list_versions response for version {} has neither a valid \
+                             `timestamp` nor `timestamp_millis` field",
+                            entry.version
+                        )
+                        .into(),
+                        request_id: request_id.clone(),
+                        status_code: None,
+                    })?;
+                Ok(Version {
+                    version: entry.version,
+                    timestamp,
+                    metadata: entry.metadata,
+                })
+            })
+            .collect()
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
@@ -2099,6 +2264,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
+    async fn blob_columns(&self) -> Result<Vec<String>> {
+        self.blob_columns_impl().await
+    }
+
+    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
+        self.fetch_blobs_impl(column, row_ids).await
+    }
+
+    async fn fetch_blob_files(
+        &self,
+        column: &str,
+        row_ids: &[u64],
+    ) -> Result<Vec<Option<BlobFile>>> {
+        self.fetch_blob_files_impl(column, row_ids).await
+    }
+
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self.post_read(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
@@ -2262,107 +2443,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(delete_response)
     }
 
-    async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
-        self.check_mutable().await?;
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/create_index/", self.identifier));
+    async fn create_index(&self, index: IndexBuilder) -> Result<()> {
+        self.submit_create_index(index).await.map(|_| ())
+    }
 
-        let column = match index.columns.len() {
-            0 => {
-                return Err(Error::InvalidInput {
-                    message: "No columns specified".into(),
-                });
-            }
-            1 => index.columns.pop().unwrap(),
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Indices over multiple columns not yet supported".into(),
-                });
-            }
-        };
-        let schema = self.schema().await?;
-        let (canonical_column, field) = resolve_arrow_field_path(&schema, &column)?;
-        let mut body = serde_json::json!({
-            "column": canonical_column
-        });
-
-        // Add name parameter if provided (for backwards compatibility, only include if Some)
-        if let Some(ref name) = index.name {
-            body["name"] = serde_json::Value::String(name.clone());
-        }
-
-        // Warn if train=false is specified since it's not meaningful
-        if !index.train {
-            log::warn!(
-                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
-            );
-        }
-
-        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
-            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
-                message: format!("failed to serialize index params {:?}", e),
-            })
-        }
-
-        // Map each Index variant to its wire type name and serializable params.
-        // Auto is special-cased since it needs schema inspection.
-        let (index_type_str, params) = match &index.index {
-            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
-            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
-            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
-            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
-            Index::IvfHnswFlat(p) => ("IVF_HNSW_FLAT", Some(to_json(p)?)),
-            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
-            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
-            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
-            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
-            Index::Fm(p) => ("FM", Some(to_json(p)?)),
-            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
-            Index::Auto => {
-                if supported_vector_data_type(field.data_type()) {
-                    body[METRIC_TYPE_KEY] =
-                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
-                    ("IVF_PQ", None)
-                } else if supported_btree_data_type(field.data_type()) {
-                    ("BTREE", None)
-                } else {
-                    return Err(Error::NotSupported {
-                        message: format!(
-                            "there are no indices supported for the field `{}` with the data type {}",
-                            field.name(),
-                            field.data_type()
-                        ),
-                    });
-                }
-            }
-            _ => {
-                return Err(Error::NotSupported {
-                    message: "Index type not supported".into(),
-                });
-            }
-        };
-
-        body[INDEX_TYPE_KEY] = index_type_str.into();
-        if let Some(params) = params {
-            for (key, value) in params.as_object().expect("params should be a JSON object") {
-                body[key] = value.clone();
-            }
-        }
-        self.apply_branch_body(&mut body);
-
-        let request = request.json(&body);
-
-        let (request_id, response) = self.send(request, true).await?;
-
-        self.check_table_response(&request_id, response).await?;
-
-        if let Some(wait_timeout) = index.wait_timeout {
-            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
-            self.wait_for_index(&[&index_name], wait_timeout).await?;
-        }
-
-        Ok(())
+    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job> {
+        Ok(match self.submit_create_index(index).await? {
+            Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            None => Job::new_done(),
+        })
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -2379,48 +2468,66 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let timeout = params.timeout;
-
         let query = MergeInsertRequest::try_from(params)?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/merge_insert/", self.identifier))
-            .query(&query)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
-        request = self.apply_branch_query(request);
 
-        if let Some(timeout) = timeout {
-            // (If it doesn't fit into u64, it's not worth sending anyways.)
-            if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
-                request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+        // Drive merge_insert through the same RemoteWriteExec streaming path as
+        // add(). This routes the request body through the error side-channel so
+        // an input stream error (e.g. NaN rejection) surfaces with its original
+        // message instead of the masked HTTP error Hyper produces when a request
+        // body stream fails under HTTP2 (issue #2339). The branch, request
+        // timeout header, and merge query params are all applied inside the exec.
+        //
+        // The public merge_insert API only accepts a `RecordBatchReader`, which
+        // is not rescannable and so could not be retried directly. To preserve
+        // the previous retry-on-retryable-status behaviour, buffer the reader
+        // into memory first: a `Vec<RecordBatch>` is rescannable, so the outer
+        // loop can re-execute the plan (and re-stream the body) on each retry.
+        // This mirrors the old `send_streaming(with_retry=true)` path, which
+        // likewise buffered the reader to support retries.
+        let batches = new_data.collect::<std::result::Result<Vec<_>, _>>()?;
+        let source: Box<dyn Scannable> = Box::new(batches);
+        let rescannable = source.rescannable();
+        let input: Arc<dyn ExecutionPlan> =
+            Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
+
+        let mut merge: Arc<dyn ExecutionPlan> = Arc::new(RemoteWriteExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            WriteOp::MergeInsert { query, timeout },
+            None,
+            self.branch.clone(),
+        ));
+
+        let mut retry_counter = crate::remote::retry::RetryCounter::new(
+            &self.client.retry_config,
+            uuid::Uuid::new_v4().to_string(),
+        );
+
+        loop {
+            let stream = execute_plan(merge.clone(), Default::default())?;
+            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
+
+            match result {
+                Ok(_) => {
+                    let merge_result = (merge.as_ref() as &dyn std::any::Any)
+                        .downcast_ref::<RemoteWriteExec<S>>()
+                        .and_then(|m| m.merge_result())
+                        .unwrap_or_default();
+
+                    self.track_write_version(merge_result.version);
+                    return Ok(merge_result);
+                }
+                Err(err) if rescannable && self.is_retryable_write_error(&err) => {
+                    retry_counter.increment_from_error(err)?;
+                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                    merge = merge.reset_state()?;
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
         }
-
-        let (request_id, response) = self.send_streaming(request, new_data, true).await?;
-
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        if body.trim().is_empty() {
-            // Backward compatible with old servers
-            return Ok(MergeResult {
-                version: 0,
-                num_deleted_rows: 0,
-                num_inserted_rows: 0,
-                num_updated_rows: 0,
-                num_attempts: 0,
-                num_rows: 0,
-            });
-        }
-
-        let merge_insert_response: MergeResult =
-            serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse merge_insert response: {}", e).into(),
-                request_id,
-                status_code: None,
-            })?;
-
-        self.track_write_version(merge_insert_response.version);
-        Ok(merge_insert_response)
     }
 
     async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
@@ -2916,20 +3023,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         write_params: lance::dataset::WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
-        Ok(Arc::new(insert::RemoteInsertExec::new(
+        Ok(Arc::new(insert::RemoteWriteExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             input,
-            overwrite,
+            WriteOp::Insert { overwrite },
             None,
             self.branch.clone(),
         )))
     }
 }
 
-#[derive(Serialize)]
-struct MergeInsertRequest {
+#[derive(Serialize, Clone, Debug)]
+pub(crate) struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
@@ -2940,6 +3047,10 @@ struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
+    // Only serialize use_lsm when explicitly set (Some); a server that predates
+    // it ignores the field and routes as it would by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_lsm: Option<bool>,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -2991,6 +3102,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
+            use_lsm: value.use_lsm,
         })
     }
 }
@@ -3008,7 +3120,9 @@ mod tests {
     use crate::table::{AddDataMode, FieldMetadataUpdate, FtsToken};
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
+    use arrow_array::Array;
+    use arrow_array::builder::LargeBinaryBuilder;
+    use arrow_array::{BinaryArray, Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
@@ -3032,7 +3146,6 @@ mod tests {
             AnalyzePlanDistributedMetrics, ColumnOrdering, ExecutableQuery, QueryBase,
             QueryExecutionOptions,
         },
-        remote::ARROW_FILE_CONTENT_TYPE,
     };
 
     #[tokio::test]
@@ -3208,6 +3321,17 @@ mod tests {
                 options,
             )
             .expect("Failed to create writer");
+            writer.write(data).expect("Failed to write data");
+            writer.finish().expect("Failed to finish");
+        }
+        body
+    }
+
+    fn write_ipc_stream_uncompressed(data: &RecordBatch) -> Vec<u8> {
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
+                .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
@@ -3883,6 +4007,480 @@ mod tests {
             .await;
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    fn blob_describe_response() -> http::Response<String> {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            crate::blob("image", true),
+            Field::new("caption", DataType::Utf8, true),
+            crate::blob("thumbnail", true),
+        ]);
+        let json_schema = JsonSchema::try_from(&schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
+    #[rstest]
+    #[case(semver::Version::new(0, 1, 0))]
+    #[case(semver::Version::new(0, 5, 0))]
+    #[tokio::test]
+    async fn test_blob_columns_read_the_schema_on_any_server_version(
+        #[case] version: semver::Version,
+    ) {
+        let table = Table::new_with_handler_version("my_table", version, |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            blob_describe_response()
+        });
+
+        let columns = table.blob_columns().await.unwrap();
+        assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_decodes_null_aligned_bytes() {
+        let mut builder = LargeBinaryBuilder::new();
+        builder.append_value(b"alpha");
+        builder.append_null();
+        builder.append_value(b"gamma");
+        let blobs = builder.finish();
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(blobs)],
+        )
+        .unwrap();
+        let expected_ref = expected.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["column"], "image");
+                assert_eq!(body["row_ids"], serde_json::json!([10, 20, 30]));
+
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .body(write_ipc_stream_uncompressed(&expected_ref))
+                    .unwrap()
+            },
+        );
+
+        let blobs = table.fetch_blobs("image", &[10, 20, 30]).await.unwrap();
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs.value(0), b"alpha");
+        assert!(blobs.is_null(1));
+        assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_concatenates_multiple_batches() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "image",
+            DataType::LargeBinary,
+            true,
+        )]));
+
+        let mut first_builder = LargeBinaryBuilder::new();
+        first_builder.append_value(b"alpha");
+        first_builder.append_null();
+        let first_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(first_builder.finish())]).unwrap();
+
+        let mut second_builder = LargeBinaryBuilder::new();
+        second_builder.append_value(b"gamma");
+        let second_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(second_builder.finish())]).unwrap();
+
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema).unwrap();
+            writer.write(&first_batch).unwrap();
+            writer.write(&second_batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .body(body.clone())
+                    .unwrap()
+            },
+        );
+
+        let blobs = table.fetch_blobs("image", &[10, 20, 30]).await.unwrap();
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs.value(0), b"alpha");
+        assert!(blobs.is_null(1));
+        assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    fn table_with_fetch_blobs_response(body: Vec<u8>) -> Table {
+        table_with_fetch_blobs_content_type(Some(ARROW_STREAM_CONTENT_TYPE), body)
+    }
+
+    fn table_with_fetch_blobs_content_type(
+        content_type: Option<&'static str>,
+        body: Vec<u8>,
+    ) -> Table {
+        Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/fetch_blobs/");
+            let mut response = http::Response::builder().status(200);
+            if let Some(content_type) = content_type {
+                response = response.header(CONTENT_TYPE, content_type);
+            }
+            response.body(body.clone()).unwrap()
+        })
+    }
+
+    fn one_row_blob_batch(column: &str) -> RecordBatch {
+        let mut builder = LargeBinaryBuilder::new();
+        builder.append_value(b"alpha");
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                column,
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(builder.finish())],
+        )
+        .unwrap()
+    }
+
+    fn one_row_blob_ipc_stream(column: &str) -> Vec<u8> {
+        write_ipc_stream_uncompressed(&one_row_blob_batch(column))
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_sends_the_checked_out_version() {
+        let ipc = one_row_blob_ipc_stream("image");
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(br#"{"version": 42, "schema": {"fields": []}}"#.to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/fetch_blobs/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(
+                        body["version"], 42,
+                        "blob reads must use the same snapshot as the query"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(ipc.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+
+        table.checkout(42).await.unwrap();
+
+        assert_eq!(table.fetch_blobs("image", &[10]).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_sends_the_checked_out_branch() {
+        use lance::dataset::refs::Ref;
+        let ipc = one_row_blob_ipc_stream("image");
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body(b"{}".to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/fetch_blobs/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["branch"], "exp", "blob reads must stay on the branch");
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(ipc.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .unwrap();
+
+        assert_eq!(branch.fetch_blobs("image", &[10]).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
+        let ipc = one_row_blob_ipc_stream("info.blob");
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| {
+                let body = request_body_json(&request);
+                assert_eq!(body["column"], "info.blob");
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .body(ipc.clone())
+                    .unwrap()
+            },
+        );
+
+        let blobs = table.fetch_blobs("info.blob", &[10]).await.unwrap();
+
+        assert_eq!(blobs.value(0), b"alpha");
+    }
+
+    fn write_empty_ipc_stream(schema: &Schema) -> Vec<u8> {
+        let mut body = Vec::new();
+        arrow_ipc::writer::StreamWriter::try_new(&mut body, schema)
+            .unwrap()
+            .finish()
+            .unwrap();
+        body
+    }
+
+    fn assert_fetch_blobs_http_error(error: Error, expected: &str) {
+        match error {
+            Error::Http {
+                source, request_id, ..
+            } => {
+                assert!(source.to_string().contains(expected));
+                assert!(!request_id.is_empty());
+            }
+            error => panic!("expected HTTP error, got {error}"),
+        }
+    }
+
+    fn assert_not_supported_error(error: Error, expected: &str) {
+        match error {
+            Error::NotSupported { message } => assert!(message.contains(expected)),
+            error => panic!("expected not-supported error, got {error}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_missing_column() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "other",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![Some(
+                b"value".as_slice(),
+            )]))],
+        )
+        .unwrap();
+        let table = table_with_fetch_blobs_response(write_ipc_stream_uncompressed(&batch));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "missing the 'image' column");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_wrong_column_type() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let table = table_with_fetch_blobs_response(write_ipc_stream_uncompressed(&batch));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(
+            error,
+            "type Int32, expected Binary, LargeBinary, or BinaryView",
+        );
+    }
+
+    #[rstest]
+    #[case(DataType::Binary)]
+    #[case(DataType::LargeBinary)]
+    #[case(DataType::BinaryView)]
+    #[tokio::test]
+    async fn test_fetch_blobs_accepts_binary_large_binary_and_binary_view(
+        #[case] data_type: DataType,
+    ) {
+        let binary_values = BinaryArray::from(vec![
+            Some(b"alpha".as_slice()),
+            None,
+            Some(b"gamma".as_slice()),
+        ]);
+        let typed_column = arrow::compute::cast(&binary_values, &data_type).unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("image", data_type, true)])),
+            vec![typed_column],
+        )
+        .unwrap();
+        let table = table_with_fetch_blobs_response(write_ipc_stream_uncompressed(&batch));
+
+        let blobs = table.fetch_blobs("image", &[10, 20, 30]).await.unwrap();
+        assert_eq!(blobs.len(), 3);
+        assert_eq!(blobs.value(0), b"alpha");
+        assert!(blobs.is_null(1));
+        assert_eq!(blobs.value(2), b"gamma");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_row_count_mismatch() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![Some(
+                b"value".as_slice(),
+            )]))],
+        )
+        .unwrap();
+        let table = table_with_fetch_blobs_response(write_ipc_stream_uncompressed(&batch));
+
+        let error = table.fetch_blobs("image", &[10, 20]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "returned 1 rows for 2 row ids");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_zero_batches_for_nonempty_row_ids() {
+        let schema = Schema::new(vec![Field::new("image", DataType::LargeBinary, true)]);
+        let table = table_with_fetch_blobs_response(write_empty_ipc_stream(&schema));
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "returned 0 rows for 1 row ids");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_skips_the_request_for_empty_row_ids() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("fetch_blobs must not call the server for an empty selection");
+        });
+
+        let blobs = table.fetch_blobs("image", &[]).await.unwrap();
+        assert!(blobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_blob_byte_apis_not_supported_on_old_server() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("blob request must not reach a server without blob support");
+        });
+
+        assert_not_supported_error(
+            table.fetch_blobs("image", &[1]).await.unwrap_err(),
+            "fetch_blobs",
+        );
+
+        assert_not_supported_error(
+            table.fetch_blob_files("image", &[1]).await.unwrap_err(),
+            "requires LanceDB Cloud server 0.5.0 or newer",
+        );
+    }
+
+    #[rstest]
+    #[case(ARROW_STREAM_CONTENT_TYPE)]
+    #[case("application/vnd.apache.arrow.stream; charset=utf-8")]
+    #[case("APPLICATION/VND.APACHE.ARROW.STREAM")]
+    #[tokio::test]
+    async fn test_fetch_blobs_accepts_stream_content_type_variants(
+        #[case] content_type: &'static str,
+    ) {
+        let table = table_with_fetch_blobs_content_type(
+            Some(content_type),
+            write_ipc_stream_uncompressed(&one_row_blob_batch("image")),
+        );
+
+        let blobs = table.fetch_blobs("image", &[10]).await.unwrap();
+
+        assert_eq!(blobs.value(0), b"alpha");
+    }
+
+    // Shared decoder accepts file framing because /query still returns it.
+    // fetch_blobs wire contract is stream. Enforced on the server.
+    #[rstest]
+    #[case(ARROW_FILE_CONTENT_TYPE)]
+    #[case("application/vnd.apache.arrow.file; charset=utf-8")]
+    #[case("APPLICATION/VND.APACHE.ARROW.FILE")]
+    #[tokio::test]
+    async fn test_fetch_blobs_accepts_file_content_type_variants(
+        #[case] content_type: &'static str,
+    ) {
+        let table = table_with_fetch_blobs_content_type(
+            Some(content_type),
+            write_ipc_file(&one_row_blob_batch("image")),
+        );
+
+        let blobs = table.fetch_blobs("image", &[10]).await.unwrap();
+
+        assert_eq!(blobs.value(0), b"alpha");
+    }
+
+    #[rstest]
+    #[case(ARROW_STREAM_CONTENT_TYPE, write_ipc_file(&one_row_blob_batch("image")))]
+    #[case(
+        ARROW_FILE_CONTENT_TYPE,
+        write_ipc_stream_uncompressed(&one_row_blob_batch("image"))
+    )]
+    #[tokio::test]
+    async fn test_fetch_blobs_fails_when_the_body_contradicts_the_content_type(
+        #[case] content_type: &'static str,
+        #[case] body: Vec<u8>,
+    ) {
+        let table = table_with_fetch_blobs_content_type(Some(content_type), body);
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+
+        assert!(
+            matches!(error, Error::Arrow { .. }),
+            "expected an Arrow decode failure, got {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_rejects_a_response_that_is_not_arrow_ipc() {
+        let table = table_with_fetch_blobs_content_type(
+            Some("application/json"),
+            br#"{"blobs": []}"#.to_vec(),
+        );
+
+        let error = table.fetch_blobs("image", &[10]).await.unwrap_err();
+        assert_fetch_blobs_http_error(error, "got 'application/json'");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blobs_without_content_type_falls_back_to_file_framing() {
+        let table =
+            table_with_fetch_blobs_content_type(None, write_ipc_file(&one_row_blob_batch("image")));
+
+        let blobs = table.fetch_blobs("image", &[10]).await.unwrap();
+
+        assert_eq!(blobs.value(0), b"alpha");
     }
 
     #[tokio::test]
@@ -4602,6 +5200,19 @@ mod tests {
                 },
                 Index::FTS(InvertedIndexParams::default().block_size(256).unwrap()),
             ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["custom_stop_words"] = json!(["cat", " cat ", "CAT"]);
+                    body
+                },
+                Index::FTS(InvertedIndexParams::default().custom_stop_words(Some(vec![
+                    "cat".to_string(),
+                    " cat ".to_string(),
+                    "CAT".to_string(),
+                ]))),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {
@@ -4639,6 +5250,224 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_create_index_returns_job() {
+        let describe_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let describe_calls_in_handler = describe_calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-123"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["job_id"], "job-123");
+                    let state = if describe_calls_in_handler
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        "IN_PROGRESS"
+                    } else {
+                        "DONE"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(format!(
+                            r#"{{"job_id": "job-123", "job_state": "{state}"}}"#
+                        ))
+                        .unwrap()
+                }
+                "/v1/jobs/cancel" => {
+                    let body = request.body().unwrap().as_bytes().unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(body["job_id"], "job-123");
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        assert_eq!(job.id(), Some("job-123"));
+        job.wait().await.unwrap();
+        assert_eq!(describe_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        job.cancel().await.unwrap();
+    }
+
+    /// An unrecognized state is treated as still running, so the client keeps
+    /// polling rather than reporting a wrong terminal outcome.
+    #[tokio::test]
+    async fn test_job_wait_treats_unknown_state_as_running() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_in_handler = calls.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-unknown"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => {
+                    let state = if calls_in_handler
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                    {
+                        "SOMETHING_NEW"
+                    } else {
+                        "DONE"
+                    };
+                    http::Response::builder()
+                        .status(200)
+                        .body(format!(
+                            r#"{{"job_id": "job-unknown", "job_state": "{state}"}}"#
+                        ))
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_job_wait_surfaces_failure() {
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err", "job_state": "FAILED"}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let err = job.wait().await.unwrap_err();
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        // The server said only that it failed, so nothing may be invented.
+        assert!(failure.message.is_none(), "{failure:?}");
+        assert!(failure.phase.is_none(), "{failure:?}");
+        assert!(failure.retryable.is_none(), "{failure:?}");
+        assert_eq!(err.to_string(), "Job job-err failed");
+    }
+
+    /// A server that reports why the job failed has that reason surfaced
+    /// verbatim rather than replaced with a generic message.
+    #[tokio::test]
+    async fn test_job_wait_reports_the_server_failure_reason() {
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "job-err"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"job_id": "job-err", "job_state": "FAILED", "failure": {"phase": "commit", "message": "preempted", "retryable": true}}"#
+                            .to_string(),
+                    )
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        let err = job.wait().await.unwrap_err();
+        let crate::Error::JobFailed { failure, .. } = &err else {
+            panic!("expected JobFailed, got {err:?}");
+        };
+        assert_eq!(failure.message.as_deref(), Some("preempted"));
+        assert_eq!(failure.phase.as_deref(), Some("commit"));
+        assert_eq!(failure.retryable, Some(true));
+        assert_eq!(err.to_string(), "Job job-err failed: preempted (in commit)");
+    }
+
+    /// Servers that return no job id (e.g. an empty create-index response)
+    /// yield an already-done job.
+    #[tokio::test]
+    async fn test_create_index_without_job_id_is_done() {
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/create_index/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {}", path),
+            });
+
+        let job = table
+            .create_index(&["a"], Index::BTree(Default::default()))
+            .execute_async()
+            .await
+            .unwrap();
+        job.wait().await.unwrap();
+        job.cancel().await.unwrap();
     }
 
     #[tokio::test]
@@ -5133,8 +5962,9 @@ mod tests {
             "max_token_length": 40,
             "lower_case": true,
             "stem": false,
-            "remove_stop_words": false,
+            "remove_stop_words": true,
             "ascii_folding": true,
+            "custom_stop_words": ["hello"],
         })
         .to_string();
         let table = Table::new_with_handler("my_table", move |request| {
@@ -5172,10 +6002,6 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                FtsToken {
-                    text: "hello".to_string(),
-                    position: 0,
-                },
                 FtsToken {
                     text: "こんにちは".to_string(),
                     position: 1,
@@ -5331,6 +6157,56 @@ mod tests {
             "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
         // assert_eq!(versions, expected);
+    }
+
+    /// Namespace-backed servers report `timestamp_millis` instead of
+    /// `timestamp`, and may omit `metadata` entirely.
+    #[tokio::test]
+    async fn test_list_versions_timestamp_millis() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/version/list/");
+
+            let response_body = serde_json::json!({
+                "versions": [
+                    {
+                        "version": 1,
+                        "manifest_path": "path/to/_versions/1.manifest",
+                        "timestamp_millis": 1704067200000i64,
+                    },
+                    {
+                        "version": 2,
+                        "manifest_path": "path/to/_versions/2.manifest",
+                        "timestamp_millis": 1706745600000i64,
+                        "metadata": {"key": "value"},
+                    },
+                ]
+            });
+            let response_body = serde_json::to_string(&response_body).unwrap();
+
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let versions = table.list_versions().await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(
+            versions[0].timestamp,
+            "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert!(versions[0].metadata.is_empty());
+        assert_eq!(versions[1].version, 2);
+        assert_eq!(
+            versions[1].timestamp,
+            "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            versions[1].metadata.get("key").map(String::as_str),
+            Some("value")
+        );
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::BlobFile;
+use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
@@ -487,9 +487,11 @@ pub struct PyBlobFile {
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read().await })
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -505,24 +507,32 @@ impl PyBlobFile {
 
     fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.close().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.close().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
         let inner = self_.inner.clone();
-        block_on(async move { inner.is_closed().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.is_closed().await }))
     }
 
     fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.seek(position).await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.seek(position).await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.tell().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.tell().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
     }
 
@@ -536,16 +546,20 @@ impl PyBlobFile {
             .checked_add(length as u64)
             .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read_range(offset..end).await })
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_range(offset..end).await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read_up_to(length).await })
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_up_to(length).await }))
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read_up_to failed: {e}")))?;
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 }
 
@@ -581,6 +595,7 @@ impl From<LanceDbFtsToken> for FtsToken {
     lower_case = true,
     stem = true,
     remove_stop_words = true,
+    custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
     ngram_max_length = 3,
@@ -595,6 +610,7 @@ pub fn tokenize(
     lower_case: bool,
     stem: bool,
     remove_stop_words: bool,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
@@ -616,7 +632,8 @@ pub fn tokenize(
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
-        .ngram_prefix_only(prefix_only);
+        .ngram_prefix_only(prefix_only)
+        .custom_stop_words(custom_stop_words);
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -860,6 +877,37 @@ impl Table {
         future_into_py(self_.py(), async move {
             op.execute().await.infer_error()?;
             Ok(())
+        })
+    }
+
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
+    pub fn create_index_async<'a>(
+        self_: PyRef<'a, Self>,
+        column: String,
+        index: Option<Bound<'_, PyAny>>,
+        replace: Option<bool>,
+        wait_timeout: Option<Bound<'_, PyAny>>,
+        name: Option<String>,
+        train: Option<bool>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let index = extract_index_params(&index)?;
+        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let mut op = self_
+            .inner_ref()?
+            .create_index_with_timeout(&[column], index, timeout);
+        if let Some(replace) = replace {
+            op = op.replace(replace);
+        }
+        if let Some(name) = name {
+            op = op.name(name);
+        }
+        if let Some(train) = train {
+            op = op.train(train);
+        }
+
+        future_into_py(self_.py(), async move {
+            let job = op.execute_async().await.infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 
@@ -1162,6 +1210,27 @@ impl Table {
         })
     }
 
+    /// Read row-specific blob-local byte ranges in one planned operation.
+    #[pyo3(signature = (column, requests))]
+    pub fn fetch_blob_ranges(
+        self_: PyRef<'_, Self>,
+        column: String,
+        requests: Vec<(u64, u64, u64)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let requests = requests
+                .into_iter()
+                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
+                .collect::<Vec<_>>();
+            let blobs: LargeBinaryArray = inner
+                .fetch_blob_ranges(column, requests)
+                .await
+                .infer_error()?;
+            Python::attach(|py| blobs.to_data().to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     /// Open lazy blob handles for `row_ids` from blob v2 column `column`.
     #[pyo3(signature = (column, row_ids))]
     pub fn fetch_blob_files(
@@ -1276,8 +1345,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_lsm_write) = parameters.use_lsm_write {
-            builder.use_lsm_write(use_lsm_write);
+        if let Some(use_lsm) = parameters.use_lsm {
+            builder.use_lsm(use_lsm);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1560,7 +1629,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_lsm_write: Option<bool>,
+    use_lsm: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

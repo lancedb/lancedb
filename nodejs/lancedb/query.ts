@@ -460,6 +460,30 @@ export class StandardQueryBase<
     this.doCall((inner: NativeQueryType) => inner.fastSearch());
     return this;
   }
+
+  /**
+   * Control MemWAL read routing for this query.
+   *
+   * By default (unset), when the table carries a MemWAL write spec (see
+   * {@link Table#setLsmWriteSpec}), reads are routed through the LSM scanner so
+   * they also return data written via the `mergeInsert` LSM path that has not yet
+   * been compacted into the base table (the active/frozen in-memory memtables and
+   * the flushed generations), deduplicated by primary key; a table without a spec
+   * reads the base table.
+   *
+   * @param enable - `true` forces the LSM scanner and errors if the table has no
+   * MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+   * even when a spec is present.
+   *
+   * Note: the LSM scanner does not support every query shape (e.g. reranking,
+   * hybrid search, `orderBy`). On a MemWAL table those shapes error unless
+   * `useLsm(false)` is set, because a base-only read would silently exclude
+   * un-compacted MemWAL data.
+   */
+  useLsm(enable: boolean): this {
+    this.doCall((inner: NativeQueryType) => inner.useLsm(enable));
+    return this;
+  }
 }
 
 /**
@@ -747,6 +771,20 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
 export class TakeQuery extends QueryBase<NativeTakeQuery> {
   constructor(inner: NativeTakeQuery) {
     super(inner);
+  }
+
+  /**
+   * Control MemWAL read routing for this take query.
+   *
+   * `false` bypasses the MemWAL and reads the base table only — the escape hatch,
+   * since take-by-row-id/offset is not supported on the LSM scanner and, on a
+   * MemWAL table, auto-routes to it and errors otherwise.
+   *
+   * @param enable - `false` reads the base table only.
+   */
+  useLsm(enable: boolean): this {
+    this.doCall((inner: NativeTakeQuery) => inner.useLsm(enable));
+    return this;
   }
 }
 

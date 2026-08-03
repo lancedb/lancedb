@@ -59,9 +59,10 @@ class StreamingDataset(IterableDataset):
     - **Stage 1 (I/O)**: one thread pool with ``num_splits * prefetch_batches``
       workers fetches raw ``RecordBatch`` objects from LanceDB in parallel
       across all splits and places them in a per-split raw-batch queue.
-    - **Stage 2 (transform)**: a second thread pool with ``os.cpu_count()``
-      workers picks up raw batches, applies the transform, and places the
-      results in a per-split cooked-row queue.
+    - **Stage 2 (transform)**: a second thread pool with
+      ``transform_parallelism`` workers picks up raw batches, applies the
+      transform, and places the results in a per-split cooked-row queue.  By
+      default, the number of workers is determined by ``os.cpu_count()``.
 
     The main thread round-robins over the cooked queues, yielding one row per
     split per cycle.
@@ -122,6 +123,10 @@ class StreamingDataset(IterableDataset):
         are yielded.  Receives one batch at a time and must return an iterable
         whose length equals the number of rows in the batch.  When ``None``
         (the default) rows are returned as plain Python dicts.
+    transform_parallelism:
+        Maximum number of transforms to run concurrently.  Must be greater
+        than zero.  When ``None`` (the default), uses ``os.cpu_count()`` or 1
+        when the CPU count is unavailable.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -146,6 +151,7 @@ class StreamingDataset(IterableDataset):
         shuffle_clump_size: Optional[int] = None,
         filter: Optional[str] = None,
         transform: Optional[Callable] = None,
+        transform_parallelism: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
     ):
@@ -159,6 +165,8 @@ class StreamingDataset(IterableDataset):
                 f"num_splits ({num_splits}) must be divisible by "
                 f"world_size ({world_size})"
             )
+        if transform_parallelism is not None and transform_parallelism <= 0:
+            raise ValueError("transform_parallelism must be greater than 0")
 
         self._table = table
         self._num_splits = num_splits
@@ -173,6 +181,7 @@ class StreamingDataset(IterableDataset):
         self._shuffle_clump_size = shuffle_clump_size
         self._filter = filter
         self._transform = transform
+        self._transform_parallelism = transform_parallelism
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
 
@@ -284,7 +293,11 @@ class StreamingDataset(IterableDataset):
 
         batch_size = self._read_batch_size
         max_prefetch = self._prefetch_batches
-        cpu_workers = os.cpu_count() or 1
+        transform_workers = (
+            self._transform_parallelism
+            if self._transform_parallelism is not None
+            else (os.cpu_count() or 1)
+        )
         final_transform = (
             self._transform if self._transform is not None else Transforms.arrow2python
         )
@@ -296,8 +309,8 @@ class StreamingDataset(IterableDataset):
         tx_pending = [deque() for _ in range(n)]  # Future[list[Any]]
         cooked = [deque() for _ in range(n)]  # rows ready to yield
 
-        # Limit simultaneous transforms to cpu_workers across all splits.
-        tx_semaphore = threading.Semaphore(cpu_workers)
+        # Limit simultaneous transforms to transform_workers across all splits.
+        tx_semaphore = threading.Semaphore(transform_workers)
 
         # ── Stage 1 helpers ───────────────────────────────────────────────────
 
@@ -369,7 +382,7 @@ class StreamingDataset(IterableDataset):
                     _advance(i)
                 elif raw_batches[i]:
                     # Acquire a transform slot (may block briefly if all
-                    # cpu_workers are busy with other splits).
+                    # transform_workers are busy with other splits).
                     tx_semaphore.acquire()
                     batch = raw_batches[i].popleft()
                     tx_pending[i].append(tx_pool.submit(_tx_call_guarded, batch))
@@ -383,7 +396,7 @@ class StreamingDataset(IterableDataset):
         # ── Main loop ─────────────────────────────────────────────────────────
 
         with ThreadPoolExecutor(max_workers=n * max_prefetch) as io_pool:
-            with ThreadPoolExecutor(max_workers=cpu_workers) as tx_pool:
+            with ThreadPoolExecutor(max_workers=transform_workers) as tx_pool:
                 self._raw_batches_ref = raw_batches
                 self._cooked_ref = cooked
                 self._fetch_head_ref = fetch_head
