@@ -123,6 +123,31 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("a") == 1
 
 
+def test_hybrid_query_offset(sync_table: Table):
+    # The offset window of a hybrid query must be a suffix of the same query
+    # run without an offset -- it must not be silently ignored.
+    full = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .limit(4)
+        .with_row_id(True)
+        .to_arrow()
+    )
+    assert len(full) == 4
+
+    offset_result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .offset(2)
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+    assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+
 def test_hybrid_query_distance_range(sync_table: Table):
     reranker = RRFReranker(return_score="all")
     result = (
