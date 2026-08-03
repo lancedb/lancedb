@@ -19,7 +19,7 @@ use lancedb::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction},
+    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats},
 };
 use tempfile::tempdir;
 
@@ -1111,6 +1111,22 @@ fn expected_null_empty_survivors() -> BlobSummary {
     ]
 }
 
+/// `optimize()` only rewrites a fragment when lance's compaction planner selects
+/// it — here because the delete pushes the fragment past
+/// `materialize_deletions_threshold` (0.1 by default; these tests delete 2 of 6
+/// rows). Without this check, a planner or threshold change upstream would leave
+/// both regression tests green while no rewrite happened at all.
+fn assert_compacted(stats: &OptimizeStats) {
+    let metrics = stats
+        .compaction
+        .as_ref()
+        .expect("OptimizeAction::All runs compaction");
+    assert!(
+        metrics.fragments_removed >= 1,
+        "optimize() rewrote no fragment, so this test proves nothing: {metrics:?}"
+    );
+}
+
 fn summarize(rows: &[(i64, Option<Vec<u8>>)]) -> BlobSummary {
     rows.iter()
         .map(|(id, payload)| {
@@ -1181,6 +1197,13 @@ async fn v1_blob_payloads(dataset_uri: &str, table: &Table) -> Result<Vec<(i64, 
     let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();
     let dataset = Arc::new(Dataset::open(dataset_uri).await?);
     let files = dataset.take_blobs(&row_ids, "image").await?;
+    assert_eq!(
+        files.len(),
+        pairs.len(),
+        "take_blobs returned {} handles for {} live rows",
+        files.len(),
+        pairs.len()
+    );
     let mut rows = Vec::with_capacity(pairs.len());
     for ((id, _), file) in pairs.iter().zip(files) {
         let payload = match file {
@@ -1242,7 +1265,7 @@ async fn optimize_preserves_v1_blob_payloads_with_null_and_empty() -> Result<()>
         LanceFileVersion::V2_0.resolve(),
         "v1 blob descriptors only exist below storage 2.2"
     );
-    let dataset_uri = format!("{db_uri}/t.lance");
+    let dataset_uri = table.uri().await?;
 
     // Any rewrite triggers it; deleting rows is the shape from the issue.
     table.delete("id IN (1, 4)").await?;
@@ -1254,7 +1277,8 @@ async fn optimize_preserves_v1_blob_payloads_with_null_and_empty() -> Result<()>
         "test setup no longer produces the null/empty/payload mix"
     );
 
-    table.optimize(OptimizeAction::All).await?;
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
 
     let descriptors_after = v1_blob_descriptors(&table).await?;
     let after = v1_blob_payloads(&dataset_uri, &table).await?;
@@ -1280,7 +1304,10 @@ async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
         .execute()
         .await?;
     table.add(null_empty_input_batch()).execute().await?;
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(
+        storage_format_version(&table).await >= LanceFileVersion::V2_2,
+        "blob v2 columns require storage >= 2.2"
+    );
 
     table.delete("id IN (1, 4)").await?;
     let before = blob_v2_values(&table).await?;
@@ -1290,7 +1317,8 @@ async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
         "test setup no longer produces the null/empty/payload mix"
     );
 
-    table.optimize(OptimizeAction::All).await?;
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
 
     assert_eq!(
         blob_v2_values(&table).await?,
