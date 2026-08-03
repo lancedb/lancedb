@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=8.0.0", default-features = false }
-lance-core = "=8.0.0"
-lance-datagen = "=8.0.0"
-lance-file = "=8.0.0"
-lance-io = { "version" = "=8.0.0", default-features = false }
-lance-index = "=8.0.0"
-lance-linalg = "=8.0.0"
-lance-namespace = "=8.0.0"
-lance-namespace-impls = { "version" = "=8.0.0", default-features = false }
-lance-table = "=8.0.0"
-lance-testing = "=8.0.0"
-lance-datafusion = "=8.0.0"
-lance-encoding = "=8.0.0"
-lance-arrow = "=8.0.0"
+lance = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e", default-features = false }
+lance-core = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-datagen = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-file = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-io = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e", default-features = false }
+lance-index = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-linalg = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-namespace = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-namespace-impls = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e", default-features = false }
+lance-table = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-testing = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-datafusion = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-encoding = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
+lance-arrow = { git = "https://github.com/anonx3247/lance.git", rev = "d7bbc7ad0abc5ac6ca6a5f4bee43aa872afe245e" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
