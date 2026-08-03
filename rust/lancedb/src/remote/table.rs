@@ -27,7 +27,7 @@ use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::checkpoint::{CODE_INVALID_TABLE_STATE, classify_lsm_fault};
+use crate::table::checkpoint::classify_lsm_fault;
 use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
@@ -910,17 +910,6 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    /// Whether a 404 body is a registry miss (`InvalidTableState`) rather
-    /// than the table not existing (`TableNotFound`). An unparseable body
-    /// reads as "not a miss", so the ambiguous case surfaces as the plain
-    /// not-found error instead of driving a re-claim loop.
-    fn is_registry_miss(body: &str) -> bool {
-        serde_json::from_str::<serde_json::Value>(body)
-            .ok()
-            .and_then(|v| v.get("code").and_then(|c| c.as_u64()))
-            == Some(CODE_INVALID_TABLE_STATE)
-    }
-
     /// Send an LSM operator request and decode its JSON body, classifying
     /// a failure into an [`Error::LsmRoute`] the checkpoint loop can act on.
     ///
@@ -946,11 +935,12 @@ impl<S: HttpSend> RemoteTable<S> {
         let status = response.status();
         let body = response.text().await.err_to_http(request_id.clone())?;
         if !status.is_success() {
-            // A 404 that is not a registry miss means the table does not
-            // exist, and must arrive as the same error every other route
-            // reports. These routes bypass `check_table_response`, so
-            // `handle_table_not_found` never runs for them.
-            if status == StatusCode::NOT_FOUND && !Self::is_registry_miss(&body) {
+            // A 404 means the table does not exist — on every route on this
+            // surface, since the server assigns one meaning per status. It must
+            // arrive as the same error every other route reports; these routes
+            // bypass `check_table_response`, so `handle_table_not_found` never
+            // runs for them. A lost claim is 421, classified below.
+            if status == StatusCode::NOT_FOUND {
                 return Err(Error::TableNotFound {
                     name: self.name.clone(),
                     source: Box::new(Error::Http {
@@ -6189,10 +6179,11 @@ mod tests {
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 
-    /// A 404 for a table that does not exist must arrive as
-    /// `TableNotFound`, like every other route — not as a lost claim the
-    /// loop re-issues from flush until its cap, then blames on a crash
-    /// loop. The two are distinguished only by the body's `code`.
+    /// A 404 must arrive as `TableNotFound`, like every other route — not as
+    /// a lost claim the loop re-issues from flush until its cap, then blames
+    /// on a crash loop. The two are distinguished by *status*: 404 is "no such
+    /// table", 421 is "this node holds no claim". They shared 404 once, and
+    /// the loop chased a name that never existed.
     #[tokio::test(start_paused = true)]
     async fn test_missing_table_is_not_read_as_a_lost_claim() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6217,8 +6208,9 @@ mod tests {
         );
     }
 
-    /// The other 404: the node lost its claim mid-loop. That one *does*
-    /// re-issue from flush, which is the call that re-claims and replays.
+    /// A lost claim — 421, not 404. It *does* re-issue from flush, which is
+    /// the call that re-claims and replays. Sharing 404 with "no such table"
+    /// is what previously sent this loop after a name that never existed.
     #[tokio::test(start_paused = true)]
     async fn test_registry_miss_reissues_from_flush() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6234,8 +6226,8 @@ mod tests {
             if path.contains("compact_lsm") {
                 if n < 4 {
                     return http::Response::builder()
-                        .status(404)
-                        .body(r#"{"code":19,"error":"WAL table not claimed"}"#.to_string())
+                        .status(421)
+                        .body(r#"{"code":19,"error":"table not claimed"}"#.to_string())
                         .unwrap();
                 }
                 return accepted();

@@ -38,55 +38,54 @@ use crate::{Error, Result, Table};
 
 /// How a failed LSM request should be handled by the checkpoint loop.
 ///
-/// Five distinct conditions used to arrive at a client as one 503. This is
-/// the classification that keeps them apart, and it reads the body's `code`
-/// on 503 only — every other status is already unambiguous.
+/// Reads the status, which the server assigns one meaning apiece and phalanx
+/// relays. The body's `code` is consulted on 503 alone, and only to tell a
+/// server 503 from a proxy's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LsmFault {
-    /// 429, or 503 with `ServiceUnavailable`: contention, a fenced writer,
-    /// no ready slot, or transport. Retry with backoff.
+    /// 429 (latch held, pool saturated, or the pod replaying its WAL), or a
+    /// 503 that did not come from the server. Retry with backoff.
     ///
     /// Fenced and slot-unavailable are deliberately not distinguished from
     /// contention here: the client action is identical.
     Retry,
-    /// 404: the registry entry vanished under a node restart mid-loop.
-    /// `flush` is the call that re-claims and replays, so re-issue from
-    /// there — with a cap, or a crash-looping node turns the loop into a
-    /// spin.
+    /// 421: the owning node holds no claim on the table — its registry entry
+    /// vanished under a restart mid-loop. `flush` is the call that re-claims
+    /// and replays, so re-issue from there — with a cap, or a crash-looping
+    /// node turns the loop into a spin.
     ReissueFromFlush,
     /// 503 with `InvalidTableState`: the owning node is draining. Terminal.
     Draining,
-    /// 409 (dropping), 400 (not WAL-backed), or anything else. Terminal.
+    /// 404 (no such table), 409 (dropping), 400 (not WAL-backed), or anything
+    /// unrecognized. Terminal.
     Fatal,
 }
 
-/// Lance-namespace `ErrorCode::InvalidTableState`. Nothing else in the
-/// server maps to it, which is what makes it usable as the draining signal:
-/// a `WalDraining` variant that mapped to the generic service-unavailable
-/// code would be byte-identical to every other 503 on the wire, leaving
-/// this classifier matching message strings — exactly what a string `code`
-/// field was rejected to avoid.
+/// Lance-namespace `ErrorCode::InvalidTableState`, which the server attaches
+/// to a draining 503. Its job here is to distinguish a 503 the server sent
+/// from one an ingress or proxy sent on its behalf — the latter carries no
+/// code at all, and is retryable.
 pub(crate) const CODE_INVALID_TABLE_STATE: u64 = 19;
 
 /// Classify an LSM-route failure from its status and response body.
 ///
-/// The body must be inspected **before** any helper that folds it into a
-/// string and keeps only the status, or the discrimination designed across
-/// three crates is lost at the last hop.
+/// The status carries the condition: the server assigns exactly one meaning
+/// per status and phalanx relays it. The body is read for one thing only —
+/// see the 503 arm.
 pub(crate) fn classify_lsm_fault(status: u16, body: &str) -> LsmFault {
     match status {
+        // Latch held, compactor pool saturated, or the pod replaying its WAL.
         429 => LsmFault::Retry,
-        // A 404 is a registry miss only when the body says so. Left
-        // unchecked, a typo'd table name — also a 404 — is read as "the
-        // node lost its claim", and the loop re-issues from flush until the
-        // cap and then blames a crash loop for a name that never existed.
-        // `send_lsm_route` turns the other 404 into `TableNotFound` before
-        // this is reached; the check stays so a direct caller cannot
-        // reintroduce the confusion.
-        404 if body_code(body) == Some(CODE_INVALID_TABLE_STATE) => LsmFault::ReissueFromFlush,
-        404 => LsmFault::Fatal,
+        // The owning node holds no claim; `flush` re-claims and replays.
+        421 => LsmFault::ReissueFromFlush,
+        // The body check is *not* disambiguating phalanx's own 503s — it asks
+        // whether this 503 came from phalanx at all. An ingress or proxy 503
+        // between here and the server carries no code, and treating that as a
+        // draining node would abort a checkpoint on a transient hop failure.
         503 if body_code(body) == Some(CODE_INVALID_TABLE_STATE) => LsmFault::Draining,
         503 => LsmFault::Retry,
+        // 404 (no such table), 409 (dropping), 400 (malformed). `send_lsm_route`
+        // turns 404 into `TableNotFound` before this is reached.
         _ => LsmFault::Fatal,
     }
 }
@@ -112,8 +111,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// merge — fails loudly instead of spinning.
 const MAX_IDLE_POLLS: usize = 10;
 
-/// Cap on re-issues from `flush` after a 404. A node in a crash loop would
-/// otherwise turn flush → compact → 404 → flush into a spin.
+/// Cap on re-issues from `flush` after a 421. A node in a crash loop would
+/// otherwise turn flush → compact → 421 → flush into a spin.
 const MAX_REISSUES: usize = 3;
 
 /// Base backoff between retries, doubled per consecutive retry up to
@@ -299,7 +298,11 @@ mod tests {
     /// that only asserts "it errored".
     #[test]
     fn taxonomy_round_trips() {
-        assert_eq!(classify_lsm_fault(429, r#"{"code":21}"#), LsmFault::Retry);
+        assert_eq!(
+            classify_lsm_fault(429, r#"{"code":21}"#),
+            LsmFault::Retry,
+            "contention, saturation, and a pod replaying its WAL all arrive here"
+        );
         assert_eq!(
             classify_lsm_fault(503, r#"{"code":19}"#),
             LsmFault::Draining,
@@ -311,9 +314,9 @@ mod tests {
             "fenced / no-slot / transport stay retryable"
         );
         assert_eq!(
-            classify_lsm_fault(404, r#"{"code":19}"#),
+            classify_lsm_fault(421, r#"{"code":19}"#),
             LsmFault::ReissueFromFlush,
-            "a registry miss says InvalidTableState and must re-claim"
+            "a lost claim has its own status and must re-claim"
         );
         assert_eq!(
             classify_lsm_fault(404, r#"{"code":4}"#),
@@ -325,8 +328,9 @@ mod tests {
     }
 
     /// A 503 whose body is missing, truncated, or not the expected JSON must
-    /// fall back to *retryable*, never to terminal: mistaking a healthy node
-    /// for a draining one aborts the checkpoint on a lie.
+    /// fall back to *retryable*, never to terminal. This is the proxy case:
+    /// an ingress 503 carries no code, and mistaking it for a draining node
+    /// aborts the checkpoint on a lie.
     #[test]
     fn unparseable_503_body_is_retryable() {
         assert_eq!(classify_lsm_fault(503, ""), LsmFault::Retry);
