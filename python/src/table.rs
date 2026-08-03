@@ -426,9 +426,11 @@ pub struct PyBlobFile {
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read().await })
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
@@ -444,24 +446,32 @@ impl PyBlobFile {
 
     fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.close().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.close().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
         let inner = self_.inner.clone();
-        block_on(async move { inner.is_closed().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.is_closed().await }))
     }
 
     fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.seek(position).await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.seek(position).await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
         let inner = self_.inner.clone();
-        block_on(async move { inner.tell().await })
+        self_
+            .py()
+            .detach(move || block_on(async move { inner.tell().await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
     }
 
@@ -475,16 +485,20 @@ impl PyBlobFile {
             .checked_add(length as u64)
             .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read_range(offset..end).await })
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_range(offset..end).await }))
             .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
         let inner = self_.inner.clone();
-        let bytes = block_on(async move { inner.read_up_to(length).await })
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
-        Ok(PyBytes::new(self_.py(), bytes.as_ref()).unbind())
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_up_to(length).await }))
+            .map_err(|e| PyRuntimeError::new_err(format!("blob read_up_to failed: {e}")))?;
+        Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 }
 

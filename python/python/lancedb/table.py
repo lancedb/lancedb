@@ -1595,8 +1595,8 @@ class Table(ABC):
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
         a ``list[int]`` or a query ``pyarrow.Table`` carrying row identity via
         ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
-        rows are ``None``. Unsupported on LanceDB Cloud, where
-        :meth:`fetch_blobs` returns full bytes instead.
+        rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
+        newer.
         """
 
     @abstractmethod

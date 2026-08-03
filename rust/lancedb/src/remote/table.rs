@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-mod blobs;
+pub mod blobs;
 pub mod insert;
 
 use self::insert::{RemoteWriteExec, WriteOp};
@@ -4300,32 +4300,9 @@ mod tests {
             "fetch_blobs",
         );
 
-        let message = table
-            .fetch_blob_files("image", &[1])
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("fetch_blob_files is not supported on LanceDB Cloud"),
-            "got: {message}"
-        );
-        assert!(
-            !message.contains("Use fetch_blobs"),
-            "old server must not be told to use fetch_blobs, got: {message}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_blob_files_point_at_fetch_blobs_on_a_blob_capable_server() {
-        let table = Table::new_with_handler_version(
-            "my_table",
-            semver::Version::new(0, 5, 0),
-            |_| -> http::Response<String> { panic!("fetch_blob_files must not reach the server") },
-        );
-
         assert_not_supported_error(
             table.fetch_blob_files("image", &[1]).await.unwrap_err(),
-            "Use fetch_blobs for full bytes",
+            "requires LanceDB Cloud server 0.5.0 or newer",
         );
     }
 

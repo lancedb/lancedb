@@ -2055,6 +2055,24 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
             request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+        elif request.path.startswith("/v1/table/test/blob/image/"):
+            path = request.path.partition("?")[0]
+            row_id = int(path.split("/")[-2])
+            payload = {10: b"alpha", 20: None, 30: b"gamma"}[row_id]
+            if payload is None:
+                request.send_response(204)
+                request.end_headers()
+                return
+            byte_range = request.headers["Range"].removeprefix("bytes=")
+            start_text, end_text = byte_range.split("-", maxsplit=1)
+            start = int(start_text)
+            end = int(end_text) if end_text else len(payload) - 1
+            chunk = payload[start : end + 1]
+            request.send_response(206)
+            request.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            request.send_header("Content-Length", str(len(chunk)))
+            request.end_headers()
+            request.wfile.write(chunk)
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
@@ -2092,8 +2110,21 @@ def test_remote_blob_columns_and_fetch():
         assert table.blob_columns() == ["image"]
         blobs = table.fetch_blobs("image", [10, 20, 30])
         assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
-        with pytest.raises(NotImplementedError, match="Use fetch_blobs for full bytes"):
-            table.fetch_blob_files("image", [10, 20, 30])
+
+
+def test_remote_blob_files_are_lazy_seekable_handles():
+    with blob_remote_table() as table:
+        files = table.fetch_blob_files("image", [10, 20, 30])
+
+        assert len(files) == 3
+        alpha, null_row, gamma = files
+        assert null_row is None
+        assert alpha is not None
+        assert gamma is not None
+        assert alpha.size() == 5
+        assert alpha.read_range(1, 3) == b"lph"
+        gamma.seek(2)
+        assert gamma.read() == b"mma"
 
 
 def test_remote_blob_fetch_accepts_query_table():
