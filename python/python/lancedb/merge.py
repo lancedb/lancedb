@@ -92,8 +92,10 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_delete = True
         if isinstance(condition, Expr):
             self._when_not_matched_by_source_condition_expr = condition._inner
-        elif condition is not None:
+            self._when_not_matched_by_source_condition = None
+        else:
             self._when_not_matched_by_source_condition = condition
+            self._when_not_matched_by_source_condition_expr = None
         return self
 
     def use_index(self, use_index: bool) -> LanceMergeInsertBuilder:
