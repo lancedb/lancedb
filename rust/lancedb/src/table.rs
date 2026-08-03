@@ -68,6 +68,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
 mod primary_key;
@@ -83,11 +84,7 @@ pub use branch_merge::{
     BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
     MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
 };
-pub use checkpoint::{BucketStats, GenerationStats, LsmFault, LsmStats, MemtableStats};
-use checkpoint::{
-    CheckpointControl, CheckpointOutcome, MAX_IDLE_POLLS, MAX_REISSUES, POLL_INTERVAL, backoff,
-    checkpoint_fault,
-};
+pub use checkpoint::LsmFault;
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -95,6 +92,7 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
+pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -1668,7 +1666,7 @@ impl Table {
     /// already-converged table costs two round trips and triggers nothing.
     ///
     /// **No deadline.** It returns when the target generations are gone, or
-    /// errors after [`MAX_IDLE_POLLS`] polls with neither progress nor a
+    /// errors after a bounded number of polls with neither progress nor a
     /// running pass — a fenced bucket, a saturated compactor pool, a
     /// failing merge. Wrap it in `tokio::time::timeout` if you need a
     /// wall-clock bound.
@@ -1685,113 +1683,7 @@ impl Table {
     /// # }
     /// ```
     pub async fn checkpoint_lsm(&self) -> Result<()> {
-        for attempt in 0..=MAX_REISSUES {
-            // The seal is what turns everything written before this call
-            // into a generation, so the watermark has to be read after it.
-            // It is also idempotent: sealing an empty active memtable is a
-            // no-op, so a re-issue does not churn empty generations.
-            match self.flush_lsm().await {
-                Ok(()) => {}
-                Err(e) => match checkpoint_fault(e, attempt)? {
-                    CheckpointControl::Retry | CheckpointControl::ReissueFromFlush => {
-                        backoff(attempt).await;
-                        continue;
-                    }
-                },
-            }
-
-            let Some(stats) = self.get_lsm_stats(false).await? else {
-                // Not WAL-backed: nothing to converge, and `flush_lsm`
-                // would have errored first on every path but a race.
-                return Ok(());
-            };
-            let targets: HashMap<String, u64> = stats
-                .buckets
-                .iter()
-                .filter_map(|b| Some((b.shard_id.clone(), b.newest_generation()?)))
-                .collect();
-            if targets.is_empty() {
-                return Ok(());
-            }
-
-            match self.drain_to_targets(&targets, attempt).await? {
-                CheckpointOutcome::Done => return Ok(()),
-                CheckpointOutcome::ReissueFromFlush => continue,
-            }
-        }
-        Err(Error::Runtime {
-            message: "checkpoint_lsm: the owning node kept losing its claim; \
-                      re-issued from flush the maximum number of times"
-                .into(),
-        })
-    }
-
-    /// Trigger and poll until no bucket holds a generation at or below its
-    /// target. Split out so the flush re-issue path above stays readable.
-    async fn drain_to_targets(
-        &self,
-        targets: &HashMap<String, u64>,
-        attempt: usize,
-    ) -> Result<CheckpointOutcome> {
-        let mut idle_polls = 0;
-        let mut last_outstanding = usize::MAX;
-        loop {
-            let Some(stats) = self.get_lsm_stats(false).await? else {
-                return Ok(CheckpointOutcome::Done);
-            };
-            let mut outstanding = 0;
-            let mut buckets_left = 0;
-            let mut all_compacting = true;
-            for b in &stats.buckets {
-                let Some(target) = targets.get(&b.shard_id) else {
-                    continue;
-                };
-                let n = b.outstanding_generations(*target);
-                if n > 0 {
-                    outstanding += n;
-                    buckets_left += 1;
-                    all_compacting &= b.compacting;
-                }
-            }
-            if outstanding == 0 {
-                return Ok(CheckpointOutcome::Done);
-            }
-
-            // Progress, not time, is the bound. A pass already running on
-            // every outstanding bucket counts as progress: piling on would
-            // only collect 429s, and the latch it would contend for is the
-            // one doing the work.
-            if outstanding < last_outstanding || all_compacting {
-                idle_polls = 0;
-            } else {
-                idle_polls += 1;
-                if idle_polls >= MAX_IDLE_POLLS {
-                    return Err(Error::Runtime {
-                        message: format!(
-                            "checkpoint_lsm: {outstanding} generation(s) across {buckets_left} \
-                             bucket(s) stopped making progress with no compaction running; the \
-                             compactor pool may be saturated or the writer fenced"
-                        ),
-                    });
-                }
-            }
-            last_outstanding = outstanding;
-
-            if !all_compacting {
-                match self.compact_lsm().await {
-                    Ok(()) => {}
-                    Err(e) => match checkpoint_fault(e, attempt)? {
-                        // Every bucket busy (429) is the state the poll
-                        // above already handles; fall through and re-read.
-                        CheckpointControl::Retry => {}
-                        CheckpointControl::ReissueFromFlush => {
-                            return Ok(CheckpointOutcome::ReissueFromFlush);
-                        }
-                    },
-                }
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+        checkpoint::checkpoint_lsm(self).await
     }
 
     /// Seal every bucket's active memtable into L0 without touching the
