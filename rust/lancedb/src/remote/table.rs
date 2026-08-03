@@ -3036,7 +3036,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub(crate) struct MergeInsertRequest {
+pub struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
