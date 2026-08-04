@@ -69,6 +69,7 @@ pub mod add_columns;
 mod add_data;
 pub mod branch_merge;
 pub mod checkpoint;
+pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -91,6 +92,7 @@ pub use branch_merge::{
     MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
 };
 pub use chrono::Duration;
+pub use computed_columns::{ComputedColumn, computed_column_from_field, computed_columns};
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
