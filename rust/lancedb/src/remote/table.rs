@@ -3089,10 +3089,12 @@ mod tests {
             Box::pin(table.delete("false").map_ok(|_| ())),
             Box::pin(
                 table
-                    .add_columns(
-                        NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
-                        None,
-                    )
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        "x".into(),
+                        "y".into(),
+                    )]))
+                    .execute()
                     .map_ok(|_| ()),
             ),
             Box::pin(async {
@@ -6388,13 +6390,12 @@ mod tests {
         });
 
         let result = table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![
-                    ("b".into(), "a + 1".into()),
-                    ("x".into(), "cast(NULL as int32)".into()),
-                ]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![
+                ("b".into(), "a + 1".into()),
+                ("x".into(), "cast(NULL as int32)".into()),
+            ]))
+            .execute()
             .await
             .unwrap();
 
@@ -7119,10 +7120,12 @@ mod tests {
             }
             "add_columns" => {
                 let _ = table
-                    .add_columns(
-                        NewColumnTransform::SqlExpressions(vec![("c".into(), "a + 1".into())]),
-                        None,
-                    )
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        "c".into(),
+                        "a + 1".into(),
+                    )]))
+                    .execute()
                     .await;
             }
             "drop_columns" => {
@@ -9880,10 +9883,12 @@ mod tests {
             .await
             .unwrap();
         branch
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("b".into(), "a + 1".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "b".into(),
+                "a + 1".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
         branch

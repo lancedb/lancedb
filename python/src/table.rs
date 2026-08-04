@@ -1375,7 +1375,12 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.add_columns(definitions, None).await.infer_error()?;
+            let result = inner
+                .add_columns()
+                .transform(definitions)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }
@@ -1389,7 +1394,12 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner.add_columns(transform, None).await.infer_error()?;
+            let result = inner
+                .add_columns()
+                .transform(transform)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }
