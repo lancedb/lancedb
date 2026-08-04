@@ -78,6 +78,7 @@ pub mod merge;
 pub mod optimize;
 mod primary_key;
 pub mod query;
+pub mod refresh;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
@@ -99,6 +100,7 @@ pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use refresh::RefreshColumnResult;
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -734,6 +736,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Fill a computed column's unfilled rows.
+    ///
+    /// The default returns `NotSupported`; Lance-backed tables override it.
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "refresh_column is not supported on this table type".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -1624,6 +1634,11 @@ impl Table {
     /// Add new columns to the table, providing values to fill in.
     pub fn add_columns(&self) -> AddColumnsBuilder {
         AddColumnsBuilder::new(self.inner.clone())
+    }
+
+    /// Compute and store values for a computed column's unfilled rows.
+    pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
+        self.inner.refresh_column(column.as_ref()).await
     }
 
     /// Change a column's name or nullability.
@@ -3292,6 +3307,12 @@ impl BaseTable for NativeTable {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         let result = schema_evolution::execute_add_columns(self, transforms, read_columns).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
+        let result = refresh::execute_refresh_column(self, column).await?;
         self.bump_freshness();
         Ok(result)
     }
