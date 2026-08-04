@@ -171,6 +171,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
         UpdateFieldMetadataResult,
@@ -1905,7 +1906,14 @@ class Table(ABC):
 
     @abstractmethod
     def add_columns(
-        self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -3917,9 +3925,21 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """Fill a computed column's unfilled rows. See
+        [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
+        return LOOP.run(self._table.refresh_column(column))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -5744,7 +5764,14 @@ class AsyncTable:
         return await self._inner.update(updates_sql, where)
 
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: dict[str, str] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -5770,10 +5797,34 @@ class AsyncTable:
             {isinstance(f, pa.Field) for f in transforms}
         ):
             transforms = pa.schema(transforms)
+        if computed:
+            if transforms:
+                raise ValueError(
+                    "add_columns cannot take both transforms and computed columns"
+                )
+            return await self._inner.add_computed_columns(list(computed.items()))
+        if transforms is None:
+            raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
         else:
             return await self._inner.add_columns(list(transforms.items()))
+
+    async def refresh_column(self, column: str) -> RefreshColumnResult:
+        """
+        Compute and store values for a computed column's unfilled rows.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            The number of rows filled and the new version of the table.
+        """
+        return await self._inner.refresh_column(column)
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
