@@ -3340,3 +3340,45 @@ describe("LSM merge insert", () => {
     await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
   });
 });
+
+describe("computed columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("declares a column and fills it on refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    let rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled)).toEqual([null, null]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(2);
+
+    rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+  });
+
+  it("fills rows added since the last refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_append", [{ x: 1 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    await table.refreshColumn("doubled");
+    await table.add([{ x: 5 }]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(1);
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
+  });
+});

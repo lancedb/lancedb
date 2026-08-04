@@ -71,7 +71,12 @@ Add new columns with defined values.
 
 #### Parameters
 
-* **newColumnTransforms**: `Field`&lt;`any`&gt; \| `Field`&lt;`any`&gt;[] \| `Schema`&lt;`any`&gt; \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+* **newColumnTransforms**:
+    \| `Field`&lt;`any`&gt;
+    \| `Field`&lt;`any`&gt;[]
+    \| `Schema`&lt;`any`&gt;
+    \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    \| `object`
     Either:
     - An array of objects with column names and SQL expressions to calculate values
     - A single Arrow Field defining one column with its data type (column will be initialized with null values)
@@ -715,6 +720,28 @@ for await (const batch of table.query()) {
   console.log(batch);
 }
 ```
+
+***
+
+### refreshColumn()
+
+```ts
+abstract refreshColumn(column): Promise<RefreshColumnResult>
+```
+
+Compute and store values for a computed column's unfilled rows.
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
+
+A promise that resolves to the
+number of rows filled and the new version number of the table.
 
 ***
 
