@@ -958,8 +958,16 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def add_columns(self, transforms: Dict[str, str]) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+    def add_columns(
+        self,
+        transforms: Dict[str, str] | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
+    ) -> AddColumnsResult:
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+
+    def refresh_column(self, column: str):
+        return LOOP.run(self._table.refresh_column(column))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
