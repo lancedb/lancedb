@@ -193,10 +193,12 @@ mod tests {
 
         // Add a computed column
         let result = table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("doubled".into(), "id * 2".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "doubled".into(),
+                "id * 2".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
 
@@ -251,13 +253,12 @@ mod tests {
 
         // Add multiple columns at once
         table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![
-                    ("y".into(), "x + 1".into()),
-                    ("z".into(), "x * x".into()),
-                ]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![
+                ("y".into(), "x + 1".into()),
+                ("z".into(), "x * x".into()),
+            ]))
+            .execute()
             .await
             .unwrap();
 
@@ -283,10 +284,12 @@ mod tests {
 
         // Add a column with a constant value
         table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("constant".into(), "42".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "constant".into(),
+                "42".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
 
@@ -659,10 +662,12 @@ mod tests {
 
         // Add column increments version
         let add_result = table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("c".into(), "a + b".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "c".into(),
+                "a + b".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
         assert!(add_result.version > v1);
