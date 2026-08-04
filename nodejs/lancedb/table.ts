@@ -33,6 +33,7 @@ import {
   Job,
   Branches as NativeBranches,
   OptimizeStats,
+  RefreshColumnResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -530,8 +531,21 @@ export abstract class Table {
    * containing the new version number of the table after adding the columns.
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Compute and store values for a computed column's unfilled rows.
+   * @param {string} column The name of the computed column to fill.
+   * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
+   * number of rows filled and the new version number of the table.
+   */
+  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
 
   /**
    * Alter the name or nullability of columns.
@@ -1078,8 +1092,22 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult> {
+    // Columns defined by an expression are declared, not materialized here.
+    if (
+      typeof newColumnTransforms === "object" &&
+      !Array.isArray(newColumnTransforms) &&
+      "computed" in newColumnTransforms
+    ) {
+      return await this.inner.addComputedColumns(newColumnTransforms.computed);
+    }
+
     // Handle single Field -> convert to array of Fields
     if (newColumnTransforms instanceof Field) {
       newColumnTransforms = [newColumnTransforms];
@@ -1112,6 +1140,10 @@ export class LocalTable extends Table {
     }
 
     throw new Error("Invalid input type for addColumns");
+  }
+
+  async refreshColumn(column: string): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column);
   }
 
   async alterColumns(

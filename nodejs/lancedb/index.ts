@@ -50,6 +50,7 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
