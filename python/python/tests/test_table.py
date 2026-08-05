@@ -1785,6 +1785,27 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
 
 
+def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
+    """Regression test for issue #2340."""
+    table = mem_db.create_table(
+        "test_nullable_fixed_size_list",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("feature", pa.list_(pa.float32(), 256)),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+
+    table.add([{"id": "1", "feature": None, "tags": ["tag1", "tag2"]}])
+
+    result = table.to_arrow()
+    assert result.to_pylist() == [
+        {"id": "1", "feature": None, "tags": ["tag1", "tag2"]}
+    ]
+
+
 def test_add_nullable_struct_with_none(mem_db: DBConnection):
     """Regression test for issue #2654: a nullable struct column whose
     first batch contains only None values must not crash in
