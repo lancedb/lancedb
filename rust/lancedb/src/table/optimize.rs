@@ -214,12 +214,17 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+    };
     use arrow_schema::{DataType, Field, Schema};
+    use lance_arrow::FixedSizeListArrayExt;
     use rstest::rstest;
     use std::sync::Arc;
 
     use crate::connect;
+    use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+    use crate::index::vector::IvfRqIndexBuilder;
     use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
@@ -440,6 +445,58 @@ mod tests {
         // Verify data integrity
         let final_row_count = table.count_rows(None).await.unwrap();
         assert_eq!(final_row_count, 200);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_vector_index_after_delete_with_stable_row_ids() {
+        const NUM_ROWS: i32 = 400;
+        const DIMENSION: i32 = 32;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..NUM_ROWS).flat_map(|id| {
+                (0..DIMENSION).map(move |offset| ((id as f32 * 0.1) + (offset as f32 * 0.3)).sin())
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..NUM_ROWS)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_vector_index_optimize_after_delete", batch)
+            .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(IvfRqIndexBuilder::default().num_partitions(4)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table.delete("id % 3 = 0").await.unwrap();
+
+        // Regression test for #3330: deleted stable row IDs used to become
+        // misaligned with row addresses while joining small IVF partitions.
+        table
+            .optimize(OptimizeAction::Index(Default::default()))
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 266);
     }
 
     #[tokio::test]
