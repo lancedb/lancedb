@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import deprecation
+import os
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -2139,6 +2140,8 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
@@ -2164,10 +2167,65 @@ class LanceTable(Table):
                     managed_versioning=managed_versioning,
                 )
             )
+        self._initialize_reopen_state(name)
+
+    def _initialize_reopen_state(self, name: str) -> None:
+        """Capture the state needed to replace inherited native handles."""
+        self._name = name
+        self._pid = os.getpid()
+        self._branch = self._table.current_branch()
+        self._checkout_version: Optional[int] = None
+
+        # A native table owns object-store clients and connection pools. Those
+        # handles must not be used after fork, so retain a process-independent
+        # connection description while it is still safe to inspect the parent
+        # connection. Some tables constructed from a bare Rust handle cannot
+        # be serialized; those retain the historical best-effort behavior.
+        try:
+            self._connection_state: Optional[str] = self._conn.serialize()
+            self._can_reopen_after_fork = not self._conn.uri.startswith("memory://")
+        except Exception:
+            self._connection_state = None
+            self._can_reopen_after_fork = False
+
+    def _ensure_open(self) -> None:
+        """Reopen native table handles inherited from another process."""
+        pid = os.getpid()
+        if self._pid == pid:
+            return
+
+        if not self._can_reopen_after_fork or self._connection_state is None:
+            # In-memory and opaque Rust-only connections cannot be recreated
+            # from connection metadata. Their local handles retain the prior
+            # best-effort fork behavior.
+            self._pid = pid
+            return
+
+        from lancedb import deserialize_conn
+
+        connection = deserialize_conn(self._connection_state, for_worker=True)
+        reopened = connection.open_table(
+            self._name,
+            namespace_path=self._namespace_path or None,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
+            branch=self._branch,
+            version=self._checkout_version,
+        )
+
+        # Keep this Python object stable because user datasets commonly retain
+        # it across fork. Replace every process-bound component with the fresh
+        # child's equivalent.
+        self._conn = reopened._conn
+        self._table = reopened._table
+        self._namespace_client = reopened._namespace_client
+        self._pushdown_operations = reopened._pushdown_operations
+        self._route_pushdown_to_rust = reopened._route_pushdown_to_rust
+        self._pid = pid
 
     @property
     def name(self) -> str:
-        return self._table.name
+        return self._name
 
     @property
     def namespace(self) -> List[str]:
@@ -2379,18 +2437,20 @@ class LanceTable(Table):
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
             _async=async_table,
         )
+        table._checkout_version = version
+        return table
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -2429,6 +2489,9 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         LOOP.run(self._table.checkout(version))
+        # Resolve tags to their numeric version so a forked child can reopen
+        # the same pinned view through ``open_table(version=...)``.
+        self._checkout_version = self.version
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -2437,6 +2500,7 @@ class LanceTable(Table):
         version of the table.
         """
         LOOP.run(self._table.checkout_latest())
+        self._checkout_version = None
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -2485,6 +2549,7 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+        self._checkout_version = None
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -3595,6 +3660,7 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
@@ -3623,6 +3689,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             )
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -3639,6 +3706,7 @@ class LanceTable(Table):
                 namespace_client=namespace_client,
             )
         )
+        self._initialize_reopen_state(name)
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:
