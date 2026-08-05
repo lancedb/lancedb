@@ -77,6 +77,23 @@ def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
 
+def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkeypatch):
+    from lancedb.background_loop import LOOP
+    from lancedb.db import LanceDBConnection
+
+    consistency_interval = timedelta(seconds=5)
+    db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    db_from_inner = LanceDBConnection.from_inner(db._inner, consistency_interval)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("properties should not use the Python background loop")
+
+    monkeypatch.setattr(LOOP, "run", fail_run)
+
+    assert db.read_consistency_interval == consistency_interval
+    assert db_from_inner.read_consistency_interval == consistency_interval
+
+
 def test_ingest_pd(tmp_path):
     db = lancedb.connect(tmp_path)
 
