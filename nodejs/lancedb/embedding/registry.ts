@@ -195,7 +195,26 @@ export class EmbeddingFunctionRegistry {
   }
 }
 
-const _REGISTRY = new EmbeddingFunctionRegistry();
+// Server bundlers can load the side-effect embedding entry points and the public
+// embedding API from separate module graphs. Keep their registry shared.
+const registryKey = Symbol.for(
+  "@lancedb/lancedb::embedding-function-registry::v1",
+);
+const registryGlobal = globalThis as typeof globalThis & {
+  [key: symbol]: EmbeddingFunctionRegistry | undefined;
+};
+
+function getGlobalRegistry(): EmbeddingFunctionRegistry {
+  const existingRegistry = registryGlobal[registryKey];
+  if (existingRegistry !== undefined) {
+    return existingRegistry;
+  }
+  const registry = new EmbeddingFunctionRegistry();
+  registryGlobal[registryKey] = registry;
+  return registry;
+}
+
+const _REGISTRY = getGlobalRegistry();
 
 export function register(name?: string) {
   return _REGISTRY.register(name);
