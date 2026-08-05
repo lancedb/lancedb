@@ -14,6 +14,7 @@ use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_io::object_store::ChainedWrappingObjectStore;
 use std::pin::Pin;
 
 use crate::error::{Error, Result};
@@ -37,13 +38,10 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
         wrapper: Arc<dyn WrappingObjectStore>,
     ) -> Result<Option<ObjectStoreParams>> {
         let mut params = self.unwrap_or_default();
-        if params.object_store_wrapper.is_some() {
-            return Err(Error::Other {
-                message: "can not patch param because object store is already set".into(),
-                source: None,
-            });
-        }
-        params.object_store_wrapper = Some(wrapper);
+        params.object_store_wrapper = Some(match params.object_store_wrapper.take() {
+            Some(existing) => Arc::new(ChainedWrappingObjectStore::new(vec![existing, wrapper])),
+            None => wrapper,
+        });
 
         Ok(Some(params))
     }
@@ -472,13 +470,52 @@ impl Stream for MaxBatchLengthStream {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use arrow_array::Int32Array;
     use arrow_schema::Field;
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
     use futures::{StreamExt, stream};
+    use object_store::{ObjectStore, memory::InMemory};
     use tokio::time::sleep;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct CountingStoreWrapper(Arc<AtomicUsize>);
+
+    impl WrappingObjectStore for CountingStoreWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn ObjectStore>,
+        ) -> Arc<dyn ObjectStore> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            original
+        }
+    }
+
+    #[test]
+    fn test_patch_store_param_chains_wrappers() {
+        let existing_count = Arc::new(AtomicUsize::new(0));
+        let added_count = Arc::new(AtomicUsize::new(0));
+        let params = Some(ObjectStoreParams {
+            object_store_wrapper: Some(Arc::new(CountingStoreWrapper(existing_count.clone()))),
+            ..Default::default()
+        });
+
+        let params = params
+            .patch_with_store_wrapper(Arc::new(CountingStoreWrapper(added_count.clone())))
+            .unwrap()
+            .unwrap();
+        params
+            .object_store_wrapper
+            .unwrap()
+            .wrap("memory", Arc::new(InMemory::new()) as Arc<dyn ObjectStore>);
+
+        assert_eq!(existing_count.load(Ordering::Relaxed), 1);
+        assert_eq!(added_count.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn test_guess_default_column() {

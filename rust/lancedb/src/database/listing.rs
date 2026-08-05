@@ -581,6 +581,17 @@ impl ListingDatabase {
                     }
                     None => None,
                 };
+                #[cfg(windows)]
+                let write_store_wrapper = if object_store.is_local() {
+                    // Local manifest commits need create-only rename semantics,
+                    // including on filesystems that do not support hard links.
+                    Some(
+                        Arc::new(crate::io::object_store::windows::WindowsLocalFileSystemWrapper)
+                            as Arc<dyn WrappingObjectStore>,
+                    )
+                } else {
+                    write_store_wrapper
+                };
 
                 let namespace_database = Self::connect_namespace_database(
                     &storage_base_uri,
@@ -645,12 +656,22 @@ impl ListingDatabase {
         )
         .await?;
 
+        #[cfg(windows)]
+        let write_store_wrapper = object_store.is_local().then(|| {
+            // Local manifest commits need create-only rename semantics,
+            // including on filesystems that do not support hard links.
+            Arc::new(crate::io::object_store::windows::WindowsLocalFileSystemWrapper)
+                as Arc<dyn WrappingObjectStore>
+        });
+        #[cfg(not(windows))]
+        let write_store_wrapper = None;
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
             base_path,
             object_store,
-            store_wrapper: None,
+            store_wrapper: write_store_wrapper,
             read_consistency_interval,
             storage_options: HashMap::new(),
             storage_options_provider: None,

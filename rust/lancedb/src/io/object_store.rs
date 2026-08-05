@@ -18,6 +18,9 @@ use async_trait::async_trait;
 #[cfg(test)]
 pub mod io_tracking;
 
+#[cfg(windows)]
+pub(crate) mod windows;
+
 #[derive(Debug)]
 struct MirroringObjectStore {
     primary: Arc<dyn ObjectStore>,
