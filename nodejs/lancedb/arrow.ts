@@ -489,10 +489,11 @@ function inferSchema(
       } else if (schema === undefined) {
         const currentType = pathTree.get(path);
         const newType = inferType(value, path, opts);
-        if (currentType !== newType) {
-          new Error(`Failed to infer schema for data. Previously inferred type \
-                     ${currentType} but found ${newType} at row ${rowI}. Consider \
-                     providing an explicit schema.`);
+        if (currentType?.toString() !== newType?.toString()) {
+          throw new Error(
+            `Failed to infer schema for data. Previously inferred type ${currentType} ` +
+              `but found ${newType} at row ${rowI}. Consider providing an explicit schema.`,
+          );
         }
       }
     }

@@ -449,6 +449,18 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         );
       });
 
+      it("will allow matching inferred types across records", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: 2 }]),
+        ).not.toThrow();
+      });
+
+      it("will reject mismatched inferred types across records", function () {
+        expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 at row 1. Consider providing an explicit schema.",
+        );
+      });
+
       it("will allow a schema to be provided", async function () {
         await checkTableCreation(
           async (records, _, schema) =>
