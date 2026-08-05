@@ -449,6 +449,20 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         );
       });
 
+      it("will accept consistent inferred types across records", function () {
+        const table = makeArrowTable([{ value: 1 }, { value: 2 }]);
+
+        expect(table.getChild("value")?.type.toString()).toEqual(
+          new Float64().toString(),
+        );
+      });
+
+      it("will reject inconsistent inferred types across records", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: "two" }]),
+        ).toThrow("Failed to infer schema for data");
+      });
+
       it("will allow a schema to be provided", async function () {
         await checkTableCreation(
           async (records, _, schema) =>
