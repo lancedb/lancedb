@@ -201,7 +201,7 @@ impl LanceNamespaceDatabase {
         &self,
         request: &DbCreateTableRequest,
     ) -> Result<(
-        Option<lance_encoding::version::LanceFileVersion>,
+        Option<lance_file::version::LanceFileVersion>,
         Option<bool>,
         Option<bool>,
     )> {
@@ -214,7 +214,7 @@ impl LanceNamespaceDatabase {
 
         let storage_version_override = storage_options
             .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<lance_encoding::version::LanceFileVersion>())
+            .map(|s| s.parse::<lance_file::version::LanceFileVersion>())
             .transpose()?;
 
         let v2_manifest_override = storage_options
