@@ -2291,6 +2291,21 @@ mod tests {
         assert_eq!(uri, expected);
     }
 
+    /// Regression test for https://github.com/lancedb/lancedb/issues/2283.
+    ///
+    /// Object-store URIs must use `/` on every platform. In particular, joining
+    /// with `std::path::Path` used to insert a `\\` into Azure blob keys on
+    /// Windows.
+    #[tokio::test]
+    async fn test_table_uri_uses_forward_slashes_for_azure() {
+        let (_tempdir, mut db) = setup_database().await;
+        db.uri = "az://test/db/test".to_string();
+
+        let uri = db.table_uri("test").unwrap();
+
+        assert_eq!(uri, "az://test/db/test/test.lance");
+    }
+
     /// Regression: connecting via a URL-style URI (which goes through
     /// `url::Url::parse` and the `query_pairs_mut()` path) must not
     /// append a trailing `?` to per-table URIs when the input URI has
