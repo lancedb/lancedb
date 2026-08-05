@@ -3709,22 +3709,25 @@ def test_stats(mem_db: DBConnection):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    assert len(table) == 2
+    table.add([{"text": "baz", "id": 1}])
+    assert len(table) == 3
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        # Full on-disk size of the data file, footer and metadata included.
-        "total_bytes": 633,
-        "num_rows": 2,
+        # Full on-disk size of the data files, footer and metadata included:
+        # one 633 byte file per fragment.
+        "total_bytes": 1266,
+        "num_rows": 3,
+        "num_deleted_rows": 0,
         "num_indices": 0,
         "fragment_stats": {
-            "num_fragments": 1,
-            "num_small_fragments": 1,
+            "num_fragments": 2,
+            "num_small_fragments": 2,
             "lengths": {
-                "min": 2,
+                "min": 1,
                 "max": 2,
-                "mean": 2,
-                "p25": 2,
+                "mean": 1,
+                "p25": 1,
                 "p50": 2,
                 "p75": 2,
                 "p99": 2,
@@ -3732,12 +3735,19 @@ def test_stats(mem_db: DBConnection):
         },
     }
 
+    # Both rows with id = 1 are deleted, but that empties the second fragment,
+    # which is dropped outright rather than kept with a deletion file, so only
+    # the row marked in the surviving fragment is counted.
+    table.delete("id = 1")
     # Index files count toward total_bytes too (only deletion files and
     # manifests are excluded).
     table.create_index("id", config=BTree())
     stats_with_index = table.stats()
     assert stats_with_index["num_indices"] == 1
     assert stats_with_index["total_bytes"] > stats["total_bytes"]
+    assert stats_with_index["num_rows"] == 1
+    assert stats_with_index["num_deleted_rows"] == 1
+    assert stats_with_index["fragment_stats"]["num_fragments"] == 1
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):

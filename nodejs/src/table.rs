@@ -1052,6 +1052,16 @@ pub struct TableStatistics {
     /// The number of rows in the table
     pub num_rows: i64,
 
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// These rows are not included in `numRows`, but still occupy space on disk
+    /// until the table is compacted, so a large value here indicates that the
+    /// table should be optimized. Fragments in which every row was deleted are
+    /// dropped outright, so their rows are not counted here.
+    ///
+    /// Absent (`undefined`) when the backend does not report deletion counts.
+    pub num_deleted_rows: Option<i64>,
+
     /// The number of indices in the table
     pub num_indices: i64,
 
@@ -1100,6 +1110,7 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
         Self {
             total_bytes: v.total_bytes as i64,
             num_rows: v.num_rows as i64,
+            num_deleted_rows: v.num_deleted_rows.map(|n| n as i64),
             num_indices: v.num_indices as i64,
             fragment_stats: FragmentStatistics {
                 num_fragments: v.fragment_stats.num_fragments as i64,
