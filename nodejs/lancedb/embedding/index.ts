@@ -14,7 +14,16 @@ export {
   EmbeddingFunctionConstructor,
 } from "./embedding_function";
 
-export * from "./registry";
+export {
+  EmbeddingFunctionRegistry,
+  getRegistry,
+  register,
+} from "./registry";
+export type {
+  CreateReturnType,
+  EmbeddingFunctionConfig,
+  EmbeddingFunctionCreate,
+} from "./registry";
 
 /**
  * Create a schema with embedding functions.

@@ -16,7 +16,7 @@ describe("embedding function registry", () => {
     registries.length = 0;
   });
 
-  it("shares registrations across isolated module instances", () => {
+  it("shares registrations across duplicated provider module graphs", () => {
     let registeringRegistry: EmbeddingFunctionRegistry | undefined;
 
     jest.isolateModules(() => {
@@ -27,6 +27,15 @@ describe("embedding function registry", () => {
       registries.push(registeringRegistry);
       expect(registeringRegistry.get("openai")).toBeDefined();
     });
+
+    expect(() => {
+      jest.isolateModules(() => {
+        require("../lancedb/embedding/openai");
+        const { getRegistry } =
+          require("../lancedb/embedding/registry") as RegistryModule;
+        registries.push(getRegistry());
+      });
+    }).not.toThrow();
 
     jest.isolateModules(() => {
       const { getRegistry } =

@@ -7,6 +7,10 @@ import {
 } from "./embedding_function";
 import "reflect-metadata";
 
+const builtInFunctionsKey = Symbol.for(
+  "@lancedb/lancedb::embedding-built-in-functions::v1",
+);
+
 export type CreateReturnType<T> = T extends { init: () => Promise<void> }
   ? Promise<T>
   : T;
@@ -96,6 +100,7 @@ export class EmbeddingFunctionRegistry {
    */
   reset(this: EmbeddingFunctionRegistry) {
     this.#functions.clear();
+    getBuiltInFunctions(this).clear();
   }
 
   /**
@@ -195,6 +200,18 @@ export class EmbeddingFunctionRegistry {
   }
 }
 
+function getBuiltInFunctions(registry: EmbeddingFunctionRegistry): Set<string> {
+  const registryWithBuiltIns = registry as EmbeddingFunctionRegistry & {
+    [key: symbol]: Set<string> | undefined;
+  };
+  let builtInFunctions = registryWithBuiltIns[builtInFunctionsKey];
+  if (builtInFunctions === undefined) {
+    builtInFunctions = new Set<string>();
+    registryWithBuiltIns[builtInFunctionsKey] = builtInFunctions;
+  }
+  return builtInFunctions;
+}
+
 // Server bundlers can load the side-effect embedding entry points and the public
 // embedding API from separate module graphs. Keep their registry shared.
 const registryKey = Symbol.for(
@@ -218,6 +235,20 @@ const _REGISTRY = getGlobalRegistry();
 
 export function register(name?: string) {
   return _REGISTRY.register(name);
+}
+
+/** @ignore */
+export function registerBuiltIn<
+  T extends EmbeddingFunctionConstructor = EmbeddingFunctionConstructor,
+>(name: string, ctor: T): T {
+  const builtInFunctions = getBuiltInFunctions(_REGISTRY);
+  if (builtInFunctions.has(name)) {
+    Reflect.defineMetadata("lancedb::embedding::name", name, ctor);
+    return ctor;
+  }
+  _REGISTRY.register(name)(ctor);
+  builtInFunctions.add(name);
+  return ctor;
 }
 
 /**
