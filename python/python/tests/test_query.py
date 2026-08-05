@@ -779,6 +779,56 @@ async def test_distance_range_with_new_rows_async():
         assert dist >= min_dist
 
 
+def test_flat_vector_search_large_limit_is_globally_sorted_after_upsert(mem_db):
+    # Regression test for https://github.com/lancedb/lancedb/issues/3669.
+    # Limits above Lance's 8,192-row output batch size used to expose batches in
+    # scheduling order instead of global distance order after plan repartitioning.
+    rng = np.random.default_rng(42)
+    num_rows = 20_000
+    fragment_size = 5_000
+    dimension = 16
+    limit = 12_000
+    vectors = rng.random((num_rows, dimension), dtype=np.float32)
+
+    def make_data(start, end):
+        return pa.table(
+            {
+                "id": pa.array(np.arange(start, end), type=pa.int64()),
+                "vector": pa.FixedSizeListArray.from_arrays(
+                    pa.array(vectors[start:end].reshape(-1)), dimension
+                ),
+            }
+        )
+
+    table = mem_db.create_table("flat_knn_order", make_data(0, fragment_size))
+    for start in range(fragment_size, num_rows, fragment_size):
+        table.add(make_data(start, start + fragment_size))
+
+    upsert = pa.table(
+        {
+            "id": pa.array([0], type=pa.int64()),
+            "vector": pa.array(
+                [[0.0] * dimension], type=pa.list_(pa.float32(), dimension)
+            ),
+        }
+    )
+    (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(upsert)
+    )
+
+    query = np.zeros(dimension, dtype=np.float32)
+    for _ in range(10):
+        result = (
+            table.search(query).where("id >= 0").select(["id"]).limit(limit).to_arrow()
+        )
+        distances = result["_distance"].to_numpy()
+        assert len(distances) == limit
+        assert np.all(distances[:-1] <= distances[1:])
+
+
 @pytest.mark.parametrize(
     "multivec_table", [pa.float16(), pa.float32(), pa.float64()], indirect=True
 )
