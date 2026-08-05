@@ -576,6 +576,28 @@ def test_with_row_id(table: lancedb.table.Table):
     assert rs["_rowid"].to_pylist() == [0, 1]
 
 
+def test_filter_preserves_deeply_nested_struct_fields(tmp_db):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2217.
+    data = [
+        {
+            "item": "test",
+            "sub_obj": {
+                "second_sub_obj": [
+                    {
+                        "third_sub_obj": {"int_val": 1},
+                        "str_val": "test",
+                    }
+                ]
+            },
+        }
+    ]
+    table = tmp_db.create_table("deeply_nested_struct", data=data)
+
+    result = table.search().where("item = 'test'").limit(1).to_arrow()
+
+    assert result.to_pylist() == data
+
+
 def test_blob_v2_query_omits_auto_row_id(tmp_db):
     table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_omits_auto_rowid")
 
