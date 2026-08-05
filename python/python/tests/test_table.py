@@ -1258,12 +1258,22 @@ def test_branch_to_lance_targets_branch(tmp_path):
     assert table.to_lance().count_rows() == 1
 
 
+def _assert_pylance_install_error(error: ImportError):
+    message = str(error)
+    assert 'pip install "lancedb[pylance]"' in message
+    assert 'pip install "lancedb-compat[pylance]"' in message
+    assert "distribution already installed" in message
+    assert "Do not install both distributions" in message
+
+
 def test_to_lance_recommends_pylance_extra(tmp_db):
     table = tmp_db.create_table("t", [{"i": 1}])
 
     with patch("builtins.__import__", side_effect=ImportError):
-        with pytest.raises(ImportError, match=r"lancedb\[pylance\]"):
+        with pytest.raises(ImportError) as exc_info:
             table.to_lance()
+
+    _assert_pylance_install_error(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -1283,8 +1293,10 @@ async def test_async_to_lance_recommends_pylance_extra(tmp_path):
     table = await db.create_table("t", [{"i": 1}])
 
     with patch("builtins.__import__", side_effect=ImportError):
-        with pytest.raises(ImportError, match=r"lancedb\[pylance\]"):
+        with pytest.raises(ImportError) as exc_info:
             await table.to_lance()
+
+    _assert_pylance_install_error(exc_info.value)
 
 
 @pytest.mark.asyncio

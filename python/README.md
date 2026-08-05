@@ -8,13 +8,24 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
-The core package does not require PyLance. Install LanceDB's optional PyLance
-dependency when you need access to the underlying Lance dataset or
-GPU-accelerated indexing:
+The core package does not require PyLance. When you need access to the underlying
+Lance dataset or GPU-accelerated indexing, add the `pylance` extra to the
+distribution you already installed.
+
+For the standard distribution:
 
 ```bash
 pip install "lancedb[pylance]"
 ```
+
+For the pre-Haswell compatibility distribution:
+
+```bash
+pip install "lancedb-compat[pylance]"
+```
+
+Use only the extra matching your installed distribution. Do not install both
+distributions because they share the `lancedb` namespace.
 
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
