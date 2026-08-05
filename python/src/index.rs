@@ -42,7 +42,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
-                let inner_opts = FtsIndexBuilder::default()
+                let mut inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
                     .map_err(|_| {
@@ -61,6 +61,12 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ngram_max_length(params.ngram_max_length)
                     .ngram_prefix_only(params.prefix_only)
                     .custom_stop_words(params.custom_stop_words);
+                if let Some(memory_limit) = params.memory_limit {
+                    inner_opts = inner_opts.memory_limit_mb(memory_limit);
+                }
+                if let Some(num_workers) = params.num_workers {
+                    inner_opts = inner_opts.num_workers(num_workers);
+                }
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -213,6 +219,8 @@ struct FtsParams {
     ngram_max_length: u32,
     prefix_only: bool,
     block_size: usize,
+    memory_limit: Option<u64>,
+    num_workers: Option<usize>,
 }
 
 #[derive(FromPyObject)]
