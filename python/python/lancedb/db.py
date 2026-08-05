@@ -707,6 +707,11 @@ class LanceDBConnection(DBConnection):
         self._namespace_client_properties = namespace_client_properties
         if _inner is not None:
             self._conn = _inner
+            # Resolve this once while constructing the wrapper. Debuggers inspect
+            # properties while the background loop thread is suspended.
+            self._read_consistency_interval = LOOP.run(
+                AsyncConnection(_inner).get_read_consistency_interval()
+            )
             self._cached_namespace_client = None
             return
 
@@ -756,11 +761,14 @@ class LanceDBConnection(DBConnection):
         # storage_options.  Also, this class really shouldn't be holding any state
         # beyond _conn.
         self._conn = AsyncConnection(LOOP.run(do_connect()))
+        # Keep property access synchronous so debugger introspection cannot wait on
+        # the background loop while that thread is suspended at a breakpoint.
+        self._read_consistency_interval = read_consistency_interval
         self._cached_namespace_client: Optional[LanceNamespace] = None
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
-        return LOOP.run(self._conn.get_read_consistency_interval())
+        return self._read_consistency_interval
 
     @property
     def session(self) -> Optional[Session]:
