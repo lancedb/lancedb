@@ -108,6 +108,11 @@ def _should_push_down_query_table(
     return namespace_client is not None and "QueryTable" in pushdown_operations
 
 
+def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
+    """Return a Polars frame unchanged while blocking predicate pushdown."""
+    return frame
+
+
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
 _MODEL_BACKED_TOKENIZER_ERRORS = (
     "unknown base tokenizer",
@@ -2573,8 +2578,12 @@ class LanceTable(Table):
         from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
 
         dataset = PyarrowDatasetAdapter(self)
-        return pl.scan_pyarrow_dataset(
-            dataset, allow_pyarrow_filter=False, batch_size=batch_size
+        # Polars 1.32's non-PyArrow callback path passes batch_size twice.  Keep
+        # the compatible PyArrow path, but block predicates because this adapter
+        # cannot translate PyArrow expressions into LanceDB filters.
+        return pl.scan_pyarrow_dataset(dataset, batch_size=batch_size).map_batches(
+            _polars_predicate_pushdown_barrier,
+            predicate_pushdown=False,
         )
 
     # New unified API overload
