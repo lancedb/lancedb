@@ -7,12 +7,11 @@ dropped a column, reading the table as it was at some point, or tracing a change
 background job behind it.
 
 What you are auditing is the **retained history**, not necessarily the full history: local
-`optimize()` (`OptimizeAction::All`) prunes versions older than seven days as a side effect,
-`OptimizeAction::Prune` can prune with any cutoff the caller chose, and remote deployments run
-their own retention. Checkout is only promised "as long as the version hasn't been deleted."
-So before answering any history question, check whether the versions you need are actually in
-the listing — a pruned prefix or a gap means the audit is **incomplete**, and you must say so
-rather than presenting what remains as the whole story. Each workflow below notes what to check.
+`optimize()` prunes versions older than seven days as a side effect, `OptimizeAction::Prune`
+takes any cutoff, and remote deployments run their own retention. Before answering any history
+question, check that the versions you need are actually in the listing — a pruned prefix or a
+gap means the audit is **incomplete**, and you must say so rather than presenting what remains
+as the whole story. Each workflow below notes what to check.
 
 Version numbers and timestamps are available on local/OSS and remote Enterprise/Cloud tables
 through both SDKs. **What changed at a version is only available over REST, and only from
@@ -24,10 +23,9 @@ capability check below before you plan an approach.
 - Versions start at 1 and increase by one per commit. Every mutation commits: creating a
   table, appending or deleting rows, adding or dropping columns, building an index, editing
   column or table metadata.
-- Pruning removes versions but never renumbers them, so the retained chain may start above 1
-  or (after a targeted prune) have gaps. Sort the listing by `version` and check it starts at
-  1 and is contiguous; if not, record where retained history actually begins and treat
-  anything older as unknown, not as "nothing happened".
+- Pruning removes versions but never renumbers them. Sort the listing by `version`: a start
+  above 1 or a gap marks where retained history ends — treat what's missing as unknown, not
+  as "nothing happened".
 - A version is a **manifest snapshot, not a diff**. "What changed at version N" is always
   derived by comparing N against N-1 — which is what `include_operations` does server-side.
 - Branches have their own version chains. Pass the branch explicitly to read one; see
@@ -76,13 +74,12 @@ or older server ignores the param and returns the bare response — which looks 
 "no operations happened", so you must distinguish the two cases before interpreting anything:
 
 - **Capability check:** send `include_operations=true` and look for the `operation` key on the
-  returned versions. Present → the server supports enrichment, and the interpretation rules
-  below apply. Absent on every version → the server does not support it; do **not** read the
-  missing column arrays as "no schema change".
-- **Fallback without enrichment:** schema changes are still recoverable — `describe` each
-  version of interest with `{"version": N}` (pinned) and diff adjacent schemas yourself; row
-  counts via checkout + count. Then state plainly that operation names and per-version row
-  deltas are unavailable from this server, rather than reporting "no changes".
+  returned versions. Present → the server supports enrichment. Absent on every version → it
+  does not; do **not** read the missing column arrays as "no schema change".
+- **Fallback without enrichment:** reconstruct manually, as in the SDK path above — diff
+  adjacent per-version schemas (`describe` with `{"version": N}` is pinned), row counts via
+  checkout — and state that operation names and row deltas are unavailable from this server,
+  rather than reporting "no changes".
 
 ```bash
 curl -s -X POST "{base_url}/v1/table/products/version/list?include_operations=true&descending=true" \
@@ -122,36 +119,28 @@ names depending on its inputs. Per the pinned Lance transaction contract:
 | `Overwrite` | table created, or fully rewritten (`mode="overwrite"`) |
 | `Append` | rows added |
 | `Delete` | rows deleted by predicate |
-| `Update` | rows updated in place, **or any `merge_insert`** — whole-schema merge inserts commit `Update` (vertical), and partial-schema merge inserts commit `Update` that can add or modify columns (horizontal) |
-| `Merge` | new column data merged in: `add_columns`, or an `alter_columns` cast that rewrites the column. **Not** merge-insert, despite the name |
-| `Project` | schema-only projection: columns dropped (`drop_columns`) or renamed / altered without touching data (`alter_columns`) |
-| `CreateIndex` | index metadata changed — built, replaced, **or dropped** (`drop_index` commits `CreateIndex` too, with only removed indices) |
+| `Update` | rows updated in place, **or any `merge_insert`** — a partial-schema merge-insert commits `Update` and can even add columns |
+| `Merge` | new column data written: `add_columns`, or an `alter_columns` cast. **Not** merge-insert, despite the name |
+| `Project` | schema-only reshape: columns dropped, or renamed/altered without touching data |
+| `CreateIndex` | index metadata changed — built, replaced, **or dropped** (`drop_index` commits this too) |
 | `UpdateConfig` | table or column metadata changed (e.g. `update_field_metadata`) |
 | `Rewrite` | compaction — data rearranged, nothing logically changed |
 | `Restore` | the table was rolled back to an earlier version |
 
 Other names exist for lower-level maintenance. Because the names are ambiguous, **never
-attribute a version from the operation name alone** — disambiguate with the returned details:
-
-- Schema change vs. data change: non-empty `added_columns` / `removed_columns`, whatever the
-  name says. An `Update` with column changes is a horizontal merge-insert; a bare `Update` is
-  a row-level change. `Merge` vs. `Project` tells you whether column data was written or only
-  the schema was reshaped.
-- `CreateIndex`: compare the index listing (`index/list`, below) before and after — or across
-  versions via checkout — to tell a build from a replacement from a drop.
+attribute a version from the operation name alone**: a schema change is a non-empty
+`added_columns` / `removed_columns`, whatever the name says, and an `Update` with column
+changes is a partial-schema merge-insert. For `CreateIndex`, compare the index listing
+across versions to tell a build from a replacement from a drop.
 
 ## Common tasks
 
 ### Diff two versions
 
-List the range with `include_operations=true` and read the versions **after** the older one,
-up to and including the newer one: "what changed between vN and vM" means the commits
-vN+1 … vM. Version N's own operation is the baseline — it already happened before the window,
-and reporting it as part of the change set is the usual off-by-one here.
-
-First confirm every version in vN+1 … vM is actually in the listing. If any of them — or the
-baseline vN itself — has been pruned, the diff of what remains is not "what changed between
-vN and vM"; report which versions are missing and mark the answer incomplete.
+"What changed between vN and vM" means the commits vN+1 … vM — version N's own operation is
+the baseline, and including it is the usual off-by-one here. Confirm vN and every version in
+vN+1 … vM are actually in the listing; if any were pruned, report which are missing and mark
+the answer incomplete.
 
 Row-count movement comes from `num_rows`; schema movement from the column diffs. For the full
 schema at either end, describe that version (below) rather than reconstructing it.
@@ -161,23 +150,16 @@ schema at either end, describe that version (below) rather than reconstructing i
 Compare each version's `timestamp` (ISO-8601 `...Z`) or `timestamp_millis` against the cutoff.
 
 - Check the cutoff falls **inside retained history**: if the oldest retained version is
-  already newer than the cutoff, commits between the cutoff and that version have been pruned.
-  Report the answer as "changes within retained history (from vK, \<timestamp\>)", not as
-  everything since the cutoff.
-- Timestamp precision **varies by path**. Local manifests carry nanoseconds, and the SDK's
-  `list_versions()` timestamps preserve that. Over REST you get an RFC 3339 `timestamp` that
-  may include fractional seconds, and/or an integer `timestamp_millis` (the namespace-backed
-  shape). Parse whichever is present at its full precision — truncating to seconds before
-  comparing against the cutoff misfiles commits near the boundary.
-- Even at full precision, near-simultaneous commits can tie — order by version number, never
-  by timestamp, when they do.
-- A **schema** change is a version with a non-empty `added_columns` / `removed_columns` —
-  judge by the arrays, not the operation name (a horizontal merge-insert changes the schema
-  under the name `Update`). An **index** change is `operation == "CreateIndex"`, which covers
-  builds, replacements, and drops alike.
-- Versions with empty column arrays (`Append`, `Delete`, bare `Update`) are data-only. They
-  may well fall inside the window; report them as what they are instead of folding them into
-  a schema-change answer.
+  already newer than the cutoff, older commits have been pruned. Report the answer as
+  "changes within retained history (from vK)", not as everything since the cutoff.
+- Timestamp precision varies: local SDK timestamps carry **nanoseconds**; REST returns an RFC
+  3339 `timestamp` (may include fractional seconds) and/or integer `timestamp_millis`. Compare
+  at full precision — truncating to seconds misfiles commits near the boundary — and when
+  timestamps still tie, order by version number, never by timestamp.
+- Classify by the rules above: non-empty column arrays = schema change, `CreateIndex` = index
+  change (build, replace, or drop), everything else is data-only. Data-only versions inside
+  the window are still part of the answer — report them as what they are instead of folding
+  them into a schema-change answer.
 
 ### Find the version that introduced or dropped a column
 
@@ -254,15 +236,11 @@ Route by writer: UDF column backfills and materialized-view refreshes — the us
 ## Gotchas
 
 - `include_operations`, `descending`, `limit`, and `branch` are **query params**. Putting them
-  in the JSON body does nothing and you silently get the bare response with no operations —
-  indistinguishable from a server that doesn't support the extension. If the capability check
-  fails, rule out this mistake before concluding the server can't do it.
+  in the JSON body silently gets you the bare response — indistinguishable from a server that
+  doesn't support the extension. Rule this mistake out before concluding the server can't do it.
 - `include_operations=true` reads a manifest per version, which is why it is opt-in. Pair it
   with `limit` on tables with long histories.
-- Without `descending=true` the order is implementation-defined — sort by `version` yourself
-  rather than trusting the response order.
-- The SDKs' `list_versions()` / `listVersions()` will not gain the operation fields by passing
-  extra arguments; the REST endpoint is the only route to them.
+- Without `descending=true` the order is implementation-defined — sort by `version` yourself.
 - `restore()` (and `POST /v1/table/{table}/restore`) rolls the table back by committing a new
   version. It is a **write** — never reach for it during a read-only investigation.
 - On local tables, `optimize()` with no arguments is also a pruner (seven-day default). If an
