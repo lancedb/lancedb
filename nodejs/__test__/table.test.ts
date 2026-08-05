@@ -239,7 +239,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
-        totalBytes: 44,
+        // Full on-disk size of the two data files, footers and metadata included.
+        totalBytes: 684,
       });
     });
 

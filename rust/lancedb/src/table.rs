@@ -93,7 +93,6 @@ pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{
@@ -3441,9 +3440,10 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
-        let ds_clone = (*ds).clone();
-        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
-        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
+        // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
+        // would open every data file to read its column metadata, which costs one
+        // IO per fragment and reports 0 for legacy v1 storage.
+        let total_bytes = ds.manifest().summary().total_files_size as usize;
 
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
@@ -3515,7 +3515,12 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files
+    ///
+    /// Read from the manifest, so this excludes index files, deletion files,
+    /// overlay files, and manifests, and it excludes any data file whose size
+    /// the manifest does not record (tables written before writers persisted
+    /// file sizes).
     pub total_bytes: usize,
 
     /// The number of rows in the table
@@ -3576,6 +3581,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -5024,12 +5030,15 @@ mod tests {
 
         let res = table.stats().await.unwrap();
         println!("{:#?}", res);
+        // `total_bytes` is the full on-disk size of the 11 data files, so it is well
+        // above the 2000 bytes of column data these 250 int32 pairs hold: each file
+        // carries its own footer and metadata.
         assert_eq!(
             res,
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 2300,
+                total_bytes: 8925,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -5068,5 +5077,62 @@ mod tests {
                 },
             }
         )
+    }
+
+    /// `stats()` must stay manifest-only. Summing per-field `bytes_on_disk`
+    /// instead opens every data file, so cost would grow with fragment count.
+    #[tokio::test]
+    pub async fn test_stats_does_not_read_data_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+
+        conn.create_table("test_stats_io", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        const NUM_APPENDS: usize = 20;
+        for _ in 0..NUM_APPENDS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Reopen through a tracking store so the counters cover `stats()` alone and
+        // not the writes above.
+        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
+        let table = conn
+            .open_table("test_stats_io")
+            .lance_read_params(ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store_wrapper: Some(wrapper),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        io_stats.lock().unwrap().read_iops = 0;
+
+        let stats = table.stats().await.unwrap();
+        let read_iops = io_stats.lock().unwrap().read_iops;
+
+        assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
+        assert!(stats.total_bytes > 0);
+        // Reading the fragments' data files would take at least one IOP each.
+        assert!(
+            read_iops < stats.fragment_stats.num_fragments as u64,
+            "stats() issued {} read IOPs across {} fragments",
+            read_iops,
+            stats.fragment_stats.num_fragments
+        );
     }
 }

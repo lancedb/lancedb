@@ -3426,7 +3426,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
