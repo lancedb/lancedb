@@ -56,18 +56,17 @@ async function withMockDatabase(
   const server = http.createServer(listener);
   server.listen(8000);
 
-  const db = await connect(
-    "db://dev",
-    Object.assign(
-      {
-        apiKey: "fake",
-        hostOverride: "http://localhost:8000",
-      },
-      connectionOptions,
-    ),
-  );
-
   try {
+    const db = await connect(
+      "db://dev",
+      Object.assign(
+        {
+          apiKey: "fake",
+          hostOverride: "http://localhost:8000",
+        },
+        connectionOptions,
+      ),
+    );
     await callback(db);
   } finally {
     server.close();
@@ -123,6 +122,33 @@ describe("remote connection", () => {
         expect(tableNames).toEqual([]);
       },
     );
+  });
+
+  it("uses LANCEDB_API_KEY when apiKey is not provided", async () => {
+    const previousApiKey = process.env.LANCEDB_API_KEY;
+    process.env.LANCEDB_API_KEY = "env-key";
+
+    try {
+      await withMockDatabase(
+        (req, res) => {
+          expect(req.headers["x-api-key"]).toEqual("env-key");
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async (db) => {
+          const tableNames = await db.tableNames();
+          expect(tableNames).toEqual([]);
+        },
+        { apiKey: undefined },
+      );
+    } finally {
+      if (previousApiKey === undefined) {
+        delete process.env.LANCEDB_API_KEY;
+      } else {
+        process.env.LANCEDB_API_KEY = previousApiKey;
+      }
+    }
   });
 
   it("allows customizing user agent", async () => {
