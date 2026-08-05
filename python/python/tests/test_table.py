@@ -2341,6 +2341,45 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_with_null_on_column(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "users",
+        data=pa.table(
+            {
+                "id": [0, 1],
+                "name": ["Alice", "Bob"],
+                "record_type": [None, "personal"],
+            }
+        ),
+    )
+    new_data = pa.table(
+        {
+            "id": [1, 2],
+            "name": ["Bobby", "Charlie"],
+            "record_type": ["personal", None],
+        }
+    )
+
+    result = (
+        table.merge_insert(["id", "record_type"])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+    assert result.num_deleted_rows == 0
+    expected = pa.table(
+        {
+            "id": [0, 1, 2],
+            "name": ["Alice", "Bobby", "Charlie"],
+            "record_type": [None, "personal", None],
+        }
+    )
+    assert table.to_arrow().sort_by("id") == expected
+
+
 def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
