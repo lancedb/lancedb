@@ -1,22 +1,91 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! A mirroring object store that mirror writes to a secondary object store
+//! Object store helpers and a store that mirrors writes to a secondary store
 
-use std::{fmt::Formatter, sync::Arc};
+use std::{collections::HashMap, fmt::Formatter, sync::Arc};
 
 use futures::{StreamExt, TryFutureExt, stream::BoxStream};
-use lance::io::WrappingObjectStore;
+use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
     UploadPart, path::Path,
 };
+#[cfg(feature = "aws")]
+use object_store::{
+    StaticCredentialProvider,
+    aws::{AmazonS3ConfigKey, AwsCredential},
+};
+#[cfg(feature = "aws")]
+use std::str::FromStr;
 
 use async_trait::async_trait;
 
 #[cfg(test)]
 pub mod io_tracking;
+
+#[cfg(feature = "aws")]
+fn explicit_aws_credentials(
+    storage_options: &HashMap<String, String>,
+) -> Option<object_store::aws::AwsCredentialProvider> {
+    let aws_options = storage_options
+        .iter()
+        .filter_map(|(key, value)| {
+            AmazonS3ConfigKey::from_str(&key.to_ascii_lowercase())
+                .ok()
+                .map(|key| (key, value))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let key_id = aws_options.get(&AmazonS3ConfigKey::AccessKeyId)?;
+    let secret_key = aws_options.get(&AmazonS3ConfigKey::SecretAccessKey)?;
+    let token = aws_options
+        .get(&AmazonS3ConfigKey::Token)
+        .map(|token| (*token).clone());
+
+    Some(Arc::new(StaticCredentialProvider::new(AwsCredential {
+        key_id: (*key_id).clone(),
+        secret_key: (*secret_key).clone(),
+        token,
+    })))
+}
+
+/// Apply storage options to object store parameters.
+///
+/// Explicit AWS credentials are also installed as a single credential provider. This keeps
+/// an ambient `AWS_SESSION_TOKEN` from being combined with an explicitly supplied access key
+/// and secret key when Lance adds missing options from the environment.
+pub(crate) fn set_storage_options(
+    params: &mut ObjectStoreParams,
+    storage_options: HashMap<String, String>,
+    provider: Option<Arc<dyn StorageOptionsProvider>>,
+) {
+    #[cfg(feature = "aws")]
+    if provider.is_none() && params.aws_credentials.is_none() {
+        params.aws_credentials = explicit_aws_credentials(&storage_options);
+    }
+
+    params.storage_options_accessor = match (storage_options.is_empty(), provider) {
+        (true, None) => None,
+        (true, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(provider))),
+        (false, None) => Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            storage_options,
+        ))),
+        (false, Some(provider)) => Some(Arc::new(
+            StorageOptionsAccessor::with_initial_and_provider(storage_options, provider),
+        )),
+    };
+}
+
+pub(crate) fn object_store_params_from_storage_options(
+    storage_options: HashMap<String, String>,
+) -> ObjectStoreParams {
+    let mut params = ObjectStoreParams::default();
+    set_storage_options(&mut params, storage_options, None);
+    params
+}
 
 #[derive(Debug)]
 struct MirroringObjectStore {
@@ -181,6 +250,52 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
             primary,
             secondary: self.secondary.clone(),
         })
+    }
+}
+
+#[cfg(all(test, feature = "aws"))]
+mod credential_tests {
+    use super::*;
+    use lance_io::object_store::providers::aws::build_aws_credential;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn explicit_aws_credentials_do_not_inherit_an_ambient_session_token() {
+        let storage_options = HashMap::from([
+            ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+            (
+                "aws_secret_access_key".to_string(),
+                "explicit-secret".to_string(),
+            ),
+        ]);
+        let params = object_store_params_from_storage_options(storage_options.clone());
+
+        // Simulate Lance's environment merge, which adds AWS_SESSION_TOKEN when running in
+        // Lambda. The explicit provider must remain an atomic two-part credential and take
+        // precedence over the mixed storage options.
+        let mut merged_options = storage_options
+            .into_iter()
+            .map(|(key, value)| (AmazonS3ConfigKey::from_str(&key).unwrap(), value))
+            .collect::<HashMap<_, _>>();
+        merged_options.insert(
+            AmazonS3ConfigKey::Token,
+            "lambda-execution-role-token".to_string(),
+        );
+
+        let (provider, _) = build_aws_credential(
+            Duration::from_secs(60),
+            params.aws_credentials,
+            Some(&merged_options),
+            Some("us-east-1".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+        let credential = provider.get_credential().await.unwrap();
+
+        assert_eq!(credential.key_id, "explicit-key");
+        assert_eq!(credential.secret_key, "explicit-secret");
+        assert_eq!(credential.token, None);
     }
 }
 

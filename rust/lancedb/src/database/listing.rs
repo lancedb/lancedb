@@ -13,7 +13,7 @@ use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
-use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+use lance_io::object_store::StorageOptionsProvider;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -23,7 +23,9 @@ use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
-use crate::io::object_store::MirroringObjectStoreWrapper;
+use crate::io::object_store::{
+    MirroringObjectStoreWrapper, object_store_params_from_storage_options, set_storage_options,
+};
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
@@ -399,16 +401,7 @@ impl ListingDatabase {
                 url.set_query(None);
                 let plain_uri = url.to_string();
 
-                let os_params = ObjectStoreParams {
-                    storage_options_accessor: if storage_options.is_empty() {
-                        None
-                    } else {
-                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
-                            storage_options.clone(),
-                        )))
-                    },
-                    ..Default::default()
-                };
+                let os_params = object_store_params_from_storage_options(storage_options.clone());
                 let (object_store, _) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     &plain_uri,
@@ -551,16 +544,8 @@ impl ListingDatabase {
                     .session
                     .clone()
                     .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-                let os_params = ObjectStoreParams {
-                    storage_options_accessor: if options.storage_options.is_empty() {
-                        None
-                    } else {
-                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
-                            options.storage_options.clone(),
-                        )))
-                    },
-                    ..Default::default()
-                };
+                let os_params =
+                    object_store_params_from_storage_options(options.storage_options.clone());
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     &storage_base_uri,
@@ -719,16 +704,8 @@ impl ListingDatabase {
     }
 
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
-        let object_store_params = ObjectStoreParams {
-            storage_options_accessor: if self.storage_options.is_empty() {
-                None
-            } else {
-                Some(Arc::new(StorageOptionsAccessor::with_static_options(
-                    self.storage_options.clone(),
-                )))
-            },
-            ..Default::default()
-        };
+        let object_store_params =
+            object_store_params_from_storage_options(self.storage_options.clone());
         let mut uri = self.uri.clone();
         if let Some(query_string) = &self.query_string {
             uri.push_str(&format!("?{}", query_string));
@@ -834,12 +811,11 @@ impl ListingDatabase {
             if !self.storage_options.is_empty() {
                 self.inherit_storage_options(&mut storage_options);
             }
-            let accessor = if let Some(ref provider) = self.storage_options_provider {
-                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider.clone())
-            } else {
-                StorageOptionsAccessor::with_static_options(storage_options)
-            };
-            store_params.storage_options_accessor = Some(Arc::new(accessor));
+            set_storage_options(
+                store_params,
+                storage_options,
+                self.storage_options_provider.clone(),
+            );
         }
 
         write_params.data_storage_version = storage_version_override
@@ -1102,16 +1078,7 @@ impl Database for ListingDatabase {
 
         validate_table_name(&request.target_table_name)?;
 
-        let storage_params = ObjectStoreParams {
-            storage_options_accessor: if self.storage_options.is_empty() {
-                None
-            } else {
-                Some(Arc::new(StorageOptionsAccessor::with_static_options(
-                    self.storage_options.clone(),
-                )))
-            },
-            ..Default::default()
-        };
+        let storage_params = object_store_params_from_storage_options(self.storage_options.clone());
         let read_params = ReadParams {
             store_options: Some(storage_params.clone()),
             session: Some(self.session.clone()),
@@ -1188,12 +1155,7 @@ impl Database for ListingDatabase {
                 .as_ref()
                 .and_then(|a| a.provider().cloned());
             let provider = self.storage_options_provider.clone().or(request_provider);
-            let accessor = if let Some(provider) = provider {
-                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider)
-            } else {
-                StorageOptionsAccessor::with_static_options(storage_options)
-            };
-            store_params.storage_options_accessor = Some(Arc::new(accessor));
+            set_storage_options(store_params, storage_options, provider);
         }
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
@@ -1297,6 +1259,7 @@ mod tests {
     use crate::table::WriteOptions;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use lance_io::object_store::StorageOptionsAccessor;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
