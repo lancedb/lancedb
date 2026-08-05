@@ -117,6 +117,14 @@ _MODEL_BACKED_TOKENIZER_ERRORS = (
     "Failed to initialize default tokenizer",
 )
 
+_PYLANCE_INSTALL_ERROR = (
+    "The lance library is required to use this function. Install the PyLance "
+    "extra for the distribution already installed: "
+    '`pip install "lancedb[pylance]"` for `lancedb`, or '
+    '`pip install "lancedb-compat[pylance]"` for `lancedb-compat`. '
+    "Do not install both distributions because they share the `lancedb` namespace."
+)
+
 
 def _add_unique_note(exception: BaseException, note: str) -> None:
     existing_notes = getattr(exception, "__notes__", ()) or ()
@@ -2249,10 +2257,7 @@ class LanceTable(Table):
         try:
             import lance
         except ImportError:
-            raise ImportError(
-                "The lance library is required to use this function. "
-                "Please install with `pip install pylance`."
-            )
+            raise ImportError(_PYLANCE_INSTALL_ERROR)
 
         branch = self.current_branch()
         version = None if branch is not None else self.version
@@ -4757,10 +4762,7 @@ class AsyncTable:
         try:
             import lance
         except ImportError:
-            raise ImportError(
-                "The lance library is required to use this function. "
-                "Please install with `pip install pylance`."
-            )
+            raise ImportError(_PYLANCE_INSTALL_ERROR)
 
         # lance.dataset() can't open a branch directly, so open the base table
         # and check out the branch ref (a None branch resolves to main).
