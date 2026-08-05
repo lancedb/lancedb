@@ -23,9 +23,12 @@ capability check below before you plan an approach.
 - Versions start at 1 and increase by one per commit. Every mutation commits: creating a
   table, appending or deleting rows, adding or dropping columns, building an index, editing
   column or table metadata.
-- Pruning removes versions but never renumbers them. Sort the listing by `version`: a start
-  above 1 or a gap marks where retained history ends — treat what's missing as unknown, not
-  as "nothing happened".
+- Pruning removes versions but never renumbers them. Sort the listing by `version`: a gap
+  means pruned versions — treat what's missing as unknown, not as "nothing happened".
+- A start above 1 means pruning **only on the main branch**. A branch is created by
+  shallow-cloning a source version, so its chain legitimately begins there — versions below
+  it live in the parent, not the branch. Establish the branch's source version first, and
+  only read a higher-than-expected start as retention loss relative to that baseline.
 - A version is a **manifest snapshot, not a diff**. "What changed at version N" is always
   derived by comparing N against N-1 — which is what `include_operations` does server-side.
 - Branches have their own version chains. Pass the branch explicitly to read one; see
@@ -48,7 +51,10 @@ await t.listVersions(); // [{ version, timestamp: Date, metadata }]
 
 **Limitation worth planning around:** both SDKs return only `version`, `timestamp`, and
 `metadata`. Neither tells you *what happened* at a version — no operation name, no row count,
-no schema diff. If the task is "what changed", the SDK list alone cannot answer it. Either
+no schema diff. On remote tables the SDKs also expose **no continuation token**, so if the
+server paginated the listing there is no way to fetch the rest — don't present a remote SDK
+listing as the complete chain; use REST and follow `page_token` when completeness matters.
+If the task is "what changed", the SDK list alone cannot answer it. Either
 use the REST endpoint below, or reconstruct it yourself version by version — checkout each
 version and read `schema` / `count_rows()` and diff by hand (N round trips, and still no
 operation names).
@@ -67,15 +73,23 @@ The options are **query parameters, not body fields**. The body is `{}`.
 | `limit=N`, `page_token=...` | paginate | pinned |
 | `branch=<name>` | that branch's chain instead of main's | pinned |
 
+Pagination is part of completeness: a `page_token` in the **response** means another page
+exists. Keep requesting until it is absent — every range and retention check in this guide
+assumes the full chain was loaded, so a listing cut short by pagination is an incomplete audit.
+
 `include_operations` and the fields it adds are **not part of the pinned Lance Namespace
 contract** (v0.8.6 defines only `branch`, `page_token`, `limit`, `descending`, and its
 `TableVersion` has no operation, row-count, or column fields). A compliant namespace-backed
 or older server ignores the param and returns the bare response — which looks exactly like
 "no operations happened", so you must distinguish the two cases before interpreting anything:
 
-- **Capability check:** send `include_operations=true` and look for the `operation` key on the
-  returned versions. Present → the server supports enrichment. Absent on every version → it
-  does not; do **not** read the missing column arrays as "no schema change".
+- **Capability check — per field:** send `include_operations=true` and check each field you
+  need. `operation` present proves only the operation field; it does **not** establish the
+  column arrays or their omission semantics — an extension version can emit `operation` while
+  never emitting schema fields. Treat a missing array as "no schema change" only when some
+  retained version demonstrates the field family (version 1, when retained, always lists its
+  original columns as `added_columns`). Otherwise absence means nothing — make adjacent
+  per-version schema comparison authoritative for schema questions.
 - **Fallback without enrichment:** reconstruct manually, as in the SDK path above — diff
   adjacent per-version schemas (`describe` with `{"version": N}` is pinned), row counts via
   checkout — and state that operation names and row deltas are unavailable from this server,
@@ -104,9 +118,9 @@ curl -s -X POST "{base_url}/v1/table/products/version/list?include_operations=tr
 }
 ```
 
-On a server that passed the capability check, `added_columns` / `removed_columns` are
-**omitted entirely** when that version changed no columns — there, a missing key means
-"no schema change", not an error. Without the check, a missing key means nothing.
+On a server that demonstrably emits the column arrays, `added_columns` / `removed_columns`
+are **omitted entirely** when that version changed no columns — there, a missing key means
+"no schema change", not an error. Without that demonstration, a missing key means nothing.
 
 ## Reading the operation names
 
@@ -152,14 +166,20 @@ Compare each version's `timestamp` (ISO-8601 `...Z`) or `timestamp_millis` again
 - Check the cutoff falls **inside retained history**: if the oldest retained version is
   already newer than the cutoff, older commits have been pruned. Report the answer as
   "changes within retained history (from vK)", not as everything since the cutoff.
-- Timestamp precision varies: local SDK timestamps carry **nanoseconds**; REST returns an RFC
-  3339 `timestamp` (may include fractional seconds) and/or integer `timestamp_millis`. Compare
-  at full precision — truncating to seconds misfiles commits near the boundary — and when
-  timestamps still tie, order by version number, never by timestamp.
-- Classify by the rules above: non-empty column arrays = schema change, `CreateIndex` = index
-  change (build, replace, or drop), everything else is data-only. Data-only versions inside
-  the window are still part of the answer — report them as what they are instead of folding
-  them into a schema-change answer.
+- Timestamp precision and timezone **vary by surface**. Lance manifests store nanoseconds,
+  but Python's `list_versions()` returns a **naive local-time** datetime at microsecond
+  precision, and TypeScript returns a JS `Date` (milliseconds). REST returns an RFC 3339
+  `timestamp` (may include fractional seconds) and/or integer `timestamp_millis`. Normalize
+  both operands to UTC or integer epoch units before comparing — a naive local datetime
+  compared against a `Z` cutoff is off by the machine's UTC offset — and keep whatever
+  sub-second precision the surface provides. When timestamps tie, order by version number,
+  never by timestamp.
+- Keep the categories separate when classifying: **schema** (non-empty column arrays),
+  **index** (`CreateIndex`), **data** (`Append`, `Delete`, `Update` with empty arrays),
+  **metadata** (`UpdateConfig`), **maintenance/rollback** (`Rewrite`, `Restore`, clone and
+  reservation internals), and **unknown** for names not in the table above. Everything inside
+  the window is part of the answer — report each version as what it is instead of folding
+  them all into a schema-change answer.
 
 ### Find the version that introduced or dropped a column
 
@@ -167,9 +187,10 @@ Scan the history for the version whose `added_columns` (or `removed_columns`) na
 that **version 1 lists every original column as added**, since it is diffed against an empty
 schema — so a base column's "added" version is 1, and only later additions are interesting.
 
-If retained history no longer starts at version 1 and no retained version names the column,
-the change predates retained history — say "introduced at or before vK (earliest retained)"
-rather than claiming a version. The earliest retained version's own diff is against a pruned
+If retained history doesn't start at version 1 and no retained version names the column, the
+change predates what you can see — on a branch, continue the search in the parent chain below
+the branch's source version; otherwise say "introduced at or before vK (earliest retained)"
+rather than claiming a version. The earliest retained version's own diff is against a missing
 predecessor, so don't trust its `added_columns` as a real change set either.
 
 ### Read the table as it was
@@ -220,10 +241,10 @@ To attribute a commit to a job, in order of strength:
 
 1. **The version's own `metadata`** (in the version listing): writers can stamp commit
    metadata, and a job id or job name there is a documented link.
-2. **A documented output link on the job**: an explicit committed-version or manifest
-   reference in the job's `status`/output (both are job-type-specific — look for the field,
-   don't assume it). Geneva `JobRecord`s carry a `manifest_id` you can compare against the
-   version's manifest.
+2. **A documented output link on the job**: an explicit committed-version reference in the
+   job's `status`/output (job-type-specific — look for the field, don't assume it). Geneva's
+   `manifest_id` is **opaque** — there is no documented mapping between it and a version's
+   `manifest_path` or `e_tag`, so it is not such a link; Geneva jobs stay at level 3.
 3. **Time-window matching** — the commit's timestamp falls between the job's start and
    completion, on the same table, with an operation type consistent with the job. Report
    this as "consistent with job X", never as "caused by job X".
