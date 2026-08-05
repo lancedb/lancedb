@@ -65,6 +65,40 @@ def _check_s3_bucket_with_dots(
         )
 
 
+def _normalize_s3_storage_options(
+    uri: str, storage_options: Optional[Dict[str, str]]
+) -> Optional[Dict[str, str]]:
+    """Translate Python S3 compatibility options to native storage options."""
+    if not isinstance(uri, str) or not uri.startswith(("s3://", "s3+ddb://")):
+        return storage_options
+    if not storage_options:
+        return storage_options
+
+    verify_key = next(
+        (key for key in storage_options if key.casefold() == "verify"), None
+    )
+    if verify_key is None:
+        return storage_options
+
+    normalized = dict(storage_options)
+    verify = normalized.pop(verify_key)
+    has_native_option = any(
+        key.casefold() == "allow_invalid_certificates" for key in normalized
+    )
+    if not has_native_option:
+        verify_value = verify.casefold()
+        if verify_value == "false":
+            normalized["allow_invalid_certificates"] = "true"
+        elif verify_value == "true":
+            normalized["allow_invalid_certificates"] = "false"
+        else:
+            raise ValueError(
+                "S3 storage option 'verify' must be 'true' or 'false'; "
+                "use 'allow_invalid_certificates' to configure TLS verification"
+            )
+    return normalized
+
+
 def connect(
     uri: Optional[URI] = None,
     *,
@@ -120,6 +154,11 @@ def connect(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
+
+        For S3-compatible endpoints with self-signed TLS certificates, set
+        ``allow_invalid_certificates`` to ``"true"``. The boto3-compatible
+        ``verify="false"`` spelling is also accepted. Disabling certificate
+        validation is insecure and should only be used for testing.
     manifest_enabled : bool, default False
         When true for local/native connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
@@ -184,6 +223,8 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
+    storage_options = _normalize_s3_storage_options(str(uri), storage_options)
+
     if namespace_client_impl is not None:
         if namespace_client_properties is None:
             raise ValueError(
@@ -426,6 +467,11 @@ async def connect_async(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
+
+        For S3-compatible endpoints with self-signed TLS certificates, set
+        ``allow_invalid_certificates`` to ``"true"``. The boto3-compatible
+        ``verify="false"`` spelling is also accepted. Disabling certificate
+        validation is insecure and should only be used for testing.
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -467,6 +513,8 @@ async def connect_async(
     conn : AsyncConnection
         A connection to a LanceDB database.
     """
+    storage_options = _normalize_s3_storage_options(str(uri), storage_options)
+
     if read_consistency_interval is not None:
         read_consistency_interval_secs = read_consistency_interval.total_seconds()
     else:

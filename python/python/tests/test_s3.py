@@ -23,6 +23,48 @@ CONFIG = {
 }
 
 
+def test_s3_verify_false_is_normalized(monkeypatch):
+    captured_options = None
+
+    async def capture_connect(*args):
+        nonlocal captured_options
+        captured_options = args[6]
+        return object()
+
+    monkeypatch.setattr("lancedb.db.lancedb_connect", capture_connect)
+    options = {"endpoint": "https://minio.example", "verify": "false"}
+
+    lancedb.connect("s3://bucket/database", storage_options=options)
+
+    assert captured_options == {
+        "endpoint": "https://minio.example",
+        "allow_invalid_certificates": "true",
+    }
+    assert options == {"endpoint": "https://minio.example", "verify": "false"}
+
+
+@pytest.mark.asyncio
+async def test_s3_native_tls_option_takes_precedence(monkeypatch):
+    captured_options = None
+
+    async def capture_connect(*args):
+        nonlocal captured_options
+        captured_options = args[6]
+        return object()
+
+    monkeypatch.setattr(lancedb, "lancedb_connect", capture_connect)
+
+    await lancedb.connect_async(
+        "s3://bucket/database",
+        storage_options={
+            "verify": "false",
+            "allow_invalid_certificates": "false",
+        },
+    )
+
+    assert captured_options == {"allow_invalid_certificates": "false"}
+
+
 def get_boto3_client(*args, **kwargs):
     import boto3
 
