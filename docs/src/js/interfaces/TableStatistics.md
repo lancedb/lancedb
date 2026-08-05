@@ -44,4 +44,7 @@ The number of rows in the table
 totalBytes: number;
 ```
 
-The total number of bytes in the table
+The total size, in bytes, of the table's data files
+
+Read from the manifest, so this excludes index files, deletion files,
+overlay files, and manifests.
