@@ -13,7 +13,7 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=10.1.0-beta.1", default-features = false, "tag" = "v10.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=10.1.0-beta.1", default-features = false, features = ["geo"], "tag" = "v10.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 lance-core = { "version" = "=10.1.0-beta.1", "tag" = "v10.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 lance-datagen = { "version" = "=10.1.0-beta.1", "tag" = "v10.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 lance-file = { "version" = "=10.1.0-beta.1", "tag" = "v10.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }

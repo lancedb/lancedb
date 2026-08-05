@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod hybrid;
+mod sql;
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -561,8 +562,8 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
-        self.mut_query()
-            .add_filter(QueryFilter::Sql(filter.as_ref().to_string()));
+        let filter = sql::rewrite_st_dwithin(filter.as_ref());
+        self.mut_query().add_filter(QueryFilter::Sql(filter));
         self
     }
 
@@ -1648,8 +1649,8 @@ mod tests {
     use super::*;
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
-        types::Float32Type,
+        FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch, StringArray,
+        cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -2022,6 +2023,46 @@ mod tests {
         // Reject bad filter
         let result = table.query().only_if("id = 0 AND").execute().await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_st_dwithin_filter() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let batch = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int32Array::from_iter_values([1, 2, 3])) as _),
+            (
+                "x",
+                Arc::new(Float64Array::from_iter_values([0.0, 1.0, 3.0])) as _,
+            ),
+            (
+                "y",
+                Arc::new(Float64Array::from_iter_values([0.0, 1.0, 4.0])) as _,
+            ),
+        ])
+        .unwrap();
+
+        let table = connect(uri)
+            .execute()
+            .await
+            .unwrap()
+            .create_table("points", batch)
+            .execute()
+            .await
+            .unwrap();
+        let batches = table
+            .query()
+            .only_if("ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let ids = batch["id"].as_primitive::<Int32Type>();
+
+        assert_eq!(ids.values(), &[1, 2]);
     }
 
     fn make_non_empty_batches() -> Box<dyn arrow_array::RecordBatchReader + Send> {
