@@ -8,6 +8,14 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
+The core package does not require PyLance. Install LanceDB's optional PyLance
+dependency when you need access to the underlying Lance dataset or
+GPU-accelerated indexing:
+
+```bash
+pip install "lancedb[pylance]"
+```
+
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
 The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C) for full performance on modern hardware. Pre-Haswell hosts — Intel Sandy Bridge / Ivy Bridge / Westmere; AMD Bulldozer / Piledriver / Steamroller — don't have AVX2 and crash with `Illegal instruction` at `import lancedb`.

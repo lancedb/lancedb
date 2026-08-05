@@ -2251,7 +2251,7 @@ class LanceTable(Table):
         except ImportError:
             raise ImportError(
                 "The lance library is required to use this function. "
-                "Please install with `pip install pylance`."
+                'Please install with `pip install "lancedb[pylance]"`.'
             )
 
         branch = self.current_branch()
@@ -4759,7 +4759,7 @@ class AsyncTable:
         except ImportError:
             raise ImportError(
                 "The lance library is required to use this function. "
-                "Please install with `pip install pylance`."
+                'Please install with `pip install "lancedb[pylance]"`.'
             )
 
         # lance.dataset() can't open a branch directly, so open the base table

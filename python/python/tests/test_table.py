@@ -1258,6 +1258,14 @@ def test_branch_to_lance_targets_branch(tmp_path):
     assert table.to_lance().count_rows() == 1
 
 
+def test_to_lance_recommends_pylance_extra(tmp_db):
+    table = tmp_db.create_table("t", [{"i": 1}])
+
+    with patch("builtins.__import__", side_effect=ImportError):
+        with pytest.raises(ImportError, match=r"lancedb\[pylance\]"):
+            table.to_lance()
+
+
 @pytest.mark.asyncio
 async def test_async_to_lance(tmp_path):
     pytest.importorskip("lance")
@@ -1267,6 +1275,16 @@ async def test_async_to_lance(tmp_path):
     dataset = await table.to_lance()
 
     assert dataset.count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_recommends_pylance_extra(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    with patch("builtins.__import__", side_effect=ImportError):
+        with pytest.raises(ImportError, match=r"lancedb\[pylance\]"):
+            await table.to_lance()
 
 
 @pytest.mark.asyncio

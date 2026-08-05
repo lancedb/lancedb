@@ -17,6 +17,14 @@ The general flow of using the API is:
 pip install lancedb
 ```
 
+The core package does not require PyLance. Install LanceDB's optional PyLance
+dependency when you need access to the underlying Lance dataset or
+GPU-accelerated indexing:
+
+```shell
+pip install "lancedb[pylance]"
+```
+
 The following methods describe the synchronous API client. There
 is also an [asynchronous API client](#connections-asynchronous).
 
