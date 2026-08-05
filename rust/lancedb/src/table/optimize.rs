@@ -214,13 +214,13 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use rstest::rstest;
     use std::sync::Arc;
 
     use crate::connect;
-    use crate::index::{Index, scalar::BTreeIndexBuilder};
+    use crate::index::{Index, scalar::BTreeIndexBuilder, vector::IvfHnswSqIndexBuilder};
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
@@ -501,6 +501,60 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..400).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_all_with_ivf_hnsw_sq_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let dimension = 8;
+        let item_field = Arc::new(Field::new("item", DataType::Float32, true));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            DataType::FixedSizeList(item_field.clone(), dimension),
+            false,
+        )]));
+
+        let make_batch = |offset: usize| {
+            let values = Float32Array::from_iter_values(
+                (offset * dimension as usize..(offset + 128) * dimension as usize)
+                    .map(|value| value as f32),
+            );
+            let vectors =
+                FixedSizeListArray::try_new(item_field.clone(), dimension, Arc::new(values), None)
+                    .unwrap();
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(vectors)]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_hnsw_optimize", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        for offset in [128, 256, 384] {
+            table.add(make_batch(offset)).execute().await.unwrap();
+        }
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfHnswSq(IvfHnswSqIndexBuilder::default()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let stats = table.optimize(OptimizeAction::All).await.unwrap();
+        assert!(stats.compaction.unwrap().fragments_removed > 0);
+
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(indices[0].index_type, crate::index::IndexType::IvfHnswSq);
+
+        let index_stats = table.index_stats(&indices[0].name).await.unwrap().unwrap();
+        assert_eq!(index_stats.num_indexed_rows, 512);
+        assert_eq!(index_stats.num_unindexed_rows, 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
     }
 
     #[tokio::test]
