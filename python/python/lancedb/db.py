@@ -707,11 +707,9 @@ class LanceDBConnection(DBConnection):
         self._namespace_client_properties = namespace_client_properties
         if _inner is not None:
             self._conn = _inner
-            # Resolve this once while constructing the wrapper. Debuggers inspect
-            # properties while the background loop thread is suspended.
-            self._read_consistency_interval = LOOP.run(
-                AsyncConnection(_inner).get_read_consistency_interval()
-            )
+            # Native-derived wrappers resolve this in their async reconstruction
+            # path so construction never synchronously re-enters LOOP.
+            self._read_consistency_interval = read_consistency_interval
             self._cached_namespace_client = None
             return
 
@@ -779,8 +777,16 @@ class LanceDBConnection(DBConnection):
         return self._conn.uri
 
     @classmethod
-    def from_inner(cls, inner: LanceDbConnection):
-        return cls(None, _inner=inner)
+    def from_inner(
+        cls,
+        inner: LanceDbConnection,
+        read_consistency_interval: Optional[timedelta],
+    ):
+        return cls(
+            None,
+            read_consistency_interval=read_consistency_interval,
+            _inner=inner,
+        )
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"

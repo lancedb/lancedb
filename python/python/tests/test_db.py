@@ -83,7 +83,7 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     consistency_interval = timedelta(seconds=5)
     db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
-    db_from_inner = LanceDBConnection.from_inner(db._inner)
+    db_from_inner = LanceDBConnection.from_inner(db._inner, consistency_interval)
 
     def fail_run(*args, **kwargs):
         raise AssertionError("properties should not use the Python background loop")
