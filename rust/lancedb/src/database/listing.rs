@@ -24,6 +24,8 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+#[cfg(any(windows, test))]
+use crate::io::object_store::register_windows_file_store;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
@@ -362,6 +364,9 @@ impl ListingDatabase {
     ) -> Result<String> {
         match url::Url::parse(uri) {
             Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                #[cfg(windows)]
+                register_windows_file_store(&session.store_registry());
                 let (object_store, _) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     uri,
@@ -399,6 +404,14 @@ impl ListingDatabase {
                 url.set_query(None);
                 let plain_uri = url.to_string();
 
+                #[cfg(windows)]
+                if url.scheme() == "file" {
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
+                        path: plain_uri.clone(),
+                    })?;
+                    register_windows_file_store(&session.store_registry());
+                }
+
                 let os_params = ObjectStoreParams {
                     storage_options_accessor: if storage_options.is_empty() {
                         None
@@ -424,6 +437,9 @@ impl ListingDatabase {
                 Ok(plain_uri)
             }
             Err(_) => {
+                Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                #[cfg(windows)]
+                register_windows_file_store(&session.store_registry());
                 let (object_store, _) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     uri,
@@ -551,6 +567,13 @@ impl ListingDatabase {
                     .session
                     .clone()
                     .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+                #[cfg(windows)]
+                if url.scheme() == "file" {
+                    Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
+                        path: storage_base_uri.clone(),
+                    })?;
+                    register_windows_file_store(&session.store_registry());
+                }
                 let os_params = ObjectStoreParams {
                     storage_options_accessor: if options.storage_options.is_empty() {
                         None
@@ -626,6 +649,9 @@ impl ListingDatabase {
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        Self::try_create_dir(path).context(CreateDirSnafu { path })?;
+        #[cfg(windows)]
+        register_windows_file_store(&session.store_registry());
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,
@@ -662,20 +688,16 @@ impl ListingDatabase {
 
     /// Try to create a local directory to store the lancedb dataset
     fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
-        // Strip file:// or file:/ scheme if present to get the actual filesystem path
-        // Note: file:///path becomes file:/path after url.to_string(), so we need to handle both
-        let fs_path = if let Some(stripped) = path.strip_prefix("file://") {
-            // file:///path or file://host/path format
-            stripped
-        } else if let Some(stripped) = path.strip_prefix("file:") {
-            // file:/path format (from url.to_string() on file:///path)
-            // The path after "file:" should already start with "/" for absolute paths
-            stripped
-        } else {
-            path
+        let filesystem_path = match url::Url::parse(path) {
+            Ok(url) if url.scheme() == "file" => url.to_file_path().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unable to convert URL '{url}' to a local path"),
+                )
+            })?,
+            _ => Path::new(path).to_path_buf(),
         };
-
-        let path = Path::new(fs_path);
+        let path = filesystem_path.as_path();
         if !path.try_exists()? {
             create_dir_all(path)?;
         }
@@ -1320,6 +1342,61 @@ mod tests {
             .unwrap();
 
         (tempdir, db)
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_with_prefixed_file_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let session = Arc::new(lance::session::Session::default());
+        register_windows_file_store(&session.store_registry());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(batch),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert_eq!(table_names, vec!["test"]);
+
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 
     #[tokio::test]
@@ -2376,18 +2453,14 @@ mod tests {
     /// as `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.
-    ///
-    /// Skipped on Windows: `try_create_dir` does not understand
-    /// `file:///C:/…` paths so `connect_with_options` fails before
-    /// even reaching the URL-mutation logic. The pure URL-mutation
-    /// invariant is covered by
-    /// `test_capture_query_treats_empty_as_none` above, which runs
-    /// on all platforms.
-    #[cfg(not(windows))]
     #[tokio::test]
     async fn test_table_uri_url_path_has_no_trailing_question_mark() {
         let tempdir = tempdir().unwrap();
-        let uri = format!("file://{}", tempdir.path().to_str().unwrap());
+        let uri = url::Url::from_directory_path(tempdir.path())
+            .unwrap()
+            .to_string()
+            .trim_end_matches('/')
+            .to_string();
 
         let request = ConnectRequest {
             uri: uri.clone(),

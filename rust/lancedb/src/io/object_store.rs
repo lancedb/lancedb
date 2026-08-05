@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! A mirroring object store that mirror writes to a secondary object store
+//! Object-store providers and adapters used by LanceDB.
 
 use std::{fmt::Formatter, sync::Arc};
 
@@ -15,8 +15,185 @@ use object_store::{
 
 use async_trait::async_trait;
 
+#[cfg(any(windows, test))]
+use lance_core::{Error as LanceError, Result as LanceResult};
+#[cfg(any(windows, test))]
+use lance_io::object_store::{
+    DEFAULT_LOCAL_IO_PARALLELISM, ObjectStoreParams, ObjectStoreProvider, ObjectStoreRegistry,
+    StorageOptions,
+};
+#[cfg(any(windows, test))]
+use object_store::local::LocalFileSystem;
+#[cfg(any(windows, test))]
+use url::Url;
+
 #[cfg(test)]
 pub mod io_tracking;
+
+/// A file-store provider that anchors each request at its filesystem root.
+///
+/// On Windows, an unprefixed [`LocalFileSystem`] cannot service UNC paths. Its
+/// conversion to an object-store [`Path`] drops the UNC host, so subsequent I/O
+/// is directed at a different local path. Anchoring the store at the drive or
+/// UNC-share root keeps the UNC authority in the filesystem prefix and exposes
+/// only paths relative to that prefix to `object_store`.
+///
+/// The returned Lance store deliberately uses the `file-object-store` scheme.
+/// The regular `file` scheme enables optimized readers and writers that bypass
+/// the configured object store and would reintroduce the broken UNC conversion.
+#[cfg(any(windows, test))]
+#[derive(Debug, Default)]
+struct PrefixedFileStoreProvider;
+
+#[cfg(any(windows, test))]
+impl PrefixedFileStoreProvider {
+    fn root_and_relative_path(url: &Url) -> LanceResult<(std::path::PathBuf, Path)> {
+        let filesystem_path = url.to_file_path().map_err(|_| {
+            LanceError::invalid_input(format!("Unable to convert URL '{url}' to a local path"))
+        })?;
+
+        let root = filesystem_path.ancestors().last().ok_or_else(|| {
+            LanceError::invalid_input(format!(
+                "Local path '{}' has no filesystem root",
+                filesystem_path.display()
+            ))
+        })?;
+
+        let relative = filesystem_path.strip_prefix(root).map_err(|_| {
+            LanceError::invalid_input(format!(
+                "Local path '{}' is not beneath store root '{}'",
+                filesystem_path.display(),
+                root.display()
+            ))
+        })?;
+        let relative = relative
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(part) => Some(part),
+                _ => None,
+            })
+            .map(|part| {
+                part.to_str().ok_or_else(|| {
+                    LanceError::invalid_input(format!(
+                        "Local path '{}' is not valid UTF-8",
+                        filesystem_path.display()
+                    ))
+                })
+            })
+            .collect::<LanceResult<Vec<_>>>()?
+            .join("/");
+
+        Ok((root.to_path_buf(), Path::parse(relative)?))
+    }
+}
+
+#[cfg(any(windows, test))]
+#[async_trait]
+impl ObjectStoreProvider for PrefixedFileStoreProvider {
+    async fn new_store(
+        &self,
+        base_path: Url,
+        params: &ObjectStoreParams,
+    ) -> LanceResult<lance::io::ObjectStore> {
+        let (root, _) = Self::root_and_relative_path(&base_path)?;
+        let store = Arc::new(LocalFileSystem::new_with_prefix(root)?);
+        let location = Url::parse("file-object-store:///").expect("static URL must be valid");
+        let storage_options =
+            StorageOptions::new(params.storage_options().cloned().unwrap_or_default());
+
+        Ok(lance::io::ObjectStore::new(
+            store,
+            location,
+            params.block_size,
+            params.object_store_wrapper.clone(),
+            false,
+            false,
+            DEFAULT_LOCAL_IO_PARALLELISM,
+            storage_options.download_retry_count(),
+            params.storage_options(),
+        ))
+    }
+
+    fn extract_path(&self, url: &Url) -> LanceResult<Path> {
+        Self::root_and_relative_path(url).map(|(_, path)| path)
+    }
+
+    fn calculate_object_store_prefix(
+        &self,
+        url: &Url,
+        _storage_options: Option<&std::collections::HashMap<String, String>>,
+    ) -> LanceResult<String> {
+        let (root, _) = Self::root_and_relative_path(url)?;
+        let root = root.canonicalize()?;
+        Ok(format!("file${}", root.display()))
+    }
+}
+
+/// Replace Lance's default Windows file provider with one that preserves UNC
+/// roots by using `LocalFileSystem::new_with_prefix`.
+#[cfg(any(windows, test))]
+pub(crate) fn register_windows_file_store(registry: &Arc<ObjectStoreRegistry>) {
+    registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+}
+
+#[cfg(test)]
+mod prefixed_file_store_test {
+    use super::*;
+
+    #[tokio::test]
+    async fn anchors_new_and_existing_directories_at_a_filesystem_prefix() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let database_path = tempdir.path().join("database");
+        std::fs::create_dir(&database_path).unwrap();
+        let table_path = database_path.join("test.lance");
+        let table_url = Url::from_directory_path(&table_path).unwrap();
+
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+
+        // A new table is relative to its filesystem root. The non-`file`
+        // scheme proves Lance will not bypass this prefixed store.
+        let (store, base_path) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            table_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.scheme(), "file-object-store");
+        assert_eq!(base_path.filename(), Some("test.lance"));
+        let initial_base_path = base_path.clone();
+
+        let marker = base_path.join("marker");
+        store
+            .inner
+            .put(&marker, bytes::Bytes::from_static(b"new").into())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(table_path.join("marker")).unwrap(), b"new");
+
+        // Once the table directory exists, a fresh store uses the same stable
+        // root and object-store path.
+        drop(store);
+        let (store, base_path) = lance::io::ObjectStore::from_uri_and_params(
+            registry,
+            table_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(base_path, initial_base_path);
+        let contents = store
+            .inner
+            .get(&base_path.join("marker"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(contents.as_ref(), b"new");
+    }
+}
 
 #[derive(Debug)]
 struct MirroringObjectStore {
