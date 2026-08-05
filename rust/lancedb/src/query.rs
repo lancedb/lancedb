@@ -511,7 +511,8 @@ pub trait QueryBase {
 
     /// Rerank the results using the specified reranker.
     ///
-    /// This is currently only supported for Hybrid Search.
+    /// For vector-only searches, the reranker receives the vector results and an
+    /// empty full-text result set.
     fn rerank(self, reranker: Arc<dyn Reranker>) -> Self;
 
     /// The method to normalize the scores. Can be "rank" or "Score". If "Rank",
@@ -1443,6 +1444,48 @@ impl VectorQuery {
         Ok(single_batch_stream(results, max_batch_length))
     }
 
+    async fn execute_vector_rerank(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        let max_batch_length = options.max_batch_length as usize;
+        let internal_options = options.without_output_batch_length_limit();
+
+        // RRF needs row IDs to assign and preserve scores. Keep them internal unless
+        // the caller explicitly requested them.
+        let vector_query = self.clone().with_row_id();
+        let vector_results = vector_query
+            .inner_execute_with_options(internal_options)
+            .await?;
+        let schema = vector_results.schema();
+        let vector_results = vector_results.try_collect::<Vec<_>>().await?;
+        let vector_results = concat_batches(&schema, vector_results.iter())?;
+        let fts_results = RecordBatch::new_empty(vector_results.schema());
+
+        let reranker = self
+            .request
+            .base
+            .reranker
+            .as_ref()
+            .expect("execute_vector_rerank requires a reranker");
+        let mut results = reranker
+            .rerank_hybrid("", vector_results, fts_results)
+            .await?;
+
+        check_reranker_result(&results)?;
+
+        let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
+        if results.num_rows() > limit {
+            results = results.slice(0, limit);
+        }
+
+        if !self.request.base.with_row_id {
+            results = results.drop_column(ROW_ID)?;
+        }
+
+        Ok(single_batch_stream(results, max_batch_length))
+    }
+
     async fn inner_execute_with_options(
         &self,
         options: QueryExecutionOptions,
@@ -1493,6 +1536,10 @@ impl ExecutableQuery for VectorQuery {
                 .boxed()
                 .await?;
             return Ok(hybrid_result);
+        }
+
+        if self.request.base.reranker.is_some() {
+            return self.execute_vector_rerank(options).await;
         }
 
         self.inner_execute_with_options(options).await

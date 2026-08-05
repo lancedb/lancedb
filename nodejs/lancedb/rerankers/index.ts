@@ -5,9 +5,9 @@ import { RecordBatch } from "apache-arrow";
 
 export * from "./rrf";
 
-// Interface for a reranker. A reranker is used to rerank the results from a
-// vector and FTS search. This is useful for combining the results from both
-// search methods.
+// Interface for a reranker. A reranker is used to rerank vector and hybrid
+// search results. For vector-only searches, query is empty and ftsResults is an
+// empty batch with the same schema as vecResults.
 export interface Reranker {
   rerankHybrid(
     query: string,

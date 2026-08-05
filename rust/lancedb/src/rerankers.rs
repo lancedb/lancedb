@@ -47,16 +47,15 @@ impl std::fmt::Display for NormalizeMethod {
     }
 }
 
-/// Interface for a reranker. A reranker is used to rerank the results from a
-/// vector and FTS search. This is useful for combining the results from both
-/// search methods.
+/// Interface for a reranker. A reranker is used to rerank vector and hybrid
+/// search results. This is useful for combining results from multiple search
+/// methods or assigning a relevance score to vector search results.
 #[async_trait]
 pub trait Reranker: std::fmt::Debug + Sync + Send {
-    // TODO support vector reranking and FTS reranking. Currently only hybrid reranking is supported.
-
     /// Rerank function receives the individual results from the vector and FTS search
     /// results. You can choose to use any of the results to generate the final results,
-    /// allowing maximum flexibility.
+    /// allowing maximum flexibility. For a vector-only search, `query` is empty and
+    /// `fts_results` is an empty batch with the same schema as `vector_results`.
     async fn rerank_hybrid(
         &self,
         query: &str,
