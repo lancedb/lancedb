@@ -406,6 +406,28 @@ async def test_create_ivfrq_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_read_ivfrq_index_created_with_lance(db_async, some_table: AsyncTable):
+    pytest.importorskip("lance")
+    dataset = await some_table.to_lance()
+    dataset.create_index(
+        "vector",
+        index_type="IVF_RQ",
+        metric="cosine",
+        num_partitions=1,
+    )
+
+    # Open a fresh LanceDB handle so the index is discovered from disk.
+    table = await db_async.open_table("some_table")
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfRq"
+    assert indices[0].columns == ["vector"]
+
+    results = await table.query().nearest_to(list(range(DIM))).limit(8).to_arrow()
+    assert len(results) == 8
+
+
+@pytest.mark.asyncio
 async def test_create_hnswpq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswPq(num_partitions=10))
     indices = await some_table.list_indices()
