@@ -44,7 +44,11 @@ def test_s3_verify_false_is_normalized(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_s3_native_tls_option_takes_precedence(monkeypatch):
+@pytest.mark.parametrize(
+    "native_key",
+    ["allow_invalid_certificates", "aws_allow_invalid_certificates"],
+)
+async def test_s3_native_tls_option_takes_precedence(monkeypatch, native_key):
     captured_options = None
 
     async def capture_connect(*args):
@@ -58,11 +62,11 @@ async def test_s3_native_tls_option_takes_precedence(monkeypatch):
         "s3://bucket/database",
         storage_options={
             "verify": "false",
-            "allow_invalid_certificates": "false",
+            native_key: "false",
         },
     )
 
-    assert captured_options == {"allow_invalid_certificates": "false"}
+    assert captured_options == {native_key: "false"}
 
 
 def get_boto3_client(*args, **kwargs):

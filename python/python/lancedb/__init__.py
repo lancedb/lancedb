@@ -82,9 +82,11 @@ def _normalize_s3_storage_options(
 
     normalized = dict(storage_options)
     verify = normalized.pop(verify_key)
-    has_native_option = any(
-        key.casefold() == "allow_invalid_certificates" for key in normalized
-    )
+    native_option_keys = {
+        "allow_invalid_certificates",
+        "aws_allow_invalid_certificates",
+    }
+    has_native_option = any(key.casefold() in native_option_keys for key in normalized)
     if not has_native_option:
         verify_value = verify.casefold()
         if verify_value == "false":
