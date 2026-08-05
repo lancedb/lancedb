@@ -132,7 +132,15 @@ impl ObjectStore for MirroringObjectStore {
         if to.primary_only() {
             self.primary.copy_opts(from, to, options).await
         } else {
-            self.secondary.copy_opts(from, to, options.clone()).await?;
+            // The secondary store can be process-local and less durable than the
+            // primary, so a source written by another process may not exist here.
+            // Check first to avoid copying a missing local source, which can hang
+            // with older object_store versions (apache/arrow-rs-object-store#82).
+            match self.secondary.head(from).await {
+                Ok(_) => self.secondary.copy_opts(from, to, options.clone()).await?,
+                Err(Error::NotFound { .. }) => {}
+                Err(err) => return Err(err),
+            }
             self.primary.copy_opts(from, to, options).await?;
             Ok(())
         }
@@ -193,6 +201,7 @@ mod test {
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use object_store::local::LocalFileSystem;
+    use std::time::Duration;
     use tempfile;
 
     use crate::{
@@ -200,6 +209,45 @@ mod test {
         query::{ExecutableQuery, QueryBase},
         table::WriteOptions,
     };
+
+    #[tokio::test]
+    async fn test_copy_when_source_is_missing_from_secondary() {
+        let primary_dir = tempfile::tempdir().unwrap();
+        let secondary_dir = tempfile::tempdir().unwrap();
+        let primary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(primary_dir.path()).unwrap());
+        let secondary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(secondary_dir.path()).unwrap());
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary: secondary.clone(),
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), store.copy(&staging, &finalized))
+            .await
+            .expect("copy should not hang when the secondary source is missing")
+            .unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
 
     // This test is ignored because lance 3.0 introduced LocalWriter optimization
     // that bypasses the object store wrapper for local writes. The mirroring feature
