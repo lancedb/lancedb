@@ -2363,6 +2363,27 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_with_schema_metadata(mem_db: DBConnection):
+    schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("value", pa.string())],
+        metadata={b"schema_key": b"schema_value"},
+    )
+    table = mem_db.create_table("my_table", schema=schema)
+    new_data = pa.table({"id": [1, 2], "value": ["one", "two"]})
+    assert new_data.schema.metadata is None
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+
+    assert result.num_inserted_rows == 2
+    assert table.to_arrow() == new_data
+    assert table.schema.metadata == schema.metadata
+
+
 def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
