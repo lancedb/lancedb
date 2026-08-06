@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-const BASELINE_CPU: &str = "x86-64-v2";
+const SAFE_TARGET_CPUS: [&str; 2] = ["x86-64", "x86-64-v2"];
 const BASELINE_FEATURES: [&str; 9] = [
     "cmpxchg16b",
     "fxsr",
@@ -69,10 +69,10 @@ pub(crate) fn validate_encoded_rustflags(encoded: &str) -> Result<(), String> {
         }
     }
 
-    if target_cpu != Some(BASELINE_CPU) {
+    if let Some(cpu) = target_cpu.filter(|cpu| !SAFE_TARGET_CPUS.contains(cpu)) {
         return Err(format!(
-            "effective target CPU is {}, expected {BASELINE_CPU}",
-            target_cpu.unwrap_or("unset")
+            "effective target CPU is {}, expected x86-64-v2 or lower",
+            cpu
         ));
     }
 
@@ -159,6 +159,20 @@ mod tests {
     }
 
     #[test]
+    fn accepts_default_cpu_with_non_codegen_flags() {
+        let flags = encoded(&["-D", "warnings"]);
+
+        assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
+    }
+
+    #[test]
+    fn accepts_explicit_x86_64_v1_cpu() {
+        let flags = encoded(&["-Ctarget-cpu=x86-64"]);
+
+        assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
+    }
+
+    #[test]
     fn accepts_musl_dynamic_crt_configuration() {
         let flags = encoded(&[
             "-C",
@@ -195,6 +209,16 @@ mod tests {
         assert_eq!(
             validate_encoded_rustflags(&flags),
             Err("features above v2: bmi2".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_cpu_above_v2() {
+        let flags = encoded(&["-Ctarget-cpu=haswell"]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("effective target CPU is haswell, expected x86-64-v2 or lower".to_owned())
         );
     }
 
