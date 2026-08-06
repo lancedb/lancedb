@@ -9,7 +9,7 @@ use arrow::{
     compute::{sort_to_indices, take},
 };
 use arrow_array::{Float32Array, RecordBatch, UInt64Array};
-use arrow_schema::{DataType, Field, Schema, SortOptions};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, SortOptions};
 use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
@@ -44,6 +44,19 @@ impl Default for RRFReranker {
 
 #[async_trait]
 impl Reranker for RRFReranker {
+    async fn output_schema(&self, input: &SchemaRef) -> Result<SchemaRef> {
+        let mut fields = input.fields().to_vec();
+        fields.push(Arc::new(Field::new(
+            RELEVANCE_SCORE,
+            DataType::Float32,
+            false,
+        )));
+        Ok(Arc::new(Schema::new_with_metadata(
+            fields,
+            input.metadata().clone(),
+        )))
+    }
+
     async fn rerank_hybrid(
         &self,
         _query: &str,
@@ -135,15 +148,9 @@ impl Reranker for RRFReranker {
             .collect();
 
         // add relevance score to schema
-        let mut fields = combined_results.schema().fields().to_vec();
-        fields.push(Arc::new(Field::new(
-            RELEVANCE_SCORE,
-            DataType::Float32,
-            false,
-        )));
-        let schema = Schema::new(fields);
+        let schema = self.output_schema(&combined_results.schema()).await?;
 
-        let combined_results = RecordBatch::try_new(Arc::new(schema), columns)?;
+        let combined_results = RecordBatch::try_new(schema, columns)?;
 
         Ok(combined_results)
     }

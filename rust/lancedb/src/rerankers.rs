@@ -8,6 +8,7 @@ use arrow::{
     compute::{concat_batches, filter_record_batch},
 };
 use arrow_array::{BooleanArray, RecordBatch, UInt64Array};
+use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
@@ -52,6 +53,19 @@ impl std::fmt::Display for NormalizeMethod {
 /// methods or assigning a relevance score to vector search results.
 #[async_trait]
 pub trait Reranker: std::fmt::Debug + Sync + Send {
+    /// Declare the schema returned by [`Self::rerank_hybrid`] for a vector-only
+    /// query.
+    ///
+    /// Vector reranking validates the returned batch against this schema so
+    /// [`crate::query::ExecutableQuery::output_schema`] and execution cannot
+    /// disagree. Rerankers that only support hybrid search do not need to
+    /// implement this method.
+    async fn output_schema(&self, _input: &SchemaRef) -> Result<SchemaRef> {
+        Err(Error::NotSupported {
+            message: "vector rerankers must declare their output schema".to_string(),
+        })
+    }
+
     /// Rerank function receives the individual results from the vector and FTS search
     /// results. You can choose to use any of the results to generate the final results,
     /// allowing maximum flexibility. For a vector-only search, `query` is empty and
