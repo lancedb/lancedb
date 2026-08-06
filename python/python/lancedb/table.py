@@ -1375,7 +1375,7 @@ class Table(ABC):
         self,
         query: FullTextQuery,
         vector_column_name: Optional[str] = None,
-        query_type: Literal["auto"] = "auto",
+        query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceFtsQueryBuilder: ...
@@ -1413,9 +1413,7 @@ class Table(ABC):
     @overload
     def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -1425,9 +1423,7 @@ class Table(ABC):
     @overload
     def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -3492,7 +3488,7 @@ class LanceTable(Table):
         self,
         query: FullTextQuery,
         vector_column_name: Optional[str] = None,
-        query_type: Literal["auto"] = "auto",
+        query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceFtsQueryBuilder: ...
@@ -3530,9 +3526,7 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -3542,9 +3536,7 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
