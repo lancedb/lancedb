@@ -64,6 +64,23 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+def test_instructor_ndims_uses_instruction():
+    instructor = get_registry().get("instructor").create()
+    model = MagicMock()
+    model.encode.return_value = np.zeros((1, 384))
+
+    with patch.object(type(instructor), "get_model", return_value=model):
+        assert instructor.ndims() == 384
+
+    model.encode.assert_called_once_with(
+        [[instructor.source_instruction, "foo"]],
+        batch_size=instructor.batch_size,
+        show_progress_bar=instructor.show_progress_bar,
+        normalize_embeddings=instructor.normalize_embeddings,
+        device=instructor.device,
+    )
+
+
 def test_embedding_function_variables():
     @register("variable-testing")
     class VariableTestingFunction(TextEmbeddingFunction):
