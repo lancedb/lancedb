@@ -27,7 +27,8 @@ pub(crate) fn validate_encoded_rustflags(encoded: &str) -> Result<(), String> {
             continue;
         };
 
-        match name {
+        let name = name.replace('_', "-");
+        match name.as_str() {
             "target-cpu" => target_cpu = Some(value),
             "target-feature" => {
                 for toggle in value.split(',').filter(|toggle| !toggle.is_empty()) {
@@ -199,6 +200,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_underscore_spelling_above_baseline_feature() {
+        let flags = encoded(&["-Ctarget_cpu=x86-64-v2", "-Ctarget_feature=+apxf"]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("features above v2: apxf".to_owned())
+        );
+    }
+
+    #[test]
     fn rejects_unexpected_above_baseline_feature() {
         let flags = encoded(&[
             "--codegen=target-cpu=x86-64-v2",
@@ -235,6 +246,16 @@ mod tests {
     #[test]
     fn rejects_llvm_feature_overrides() {
         let flags = encoded(&["-Ctarget-cpu=x86-64-v2", "-Cllvm-args=-mattr=+apxf"]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("LLVM arguments can override the CPU baseline".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_underscore_spelling_llvm_feature_overrides() {
+        let flags = encoded(&["-Ctarget_cpu=x86-64-v2", "-Cllvm_args=-mattr=+apxf"]);
 
         assert_eq!(
             validate_encoded_rustflags(&flags),
