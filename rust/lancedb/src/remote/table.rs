@@ -5907,16 +5907,18 @@ mod tests {
             .await
             .unwrap();
 
+        // Positions are relative to the first retained token, so dropping the
+        // leading "hello" stop word does not shift the remaining tokens.
         assert_eq!(
             tokens,
             vec![
                 FtsToken {
                     text: "こんにちは".to_string(),
-                    position: 1,
+                    position: 0,
                 },
                 FtsToken {
                     text: "世界".to_string(),
-                    position: 2,
+                    position: 1,
                 },
             ]
         );
