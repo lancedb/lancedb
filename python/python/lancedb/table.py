@@ -869,12 +869,18 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_polars(self, **kwargs) -> "pl.DataFrame":
-        """Return the table as a polars.DataFrame.
+    def to_polars(self, **kwargs) -> "pl.LazyFrame":
+        """Return the table as a Polars LazyFrame.
+
+        Note
+        ----
+        The Polars streaming engine is not supported because it does not currently
+        implement Python PyArrow dataset scans. Use the default engine when collecting
+        this LazyFrame.
 
         Returns
         -------
-        polars.DataFrame
+        polars.LazyFrame
         """
         raise NotImplementedError
 
