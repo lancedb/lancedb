@@ -13,10 +13,11 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     CompactionMetrics, IndexRemapperOptions, compact_files, plan_compaction,
 };
-use lance::index::DatasetIndexExt;
+use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
+use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::optimize::OptimizeOptions;
-use log::info;
-use serde::Deserialize;
+use lance_index::vector::quantizer::QuantizationType;
+use log::{debug, info};
 
 use super::NativeTable;
 use crate::error::{Error, Result};
@@ -24,22 +25,6 @@ pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
-
-#[derive(Debug, Deserialize)]
-struct VectorIndexStatistics {
-    indices: Vec<VectorIndexSegmentStatistics>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VectorIndexSegmentStatistics {
-    uuid: String,
-    partitions: Vec<VectorIndexPartitionStatistics>,
-}
-
-#[derive(Debug, Deserialize)]
-struct VectorIndexPartitionStatistics {
-    size: u64,
-}
 
 fn sq_vector_dimension(data_type: &DataType) -> Option<i32> {
     match data_type {
@@ -52,27 +37,26 @@ fn sq_vector_dimension(data_type: &DataType) -> Option<i32> {
     }
 }
 
-fn oversized_sq_partition(
-    statistics: &str,
-    dimension: u64,
-    affected_segment_uuids: &HashSet<String>,
-) -> Result<Option<u64>> {
-    let statistics: VectorIndexStatistics =
-        serde_json::from_str(statistics).map_err(|source| Error::InvalidInput {
-            message: format!("Could not parse vector index statistics: {source}"),
-        })?;
+fn segment_touches_fragments(
+    fragment_ids: Option<impl IntoIterator<Item = u32>>,
+    affected_fragments: &HashSet<u64>,
+) -> bool {
+    fragment_ids.is_none_or(|fragment_ids| {
+        fragment_ids
+            .into_iter()
+            .any(|fragment| affected_fragments.contains(&(fragment as u64)))
+    })
+}
 
-    Ok(statistics
-        .indices
-        .iter()
-        .filter(|index| affected_segment_uuids.contains(&index.uuid))
-        .flat_map(|index| &index.partitions)
-        .map(|partition| partition.size)
-        .find(|partition_size| {
-            partition_size
-                .checked_mul(dimension)
-                .is_none_or(|child_len| child_len > MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
-        }))
+fn oversized_sq_partition(
+    partition_sizes: impl IntoIterator<Item = u64>,
+    dimension: u64,
+) -> Option<u64> {
+    partition_sizes.into_iter().find(|partition_size| {
+        partition_size
+            .checked_mul(dimension)
+            .is_none_or(|child_len| child_len > MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
+    })
 }
 
 async fn validate_sq_index_remapping(
@@ -95,30 +79,20 @@ async fn validate_sq_index_remapping(
         .flat_map(|task| task.fragments.iter().map(|fragment| fragment.id))
         .collect();
 
-    for index in dataset.describe_indices(None).await? {
-        if !matches!(index.index_type(), "IVF_SQ" | "IVF_HNSW_SQ") {
+    for segment in dataset.load_indices().await?.iter() {
+        if !segment_touches_fragments(
+            segment
+                .fragment_bitmap
+                .as_ref()
+                .map(|fragment_bitmap| fragment_bitmap.iter()),
+            &affected_fragments,
+        ) {
             continue;
         }
-        let affected_segment_uuids: HashSet<String> = index
-            .segments()
-            .iter()
-            .filter(|segment| {
-                segment.fragment_bitmap.as_ref().is_none_or(|bitmap| {
-                    bitmap
-                        .iter()
-                        .any(|fragment| affected_fragments.contains(&(fragment as u64)))
-                })
-            })
-            .map(|segment| segment.uuid.to_string())
-            .collect();
-        if affected_segment_uuids.is_empty() {
-            continue;
-        }
-
-        let Some(field_id) = index.field_ids().first() else {
+        let Some(field_id) = segment.fields.first() else {
             continue;
         };
-        let Some(field) = dataset.schema().field_by_id(*field_id as i32) else {
+        let Some(field) = dataset.schema().field_by_id(*field_id) else {
             continue;
         };
         let data_type = field.data_type();
@@ -128,31 +102,39 @@ async fn validate_sq_index_remapping(
         let dimension = u64::try_from(dimension).map_err(|_| Error::InvalidInput {
             message: format!(
                 "SQ index '{}' has an invalid vector dimension of {}",
-                index.name(),
-                dimension
+                segment.name, dimension
             ),
         })?;
 
-        // If the entire index fits then every individual partition does too,
-        // avoiding the index-file read needed for detailed statistics.
-        if matches!(data_type, DataType::FixedSizeList(..))
-            && index
-                .rows_indexed()
-                .checked_mul(dimension)
-                .is_some_and(|child_len| child_len <= MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
+        let field_path = dataset.schema().field_path(*field_id)?;
+        let vector_index = match dataset
+            .open_vector_index(&field_path, &segment.uuid, &NoOpMetricsCollector)
+            .await
         {
+            Ok(vector_index) => vector_index,
+            Err(error) => {
+                // The default remapper also treats an index it cannot open as
+                // unusable and drops it, so it cannot reach the SQ take kernel.
+                debug!(
+                    "Skipping remap preflight for index segment {} because it could not be opened: {}",
+                    segment.uuid, error
+                );
+                continue;
+            }
+        };
+        if vector_index.sub_index_type().1 != QuantizationType::Scalar {
             continue;
         }
 
-        let statistics = dataset.index_statistics(index.name()).await?;
-        if let Some(partition_size) =
-            oversized_sq_partition(&statistics, dimension, &affected_segment_uuids)?
-        {
+        let partition_sizes = (0..vector_index.total_partitions())
+            .map(|partition_id| vector_index.partition_size(partition_id) as u64);
+        if let Some(partition_size) = oversized_sq_partition(partition_sizes, dimension) {
             let max_partition_size = MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX / dimension;
             return Err(Error::InvalidInput {
                 message: format!(
-                    "Cannot compact table because SQ index '{}' has a partition with {} vectors of dimension {}. Arrow's fixed-size-list take kernel cannot remap partitions whose child array exceeds {} values. Recreate the index with default IVF partitioning, or enough partitions to keep each partition at or below {} vectors, before compacting.",
-                    index.name(),
+                    "Cannot compact table because SQ index '{}' segment {} has a partition with {} vectors of dimension {}. Arrow's fixed-size-list take kernel cannot remap partitions whose child array exceeds {} values. Recreate the index with default IVF partitioning, or enough partitions to keep each partition at or below {} vectors, before compacting.",
+                    segment.name,
+                    segment.uuid,
                     partition_size,
                     dimension,
                     MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX,
@@ -360,7 +342,7 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use super::{oversized_sq_partition, sq_vector_dimension};
+    use super::{oversized_sq_partition, segment_touches_fragments, sq_vector_dimension};
     use arrow_array::{
         Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
     };
@@ -382,43 +364,33 @@ mod tests {
     fn test_detect_oversized_sq_partition() {
         const DIMENSION: u64 = 4095;
         let safe_size = u32::MAX as u64 / DIMENSION;
-        let affected_segments = HashSet::from(["affected".to_string()]);
-        let statistics = serde_json::json!({
-            "indices": [{
-                "uuid": "affected",
-                "partitions": [
-                    { "size": safe_size },
-                    { "size": safe_size + 1 }
-                ]
-            }]
-        });
 
         assert_eq!(
-            oversized_sq_partition(&statistics.to_string(), DIMENSION, &affected_segments).unwrap(),
+            oversized_sq_partition([safe_size, safe_size + 1], DIMENSION),
             Some(safe_size + 1)
         );
-
-        let segmented_statistics = serde_json::json!({
-            "indices": [{
-                "uuid": "unaffected",
-                "partitions": [{ "size": safe_size + 1 }]
-            }, {
-                "uuid": "affected",
-                "partitions": [
-                    { "size": safe_size / 2 },
-                    { "size": safe_size / 2 + 1 }
-                ]
-            }]
-        });
         assert_eq!(
-            oversized_sq_partition(
-                &segmented_statistics.to_string(),
-                DIMENSION,
-                &affected_segments,
-            )
-            .unwrap(),
+            oversized_sq_partition([safe_size / 2, safe_size / 2 + 1], DIMENSION),
             None
         );
+    }
+
+    #[test]
+    fn test_segment_touches_fragments_includes_unknown_coverage() {
+        let affected_fragments = HashSet::from([7]);
+
+        assert!(segment_touches_fragments(
+            Some([7_u32]),
+            &affected_fragments
+        ));
+        assert!(!segment_touches_fragments(
+            Some([8_u32]),
+            &affected_fragments
+        ));
+        assert!(segment_touches_fragments(
+            None::<[u32; 0]>,
+            &affected_fragments
+        ));
     }
 
     #[test]
@@ -433,6 +405,99 @@ mod tests {
         assert_eq!(sq_vector_dimension(&vector), Some(DIMENSION));
         assert_eq!(sq_vector_dimension(&multivector), Some(DIMENSION));
         assert_eq!(sq_vector_dimension(&DataType::Float32), None);
+    }
+
+    #[tokio::test]
+    async fn test_compact_legacy_sq_index_with_unknown_fragment_coverage() {
+        use lance::Dataset;
+        use lance::dataset::transaction::Operation;
+        use lance::index::DatasetIndexExt;
+
+        const INDEX_NAME: &str = "legacy_sq";
+        const ROWS: i32 = 64;
+        const DIMENSION: i32 = 8;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..ROWS).flat_map(|row| {
+                (0..DIMENSION).map(move |offset| (row * DIMENSION + offset) as f32)
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
+        let table = conn
+            .create_table("test_legacy_sq_compact", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch.clone()).execute().await.unwrap();
+        table.add(batch).execute().await.unwrap();
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfSq(crate::index::vector::IvfSqIndexBuilder::default().num_partitions(1)),
+            )
+            .name(INDEX_NAME.to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let mut segments = dataset.load_indices_by_name(INDEX_NAME).await.unwrap();
+        assert_eq!(segments.len(), 1);
+        let original = segments.pop().unwrap();
+        let mut legacy = original.clone();
+        legacy.fragment_bitmap = None;
+        let legacy_dataset = Dataset::commit(
+            dataset.clone(),
+            Operation::CreateIndex {
+                new_indices: vec![legacy],
+                removed_indices: vec![original],
+            },
+            Some(dataset.manifest().version),
+            None,
+            None,
+            Default::default(),
+            false,
+        )
+        .await
+        .unwrap();
+        table.dataset().unwrap().update(legacy_dataset);
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let description_error = dataset
+            .describe_indices(None)
+            .await
+            .err()
+            .expect("legacy coverage should be unknown to index descriptions");
+        assert!(
+            description_error
+                .to_string()
+                .contains("Fragment bitmap is required")
+        );
+
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1_000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert!(stats.compaction.unwrap().fragments_removed > 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), ROWS as usize * 3);
     }
 
     #[tokio::test]
