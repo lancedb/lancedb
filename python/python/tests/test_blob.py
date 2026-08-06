@@ -179,6 +179,20 @@ async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
     assert set(descriptor.keys()) == {"kind", "position", "size", "blob_id", "blob_uri"}
 
 
+@pytest.mark.asyncio
+async def test_async_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///typed_blob_projection")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table("typed_blob_projection", schema=schema)
+    await table.add([{"id": 1, "blob": b"alpha"}])
+
+    hits = await table.query().select({"blob_alias": col("blob")}).to_arrow()
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
+    assert blobs.to_pylist() == [b"alpha"]
+
+
 def test_fetch_blobs_round_trip():
     table = _blob_table(
         "round_trip",

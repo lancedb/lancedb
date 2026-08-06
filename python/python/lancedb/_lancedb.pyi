@@ -579,6 +579,7 @@ class PyQueryRequest:
     filter: Optional[Union[str, bytes]]
     full_text_search: Optional[FullTextQuery]
     select: Optional[Union[str, List[str]]]
+    select_source_columns: Optional[Dict[str, str]]
     fast_search: Optional[bool]
     with_row_id: Optional[bool]
     use_lsm: Optional[bool]

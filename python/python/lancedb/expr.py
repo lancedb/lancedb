@@ -315,7 +315,7 @@ def func(name: str, *args: ExprLike) -> Expr:
     --------
     >>> from lancedb.expr import col, func
     >>> func("lower", col("name"))
-    Expr(lower(name))
+    Expr(lower(`name`))
     """
     inner_args = [_coerce(a)._inner for a in args]
     return Expr(expr_func(name, inner_args))

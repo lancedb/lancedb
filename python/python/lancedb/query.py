@@ -2777,15 +2777,20 @@ class AsyncQueryBase(object):
 
         req = self._inner.to_query_request()
         schema = await self._table.schema()
+        projection = (
+            req.select_source_columns
+            if req.select_source_columns is not None
+            else req.select
+        )
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
             schema,
-            req.select,
+            projection,
             with_row_id=self._with_row_id,
         )
         if not self._blob_auto_row_id:
             self._blob_paths = ()
             return
-        self._blob_paths = tuple(blob_v2_projection_sources(schema, req.select).keys())
+        self._blob_paths = tuple(blob_v2_projection_sources(schema, projection).keys())
         self._inner.with_row_id()
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:

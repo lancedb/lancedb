@@ -212,6 +212,17 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_is_in_discards_binary_children() {
+        use datafusion_common::ScalarValue;
+
+        let expr = is_in(
+            col("payload").eq(lit(ScalarValue::Binary(Some(vec![0x01])))),
+            vec![],
+        );
+        assert_eq!(expr_to_sql_string(&expr).unwrap(), "false");
+    }
+
+    #[test]
     fn test_keyword_identifier() {
         let expr = col("null").eq(lit(1i64));
         assert_eq!(expr_to_sql_string(&expr).unwrap(), "(`null` = 1)");
@@ -226,8 +237,35 @@ mod tests {
             19,
             18,
         )));
-        let sql = expr_to_sql_string(&expr).unwrap().replace(' ', "");
-        assert_eq!(sql, "(val<CAST('1.234567890123456790'ASDECIMAL(19,18)))");
+        let sql = expr_to_sql_string(&expr).unwrap();
+        assert_eq!(
+            sql,
+            "(val < arrow_cast('1.234567890123456790', 'Decimal128(19, 18)'))"
+        );
+    }
+
+    #[test]
+    fn test_non_finite_float_literal_preserves_type() {
+        let expr = col("x").lt(lit(f64::INFINITY));
+        assert_eq!(
+            expr_to_sql_string(&expr).unwrap(),
+            "(x < arrow_cast('inf', 'Float64'))"
+        );
+    }
+
+    #[test]
+    fn test_cast_uses_arrow_type_name() {
+        let expr = expr_cast(col("x"), DataType::Float16).lt(lit(2.0));
+        assert_eq!(
+            expr_to_sql_string(&expr).unwrap(),
+            "(arrow_cast(x, 'Float16') < 2.0)"
+        );
+
+        let decimal = expr_cast(lit("2.00"), DataType::Decimal256(40, 2));
+        assert_eq!(
+            expr_to_sql_string(&decimal).unwrap(),
+            "arrow_cast('2.00', 'Decimal256(40, 2)')"
+        );
     }
 
     #[test]
@@ -242,6 +280,19 @@ mod tests {
             expr_to_sql_string(&expr).unwrap(),
             "((payload = X'01') OR (`text` = '__lancedb_binary_placeholder_0__'))"
         );
+    }
+
+    #[test]
+    fn test_binary_placeholder_collision_search_is_linear() {
+        use datafusion_common::ScalarValue;
+
+        let collision_shaped = format!("__lancedb_binary_placeholder_0__{}", "_".repeat(64_000));
+        let expr = col("payload")
+            .eq(lit(ScalarValue::Binary(Some(vec![0x01]))))
+            .and(col("text").eq(lit(collision_shaped.clone())));
+        let sql = expr_to_sql_string(&expr).unwrap();
+        assert!(sql.contains("X'01'"));
+        assert!(sql.contains(&format!("'{collision_shaped}'")));
     }
 
     #[test]

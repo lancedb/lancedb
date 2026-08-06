@@ -2366,6 +2366,55 @@ def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
     result = binary_table.update(where=predicate, values={"result": "new"})
     assert result.rows_updated == 2
 
+    nonfinite_table = mem_db.create_table(
+        "update_expr_nonfinite",
+        [{"x": 1.0, "result": "old"}, {"x": 2.0, "result": "old"}],
+    )
+    predicate = col("x") < float("inf")
+    assert nonfinite_table.search().where(predicate).to_arrow().num_rows == 2
+    result = nonfinite_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    float16_table = mem_db.create_table(
+        "update_expr_float16",
+        [{"x": 1.0, "result": "old"}, {"x": 3.0, "result": "old"}],
+    )
+    predicate = col("x").cast(pa.float16()) < 2.0
+    assert float16_table.search().where(predicate).to_arrow().num_rows == 1
+    result = float16_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    decimal256_schema = pa.schema(
+        [("val", pa.decimal256(40, 2)), ("result", pa.string())]
+    )
+    decimal256_table = mem_db.create_table(
+        "update_expr_decimal256",
+        pa.table(
+            {
+                "val": [Decimal("1.00"), Decimal("3.00")],
+                "result": ["old", "old"],
+            },
+            schema=decimal256_schema,
+        ),
+    )
+    predicate = col("val") < lit(Decimal("2.00")).cast(pa.decimal256(40, 2))
+    assert decimal256_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal256_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    binary_empty_table = mem_db.create_table(
+        "update_expr_binary_empty",
+        pa.table(
+            {"payload": [b"\x01", b"\x02"], "result": ["old", "old"]},
+            schema=pa.schema([("payload", pa.binary()), ("result", pa.string())]),
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")).isin([])
+    assert binary_empty_table.search().where(predicate).to_arrow().num_rows == 0
+    assert predicate.to_sql() == "false"
+    result = binary_empty_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
 
 def test_update_with_arrow_scalar(mem_db: DBConnection):
     schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
