@@ -5,8 +5,16 @@
 
 use std::{collections::HashMap, fmt::Formatter, sync::Arc};
 
+#[cfg(feature = "aws")]
+use std::sync::{LazyLock, Mutex, Weak};
+
 use futures::{StreamExt, TryFutureExt, stream::BoxStream};
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+#[cfg(feature = "aws")]
+use lance_io::object_store::{
+    ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry,
+    throttle::{AimdThrottleConfig, AimdThrottledStore},
+};
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
@@ -19,6 +27,10 @@ use object_store::{
     aws::{AmazonS3ConfigKey, AwsCredential},
 };
 #[cfg(feature = "aws")]
+use object_store_opendal::OpendalStore;
+#[cfg(feature = "aws")]
+use opendal::{Operator, services::S3};
+#[cfg(feature = "aws")]
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -30,6 +42,16 @@ pub mod io_tracking;
 fn explicit_aws_credentials(
     storage_options: &HashMap<String, String>,
 ) -> Option<object_store::aws::AwsCredentialProvider> {
+    explicit_aws_credential(storage_options)
+        .ok()
+        .flatten()
+        .map(|credential| Arc::new(StaticCredentialProvider::new(credential)) as _)
+}
+
+#[cfg(feature = "aws")]
+fn explicit_aws_credential(
+    storage_options: &HashMap<String, String>,
+) -> lance_core::Result<Option<AwsCredential>> {
     let aws_options = storage_options
         .iter()
         .filter_map(|(key, value)| {
@@ -39,18 +61,209 @@ fn explicit_aws_credentials(
         })
         .collect::<HashMap<_, _>>();
 
-    let key_id = aws_options.get(&AmazonS3ConfigKey::AccessKeyId)?;
-    let secret_key = aws_options.get(&AmazonS3ConfigKey::SecretAccessKey)?;
-    let token = aws_options
-        .get(&AmazonS3ConfigKey::Token)
-        .map(|token| (*token).clone());
+    let key_id = aws_options.get(&AmazonS3ConfigKey::AccessKeyId);
+    let secret_key = aws_options.get(&AmazonS3ConfigKey::SecretAccessKey);
+    let token = aws_options.get(&AmazonS3ConfigKey::Token);
+    if key_id.is_none() && secret_key.is_none() && token.is_none() {
+        return Ok(None);
+    }
+    let (Some(key_id), Some(secret_key)) = (key_id, secret_key) else {
+        return Err(lance_core::Error::invalid_input(
+            "Explicit AWS credentials require both aws_access_key_id and aws_secret_access_key",
+        ));
+    };
 
-    Some(Arc::new(StaticCredentialProvider::new(AwsCredential {
+    Ok(Some(AwsCredential {
         key_id: (*key_id).clone(),
         secret_key: (*secret_key).clone(),
-        token,
-    })))
+        token: token.map(|token| (*token).clone()),
+    }))
 }
+
+#[cfg(feature = "aws")]
+fn is_aws_credential_key(key: &AmazonS3ConfigKey) -> bool {
+    matches!(
+        key,
+        AmazonS3ConfigKey::AccessKeyId
+            | AmazonS3ConfigKey::SecretAccessKey
+            | AmazonS3ConfigKey::Token
+    )
+}
+
+/// Resolve OpenDAL options while keeping one explicit AWS credential family atomic.
+///
+/// Lance's native S3 provider accepts an explicit credential provider, but OpenDAL does not.
+/// For that backend we therefore merge non-credential environment options here and disable
+/// OpenDAL's second credential lookup. Wholly ambient credentials never enter this path.
+#[cfg(feature = "aws")]
+fn atomic_opendal_options(
+    storage_options: &HashMap<String, String>,
+    environment: impl IntoIterator<Item = (String, String)>,
+) -> lance_core::Result<Option<HashMap<String, String>>> {
+    let Some(credential) = explicit_aws_credential(storage_options)? else {
+        return Ok(None);
+    };
+
+    let mut options = HashMap::new();
+    for (key, value) in storage_options {
+        match AmazonS3ConfigKey::from_str(&key.to_ascii_lowercase()) {
+            Ok(config_key) if is_aws_credential_key(&config_key) => {}
+            Ok(config_key) => {
+                options.insert(config_key.as_ref().to_string(), value.clone());
+            }
+            Err(_) => {
+                options.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for (key, value) in environment {
+        if let Ok(config_key) = AmazonS3ConfigKey::from_str(&key.to_ascii_lowercase())
+            && !is_aws_credential_key(&config_key)
+        {
+            options
+                .entry(config_key.as_ref().to_string())
+                .or_insert(value);
+        }
+    }
+
+    options.insert(
+        AmazonS3ConfigKey::AccessKeyId.as_ref().to_string(),
+        credential.key_id,
+    );
+    options.insert(
+        AmazonS3ConfigKey::SecretAccessKey.as_ref().to_string(),
+        credential.secret_key,
+    );
+    if let Some(token) = credential.token {
+        options.insert(AmazonS3ConfigKey::Token.as_ref().to_string(), token);
+    }
+    options.insert("disable_config_load".to_string(), "true".to_string());
+    Ok(Some(options))
+}
+
+#[cfg(feature = "aws")]
+#[derive(Debug)]
+struct AtomicAwsStoreProvider {
+    inner: Arc<dyn ObjectStoreProvider>,
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl ObjectStoreProvider for AtomicAwsStoreProvider {
+    async fn new_store(
+        &self,
+        base_path: url::Url,
+        params: &ObjectStoreParams,
+    ) -> lance_core::Result<LanceObjectStore> {
+        let storage_options = params.storage_options().cloned().unwrap_or_default();
+        let Some(credential) = explicit_aws_credential(&storage_options)? else {
+            return self.inner.new_store(base_path, params).await;
+        };
+
+        let use_opendal = storage_options
+            .get("use_opendal")
+            .is_some_and(|value| value == "true");
+
+        // The native provider gives an explicit credential provider highest precedence, so its
+        // later environment merge cannot splice in an unrelated session token. It also supplies
+        // the correctly initialized Lance ObjectStore shell used below for OpenDAL.
+        let mut native_options = storage_options.clone();
+        native_options.insert("use_opendal".to_string(), "false".to_string());
+        let provider = params
+            .storage_options_accessor
+            .as_ref()
+            .and_then(|accessor| accessor.provider().cloned());
+        let accessor = if let Some(provider) = provider {
+            StorageOptionsAccessor::with_initial_and_provider(native_options, provider)
+        } else {
+            StorageOptionsAccessor::with_static_options(native_options)
+        };
+        let mut native_params = params.clone();
+        native_params.storage_options_accessor = Some(Arc::new(accessor));
+        native_params.aws_credentials = Some(Arc::new(StaticCredentialProvider::new(credential)));
+        let mut store = self
+            .inner
+            .new_store(base_path.clone(), &native_params)
+            .await?;
+
+        if use_opendal {
+            if storage_options
+                .get("aws_provider_scheme")
+                .is_some_and(|scheme| !scheme.is_empty())
+            {
+                return Err(lance_core::Error::not_supported(
+                    "OpendalStore does not support an explicit aws_provider_scheme".to_string(),
+                ));
+            }
+            let mut config = atomic_opendal_options(
+                &storage_options,
+                std::env::vars_os().filter_map(|(key, value)| {
+                    Some((key.into_string().ok()?, value.into_string().ok()?))
+                }),
+            )?
+            .expect("explicit credentials were already validated");
+            let bucket = base_path.host_str().ok_or_else(|| {
+                lance_core::Error::invalid_input("S3 URL must contain bucket name")
+            })?;
+            config.insert("bucket".to_string(), bucket.to_string());
+            if !base_path.path().trim_start_matches('/').is_empty() {
+                config.insert("root".to_string(), "/".to_string());
+            }
+            let operator = Operator::from_iter::<S3>(config).map_err(|error| {
+                lance_core::Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
+            })?;
+            let opendal_store: Arc<dyn ObjectStore> = Arc::new(OpendalStore::new(operator));
+            let throttle_config = AimdThrottleConfig::from_storage_options(Some(&storage_options))?;
+            store.inner = if throttle_config.is_disabled() {
+                opendal_store
+            } else {
+                Arc::new(AimdThrottledStore::new(opendal_store, throttle_config)?)
+            };
+        }
+
+        Ok(store)
+    }
+
+    fn calculate_object_store_prefix(
+        &self,
+        url: &url::Url,
+        storage_options: Option<&HashMap<String, String>>,
+    ) -> lance_core::Result<String> {
+        self.inner
+            .calculate_object_store_prefix(url, storage_options)
+    }
+}
+
+#[cfg(feature = "aws")]
+static ATOMIC_AWS_REGISTRIES: LazyLock<Mutex<Vec<Weak<ObjectStoreRegistry>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Install the credential-safe S3 provider once on a session's shared object-store registry.
+#[cfg(feature = "aws")]
+pub(crate) fn install_atomic_aws_provider(session: &lance::session::Session) {
+    let registry = session.store_registry();
+    let mut installed = ATOMIC_AWS_REGISTRIES
+        .lock()
+        .expect("atomic AWS registry lock poisoned");
+    installed.retain(|entry| entry.strong_count() > 0);
+    if installed
+        .iter()
+        .filter_map(Weak::upgrade)
+        .any(|entry| Arc::ptr_eq(&entry, &registry))
+    {
+        return;
+    }
+
+    for scheme in ["s3", "s3+ddb"] {
+        if let Some(inner) = registry.get_provider(scheme) {
+            registry.insert(scheme, Arc::new(AtomicAwsStoreProvider { inner }));
+        }
+    }
+    installed.push(Arc::downgrade(&registry));
+}
+
+#[cfg(not(feature = "aws"))]
+pub(crate) fn install_atomic_aws_provider(_session: &lance::session::Session) {}
 
 /// Apply storage options to object store parameters.
 ///
@@ -201,9 +414,14 @@ impl ObjectStore for MirroringObjectStore {
         if to.primary_only() {
             self.primary.copy_opts(from, to, options).await
         } else {
-            self.secondary.copy_opts(from, to, options.clone()).await?;
-            self.primary.copy_opts(from, to, options).await?;
-            Ok(())
+            // The secondary store can be process-local and less durable than the
+            // primary, so a source written by another process may not exist here
+            // or may be evicted before the copy begins.
+            match self.secondary.copy_opts(from, to, options.clone()).await {
+                Ok(()) | Err(Error::NotFound { .. }) => {}
+                Err(err) => return Err(err),
+            }
+            self.primary.copy_opts(from, to, options).await
         }
     }
 }
@@ -257,7 +475,26 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 mod credential_tests {
     use super::*;
     use lance_io::object_store::providers::aws::build_aws_credential;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    #[derive(Debug)]
+    struct RecordingProvider {
+        saw_atomic_credentials: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ObjectStoreProvider for RecordingProvider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            self.saw_atomic_credentials
+                .store(params.aws_credentials.is_some(), Ordering::SeqCst);
+            Err(lance_core::Error::invalid_input("recorded test request"))
+        }
+    }
 
     #[tokio::test]
     async fn explicit_aws_credentials_do_not_inherit_an_ambient_session_token() {
@@ -288,6 +525,7 @@ mod credential_tests {
             Some(&merged_options),
             Some("us-east-1".to_string()),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -296,6 +534,131 @@ mod credential_tests {
         assert_eq!(credential.key_id, "explicit-key");
         assert_eq!(credential.secret_key, "explicit-secret");
         assert_eq!(credential.token, None);
+    }
+
+    #[test]
+    fn opendal_explicit_credentials_exclude_ambient_token() {
+        let storage_options = HashMap::from([
+            ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+            (
+                "aws_secret_access_key".to_string(),
+                "explicit-secret".to_string(),
+            ),
+            ("use_opendal".to_string(), "true".to_string()),
+        ]);
+        let environment = [
+            (
+                "AWS_SESSION_TOKEN".to_string(),
+                "lambda-execution-role-token".to_string(),
+            ),
+            ("AWS_REGION".to_string(), "us-east-1".to_string()),
+        ];
+
+        let options = atomic_opendal_options(&storage_options, environment)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(options.get("aws_access_key_id").unwrap(), "explicit-key");
+        assert_eq!(
+            options.get("aws_secret_access_key").unwrap(),
+            "explicit-secret"
+        );
+        assert!(!options.contains_key("aws_session_token"));
+        assert_eq!(options.get("aws_region").unwrap(), "us-east-1");
+        assert_eq!(options.get("disable_config_load").unwrap(), "true");
+    }
+
+    #[test]
+    fn opendal_preserves_an_explicit_session_token() {
+        let storage_options = HashMap::from([
+            ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+            (
+                "aws_secret_access_key".to_string(),
+                "explicit-secret".to_string(),
+            ),
+            (
+                "aws_session_token".to_string(),
+                "explicit-token".to_string(),
+            ),
+        ]);
+
+        let options = atomic_opendal_options(
+            &storage_options,
+            [("AWS_SESSION_TOKEN".to_string(), "ambient-token".to_string())],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(options.get("aws_session_token").unwrap(), "explicit-token");
+    }
+
+    #[test]
+    fn wholly_ambient_credentials_still_use_the_default_chain() {
+        let options = atomic_opendal_options(
+            &HashMap::new(),
+            [
+                ("AWS_ACCESS_KEY_ID".to_string(), "ambient-key".to_string()),
+                (
+                    "AWS_SECRET_ACCESS_KEY".to_string(),
+                    "ambient-secret".to_string(),
+                ),
+                ("AWS_SESSION_TOKEN".to_string(), "ambient-token".to_string()),
+            ],
+        )
+        .unwrap();
+
+        assert!(options.is_none());
+    }
+
+    #[test]
+    fn partial_explicit_credentials_are_rejected() {
+        let error = explicit_aws_credential(&HashMap::from([(
+            "aws_access_key_id".to_string(),
+            "explicit-key".to_string(),
+        )]))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("require both"));
+    }
+
+    #[tokio::test]
+    async fn namespace_and_opendal_params_reach_the_atomic_provider_boundary() {
+        let saw_atomic_credentials = Arc::new(AtomicBool::new(false));
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert(
+            "s3",
+            Arc::new(RecordingProvider {
+                saw_atomic_credentials: saw_atomic_credentials.clone(),
+            }),
+        );
+        let session = lance::session::Session::new(16, 16, registry.clone());
+        install_atomic_aws_provider(&session);
+
+        // DirectoryNamespaceBuilder constructs fresh params with only a static accessor. The
+        // OpenDAL selector is included to verify that both paths cross the installed boundary.
+        let params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([
+                    ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+                    (
+                        "aws_secret_access_key".to_string(),
+                        "explicit-secret".to_string(),
+                    ),
+                    ("use_opendal".to_string(), "true".to_string()),
+                ]),
+            ))),
+            ..Default::default()
+        };
+
+        let error = registry
+            .get_provider("s3")
+            .unwrap()
+            .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("recorded test request"));
+        assert!(saw_atomic_credentials.load(Ordering::SeqCst));
     }
 }
 
@@ -307,7 +670,8 @@ mod test {
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
-    use object_store::local::LocalFileSystem;
+    use object_store::{local::LocalFileSystem, memory::InMemory};
+    use std::time::Duration;
     use tempfile;
 
     use crate::{
@@ -315,6 +679,139 @@ mod test {
         query::{ExecutableQuery, QueryBase},
         table::WriteOptions,
     };
+
+    #[derive(Debug)]
+    struct EvictBeforeCopyStore {
+        inner: Arc<dyn ObjectStore>,
+    }
+
+    impl std::fmt::Display for EvictBeforeCopyStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "EvictBeforeCopyStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for EvictBeforeCopyStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> Result<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            options: PutMultipartOptions,
+        ) -> Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, Result<Path>>,
+        ) -> BoxStream<'static, Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+            self.inner.delete(from).await?;
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_source_is_missing_from_secondary() {
+        let primary_dir = tempfile::tempdir().unwrap();
+        let secondary_dir = tempfile::tempdir().unwrap();
+        let primary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(primary_dir.path()).unwrap());
+        let secondary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(secondary_dir.path()).unwrap());
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary: secondary.clone(),
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), store.copy(&staging, &finalized))
+            .await
+            .expect("copy should not hang when the secondary source is missing")
+            .unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_secondary_source_disappears_after_head() {
+        let primary: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary_inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary: Arc<dyn ObjectStore> = Arc::new(EvictBeforeCopyStore {
+            inner: secondary_inner.clone(),
+        });
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary,
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+        secondary_inner
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        store.copy(&staging, &finalized).await.unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary_inner.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
 
     // This test is ignored because lance 3.0 introduced LocalWriter optimization
     // that bypasses the object store wrapper for local writes. The mirroring feature

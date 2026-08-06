@@ -12,7 +12,7 @@ use lance::dataset::refs::Ref;
 use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
 use lance_io::object_store::StorageOptionsProvider;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
@@ -24,7 +24,8 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::{
-    MirroringObjectStoreWrapper, object_store_params_from_storage_options, set_storage_options,
+    MirroringObjectStoreWrapper, install_atomic_aws_provider,
+    object_store_params_from_storage_options, set_storage_options,
 };
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
@@ -439,6 +440,7 @@ impl ListingDatabase {
             .session
             .clone()
             .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        install_atomic_aws_provider(&session);
         let namespace_root =
             Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
                 .await?;
@@ -544,6 +546,7 @@ impl ListingDatabase {
                     .session
                     .clone()
                     .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+                install_atomic_aws_provider(&session);
                 let os_params =
                     object_store_params_from_storage_options(options.storage_options.clone());
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
@@ -611,6 +614,7 @@ impl ListingDatabase {
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        install_atomic_aws_provider(&session);
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,
@@ -783,6 +787,23 @@ impl ListingDatabase {
     }
 
     /// Prepare write parameters for table creation
+    fn prepare_store_params(&self, store_params: &mut ObjectStoreParams) {
+        let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+        if !self.storage_options.is_empty() {
+            self.inherit_storage_options(&mut storage_options);
+        }
+        let request_provider = store_params
+            .storage_options_accessor
+            .as_ref()
+            .and_then(|accessor| accessor.provider().cloned());
+        let provider = self.storage_options_provider.clone().or(request_provider);
+        set_storage_options(store_params, storage_options, provider);
+    }
+
+    fn has_request_storage_options(store_params: Option<&ObjectStoreParams>) -> bool {
+        store_params.is_some_and(|params| params.storage_options_accessor.is_some())
+    }
+
     fn prepare_write_params(
         &self,
         request: &CreateTableRequest,
@@ -796,26 +817,21 @@ impl ListingDatabase {
             .clone()
             .unwrap_or_default();
 
-        // Only modify the storage options if we actually have something to
-        // inherit. There is a difference between storage_options=None and
+        // Only modify the storage options if the connection or operation supplied something.
+        // There is a difference between storage_options=None and
         // storage_options=Some({}). Using storage_options=None will cause the
         // connection's session store registry to be used. Supplying Some({})
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
+        if !self.storage_options.is_empty()
+            || self.storage_options_provider.is_some()
+            || Self::has_request_storage_options(write_params.store_params.as_ref())
+        {
             let store_params = write_params
                 .store_params
                 .get_or_insert_with(Default::default);
-            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
-            if !self.storage_options.is_empty() {
-                self.inherit_storage_options(&mut storage_options);
-            }
-            set_storage_options(
-                store_params,
-                storage_options,
-                self.storage_options_provider.clone(),
-            );
+            self.prepare_store_params(store_params);
         }
 
         write_params.data_storage_version = storage_version_override
@@ -845,6 +861,24 @@ impl ListingDatabase {
         write_params.session = Some(self.session.clone());
 
         write_params
+    }
+
+    fn prepare_open_table_request(&self, request: &mut OpenTableRequest) {
+        let request_store_params = request
+            .lance_read_params
+            .as_ref()
+            .and_then(|params| params.store_options.as_ref());
+        if !self.storage_options.is_empty()
+            || self.storage_options_provider.is_some()
+            || Self::has_request_storage_options(request_store_params)
+        {
+            let store_params = request
+                .lance_read_params
+                .get_or_insert_with(Default::default)
+                .store_options
+                .get_or_insert_with(Default::default);
+            self.prepare_store_params(store_params);
+        }
     }
 
     /// Handle the case where table already exists based on the create mode
@@ -1132,31 +1166,10 @@ impl Database for ListingDatabase {
             .clone()
             .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
-        // Only modify the storage options if we actually have something to
-        // inherit. There is a difference between storage_options=None and
-        // storage_options=Some({}). Using storage_options=None will cause the
-        // connection's session store registry to be used. Supplying Some({})
-        // will cause a new connection to be created, and that connection will
-        // be dropped from the cache when python GCs the table object, which
-        // confounds reuse across tables.
-        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
-            let store_params = request
-                .lance_read_params
-                .get_or_insert_with(Default::default)
-                .store_options
-                .get_or_insert_with(Default::default);
-            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
-            if !self.storage_options.is_empty() {
-                self.inherit_storage_options(&mut storage_options);
-            }
-            // Preserve request-level provider if no connection-level provider exists
-            let request_provider = store_params
-                .storage_options_accessor
-                .as_ref()
-                .and_then(|a| a.provider().cloned());
-            let provider = self.storage_options_provider.clone().or(request_provider);
-            set_storage_options(store_params, storage_options, provider);
-        }
+        // Preserve the distinction between no store options (reuse the connection store) and
+        // explicit request options (construct a request-specific store). Operation-only options
+        // still need credential atomicization even when the connection has no options.
+        self.prepare_open_table_request(&mut request);
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
         // let the user provide their own ReadParams.
@@ -1285,6 +1298,81 @@ mod tests {
         (tempdir, db)
     }
 
+    #[cfg(feature = "aws")]
+    fn operation_aws_store_params() -> ObjectStoreParams {
+        ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([
+                    ("aws_access_key_id".to_string(), "operation-key".to_string()),
+                    (
+                        "aws_secret_access_key".to_string(),
+                        "operation-secret".to_string(),
+                    ),
+                ]),
+            ))),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn create_operation_only_explicit_aws_credentials_are_atomic() {
+        let (_tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let request = CreateTableRequest {
+            name: "operation_credentials".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(operation_aws_store_params()),
+                    ..Default::default()
+                }),
+            },
+            location: None,
+            namespace_client: None,
+        };
+
+        let write_params = db.prepare_write_params(&request, None, None, None);
+
+        assert!(
+            write_params.store_params.unwrap().aws_credentials.is_some(),
+            "operation-only explicit credentials must be installed atomically"
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn open_operation_only_explicit_aws_credentials_are_atomic() {
+        let (_tempdir, db) = setup_database().await;
+        let mut request = OpenTableRequest {
+            name: "operation_credentials".to_string(),
+            namespace_path: vec![],
+            index_cache_size: None,
+            lance_read_params: Some(ReadParams {
+                store_options: Some(operation_aws_store_params()),
+                ..Default::default()
+            }),
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        };
+
+        db.prepare_open_table_request(&mut request);
+
+        assert!(
+            request
+                .lance_read_params
+                .unwrap()
+                .store_options
+                .unwrap()
+                .aws_credentials
+                .is_some(),
+            "operation-only explicit credentials must be installed atomically"
+        );
+    }
+
     #[tokio::test]
     async fn test_listing_database_root_ops_do_not_create_manifest() {
         let tempdir = tempdir().unwrap();
@@ -1337,6 +1425,68 @@ mod tests {
 
         assert_eq!(table_names, vec!["root_table".to_string()]);
         assert!(!tempdir.path().join("__manifest").exists());
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/1600.
+    ///
+    /// Opening a table used to create a separate object-store client instead of
+    /// reusing the one that successfully connected to the database.  Repeating
+    /// credential discovery made S3 table opens intermittent, especially in AWS
+    /// Lambda, and the failed open was reported as `TableNotFound`.
+    #[tokio::test]
+    async fn test_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before_open = registry.stats();
+        for _ in 0..3 {
+            let table = db
+                .open_table(OpenTableRequest {
+                    name: "test".to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(table.count_rows(None).await.unwrap(), 0);
+        }
+
+        let after_open = registry.stats();
+        assert_eq!(after_open.misses, before_open.misses);
+        assert!(after_open.hits >= before_open.hits + 3);
     }
 
     #[tokio::test]
