@@ -130,6 +130,14 @@ impl PyExpr {
 
     // ── utilities ────────────────────────────────────────────────────────────
 
+    /// Return the referenced column name for a bare column expression.
+    fn column_name(&self) -> Option<String> {
+        match &self.0 {
+            DfExpr::Column(column) if column.relation.is_none() => Some(column.name.clone()),
+            _ => None,
+        }
+    }
+
     /// Render the expression as a SQL string (useful for debugging).
     fn to_sql(&self) -> PyResult<String> {
         lancedb::expr::expr_to_sql_string(&self.0).map_err(|e| PyValueError::new_err(e.to_string()))

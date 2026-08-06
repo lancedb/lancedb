@@ -8,7 +8,12 @@ import pyarrow.compute as pc
 import pytest
 
 import lancedb
-from lancedb._blob import read_row_ids_from_hits, stash_auto_row_ids
+from lancedb._blob import (
+    blob_v2_projection_sources,
+    read_row_ids_from_hits,
+    stash_auto_row_ids,
+)
+from lancedb.expr import col
 from lancedb.index import FTS
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
 
@@ -68,6 +73,14 @@ def test_blob_v2_column_paths_include_list_children():
         "large_images.large_image",
         "fixed_images.fixed_image",
     ]
+
+
+def test_blob_v2_projection_sources_use_typed_column_name():
+    schema = pa.schema([lancedb.blob("blob")])
+
+    assert blob_v2_projection_sources(schema, {"blob_alias": col("blob")}) == {
+        "blob_alias": "blob"
+    }
 
 
 def _legacy_v1_table(name):
