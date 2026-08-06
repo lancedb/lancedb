@@ -2109,14 +2109,19 @@ def test_merge(tmp_db: DBConnection, tmp_path):
     table.merge(other_dataset, left_on="id")
 
 
-def test_search_after_merge(tmp_db: DBConnection):
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_search_after_merge(tmp_path, storage_version):
     pytest.importorskip("lance")
     pd = pytest.importorskip("pandas")
 
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": storage_version},
+    )
     rng = np.random.default_rng(42)
     row_count = 512
     vectors = rng.standard_normal((row_count, 8)).astype(np.float32)
-    table = tmp_db.create_table(
+    table = db.create_table(
         "search_after_merge",
         data=pd.DataFrame(
             {
@@ -2135,7 +2140,10 @@ def test_search_after_merge(tmp_db: DBConnection):
     )
     table.merge(links, left_on="id")
 
-    result = table.search(vectors[-1]).refine_factor(50).limit(10).to_arrow()
+    query = table.search(vectors[-1]).refine_factor(50).limit(10)
+    assert "ANN" in query.explain_plan(verbose=True)
+
+    result = query.to_arrow()
     links_by_id = dict(zip(result["id"].to_pylist(), result["link"].to_pylist()))
     assert links_by_id[str(row_count - 1)] is None
 
