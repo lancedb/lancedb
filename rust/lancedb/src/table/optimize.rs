@@ -14,9 +14,9 @@ use lance::dataset::optimize::{
     CompactionMetrics, IndexRemapperOptions, compact_files, plan_compaction,
 };
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
+use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::optimize::OptimizeOptions;
-use lance_index::vector::quantizer::QuantizationType;
 use log::{debug, info};
 
 use super::NativeTable;
@@ -122,7 +122,10 @@ async fn validate_sq_index_remapping(
                 continue;
             }
         };
-        if vector_index.sub_index_type().1 != QuantizationType::Scalar {
+        if !matches!(
+            vector_index.index_type(),
+            IndexType::IvfSq | IndexType::IvfHnswSq
+        ) {
             continue;
         }
 
@@ -408,44 +411,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_legacy_index_with_unknown_fragment_coverage() {
+    async fn test_compact_legacy_vector_index_with_unknown_fragment_coverage() {
         use lance::Dataset;
-        use lance::index::DatasetIndexExt;
+        use lance::index::vector::{IndexFileVersion, VectorIndexParams};
+        use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
+        use lance_index::IndexType;
+        use lance_linalg::distance::MetricType;
         use lance_table::io::commit::write_manifest_file_to_path;
         use object_store::ObjectStoreExt;
 
-        const INDEX_NAME: &str = "legacy_btree";
-        const ROWS: i32 = 64;
+        const INDEX_NAME: &str = "legacy_ivf_pq";
+        const ROWS: i32 = 128;
+        const DIMENSION: i32 = 8;
 
         let tmpdir = tempfile::tempdir().unwrap();
         let conn = connect(tmpdir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(0..ROWS))],
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..ROWS).flat_map(|row| {
+                (0..DIMENSION).map(move |offset| (row * DIMENSION + offset) as f32)
+            })),
+            DIMENSION,
         )
         .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "vector",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
         let table = conn
-            .create_table("test_legacy_compact", batch.clone())
+            .create_table("test_legacy_vector_compact", batch.clone())
             .execute()
             .await
             .unwrap();
         table.add(batch.clone()).execute().await.unwrap();
         table.add(batch).execute().await.unwrap();
-        table
-            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
-            .name(INDEX_NAME.to_string())
-            .execute()
+        let mut dataset = (*table.dataset().unwrap().get().await.unwrap()).clone();
+        let mut params = VectorIndexParams::ivf_pq(1, 8, 1, MetricType::L2, 10);
+        params.version(IndexFileVersion::Legacy);
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                Some(INDEX_NAME.to_string()),
+                &params,
+                true,
+            )
             .await
             .unwrap();
+        table.dataset().unwrap().update(dataset);
 
         let dataset = table.dataset().unwrap().get().await.unwrap();
         let mut segments = dataset.load_indices_by_name(INDEX_NAME).await.unwrap();
         assert_eq!(segments.len(), 1);
         let original = segments.pop().unwrap();
+        let field_path = dataset.schema().field_path(original.fields[0]).unwrap();
+        let vector_index = dataset
+            .open_vector_index(
+                &field_path,
+                &original.uuid,
+                &lance_index::metrics::NoOpMetricsCollector,
+            )
+            .await
+            .unwrap();
+        assert_eq!(vector_index.index_type(), IndexType::IvfPq);
+        assert_eq!(
+            vector_index.statistics().unwrap()["index_file_version"],
+            "Legacy"
+        );
         let mut legacy = original.clone();
         legacy.fragment_bitmap = None;
         let object_store = dataset.object_store(None).await.unwrap();
