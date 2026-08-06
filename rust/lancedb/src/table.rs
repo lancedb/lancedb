@@ -3443,7 +3443,21 @@ impl BaseTable for NativeTable {
         // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
         // would open every data file to read its column metadata, which costs one
         // IO per fragment and reports 0 for legacy v1 storage.
-        let total_bytes = ds.manifest().summary().total_files_size as usize;
+        //
+        // The manifest summary covers only the fragments' base data files, so
+        // overlay files (recorded on each fragment) and index files (recorded in
+        // the manifest's index section) are added separately.
+        let mut total_bytes = ds.manifest().summary().total_files_size as usize;
+        for frag in ds.manifest().fragments.iter() {
+            for overlay in &frag.overlays {
+                if let Some(size) = overlay.data_file.file_size_bytes.get() {
+                    total_bytes += size.get() as usize;
+                }
+            }
+        }
+        for index in ds.load_indices().await?.iter() {
+            total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
+        }
 
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
@@ -3515,12 +3529,12 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
-    /// The total size, in bytes, of the table's data files
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
     ///
-    /// Read from the manifest, so this excludes index files, deletion files,
-    /// overlay files, and manifests, and it excludes any data file whose size
-    /// the manifest does not record (tables written before writers persisted
-    /// file sizes).
+    /// Read from the manifest, so this excludes deletion files and manifests,
+    /// and it excludes any file whose size the manifest does not record
+    /// (tables and indices written before writers persisted file sizes).
     pub total_bytes: usize,
 
     /// The number of rows in the table
@@ -5030,9 +5044,10 @@ mod tests {
 
         let res = table.stats().await.unwrap();
         println!("{:#?}", res);
-        // `total_bytes` is the full on-disk size of the 11 data files, so it is well
-        // above the 2000 bytes of column data these 250 int32 pairs hold: each file
-        // carries its own footer and metadata.
+        // `total_bytes` is the full on-disk size of the 11 data files (this table
+        // has no index or overlay files), so it is well above the 2000 bytes of
+        // column data these 250 int32 pairs hold: each file carries its own footer
+        // and metadata.
         assert_eq!(
             res,
             TableStatistics {
@@ -5077,6 +5092,141 @@ mod tests {
                 },
             }
         )
+    }
+
+    /// `total_bytes` counts more than the base data files: index files and
+    /// overlay files recorded in the manifest are included too.
+    #[tokio::test]
+    pub async fn test_stats_includes_index_and_overlay_files() {
+        use lance::dataset::WriteDestination;
+        use lance::dataset::transaction::{DataOverlayGroup, Operation};
+        use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+        use lance_file::writer::FileWriterOptions;
+        use lance_io::utils::CachedFileSize;
+        use lance_table::format::DataFile;
+        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
+        use roaring::RoaringBitmap;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_stats_extra_files", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let data_only = table.stats().await.unwrap().total_bytes;
+        assert!(data_only > 0);
+
+        // A scalar index adds index files whose sizes are recorded in the
+        // manifest's index section.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let with_index = table.stats().await.unwrap().total_bytes;
+        let dataset = {
+            let native = table.as_native().unwrap();
+            (*native.dataset.get().await.unwrap()).clone()
+        };
+        let index_bytes: usize = dataset
+            .load_indices()
+            .await
+            .unwrap()
+            .iter()
+            .map(|idx| idx.total_size_bytes().unwrap_or(0) as usize)
+            .sum();
+        assert!(index_bytes > 0);
+        assert_eq!(with_index, data_only + index_bytes);
+
+        // Commit an overlay file supplying new `foo` values for the first three
+        // rows of fragment 0. There is no high-level API that writes overlays
+        // yet, so write the overlay's data file and commit the `DataOverlay`
+        // operation by hand.
+        let read_version = dataset.version().version;
+        let fragment_id = dataset.get_fragments()[0].id() as u64;
+        let foo_field_id = dataset.schema().field("foo").unwrap().id;
+        let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
+        let file_version = ConcreteFileVersion::from(LanceFileVersion::Stable);
+
+        let filename = "overlay.lance".to_string();
+        let store = dataset.object_store(None).await.unwrap();
+        let path = dataset.data_dir().child(filename.clone());
+        let obj_writer = store.create(&path).await.unwrap();
+        let mut writer = lance_file::versions::create_writer(
+            file_version,
+            obj_writer,
+            overlay_schema,
+            FileWriterOptions::default(),
+        )
+        .unwrap();
+        writer
+            .write_column(0, Arc::new(Int32Array::from(vec![1000, 1001, 1002])) as _)
+            .await
+            .unwrap();
+        let summary = writer.finish().await.unwrap();
+        let overlay_bytes = summary.size_bytes as usize;
+        assert!(overlay_bytes > 0);
+
+        let mut data_file = DataFile::new_unstarted(filename, file_version);
+        data_file.fields = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(field_id, _)| *field_id as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.column_indices = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(_, column_index)| *column_index as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.file_size_bytes = CachedFileSize::new(summary.size_bytes);
+
+        let overlay = DataOverlayFile {
+            data_file,
+            coverage: OverlayCoverage::dense(RoaringBitmap::from_iter(0..3)),
+            committed_version: 0,
+        };
+        Dataset::commit(
+            WriteDestination::Dataset(Arc::new(dataset)),
+            Operation::DataOverlay {
+                groups: vec![DataOverlayGroup {
+                    fragment_id,
+                    overlays: vec![overlay],
+                }],
+            },
+            Some(read_version),
+            None,
+            None,
+            Arc::new(Default::default()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        table.checkout_latest().await.unwrap();
+        let with_overlay = table.stats().await.unwrap().total_bytes;
+        assert_eq!(with_overlay, with_index + overlay_bytes);
     }
 
     /// `stats()` must stay manifest-only. Summing per-field `bytes_on_disk`

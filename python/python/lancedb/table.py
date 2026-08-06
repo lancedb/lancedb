@@ -6229,8 +6229,8 @@ class TableStatistics:
     Attributes
     ----------
     total_bytes: int
-        The total size, in bytes, of the table's data files. Read from the
-        manifest, so this excludes index files, deletion files, overlay files,
+        The total size, in bytes, of the table's data files, index files, and
+        overlay files. Read from the manifest, so this excludes deletion files
         and manifests.
     num_rows: int
         The total number of rows in the table.

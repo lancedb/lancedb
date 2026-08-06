@@ -3445,6 +3445,13 @@ def test_stats(mem_db: DBConnection):
         },
     }
 
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
+
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
     """Test creating table with empty list data and schema
