@@ -34,7 +34,7 @@ use crate::remote::{
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
 use lance::io::ObjectStoreParams;
-pub use lance_encoding::version::LanceFileVersion;
+pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};

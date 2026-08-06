@@ -49,8 +49,8 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
-# Keep the direct dependency aligned with the version required by OpenDAL.
-goosefs-sdk = { version = "=0.1.8", optional = true }
+# Pin the GooseFS SDK to the version required by Lance's OpenDAL dependency.
+goosefs-sdk = { version = "=0.1.9", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -75,6 +75,8 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "http2",
     "json",
     "macos-system-configuration",
+    # Avoid linking OpenSSL into Python wheels, which breaks on FIPS hosts.
+    "rustls-tls-native-roots",
     "stream",
 ], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
@@ -98,7 +100,7 @@ anyhow = "1"
 lance-testing = { workspace = true }
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
-tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
+tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.55.0" }

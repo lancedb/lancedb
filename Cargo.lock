@@ -601,7 +601,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "hex",
- "http 1.4.2",
+ "http 1.5.0",
  "sha1 0.10.6",
  "time",
  "tokio",
@@ -664,7 +664,7 @@ dependencies = [
  "bytes-utils",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "http-body 1.1.0",
  "percent-encoding",
@@ -694,7 +694,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body-util",
  "regex-lite",
  "tracing",
@@ -719,7 +719,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -743,7 +743,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -773,7 +773,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "lru 0.16.4",
  "percent-encoding",
@@ -802,7 +802,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -826,7 +826,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -851,7 +851,7 @@ dependencies = [
  "aws-types",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "regex-lite",
  "tracing",
 ]
@@ -873,7 +873,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "p256",
  "percent-encoding",
  "ring",
@@ -906,7 +906,7 @@ dependencies = [
  "bytes",
  "crc-fast",
  "hex",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "md-5 0.11.0",
@@ -940,7 +940,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "percent-encoding",
@@ -961,7 +961,7 @@ dependencies = [
  "h2 0.3.27",
  "h2 0.4.14",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "hyper 0.14.32",
  "hyper 1.9.0",
@@ -1023,7 +1023,7 @@ dependencies = [
  "bytes",
  "fastrand",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "http-body 1.1.0",
  "http-body-util",
@@ -1044,7 +1044,7 @@ dependencies = [
  "aws-smithy-types",
  "bytes",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "pin-project-lite",
  "tokio",
  "tracing",
@@ -1070,7 +1070,7 @@ checksum = "7442cb268338f0eb8278140a107c046756aa01093d8ef5e99628d34ae09c94f5"
 dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "http 1.4.2",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -1084,7 +1084,7 @@ dependencies = [
  "bytes-utils",
  "futures-core",
  "http 0.2.12",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 0.4.6",
  "http-body 1.1.0",
  "http-body-util",
@@ -1132,7 +1132,7 @@ dependencies = [
  "axum-core",
  "bytes",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper 1.9.0",
@@ -1165,7 +1165,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "mime",
@@ -1243,9 +1243,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64-simd"
@@ -3442,6 +3442,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "frostem"
+version = "1.20260804.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82eb03a32a1d50555353c85a7b9d3279a6f1e91af9890b789acdf544ed57c8d7"
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3449,8 +3455,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "rand 0.9.5",
@@ -3807,20 +3813,21 @@ dependencies = [
 
 [[package]]
 name = "goosefs-sdk"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9bc9414e3b2cb0bd08dfe0eb315b177e86b119c7fa5e16179c92fc7b184860"
+checksum = "e1ea4eee6dcbc31b25ab4fd577adc55b677d2bed3aa3016c44c58fbe1b2298a5"
 dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
  "dashmap",
+ "fastrand",
  "futures",
  "hostname",
  "io-uring",
  "itoa",
  "libc",
- "lru 0.12.5",
+ "lru 0.18.2",
  "memmap2 0.9.10",
  "moka",
  "prost",
@@ -3879,7 +3886,7 @@ dependencies = [
  "fnv",
  "futures-core",
  "futures-sink",
- "http 1.4.2",
+ "http 1.5.0",
  "indexmap 2.14.0",
  "slab",
  "tokio",
@@ -3925,8 +3932,6 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -3992,7 +3997,7 @@ checksum = "629d8f3bbeda9d148036d6b0de0a3ab947abd08ce90626327fc3547a49d59d97"
 dependencies = [
  "dirs",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "indicatif",
  "libc",
  "log",
@@ -4015,7 +4020,7 @@ checksum = "430b33fa84f92796d4d263070b6c0d3ca219df7b9a0e1853ee431029b1612bcd"
 dependencies = [
  "async-trait",
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "more-asserts",
  "serde",
  "thiserror 2.0.18",
@@ -4080,9 +4085,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
  "itoa",
@@ -4106,7 +4111,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
 dependencies = [
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -4117,7 +4122,7 @@ checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
 dependencies = [
  "bytes",
  "futures-core",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "pin-project-lite",
 ]
@@ -4184,7 +4189,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "h2 0.4.14",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "httparse",
  "httpdate",
@@ -4216,7 +4221,7 @@ version = "0.27.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
 dependencies = [
- "http 1.4.2",
+ "http 1.5.0",
  "hyper 1.9.0",
  "hyper-util",
  "rustls 0.23.40",
@@ -4250,7 +4255,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "hyper 1.9.0",
  "ipnet",
@@ -4810,8 +4815,8 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
 name = "lance"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4885,8 +4890,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4908,7 +4913,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-scalar"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4922,7 +4927,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-stats"
 version = "58.0.0"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4931,8 +4936,8 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrayref",
  "crunchy",
@@ -4942,8 +4947,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4983,8 +4988,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5014,8 +5019,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5032,8 +5037,8 @@ dependencies = [
 
 [[package]]
 name = "lance-derive"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5042,8 +5047,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5069,7 +5074,6 @@ dependencies = [
  "prost",
  "prost-build",
  "rand 0.9.5",
- "strum 0.26.3",
  "tokio",
  "tracing",
  "xxhash-rust",
@@ -5078,8 +5082,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5110,8 +5114,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5178,8 +5182,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index-core"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5201,8 +5205,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5214,7 +5218,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "io-uring",
  "lance-arrow",
  "lance-core",
@@ -5238,8 +5242,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5255,8 +5259,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5268,8 +5272,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5323,8 +5327,8 @@ dependencies = [
 
 [[package]]
 name = "lance-select"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5339,8 +5343,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5379,8 +5383,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5393,13 +5397,13 @@ dependencies = [
 
 [[package]]
 name = "lance-tokenizer"
-version = "10.1.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v10.1.0-beta.2#94cca93d13b1c731afd6660d46ad2f8d4b4345c4"
+version = "11.0.0-beta.2"
+source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
+ "frostem",
  "icu_segmenter",
  "jieba-rs",
  "lindera",
- "rust-stemmers",
  "serde",
  "stop-words",
  "unicode-normalization",
@@ -5446,7 +5450,7 @@ dependencies = [
  "goosefs-sdk",
  "half",
  "hf-hub",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "lance",
  "lance-arrow",
@@ -5677,7 +5681,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "strum 0.28.0",
+ "strum",
  "strum_macros 0.28.0",
  "unicode-blocks",
  "unicode-normalization",
@@ -5707,7 +5711,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
- "strum 0.28.0",
+ "strum",
  "strum_macros 0.28.0",
  "thiserror 2.0.18",
 ]
@@ -5772,20 +5776,20 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.12.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
-dependencies = [
- "hashbrown 0.15.5",
-]
-
-[[package]]
-name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "lru"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
+dependencies = [
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -6121,15 +6125,15 @@ dependencies = [
 
 [[package]]
 name = "napi-build"
-version = "2.3.2"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9c366d2c8c60b86fa632df75f745509b52f9128f91a6bad4c796e44abb505e1"
+checksum = "5282704fbe8d49b0cf8b08e3f33233416a528658f205c7e5ace63b582de0b11c"
 
 [[package]]
 name = "napi-derive"
-version = "3.6.0"
+version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a49c513341a61a16a10af6efcce46b30d0822ba2d4fb197d24d33dfc199c78d5"
+checksum = "4d5c9c02556ea6dc99dffd36c1ce60141411657438501a125b675776d011ce92"
 dependencies = [
  "convert_case",
  "ctor 1.0.12",
@@ -6141,9 +6145,9 @@ dependencies = [
 
 [[package]]
 name = "napi-derive-backend"
-version = "6.0.0"
+version = "6.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4747005fa3e2c9989ac45a723a514c5db2411238b72981a3cda4c701a9dfea17"
+checksum = "d60b5d773ad46c698c8cc2cd9fde0b283d39cbb7f71c04bee633c7bdba4423bd"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -6397,7 +6401,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body-util",
  "httparse",
  "humantime",
@@ -6516,10 +6520,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec75551ff4cf3e57da98979f6a937aaa9ddb3915bf68cc17d03df733be6646ed"
 dependencies = [
  "anyhow",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "jiff",
  "log",
  "md-5 0.11.0",
@@ -6543,7 +6547,7 @@ checksum = "ad4d4f19c3ce01126a30611f8e544eaa217104a278c889ac17c9374fe4f9e4ef"
 dependencies = [
  "bytes",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "opendal-core",
  "reqwest 0.13.4",
@@ -6556,7 +6560,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "249ac5b0aa5a7a6c3737342d10456067937f9c9a6f3f02544271f7908ab91081"
 dependencies = [
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "mea",
  "opendal-core",
 ]
@@ -6598,9 +6602,9 @@ version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b3310fbbb48f111c6f590473c2cd15e1b7f8e384444b0d4e328f0464c864d767"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "opendal-core",
  "opendal-service-azure-common",
@@ -6619,9 +6623,9 @@ version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e3c406729935fe214ce574d68681a1ff7e0b322548f14094912bdbfe50e5c53"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "mea",
  "opendal-core",
@@ -6640,7 +6644,7 @@ version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7348c88edf15af435b7be930077746b569fac5e738c1bf6a363b675e7317c9df"
 dependencies = [
- "http 1.4.2",
+ "http 1.5.0",
  "opendal-core",
 ]
 
@@ -6651,7 +6655,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d533d4582105d269c8aebeee5f0e8bcf960f41b8aab6197df7012254d9f39bf0"
 dependencies = [
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "opendal-core",
  "quick-xml 0.41.0",
@@ -6669,7 +6673,7 @@ checksum = "007f3fba63c21e516c956b891e96ff9892d8175662bfb781cdada9d3766a11e6"
 dependencies = [
  "async-trait",
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "opendal-core",
  "percent-encoding",
@@ -6704,7 +6708,7 @@ checksum = "b41fd41eb7ed03c5e66cefda61e8e117808ffd2908f2916737cb020a6beb02c7"
 dependencies = [
  "bytes",
  "hf-xet",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "opendal-core",
  "percent-encoding",
@@ -6719,7 +6723,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd528ec2d49c5ca69e674ffed7b3e0686fb9cfcfea0596870de381467fda4f1b"
 dependencies = [
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "opendal-core",
  "quick-xml 0.41.0",
@@ -6735,10 +6739,10 @@ version = "0.58.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58e80cdf192d7eff05feed747894d64f81905ac4eaf132edf7ea270abdd2d663"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "crc-fast",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "md-5 0.11.0",
  "opendal-core",
@@ -8284,13 +8288,13 @@ dependencies = [
 
 [[package]]
 name = "reqsign-aliyun-oss"
-version = "3.1.2"
+version = "3.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c0f9f69a519dd6958c4b43606bb8e1278cdc76d611fc8fed4b796eee548dc0f"
+checksum = "a5e6d659fcdbca6fe2d7ef109c2e28499b7be80501f1bb86c10caf5ec8ac1219"
 dependencies = [
  "anyhow",
  "form_urlencoded",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "percent-encoding",
  "reqsign-core",
@@ -8300,16 +8304,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqsign-aws-v4"
+name = "reqsign-aws-core"
 version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc883bc56889f3e4a419265c87facea222a921debc5c6f15c7fd8b68ec4b36b2"
+checksum = "e4af084e1f3cbf3e67e0c972765399bce54ecec804cceba46b39a8331f3c1bff"
 dependencies = [
- "anyhow",
  "bytes",
  "form_urlencoded",
  "hex",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "percent-encoding",
  "quick-xml 0.41.0",
@@ -8322,16 +8325,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "reqsign-azure-storage"
-version = "3.1.1"
+name = "reqsign-aws-v4"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ebd8524185ce9c64063e3095f83968acfa90922f00c601a4a0f3aca15b077e"
+checksum = "4ac5b3b7cefa28933792b439186459f77f19f9b6edbeab41b8b187150361a206"
+dependencies = [
+ "bytes",
+ "http 1.5.0",
+ "log",
+ "quick-xml 0.41.0",
+ "reqsign-aws-core",
+ "reqsign-core",
+ "serde",
+]
+
+[[package]]
+name = "reqsign-azure-storage"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2824e7da3c2cc42ac3406c674eb57c89127fdcd97f3a73c608cfc680505ea134"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "form_urlencoded",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "pem",
  "percent-encoding",
@@ -8344,17 +8362,17 @@ dependencies = [
 
 [[package]]
 name = "reqsign-core"
-version = "3.2.0"
+version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e38b44697c60a823705ccef85cb04d8e0527c9d16ed7c58bf1c6395bdd24ceb"
+checksum = "c07dd510b1e1b9b241883e483358147fb2ed2d497a7b39b065ba61eb93deceb0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "hex",
  "hmac 0.13.0",
- "http 1.4.2",
+ "http 1.5.0",
  "jiff",
  "log",
  "percent-encoding",
@@ -8368,9 +8386,9 @@ dependencies = [
 
 [[package]]
 name = "reqsign-file-read-tokio"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "688ff0ae421b8d4b92b53fdafaf53df2de28f428a9962edcf21702990b26f74b"
+checksum = "663d9d55abd0df0830ef0ae43708297cc1371cf4e8ca91f3ac813c309cca8c98"
 dependencies = [
  "anyhow",
  "reqsign-core",
@@ -8379,12 +8397,12 @@ dependencies = [
 
 [[package]]
 name = "reqsign-google"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a96da0b579b846d358090cb06b9e3c2ad1375529efbe3e0c45f96bd7bcf043ea"
+checksum = "4080a227f82a09f68540ecd028622065d7ac4c0bcb8727a25bdcfc0526235792"
 dependencies = [
  "form_urlencoded",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "percent-encoding",
  "reqsign-aws-v4",
@@ -8397,12 +8415,12 @@ dependencies = [
 
 [[package]]
 name = "reqsign-tencent-cos"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6497dd9f6e3d1349b420521484099b284f95e8d3a65f088fccef42493a7b644"
+checksum = "764629c90f7c3566a6d4e4641ebab9acd604ce02e16eda4d37c7d7e79e16ed90"
 dependencies = [
  "anyhow",
- "http 1.4.2",
+ "http 1.5.0",
  "log",
  "percent-encoding",
  "reqsign-core",
@@ -8422,7 +8440,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2 0.4.14",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper 1.9.0",
@@ -8466,7 +8484,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper 1.9.0",
@@ -8520,7 +8538,7 @@ checksum = "199dda04a536b532d0cc04d7979e39b1c763ea749bf91507017069c00b96056f"
 dependencies = [
  "anyhow",
  "async-trait",
- "http 1.4.2",
+ "http 1.5.0",
  "reqwest 0.13.4",
  "thiserror 2.0.18",
  "tower-service",
@@ -8562,9 +8580,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.8.16"
+version = "0.8.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73389e0c99e664f919275ab5b5b0471391fe9a8de61e1dff9b1eaf56a90f16e3"
+checksum = "815cc8a37159a463064825246cadb07961e25cd9885908606f6d08a98d8f8874"
 dependencies = [
  "bytecheck",
  "bytes",
@@ -8581,9 +8599,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv_derive"
-version = "0.8.16"
+version = "0.8.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d2ed0b54125315fb36bd021e82d314d1c126548f871634b483f46b31d13cac6"
+checksum = "c0ed1a78a1b19d184b0daa629dd9a024573173ec7d485b287cb369fb3607cc1c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8659,16 +8677,6 @@ checksum = "796e8d2b6696392a43bea58116b667fb4c29727dc5abd27d6acf338bb4f688c7"
 dependencies = [
  "cfg-if 1.0.4",
  "ordered-multimap",
-]
-
-[[package]]
-name = "rust-stemmers"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e46a2036019fdb888131db7a4c847a1063a7493f971ed94ea82c67eada63ca54"
-dependencies = [
- "serde",
- "serde_derive",
 ]
 
 [[package]]
@@ -9546,15 +9554,6 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
-dependencies = [
- "strum_macros 0.26.4",
-]
-
-[[package]]
-name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
@@ -9569,19 +9568,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23dc1fa9ac9c169a78ba62f0b841814b7abae11bdd047b9c58f893439e309ea0"
 dependencies = [
  "heck 0.4.1",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck 0.5.0",
  "proc-macro2",
  "quote",
  "rustversion",
@@ -10110,7 +10096,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "h2 0.4.14",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "hyper 1.9.0",
@@ -10166,7 +10152,7 @@ checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
 dependencies = [
  "bitflags 2.11.1",
  "bytes",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "pin-project-lite",
@@ -10186,7 +10172,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "http 1.4.2",
+ "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
  "pin-project-lite",
@@ -11207,7 +11193,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "futures",
- "http 1.4.2",
+ "http 1.5.0",
  "hyper 1.9.0",
  "lazy_static",
  "more-asserts",
@@ -11281,7 +11267,7 @@ dependencies = [
  "chrono",
  "clap",
  "gearhash",
- "http 1.4.2",
+ "http 1.5.0",
  "itertools 0.14.0",
  "lazy_static",
  "more-asserts",
