@@ -305,6 +305,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parallel_compaction_reserves_fragment_ids_once() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter_values(0..10))])
+                .unwrap();
+
+        let table = conn
+            .create_table("test_parallel_compaction", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        // Create 64 fragments. With a 20-row target, compaction plans 32 tasks,
+        // which is more than the commit retry limit that used to be exhausted
+        // when each parallel task reserved fragment IDs independently.
+        for _ in 1..64 {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Legacy row IDs require fragment IDs before an index can be remapped.
+        assert!(
+            !table
+                .as_native()
+                .unwrap()
+                .manifest()
+                .await
+                .unwrap()
+                .uses_stable_row_ids()
+        );
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let version_before = table.version().await.unwrap();
+        let stats = table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 20,
+                    num_threads: Some(64),
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap()
+            .compaction
+            .unwrap();
+
+        assert_eq!(stats.fragments_removed, 64);
+        assert_eq!(stats.fragments_added, 32);
+        assert_eq!(table.count_rows(None).await.unwrap(), 640);
+        assert_eq!(
+            table.version().await.unwrap(),
+            version_before + 2,
+            "parallel compaction should use one fragment reservation commit and one rewrite commit"
+        );
+    }
+
+    #[tokio::test]
     async fn test_optimize_prune_versions() {
         let conn = connect("memory://").execute().await.unwrap();
 
