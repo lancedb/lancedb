@@ -65,6 +65,19 @@ fn session_or_default(
     }
 }
 
+fn clone_target_read_params(
+    store_options: ObjectStoreParams,
+    session: Arc<lance::session::Session>,
+    commit_handler: Arc<dyn CommitHandler>,
+) -> ReadParams {
+    ReadParams {
+        store_options: Some(store_options),
+        session: Some(session),
+        commit_handler: Some(commit_handler),
+        ..Default::default()
+    }
+}
+
 /// Routes clone source metadata through the source commit handler while all
 /// destination operations continue to use the target handler.
 #[derive(Debug)]
@@ -1295,6 +1308,11 @@ impl Database for ListingDatabase {
             Some(handler) => handler,
             None => commit_handler_from_url(&target_uri, &Some(storage_params.clone())).await?,
         };
+        let target_read_params = clone_target_read_params(
+            storage_params.clone(),
+            self.session.clone(),
+            target_commit_handler.clone(),
+        );
         let clone_commit_handler = Arc::new(CloneCommitHandler {
             source_base,
             source: source_commit_handler,
@@ -1329,7 +1347,7 @@ impl Database for ListingDatabase {
             &request.target_table_name,
             request.target_namespace_path,
             self.store_wrapper.clone(),
-            Some(read_params),
+            Some(target_read_params),
             self.read_consistency_interval,
             request.namespace_client,
             HashSet::new(), // listing database doesn't support server-side queries
@@ -1563,6 +1581,24 @@ mod tests {
         assert!(Arc::ptr_eq(
             &registry.get_provider("file").unwrap(),
             &provider
+        ));
+    }
+
+    #[test]
+    fn clone_target_read_params_use_the_target_commit_handler() {
+        let session = Arc::new(lance::session::Session::default());
+        let target_handler: Arc<dyn CommitHandler> = Arc::new(TargetOnlyCommitHandler);
+
+        let params = clone_target_read_params(
+            ObjectStoreParams::default(),
+            session.clone(),
+            target_handler.clone(),
+        );
+
+        assert!(Arc::ptr_eq(params.session.as_ref().unwrap(), &session));
+        assert!(Arc::ptr_eq(
+            params.commit_handler.as_ref().unwrap(),
+            &target_handler
         ));
     }
 
