@@ -90,7 +90,6 @@ pub use branch_merge::{
     BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
     MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
 };
-pub use checkpoint::LsmFault;
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;

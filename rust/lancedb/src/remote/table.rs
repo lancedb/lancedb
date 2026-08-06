@@ -29,7 +29,6 @@ use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::checkpoint::classify_lsm_fault;
 use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
@@ -994,63 +993,16 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    /// Send an LSM operator request, classifying a failure into an
-    /// [`Error::LsmRoute`] the checkpoint loop can act on.
+    /// Send an LSM operator request with the transport retry layer **off**.
     ///
-    /// Deliberately not routed through `check_response` /
-    /// `check_table_response`: those fold the body into a string and keep only
-    /// the status, and on a 503 the body's `code` is the only thing that tells
-    /// a draining node from a fenced writer or a transport blip.
-    async fn send_lsm_route(
-        &self,
-        request: RequestBuilder,
-        route: &str,
-    ) -> Result<(String, String)> {
-        // `with_retry = false` on purpose: the transport layer treats every
-        // 503 alike and would burn its budget re-asking a draining node,
-        // before this classifier ever saw the body saying which 503 it was.
-        // Retry policy here belongs to the checkpoint loop.
+    /// Retry policy on these routes belongs to the checkpoint loop, which
+    /// reads the status and can tell contention from a lost claim. Leaving the
+    /// transport layer on would re-ask on its own schedule first, and surface
+    /// an `Error::Retry` whose status the loop would then have to unwrap.
+    async fn send_lsm_route(&self, request: RequestBuilder) -> Result<(String, reqwest::Response)> {
         let (request_id, response) = self.send(request, false).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        if !status.is_success() {
-            // 404 means the table does not exist, and must arrive as the error
-            // every other route reports. These routes bypass
-            // `check_table_response`, so `handle_table_not_found` never runs
-            // for them. A lost claim is 421, classified below.
-            if status == StatusCode::NOT_FOUND {
-                return Err(Error::TableNotFound {
-                    name: self.name.clone(),
-                    source: Box::new(Error::Http {
-                        source: body.into(),
-                        request_id,
-                        status_code: Some(status),
-                    }),
-                });
-            }
-            return Err(Error::LsmRoute {
-                fault: classify_lsm_fault(status.as_u16(), &body),
-                status: status.as_u16(),
-                message: format!("{route}: {status}: {body}"),
-            });
-        }
-        Ok((body, request_id))
-    }
-
-    /// [`Self::send_lsm_route`] plus a JSON decode. Separate because
-    /// `flush_lsm` and `compact_lsm` answer `202` with no body at all —
-    /// decoding an empty string is a parse error, not an empty struct.
-    async fn send_lsm_route_json<T: serde::de::DeserializeOwned>(
-        &self,
-        request: RequestBuilder,
-        route: &str,
-    ) -> Result<T> {
-        let (body, request_id) = self.send_lsm_route(request, route).await?;
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse {route} response: {e}").into(),
-            request_id,
-            status_code: None,
-        })
+        let response = self.check_table_response(&request_id, response).await?;
+        Ok((request_id, response))
     }
 
     /// Build a POST request and attach the read-freshness headers
@@ -2534,7 +2486,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/flush_lsm/", self.identifier));
-        self.send_lsm_route(request, "flush_lsm").await?;
+        self.send_lsm_route(request).await?;
         Ok(())
     }
 
@@ -2542,7 +2494,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/compact_lsm/", self.identifier));
-        self.send_lsm_route(request, "compact_lsm").await?;
+        self.send_lsm_route(request).await?;
         Ok(())
     }
 
@@ -2553,8 +2505,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .json(&serde_json::json!({
                 "include_generation_rows": include_generation_rows,
             }));
-        let parsed: GetLsmStatsResponse =
-            self.send_lsm_route_json(request, "get_lsm_stats").await?;
+        let (request_id, response) = self.send_lsm_route(request).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let parsed: GetLsmStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_lsm_stats response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
         // `null` — and only — when the table has no LSM write path.
         Ok(parsed.lsm_stats)
     }
@@ -6895,11 +6852,11 @@ mod tests {
         );
     }
 
-    /// Contention is not draining. Every layer says "unavailable" either way,
-    /// so reading a 429 as terminal stops the checkpoint early and blames a
-    /// healthy node.
+    /// Contention is a 429 and must be retried. The server keeps it off 503
+    /// precisely so the client can act on the status alone — reading it as
+    /// terminal stops the checkpoint early on a healthy node.
     #[tokio::test(start_paused = true)]
-    async fn test_checkpoint_retries_contention_and_does_not_report_draining() {
+    async fn test_checkpoint_retries_contention() {
         let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
@@ -7027,14 +6984,7 @@ mod tests {
 
         let err = table.checkpoint_lsm().await.unwrap_err();
         assert!(
-            matches!(
-                err,
-                Error::LsmRoute {
-                    fault: crate::table::LsmFault::Retry,
-                    status: 429,
-                    ..
-                }
-            ),
+            matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 429),
             "the fault that spent the budget must be the one reported: {err:?}"
         );
         assert_eq!(
@@ -7044,11 +6994,14 @@ mod tests {
         );
     }
 
-    /// A draining node stops the loop immediately, without retrying. The call
-    /// count is the assertion: a regression to retry-until-exhausted passes
-    /// any test that only checks that it errored.
+    /// A draining node is terminal, but the client does not know that from the
+    /// status: draining and a proxy blip are both 503, and telling them apart
+    /// takes parsing the body for a namespace code. So it spends the retry
+    /// budget and then reports what the server said — the drain gate never
+    /// releases, so the answer does not change, and the operator still reads
+    /// "WAL node draining" in the error.
     #[tokio::test(start_paused = true)]
-    async fn test_checkpoint_stops_without_retrying_on_draining() {
+    async fn test_draining_surfaces_after_the_retry_budget() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = calls.clone();
         let table = Table::new_with_handler("my_table", move |_request| {
@@ -7060,20 +7013,19 @@ mod tests {
         });
 
         let err = table.checkpoint_lsm().await.unwrap_err();
+        let message = err.to_string();
         assert!(
-            matches!(
-                err,
-                Error::LsmRoute {
-                    fault: crate::table::LsmFault::Draining,
-                    ..
-                }
-            ),
-            "draining must surface as itself, not as a generic failure: {err:?}"
+            matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 503),
+            "the 503 must surface as itself: {err:?}"
+        );
+        assert!(
+            message.contains("WAL node draining"),
+            "the server's own diagnosis must survive to the caller: {message}"
         );
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "draining is terminal: exactly one request, no retries"
+            9,
+            "one call plus MAX_RETRIES, then it reports rather than spinning"
         );
     }
 

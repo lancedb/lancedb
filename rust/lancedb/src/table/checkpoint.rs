@@ -27,53 +27,45 @@ use std::time::Duration;
 
 use crate::{Error, Result, Table};
 
-/// How a failed LSM request should be handled by the checkpoint loop.
+/// The HTTP status a failed request carried, if it carried one.
 ///
-/// Keyed on status, which the server assigns one meaning apiece. The body's
-/// `code` is read on 503 alone, to tell a server 503 from a proxy's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LsmFault {
-    /// 429 (latch held, pool saturated, or the pod replaying its WAL), or a
-    /// 503 that did not come from the server. Fenced and slot-unavailable are
-    /// not distinguished from contention: the client action is identical.
-    Retry,
-    /// 421: the owning node holds no claim. `flush` re-claims and replays, so
-    /// re-issue from there — capped, or a crash-looping node spins.
-    ReissueFromFlush,
-    /// 503 with `InvalidTableState`: the owning node is draining. Terminal.
-    Draining,
-    /// 404 (no such table), 409 (dropping), 400 (not WAL-backed), or anything
-    /// unrecognized. Terminal.
-    Fatal,
-}
-
-/// Lance-namespace `ErrorCode::InvalidTableState`, which the server attaches
-/// to a draining 503. Tells a server 503 from an ingress or proxy one, which
-/// carries no code at all and is retryable.
-pub(crate) const CODE_INVALID_TABLE_STATE: u64 = 19;
-
-/// Classify an LSM-route failure from its status and response body.
-pub(crate) fn classify_lsm_fault(status: u16, body: &str) -> LsmFault {
-    match status {
-        429 => LsmFault::Retry,
-        // `flush` is what re-claims and replays.
-        421 => LsmFault::ReissueFromFlush,
-        // The body check asks whether this 503 came from phalanx at all: a
-        // proxy 503 carries no code, and reading it as a draining node would
-        // abort a checkpoint on a transient hop failure.
-        503 if body_code(body) == Some(CODE_INVALID_TABLE_STATE) => LsmFault::Draining,
-        503 => LsmFault::Retry,
-        // `send_lsm_route` turns 404 into `TableNotFound` before this runs.
-        _ => LsmFault::Fatal,
+/// `None` for anything with no retry story: a `TableNotFound` that
+/// `check_table_response` already translated, or a connection failure that
+/// never reached the server. Both are terminal.
+fn status_of(e: &Error) -> Option<u16> {
+    #[cfg(feature = "remote")]
+    {
+        match e {
+            Error::Http {
+                status_code: Some(status),
+                ..
+            } => Some(status.as_u16()),
+            _ => None,
+        }
+    }
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = e;
+        None
     }
 }
 
-/// The lance-namespace error code from a JSON error body. Absent or
-/// unparseable ⇒ `None`, which callers read as the *less* terminal branch.
-fn body_code(body: &str) -> Option<u64> {
-    serde_json::from_str::<HashMap<String, serde_json::Value>>(body)
-        .ok()
-        .and_then(|m| m.get("code").and_then(|c| c.as_u64()))
+/// 429 (latch held, pool saturated, or the pod replaying its WAL) and 503 (a
+/// draining node, or a proxy between here and it).
+///
+/// The status is the whole signal: the server deliberately keeps contention
+/// off 503, so a latch collision is a 429. A draining node *is* terminal, but
+/// it is also a 503 that stays a 503, so retrying spends one budget and then
+/// reports the server's own message — cheaper than parsing the body for the
+/// namespace code it would take to tell the two apart.
+fn is_retryable(e: &Error) -> bool {
+    matches!(status_of(e), Some(429 | 503))
+}
+
+/// 421: the owning node holds no claim. Only `flush` re-claims and replays,
+/// so this cannot be retried in place — the caller has to start over.
+fn is_lost_claim(e: &Error) -> bool {
+    status_of(e) == Some(421)
 }
 
 /// Interval between `get_lsm_stats` polls. One interval is roughly one
@@ -126,23 +118,6 @@ enum Attempt<T> {
     ReissueFromFlush,
 }
 
-/// The fault an LSM route reported, or `None` for anything else — a
-/// `TableNotFound`, a transport failure — which is terminal by definition.
-fn lsm_fault(e: &Error) -> Option<LsmFault> {
-    #[cfg(feature = "remote")]
-    {
-        match e {
-            Error::LsmRoute { fault, .. } => Some(*fault),
-            _ => None,
-        }
-    }
-    #[cfg(not(feature = "remote"))]
-    {
-        let _ = e;
-        None
-    }
-}
-
 /// Issue one LSM request, retrying in place while the fault is retryable.
 ///
 /// The two recoverable faults have separate budgets: contention clears on its
@@ -150,9 +125,8 @@ fn lsm_fault(e: &Error) -> Option<LsmFault> {
 /// re-claim, which only the caller can drive.
 ///
 /// An exhausted budget propagates the last error *as itself* rather than a
-/// synthesized one — "429 after nine tries" beats "checkpoint failed".
-/// Draining is terminal: the drain gate never releases until the process
-/// restarts, so retrying that node spins forever.
+/// synthesized one — "429 after nine tries" beats "checkpoint failed", and a
+/// draining node arrives carrying the server's own message.
 async fn issue<T, F, Fut>(mut call: F) -> Result<Attempt<T>>
 where
     F: FnMut() -> Fut,
@@ -160,17 +134,18 @@ where
 {
     let mut retries = 0;
     loop {
-        match call().await {
+        let e = match call().await {
             Ok(value) => return Ok(Attempt::Ok(value)),
-            Err(e) => match lsm_fault(&e) {
-                Some(LsmFault::ReissueFromFlush) => return Ok(Attempt::ReissueFromFlush),
-                Some(LsmFault::Retry) if retries < MAX_RETRIES => {
-                    backoff(retries).await;
-                    retries += 1;
-                }
-                _ => return Err(e),
-            },
+            Err(e) => e,
+        };
+        if is_lost_claim(&e) {
+            return Ok(Attempt::ReissueFromFlush);
         }
+        if !is_retryable(&e) || retries >= MAX_RETRIES {
+            return Err(e);
+        }
+        backoff(retries).await;
+        retries += 1;
     }
 }
 
@@ -265,70 +240,76 @@ async fn drain_to_targets(
             return Ok(CheckpointOutcome::Done);
         }
 
-        // Not retried in place: the server answers 429 only when it could
-        // latch no bucket at all, which the poll above already handles. Fall
-        // through and re-read; `POLL_INTERVAL` is the backoff.
         if !all_compacting {
             match table.compact_lsm().await {
                 Ok(()) => {}
-                Err(e) => match lsm_fault(&e) {
-                    Some(LsmFault::Retry) => {}
-                    Some(LsmFault::ReissueFromFlush) => {
-                        return Ok(CheckpointOutcome::ReissueFromFlush);
-                    }
-                    _ => return Err(e),
-                },
+                Err(e) if is_lost_claim(&e) => return Ok(CheckpointOutcome::ReissueFromFlush),
+                Err(e) if !is_retryable(&e) => return Err(e),
+                // A 429 here means the server could latch no bucket at all,
+                // which the poll above already handles. Not retried in place:
+                // the latch it would contend for is the one doing the work, so
+                // fall through and re-read — `POLL_INTERVAL` is the backoff.
+                Err(_) => {}
             }
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "remote"))]
 mod tests {
     use super::*;
 
-    /// Every row of the taxonomy, on the `(status, code)` pair the client
-    /// receives. A `_ =>` arm added later passes any test that only asserts
-    /// "it errored".
-    #[test]
-    fn taxonomy_round_trips() {
-        assert_eq!(
-            classify_lsm_fault(429, r#"{"code":21}"#),
-            LsmFault::Retry,
-            "contention, saturation, and a pod replaying its WAL all arrive here"
-        );
-        assert_eq!(
-            classify_lsm_fault(503, r#"{"code":19}"#),
-            LsmFault::Draining,
-            "a draining node must be told apart from every other 503"
-        );
-        assert_eq!(
-            classify_lsm_fault(503, r#"{"code":17}"#),
-            LsmFault::Retry,
-            "fenced / no-slot / transport stay retryable"
-        );
-        assert_eq!(
-            classify_lsm_fault(421, r#"{"code":19}"#),
-            LsmFault::ReissueFromFlush,
-            "a lost claim has its own status and must re-claim"
-        );
-        assert_eq!(
-            classify_lsm_fault(404, r#"{"code":4}"#),
-            LsmFault::Fatal,
-            "a table that does not exist must not be retried as a lost claim"
-        );
-        assert_eq!(classify_lsm_fault(409, r#"{"code":14}"#), LsmFault::Fatal);
-        assert_eq!(classify_lsm_fault(400, r#"{"code":13}"#), LsmFault::Fatal);
+    fn http(status: u16) -> Error {
+        Error::Http {
+            source: "server said no".into(),
+            request_id: "rid".into(),
+            status_code: reqwest::StatusCode::from_u16(status).ok(),
+        }
     }
 
-    /// A 503 whose body is missing, truncated, or not the expected JSON falls
-    /// back to retryable, never terminal: an ingress 503 carries no code, and
-    /// mistaking it for a draining node aborts the checkpoint on a lie.
+    /// Every status the loop acts on. The two predicates are checked together
+    /// because their overlap is what would be wrong: a status must never be
+    /// both, and 421 in particular must not read as retryable — retrying it in
+    /// place re-issues the call that just said the node holds no claim.
     #[test]
-    fn unparseable_503_body_is_retryable() {
-        assert_eq!(classify_lsm_fault(503, ""), LsmFault::Retry);
-        assert_eq!(classify_lsm_fault(503, "gateway timeout"), LsmFault::Retry);
-        assert_eq!(classify_lsm_fault(503, r#"{"code":"19"}"#), LsmFault::Retry);
+    fn taxonomy_round_trips() {
+        for status in [429, 503] {
+            assert!(is_retryable(&http(status)), "{status} must retry");
+            assert!(
+                !is_lost_claim(&http(status)),
+                "{status} is not a lost claim"
+            );
+        }
+        assert!(is_lost_claim(&http(421)), "a lost claim must re-claim");
+        assert!(
+            !is_retryable(&http(421)),
+            "retrying a lost claim in place only asks the same node again"
+        );
+        for status in [400, 404, 409, 500] {
+            assert!(!is_retryable(&http(status)), "{status} is terminal");
+            assert!(!is_lost_claim(&http(status)), "{status} is terminal");
+        }
+    }
+
+    /// An error carrying no status has no retry story and must be terminal —
+    /// a connection that never reached the server, or a `TableNotFound` that
+    /// `check_table_response` translated before the loop saw it.
+    #[test]
+    fn errors_without_a_status_are_terminal() {
+        let no_status = Error::Http {
+            source: "connection reset".into(),
+            request_id: "rid".into(),
+            status_code: None,
+        };
+        assert!(!is_retryable(&no_status));
+        assert!(!is_lost_claim(&no_status));
+
+        let translated = Error::TableNotFound {
+            name: "t".into(),
+            source: "gone".into(),
+        };
+        assert!(!is_retryable(&translated));
+        assert!(!is_lost_claim(&translated));
     }
 }
