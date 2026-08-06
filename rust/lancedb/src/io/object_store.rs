@@ -42,12 +42,8 @@ pub mod io_tracking;
 /// The regular `file` scheme enables optimized readers and writers that bypass
 /// the configured object store and would reintroduce the broken UNC conversion.
 #[cfg(any(windows, test))]
-#[derive(Debug, Default)]
-struct PrefixedFileStoreProvider {
-    base_paths: std::sync::Mutex<
-        std::collections::HashMap<std::path::PathBuf, Arc<std::sync::RwLock<Vec<Path>>>>,
-    >,
-}
+#[derive(Debug)]
+struct PrefixedFileStoreProvider;
 
 #[cfg(any(windows, test))]
 impl PrefixedFileStoreProvider {
@@ -98,25 +94,6 @@ impl PrefixedFileStoreProvider {
 
         Ok((root, Path::parse(relative)?))
     }
-
-    fn base_paths_for(
-        &self,
-        root: &std::path::Path,
-        base_path: &Path,
-    ) -> Arc<std::sync::RwLock<Vec<Path>>> {
-        let mut roots = self.base_paths.lock().expect("base-path lock poisoned");
-        let base_paths = roots
-            .entry(root.to_path_buf())
-            .or_insert_with(|| Arc::new(std::sync::RwLock::new(Vec::new())))
-            .clone();
-        let mut paths = base_paths.write().expect("base-path lock poisoned");
-        if !paths.iter().any(|path| base_path.prefix_matches(path)) {
-            paths.retain(|path| !path.prefix_matches(base_path));
-            paths.push(base_path.clone());
-        }
-        drop(paths);
-        base_paths
-    }
 }
 
 /// A local store rooted at a Windows drive or UNC share.
@@ -132,21 +109,18 @@ impl PrefixedFileStoreProvider {
 struct RootedLocalFileSystem {
     inner: Arc<LocalFileSystem>,
     root: std::path::PathBuf,
-    base_paths: Arc<std::sync::RwLock<Vec<Path>>>,
+    base_path: Path,
     absolute_alias: Path,
 }
 
 #[cfg(any(windows, test))]
 impl RootedLocalFileSystem {
-    fn new(
-        root: std::path::PathBuf,
-        base_paths: Arc<std::sync::RwLock<Vec<Path>>>,
-    ) -> LanceResult<Self> {
+    fn new(root: std::path::PathBuf, base_path: Path) -> LanceResult<Self> {
         let absolute_alias = Path::from_absolute_path(&root)?;
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new_with_prefix(&root)?),
             root,
-            base_paths,
+            base_path,
             absolute_alias,
         })
     }
@@ -165,13 +139,10 @@ impl RootedLocalFileSystem {
         let suffix = Self::path_from_parts(suffix);
 
         // A UNC absolute path loses its server when converted to an object-store
-        // path, leaving `share/<path>`. Only strip that ambiguous share segment
-        // when the remainder is inside a base that requested this shared store.
-        let base_paths = self.base_paths.read().expect("base-path lock poisoned");
-        if base_paths
-            .iter()
-            .any(|base| base.as_ref().is_empty() || suffix.prefix_matches(base))
-        {
+        // path, leaving `share/<path>`. Each store is cached for exactly one base
+        // path, so only strip that ambiguous share segment when the remainder is
+        // inside this store's immutable base.
+        if self.base_path.as_ref().is_empty() || suffix.prefix_matches(&self.base_path) {
             suffix
         } else {
             path.clone()
@@ -292,9 +263,8 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         params: &ObjectStoreParams,
     ) -> LanceResult<lance::io::ObjectStore> {
         let (root, relative_path) = Self::root_and_relative_path(&base_path)?;
-        let base_paths = self.base_paths_for(&root, &relative_path);
         let raw_store: Arc<dyn ObjectStore> =
-            Arc::new(RootedLocalFileSystem::new(root, base_paths)?);
+            Arc::new(RootedLocalFileSystem::new(root, relative_path)?);
         let location = Url::parse("lancedb-file:///").expect("static URL must be valid");
         let storage_options =
             StorageOptions::new(params.storage_options().cloned().unwrap_or_default());
@@ -320,10 +290,7 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
     }
 
     fn extract_path(&self, url: &Url) -> LanceResult<Path> {
-        Self::root_and_relative_path(url).map(|(root, path)| {
-            self.base_paths_for(&root, &path);
-            path
-        })
+        Self::root_and_relative_path(url).map(|(_, path)| path)
     }
 
     fn calculate_object_store_prefix(
@@ -332,9 +299,13 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         _storage_options: Option<&std::collections::HashMap<String, String>>,
     ) -> LanceResult<String> {
         let (root, path) = Self::root_and_relative_path(url)?;
-        self.base_paths_for(&root, &path);
         let root = root.canonicalize()?;
-        Ok(format!("file${}", root.display()))
+        // Scope the registry cache to one requested base path. A root-wide
+        // store cannot distinguish a legitimate relative path beginning with a
+        // UNC share name from the absolute alias produced by the default file
+        // provider, and mutable path history can therefore redirect I/O between
+        // sibling databases.
+        Ok(format!("file${}${path}", root.display()))
     }
 }
 
@@ -342,7 +313,7 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
 /// roots by using `LocalFileSystem::new_with_prefix`.
 #[cfg(any(windows, test))]
 pub(crate) fn register_windows_file_store(registry: &Arc<ObjectStoreRegistry>) {
-    registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
+    registry.insert("file", Arc::new(PrefixedFileStoreProvider));
 }
 
 #[cfg(test)]
@@ -375,7 +346,7 @@ mod prefixed_file_store_test {
         let table_url = Url::from_directory_path(&table_path).unwrap();
 
         let registry = Arc::new(ObjectStoreRegistry::default());
-        registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
 
         // A new table is relative to its filesystem root. The non-`file`
         // scheme proves Lance will not bypass this prefixed store.
@@ -427,7 +398,7 @@ mod prefixed_file_store_test {
         let tempdir = tempfile::tempdir().unwrap();
         let table_url = Url::from_directory_path(tempdir.path().join("test.lance")).unwrap();
         let registry = Arc::new(ObjectStoreRegistry::default());
-        registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
         let wrapper = Arc::new(CountingWrapper::default());
         let params = ObjectStoreParams {
             object_store_wrapper: Some(wrapper.clone()),
@@ -453,21 +424,48 @@ mod prefixed_file_store_test {
         assert_eq!(stats.written_bytes, 7);
     }
 
+    #[tokio::test]
+    async fn scopes_store_cache_to_requested_base_path() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let first_url = Url::from_directory_path(tempdir.path().join("database")).unwrap();
+        let second_url = Url::from_directory_path(tempdir.path().join("share/database")).unwrap();
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+
+        let (first, _) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            first_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+        let (second, _) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            second_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(registry.stats().misses, 2);
+    }
+
     #[test]
     fn normalizes_absolute_drive_and_unc_aliases() {
         let tempdir = tempfile::tempdir().unwrap();
-        let drive_bases = Arc::new(std::sync::RwLock::new(vec![Path::from("Users/db")]));
         let mut drive_store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), drive_bases).unwrap();
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("Users/db"))
+                .unwrap();
         drive_store.absolute_alias = Path::from("C:");
         assert_eq!(
             drive_store.normalize(&Path::from("C:/Users/db/table.lance")),
             Path::from("Users/db/table.lance")
         );
 
-        let unc_bases = Arc::new(std::sync::RwLock::new(vec![Path::from("share/db")]));
         let mut unc_store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), unc_bases).unwrap();
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/db"))
+                .unwrap();
         unc_store.absolute_alias = Path::from("share");
         assert_eq!(
             unc_store.normalize(&Path::from("share/share/db/table.lance")),
@@ -479,12 +477,28 @@ mod prefixed_file_store_test {
         );
     }
 
+    #[test]
+    fn relative_unc_alias_does_not_cross_database_roots() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut store =
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/database"))
+                .unwrap();
+        store.absolute_alias = Path::from("share");
+
+        let relative = Path::from("share/database/table.lance/marker");
+        assert_eq!(store.normalize(&relative), relative);
+        assert_eq!(
+            store.normalize(&Path::from("share/share/database/table.lance/marker")),
+            relative
+        );
+    }
+
     #[tokio::test]
     async fn routes_unc_alias_lifecycle_through_the_prefix() {
         let tempdir = tempfile::tempdir().unwrap();
-        let base_paths = Arc::new(std::sync::RwLock::new(vec![Path::from("share/db")]));
         let mut store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), base_paths).unwrap();
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/db"))
+                .unwrap();
         store.absolute_alias = Path::from("share");
         let table = Path::from("share/share/db/test.lance");
         let marker = table.clone().join("marker");
@@ -650,9 +664,14 @@ impl ObjectStore for MirroringObjectStore {
         if to.primary_only() {
             self.primary.copy_opts(from, to, options).await
         } else {
-            self.secondary.copy_opts(from, to, options.clone()).await?;
-            self.primary.copy_opts(from, to, options).await?;
-            Ok(())
+            // The secondary store can be process-local and less durable than the
+            // primary, so a source written by another process may not exist here
+            // or may be evicted before the copy begins.
+            match self.secondary.copy_opts(from, to, options.clone()).await {
+                Ok(()) | Err(Error::NotFound { .. }) => {}
+                Err(err) => return Err(err),
+            }
+            self.primary.copy_opts(from, to, options).await
         }
     }
 }
@@ -710,7 +729,8 @@ mod test {
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
-    use object_store::local::LocalFileSystem;
+    use object_store::{local::LocalFileSystem, memory::InMemory};
+    use std::time::Duration;
     use tempfile;
 
     use crate::{
@@ -718,6 +738,139 @@ mod test {
         query::{ExecutableQuery, QueryBase},
         table::WriteOptions,
     };
+
+    #[derive(Debug)]
+    struct EvictBeforeCopyStore {
+        inner: Arc<dyn ObjectStore>,
+    }
+
+    impl std::fmt::Display for EvictBeforeCopyStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "EvictBeforeCopyStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for EvictBeforeCopyStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> Result<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            options: PutMultipartOptions,
+        ) -> Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, Result<Path>>,
+        ) -> BoxStream<'static, Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+            self.inner.delete(from).await?;
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_source_is_missing_from_secondary() {
+        let primary_dir = tempfile::tempdir().unwrap();
+        let secondary_dir = tempfile::tempdir().unwrap();
+        let primary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(primary_dir.path()).unwrap());
+        let secondary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(secondary_dir.path()).unwrap());
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary: secondary.clone(),
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), store.copy(&staging, &finalized))
+            .await
+            .expect("copy should not hang when the secondary source is missing")
+            .unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_secondary_source_disappears_after_head() {
+        let primary: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary_inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary: Arc<dyn ObjectStore> = Arc::new(EvictBeforeCopyStore {
+            inner: secondary_inner.clone(),
+        });
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary,
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+        secondary_inner
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        store.copy(&staging, &finalized).await.unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary_inner.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
 
     // This test is ignored because lance 3.0 introduced LocalWriter optimization
     // that bypasses the object store wrapper for local writes. The mirroring feature

@@ -718,11 +718,7 @@ impl ListingDatabase {
             }
             _ => Path::new(path).to_path_buf(),
         };
-        match std::fs::remove_dir_all(filesystem_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
+        std::fs::remove_dir_all(filesystem_path)
     }
 
     /// Get the URI of a table in the database.
@@ -802,8 +798,19 @@ impl ListingDatabase {
             #[cfg(any(windows, test))]
             if self.object_store.scheme() == "lancedb-file" {
                 let table_uri = self.table_uri(&name)?;
-                Self::try_remove_dir_all(&table_uri).map_err(|error| Error::Runtime {
-                    message: format!("Failed to remove table directory '{table_uri}': {error}"),
+                Self::try_remove_dir_all(&table_uri).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Error::TableNotFound {
+                            name: name.clone(),
+                            source: Box::new(error),
+                        }
+                    } else {
+                        Error::Runtime {
+                            message: format!(
+                                "Failed to remove table directory '{table_uri}': {error}"
+                            ),
+                        }
+                    }
                 })?;
             }
         }
@@ -1433,6 +1440,10 @@ mod tests {
 
         db.drop_table("test", &[]).await.unwrap();
         assert!(!tempdir.path().join("test.lance").exists());
+        assert!(matches!(
+            db.drop_table("test", &[]).await,
+            Err(Error::TableNotFound { .. })
+        ));
         #[allow(deprecated)]
         let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
         assert!(table_names.is_empty());
@@ -1502,6 +1513,68 @@ mod tests {
 
         assert_eq!(table_names, vec!["root_table".to_string()]);
         assert!(!tempdir.path().join("__manifest").exists());
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/1600.
+    ///
+    /// Opening a table used to create a separate object-store client instead of
+    /// reusing the one that successfully connected to the database.  Repeating
+    /// credential discovery made S3 table opens intermittent, especially in AWS
+    /// Lambda, and the failed open was reported as `TableNotFound`.
+    #[tokio::test]
+    async fn test_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before_open = registry.stats();
+        for _ in 0..3 {
+            let table = db
+                .open_table(OpenTableRequest {
+                    name: "test".to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(table.count_rows(None).await.unwrap(), 0);
+        }
+
+        let after_open = registry.stats();
+        assert_eq!(after_open.misses, before_open.misses);
+        assert!(after_open.hits >= before_open.hits + 3);
     }
 
     #[tokio::test]

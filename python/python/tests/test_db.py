@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import inspect
 import re
 import sys
 from datetime import timedelta
@@ -62,17 +63,23 @@ def test_basic(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
-def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
+def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
     from lancedb.background_loop import LOOP
 
     db = lancedb.connect(tmp_path)
     table = db.create_table("test", data=[{"id": 1}])
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("repr should not use the Python background loop")
+        raise AssertionError("debugger inspection should not use the background loop")
 
     monkeypatch.setattr(LOOP, "run", fail_run)
 
+    # Debuggers enumerate and evaluate every exposed attribute when expanding a
+    # variable. This must remain safe while their breakpoint suspends LOOP's thread.
+    members = dict(inspect.getmembers(db))
+
+    assert members["uri"] == str(tmp_path)
+    assert members["read_consistency_interval"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
@@ -101,6 +108,23 @@ def test_connect_file_uri_lifecycle(tmp_path):
     assert db.open_table("test").count_rows() == 1
     db.drop_table("test")
     assert db.table_names() == []
+
+
+def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkeypatch):
+    from lancedb.background_loop import LOOP
+    from lancedb.db import LanceDBConnection
+
+    consistency_interval = timedelta(seconds=5)
+    db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    db_from_inner = LanceDBConnection.from_inner(db._inner, consistency_interval)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("properties should not use the Python background loop")
+
+    monkeypatch.setattr(LOOP, "run", fail_run)
+
+    assert db.read_consistency_interval == consistency_interval
+    assert db_from_inner.read_consistency_interval == consistency_interval
 
 
 def test_ingest_pd(tmp_path):
