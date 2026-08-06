@@ -527,6 +527,19 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         ).toEqual(nestedRecords.map((record) => record.items));
       });
 
+      it("will reject incompatible deferred evidence within a list", function () {
+        for (const items of [
+          [[], 1],
+          [1, []],
+          [[null], 1],
+          [1, [null]],
+        ]) {
+          expect(() => makeArrowTable([{ items }])).toThrow(
+            "Failed to infer data type for field items at row 0.",
+          );
+        }
+      });
+
       it("will reject empty fixed-size lists", function () {
         expect(() =>
           makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),

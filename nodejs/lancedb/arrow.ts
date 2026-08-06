@@ -857,12 +857,14 @@ function inferType(
       );
     }
     let valueType: DataType | undefined;
+    const deferredItems: unknown[] = [];
     for (const item of value) {
       const itemType = inferType(item, path, opts);
       if (itemType === undefined) {
         if (!hasOnlyNoTypeEvidence(item)) {
           return undefined;
         }
+        deferredItems.push(item);
       } else if (valueType === undefined) {
         valueType = itemType;
       } else if (!compareInferredTypes(valueType, itemType)) {
@@ -871,6 +873,11 @@ function inferType(
     }
     if (valueType === undefined) {
       return undefined;
+    }
+    for (const item of deferredItems) {
+      if (!noTypeEvidenceMatchesType(item, valueType)) {
+        return undefined;
+      }
     }
     // Try to automatically detect embedding columns.
     if (nameSuggestsVectorColumn(path[path.length - 1])) {
