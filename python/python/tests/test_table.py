@@ -2598,6 +2598,36 @@ def test_merge_insert_subschema(mem_db: DBConnection, data_format):
     assert table.to_arrow().sort_by("id") == expected
 
 
+def test_repeated_partial_merge_insert_with_scalar_index(mem_db: DBConnection):
+    def make_batch(start: int) -> pa.Table:
+        return pa.table(
+            {
+                "id": [f"id-{i:04}" for i in range(start, start + 100)],
+                "category": ["A"] * 100,
+                "value_a": [float(i) for i in range(start, start + 100)],
+                "value_b": [float(i) / 10 for i in range(100)],
+            }
+        )
+
+    table = mem_db.create_table("my_table", data=make_batch(0))
+    table.add(make_batch(100))
+    table.add(make_batch(200))
+    table.create_index("id", config=BTree())
+
+    ids = [f"id-{i:04}" for i in range(100, 200)]
+    for value in (999.0, 888.0):
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .execute(pa.table({"id": ids, "value_a": [value] * 100}))
+        )
+        assert result.num_updated_rows == 100
+
+    actual = table.to_arrow().sort_by("id")
+    assert actual.num_rows == 300
+    assert actual["value_a"].to_pylist()[100:200] == [888.0] * 100
+
+
 @pytest.mark.asyncio
 async def test_merge_insert_async(mem_db_async: AsyncConnection):
     data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
