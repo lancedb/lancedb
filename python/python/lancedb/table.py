@@ -2570,6 +2570,9 @@ class LanceTable(Table):
         2. Currently we've disabled push-down of the filters from polars
            because polars pushdown into pyarrow uses pyarrow compute
            expressions rather than SQl strings (which LanceDB supports)
+        3. The Polars streaming engine is not supported because it does not
+           currently implement Python PyArrow dataset scans. Use the default
+           engine when collecting this LazyFrame.
 
         Returns
         -------
