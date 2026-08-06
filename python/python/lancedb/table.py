@@ -2186,11 +2186,15 @@ class LanceTable(Table):
         return self.name
 
     @classmethod
-    def from_inner(cls, tbl: LanceDBTable):
-        from .db import LanceDBConnection
+    async def from_inner(cls, tbl: LanceDBTable):
+        from .db import AsyncConnection, LanceDBConnection
 
         async_tbl = AsyncTable(tbl)
-        conn = LanceDBConnection.from_inner(tbl.database())
+        inner_conn = tbl.database()
+        read_consistency_interval = await AsyncConnection(
+            inner_conn
+        ).get_read_consistency_interval()
+        conn = LanceDBConnection.from_inner(inner_conn, read_consistency_interval)
         return cls(
             conn,
             async_tbl.name,

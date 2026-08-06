@@ -226,7 +226,7 @@ class PermutationBuilder:
 
         async def do_execute():
             inner_tbl = await self._async.execute()
-            return LanceTable.from_inner(inner_tbl)
+            return await LanceTable.from_inner(inner_tbl)
 
         return LOOP.run(do_execute())
 
