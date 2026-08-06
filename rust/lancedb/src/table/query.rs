@@ -327,7 +327,7 @@ pub async fn create_plan(
     scanner
         .create_plan()
         .await
-        .map_err(|error| enrich_field_not_found(error, &arrow_schema))
+        .map_err(|error| enrich_lance_field_not_found(error, &arrow_schema))
 }
 
 /// Replace DataFusion's top-level field candidates with qualified leaf paths.
@@ -336,19 +336,24 @@ pub async fn create_plan(
 /// top-level Arrow fields. This makes a missing leaf look unavailable even when it
 /// exists below a struct. Keep every other Lance/DataFusion error unchanged and
 /// enrich only this one schema error at the LanceDB query boundary.
-fn enrich_field_not_found(error: lance::Error, schema: &Schema) -> Error {
-    let Some(field) = find_missing_field(&error) else {
-        return error.into();
-    };
+fn enrich_lance_field_not_found(error: lance::Error, schema: &Schema) -> Error {
+    field_not_found_diagnostic(&error, schema).unwrap_or_else(|| error.into())
+}
 
-    let schema_error = SchemaError::FieldNotFound {
-        field: Box::new(field.clone()),
-        valid_fields: leaf_field_columns(schema),
-    };
-    let error = DataFusionError::SchemaError(Box::new(schema_error), Box::new(None));
-    Error::InvalidInput {
-        message: error.to_string(),
+fn field_not_found_diagnostic(
+    error: &(dyn std::error::Error + 'static),
+    schema: &Schema,
+) -> Option<Error> {
+    let field = find_missing_field(error)?;
+    let valid_fields = leaf_field_paths(schema);
+    let mut message = format!("Schema error: No field named {}", field.quoted_flat_name());
+    if !valid_fields.is_empty() {
+        message.push_str(". Valid fields are ");
+        message.push_str(&valid_fields.join(", "));
     }
+    message.push('.');
+
+    Some(Error::InvalidInput { message })
 }
 
 fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
@@ -362,32 +367,26 @@ fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Optio
     error.source().and_then(find_missing_field)
 }
 
-fn leaf_field_columns(schema: &Schema) -> Vec<Column> {
-    fn visit(fields: &arrow_schema::Fields, path: &mut Vec<String>, columns: &mut Vec<Column>) {
+fn leaf_field_paths(schema: &Schema) -> Vec<String> {
+    fn visit(fields: &arrow_schema::Fields, path: &mut Vec<String>, paths: &mut Vec<String>) {
         for field in fields {
             path.push(field.name().clone());
             match field.data_type() {
                 DataType::Struct(children) if !children.is_empty() => {
-                    visit(children, path, columns);
+                    visit(children, path, paths);
                 }
                 _ => {
-                    let qualified_name = path
-                        .iter()
-                        .map(|part| {
-                            datafusion_common::utils::quote_identifier(part.as_str()).into_owned()
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
-                    columns.push(Column::from_qualified_name_ignore_case(qualified_name));
+                    let segments = path.iter().map(String::as_str).collect::<Vec<_>>();
+                    paths.push(lance_core::datatypes::format_field_path(&segments));
                 }
             }
             path.pop();
         }
     }
 
-    let mut columns = Vec::new();
-    visit(schema.fields(), &mut Vec::new(), &mut columns);
-    columns
+    let mut paths = Vec::new();
+    visit(schema.fields(), &mut Vec::new(), &mut paths);
+    paths
 }
 
 //Helper functions below
@@ -939,7 +938,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_filter_field_lists_nested_fields() {
+    async fn test_missing_filter_field_lists_nested_fields_in_local_planners() {
         use crate::connect;
         use arrow_schema::{DataType, Field, Schema};
 
@@ -984,11 +983,71 @@ mod tests {
             .await
             .err()
             .expect("query should reject the unqualified nested field");
+        let expected = "No field named year. Valid fields are id, vector, content, metadata.year, metadata.genre.";
 
         assert!(
-            error.to_string().contains(
-                "No field named year. Valid fields are id, vector, content, metadata.year, metadata.genre."
-            ),
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        let lsm_error = table
+            .query()
+            .only_if("year = 2024")
+            .execute()
+            .await
+            .err()
+            .expect("LSM query should reject the unqualified nested field");
+
+        assert!(
+            lsm_error.to_string().contains(expected),
+            "unexpected LSM error: {lsm_error}"
+        );
+    }
+
+    #[test]
+    fn test_leaf_field_paths_preserve_arbitrary_depth() {
+        use arrow_schema::{DataType, Field, Schema};
+
+        fn nested_field(path: &[&str]) -> Field {
+            let mut segments = path.iter().rev();
+            let mut field = Field::new(
+                *segments.next().expect("path must have a leaf"),
+                DataType::Int32,
+                false,
+            );
+            for segment in segments {
+                field = Field::new(*segment, DataType::Struct(vec![field].into()), false);
+            }
+            field
+        }
+
+        let schema = Schema::new(vec![
+            nested_field(&["a", "b", "c", "d", "e"]),
+            nested_field(&["metadata", "child.with.dot"]),
+        ]);
+
+        assert_eq!(
+            leaf_field_paths(&schema),
+            vec!["a.b.c.d.e", "metadata.`child.with.dot`"]
+        );
+
+        let source = DataFusionError::SchemaError(
+            Box::new(SchemaError::FieldNotFound {
+                field: Box::new(Column::from_name("missing")),
+                valid_fields: Vec::new(),
+            }),
+            Box::new(None),
+        );
+        let error = field_not_found_diagnostic(&source, &schema).unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("Valid fields are a.b.c.d.e, metadata.`child.with.dot`"),
             "unexpected error: {error}"
         );
     }
