@@ -26,7 +26,7 @@ from lancedb.index import (
     HnswFlat,
     FTS,
 )
-from lancedb.table import IndexStatistics
+from lancedb.table import IndexStatistics, LanceTable
 
 
 @pytest_asyncio.fixture
@@ -398,6 +398,11 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
 def test_seeded_ivfpq_rejects_accelerator():
     with pytest.raises(ValueError, match="seed is not supported with accelerator"):
         IvfPq(seed=42, accelerator="cuda")
+
+    config = IvfPq(seed=42)
+    config.accelerator = "cuda"
+    with pytest.raises(ValueError, match="seed is not supported with accelerator"):
+        object.__new__(LanceTable).create_index("vector", config=config)
 
 
 @pytest.mark.asyncio

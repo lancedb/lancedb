@@ -2762,6 +2762,11 @@ class LanceTable(Table):
             if config is not None and hasattr(config, "accelerator"):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
+                    if isinstance(config, IvfPq) and config.seed is not None:
+                        raise ValueError(
+                            "IvfPq seed is not supported with accelerator-based "
+                            "index training"
+                        )
                     # Dispatch to pylance for GPU acceleration
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
