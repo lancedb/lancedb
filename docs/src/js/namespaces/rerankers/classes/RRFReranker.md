@@ -16,6 +16,8 @@ Reranks the results using the Reciprocal Rank Fusion (RRF) algorithm.
 outputSchema(inputSchema): Promise<Schema<any>>
 ```
 
+Declare the RRF output schema for vector-only query execution.
+
 #### Parameters
 
 * **inputSchema**: `Schema`&lt;`any`&gt;
