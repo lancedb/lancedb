@@ -24,7 +24,7 @@ DistanceType = Literal["l2", "cosine", "dot"]
 DistanceTypeWithHamming = Literal["l2", "cosine", "dot", "hamming"]
 
 # Vector handling literals
-OnBadVectorsType = Literal["error", "drop", "fill", "null"]
+OnBadVectorsType = Literal["error", "drop", "fill", "null", "keep"]
 
 # Mode literals
 AddMode = Literal["append", "overwrite"]

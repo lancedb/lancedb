@@ -543,7 +543,9 @@ class RemoteDBConnection(DBConnection):
             to "exist_ok".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null", or "keep". With "keep",
+            vectors containing NaNs are preserved, but vectors with the wrong
+            dimension still raise an error.
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 

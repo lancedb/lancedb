@@ -350,8 +350,10 @@ def _sanitize_data(
         in the input table before casting.
     metadata : Optional[dict], default None
         The embedding metadata to add to the schema.
-    on_bad_vectors : Literal["error", "drop", "fill", "null"], default "error"
+    on_bad_vectors : Literal["error", "drop", "fill", "null", "keep"], default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
+        With "keep", vectors containing NaNs are preserved, but vectors with the
+        wrong dimension still raise an error.
     fill_value : float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
         All entries in the vector will be set to this value.
@@ -1247,7 +1249,9 @@ class Table(ABC):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null", or "keep". With "keep",
+            vectors containing NaNs are preserved but are not indexed for vector
+            search; vectors with the wrong dimension still raise an error.
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: bool, callable, or tqdm-like, optional
@@ -3265,7 +3269,9 @@ class LanceTable(Table):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill", "null".
+            One of "error", "drop", "fill", "null", or "keep". With "keep",
+            vectors containing NaNs are preserved, but vectors with the wrong
+            dimension still raise an error.
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: bool, callable, or tqdm-like, optional
@@ -3578,7 +3584,9 @@ class LanceTable(Table):
             data but will validate against any schema that's specified.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill", "null".
+            One of "error", "drop", "fill", "null", or "keep". With "keep",
+            vectors containing NaNs are preserved, but vectors with the wrong
+            dimension still raise an error.
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
@@ -4014,7 +4022,7 @@ class LanceTable(Table):
 
 def _handle_bad_vectors(
     reader: pa.RecordBatchReader,
-    on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
+    on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
     target_schema: Optional[pa.Schema] = None,
     metadata: Optional[dict] = None,
@@ -4188,7 +4196,9 @@ def _handle_bad_vector_column(
         The name of the vector column.
     on_bad_vectors: str, default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill", "null".
+        One of "error", "drop", "fill", "null", or "keep". With "keep",
+        vectors containing NaNs are preserved, but vectors with the wrong dimension
+        still raise an error.
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
@@ -4253,7 +4263,8 @@ def _handle_bad_vector_column(
                     f"Vector column '{vector_column_name}' has NaNs. "
                     "Set on_bad_vectors='drop' to remove them, "
                     "set on_bad_vectors='fill' and fill_value=<value> to replace them, "
-                    "or set on_bad_vectors='null' to replace them with null."
+                    "set on_bad_vectors='null' to replace them with null, "
+                    "or set on_bad_vectors='keep' to preserve them."
                 )
         elif on_bad_vectors == "null":
             vec_arr = pc.if_else(
@@ -4270,6 +4281,16 @@ def _handle_bad_vector_column(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
             vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
+        elif on_bad_vectors == "keep":
+            if pc.any(has_wrong_dim).as_py():
+                raise ValueError(
+                    f"Vector column '{vector_column_name}' has variable length "
+                    "vectors. on_bad_vectors='keep' only preserves vectors "
+                    "containing NaNs. Set on_bad_vectors='drop' to remove "
+                    "wrong-size vectors, set on_bad_vectors='fill' and "
+                    "fill_value=<value> to replace them, or set "
+                    "on_bad_vectors='null' to replace them with null."
+                )
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
@@ -5114,7 +5135,9 @@ class AsyncTable:
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill", "null".
+            One of "error", "drop", "fill", "null", or "keep". With "keep",
+            vectors containing NaNs are preserved but are not indexed for vector
+            search; vectors with the wrong dimension still raise an error.
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: callable or tqdm-like, optional
@@ -5162,6 +5185,7 @@ class AsyncTable:
                 mode or "append",
                 progress=progress,
                 write_parallelism=write_parallelism,
+                on_nan_vectors="keep" if on_bad_vectors == "keep" else None,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):

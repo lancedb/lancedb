@@ -21,7 +21,8 @@ use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
-    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    NaNVectorBehavior, NewColumnTransform, OptimizeAction, OptimizeOptions, Ref,
+    Table as LanceDbTable,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -642,13 +643,14 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, on_nan_vectors=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
+        on_nan_vectors: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -657,6 +659,18 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        match on_nan_vectors.as_deref() {
+            None | Some("error") => {}
+            Some("keep") => {
+                op = op.on_nan_vectors(NaNVectorBehavior::Keep);
+            }
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid on_nan_vectors: {}",
+                    other
+                )));
+            }
         }
         if let Some(write_parallelism) = write_parallelism {
             op = op.write_parallelism(write_parallelism);

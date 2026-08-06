@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import math
 import os
 import pathlib
 from typing import Optional
@@ -364,7 +365,7 @@ def test_fill_bad_vector_values_arrow_types(vector_type, vectors, expected):
     assert actual.to_pylist() == expected
 
 
-@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null", "keep"])
 def test_handle_bad_vectors_nan(on_bad_vectors):
     vector = pa.array([[1.0, float("nan")], [3.0, 4.0]])
     data = pa.table({"vector": vector})
@@ -379,8 +380,9 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
         assert output == (
             "ValueError: Vector column 'vector' has NaNs. Set "
             "on_bad_vectors='drop' to remove them, set on_bad_vectors='fill' "
-            "and fill_value=<value> to replace them, or set on_bad_vectors='null' "
-            "to replace them with null."
+            "and fill_value=<value> to replace them, set on_bad_vectors='null' "
+            "to replace them with null, or set on_bad_vectors='keep' to preserve "
+            "them."
         )
         return
     else:
@@ -396,8 +398,24 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
         expected = pa.array([[1.0, 42.0], [3.0, 4.0]])
     elif on_bad_vectors == "null":
         expected = pa.array([None, [3.0, 4.0]])
+    elif on_bad_vectors == "keep":
+        actual = output["vector"].to_pylist()
+        assert actual[0][0] == 1.0
+        assert math.isnan(actual[0][1])
+        assert actual[1] == [3.0, 4.0]
+        return
 
     assert output["vector"].combine_chunks() == expected
+
+
+def test_handle_bad_vectors_keep_rejects_wrong_dimension():
+    data = pa.table({"vector": [[1.0, 2.0], [3.0]]})
+
+    with pytest.raises(ValueError, match="only preserves vectors containing NaNs"):
+        _handle_bad_vectors(
+            data.to_reader(),
+            on_bad_vectors="keep",
+        ).read_all()
 
 
 def test_handle_bad_vectors_noop():

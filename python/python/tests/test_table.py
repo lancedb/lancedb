@@ -1766,6 +1766,40 @@ def test_add_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+def test_add_with_non_finite_values_keep(mem_db: DBConnection):
+    schema = pa.schema([pa.field("data", pa.list_(pa.float32(), 4))])
+    table = mem_db.create_table("test", schema=schema)
+    batch = pa.table(
+        {
+            "data": pa.array(
+                [[np.nan, np.inf, -np.inf, -0.0]],
+                type=schema.field("data").type,
+            )
+        },
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="NaN"):
+        table.add(batch)
+
+    table.add(batch, on_bad_vectors="keep")
+
+    values = table.to_arrow()["data"][0].as_py()
+    assert np.isnan(values[0])
+    assert np.isposinf(values[1])
+    assert np.isneginf(values[2])
+    assert values[3] == 0.0
+    assert np.signbit(values[3])
+
+
+def test_add_keep_rejects_wrong_dimension(mem_db: DBConnection):
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
+    table = mem_db.create_table("test", schema=schema)
+
+    with pytest.raises((ValueError, RuntimeError), match="variable length"):
+        table.add([{"vector": [1.0]}], on_bad_vectors="keep")
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
