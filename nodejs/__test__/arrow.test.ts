@@ -461,6 +461,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         );
       });
 
+      it("will ignore generated dictionary IDs when comparing inferred types", function () {
+        const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
+          dictionaryEncodeStrings: true,
+        });
+
+        expect(table.getChild("str")?.toJSON()).toEqual(["a", "b"]);
+      });
+
       it("will preserve null values without treating them as type mismatches", function () {
         for (const records of [
           [{ vector: [1, 2, 3] }, { vector: null }],
@@ -488,6 +496,37 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         }
       });
 
+      it("will propagate deferred evidence through nested lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [null] }],
+          [{ items: [null] }, { items: [1] }],
+          [{ items: [null, 1] }, { items: [2, null] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+
+        const nestedRecords = [{ items: [[1]] }, { items: [[null]] }];
+        const nestedTable = makeArrowTable(nestedRecords);
+        expect(
+          nestedTable
+            .getChild("items")
+            ?.toJSON()
+            .map((value) =>
+              value
+                .toJSON()
+                .map((nestedValue: { toJSON: () => unknown[] }) =>
+                  nestedValue.toJSON(),
+                ),
+            ),
+        ).toEqual(nestedRecords.map((record) => record.items));
+      });
+
       it("will reject empty fixed-size lists", function () {
         expect(() =>
           makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),
@@ -510,12 +549,22 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       });
 
       it("will allow null values around inferred struct values", function () {
-        expect(() =>
-          makeArrowTable([{ value: null }, { value: { nested: 2 } }]),
-        ).not.toThrow();
-        expect(() =>
-          makeArrowTable([{ value: { nested: 1 } }, { value: null }]),
-        ).not.toThrow();
+        for (const { records, nullIndex } of [
+          {
+            records: [{ value: null }, { value: { nested: 2 } }],
+            nullIndex: 0,
+          },
+          {
+            records: [{ value: { nested: 1 } }, { value: null }],
+            nullIndex: 1,
+          },
+        ]) {
+          const table = makeArrowTable(records);
+          const values = table.getChild("value");
+
+          expect(values?.nullCount).toBe(1);
+          expect(values?.get(nullIndex)).toBeNull();
+        }
       });
 
       it("will allow a schema to be provided", async function () {

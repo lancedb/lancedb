@@ -460,19 +460,22 @@ const NO_TYPE_EVIDENCE = Symbol("no-type-evidence");
 
 type NoTypeEvidence = {
   kind: typeof NO_TYPE_EVIDENCE;
-  valueKind: "null" | "empty-list";
-  row: number;
+  values: Array<{ value: unknown; row: number }>;
 };
+
+function hasOnlyNoTypeEvidence(value: unknown): boolean {
+  return (
+    value == null ||
+    (Array.isArray(value) && value.every(hasOnlyNoTypeEvidence))
+  );
+}
 
 function getNoTypeEvidence(
   value: unknown,
   row: number,
 ): NoTypeEvidence | undefined {
-  if (value === null) {
-    return { kind: NO_TYPE_EVIDENCE, valueKind: "null", row };
-  }
-  if (Array.isArray(value) && value.length === 0) {
-    return { kind: NO_TYPE_EVIDENCE, valueKind: "empty-list", row };
+  if (hasOnlyNoTypeEvidence(value)) {
+    return { kind: NO_TYPE_EVIDENCE, values: [{ value, row }] };
   }
   return undefined;
 }
@@ -490,9 +493,65 @@ function describeInferredType(
     return "an unsupported value";
   }
   if (isNoTypeEvidence(value)) {
-    return value.valueKind === "null" ? "null" : "List[0]";
+    const listValue = value.values.find(({ value }) => Array.isArray(value));
+    return listValue === undefined
+      ? "null"
+      : `List[${(listValue.value as unknown[]).length}]`;
   }
   return value.toString();
+}
+
+function noTypeEvidenceMatchesType(value: unknown, type: DataType): boolean {
+  if (value == null) {
+    return true;
+  }
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  if (DataType.isList(type)) {
+    return value.every((item) =>
+      noTypeEvidenceMatchesType(item, type.valueType),
+    );
+  }
+  if (DataType.isFixedSizeList(type)) {
+    return (
+      value.length === type.listSize &&
+      value.every((item) => noTypeEvidenceMatchesType(item, type.valueType))
+    );
+  }
+  return false;
+}
+
+function compareInferredTypes(
+  currentType: DataType,
+  newType: DataType,
+): boolean {
+  if (DataType.isDictionary(currentType)) {
+    return (
+      DataType.isDictionary(newType) &&
+      currentType.isOrdered === newType.isOrdered &&
+      compareInferredTypes(currentType.indices, newType.indices) &&
+      compareInferredTypes(currentType.dictionary, newType.dictionary)
+    );
+  }
+  if (DataType.isList(currentType)) {
+    return (
+      DataType.isList(newType) &&
+      currentType.valueField.name === newType.valueField.name &&
+      currentType.valueField.nullable === newType.valueField.nullable &&
+      compareInferredTypes(currentType.valueType, newType.valueType)
+    );
+  }
+  if (DataType.isFixedSizeList(currentType)) {
+    return (
+      DataType.isFixedSizeList(newType) &&
+      currentType.listSize === newType.listSize &&
+      currentType.valueField.name === newType.valueField.name &&
+      currentType.valueField.nullable === newType.valueField.nullable &&
+      compareInferredTypes(currentType.valueType, newType.valueType)
+    );
+  }
+  return arrowUtil.compareTypes(currentType, newType);
 }
 
 function schemaInferenceError(
@@ -554,7 +613,8 @@ function inferSchema(
             path,
             inferredType ?? (noTypeEvidence as NoTypeEvidence),
             (existing) =>
-              isNoTypeEvidence(existing) && existing.valueKind === "null",
+              isNoTypeEvidence(existing) &&
+              existing.values.every(({ value }) => value == null),
           );
           if (conflict !== undefined) {
             throw schemaInferenceError(
@@ -572,7 +632,9 @@ function inferSchema(
         const noTypeEvidence = getNoTypeEvidence(value, rowI);
 
         if (currentType instanceof PathTree) {
-          if (noTypeEvidence?.valueKind === "null") {
+          if (
+            noTypeEvidence?.values.every(({ value }) => value == null) === true
+          ) {
             continue;
           }
           throw schemaInferenceError(
@@ -586,8 +648,9 @@ function inferSchema(
         if (isNoTypeEvidence(currentType)) {
           if (newType !== undefined) {
             if (
-              currentType.valueKind === "empty-list" &&
-              !DataType.isList(newType)
+              !currentType.values.every(({ value }) =>
+                noTypeEvidenceMatchesType(value, newType),
+              )
             ) {
               throw schemaInferenceError(
                 path,
@@ -598,12 +661,10 @@ function inferSchema(
             }
             pathTree.set(path, newType);
           } else if (noTypeEvidence !== undefined) {
-            if (
-              currentType.valueKind === "null" &&
-              noTypeEvidence.valueKind === "empty-list"
-            ) {
-              pathTree.set(path, noTypeEvidence);
-            }
+            pathTree.set(path, {
+              kind: NO_TYPE_EVIDENCE,
+              values: [...currentType.values, ...noTypeEvidence.values],
+            });
           } else {
             throw schemaInferenceError(
               path,
@@ -613,7 +674,7 @@ function inferSchema(
             );
           }
         } else if (newType !== undefined) {
-          if (!arrowUtil.compareTypes(currentType, newType)) {
+          if (!compareInferredTypes(currentType, newType)) {
             throw schemaInferenceError(
               path,
               rowI,
@@ -622,10 +683,9 @@ function inferSchema(
             );
           }
         } else if (
-          noTypeEvidence?.valueKind !== "null" &&
-          !(
-            noTypeEvidence?.valueKind === "empty-list" &&
-            DataType.isList(currentType)
+          noTypeEvidence === undefined ||
+          !noTypeEvidence.values.every(({ value }) =>
+            noTypeEvidenceMatchesType(value, currentType),
           )
         ) {
           throw schemaInferenceError(
@@ -653,7 +713,7 @@ function inferSchema(
           throw new Error(`Failed to infer data type for field ${[
             ...basePath,
             name,
-          ].join(".")} at row ${value.row}. \
+          ].join(".")} at row ${value.values[0].row}. \
                              Consider providing an explicit schema.`);
         } else {
           fields.push(new Field(name, value, true));
@@ -796,7 +856,19 @@ function inferType(
         new Field("item", floatType, true),
       );
     }
-    const valueType = inferType(value[0], path, opts);
+    let valueType: DataType | undefined;
+    for (const item of value) {
+      const itemType = inferType(item, path, opts);
+      if (itemType === undefined) {
+        if (!hasOnlyNoTypeEvidence(item)) {
+          return undefined;
+        }
+      } else if (valueType === undefined) {
+        valueType = itemType;
+      } else if (!compareInferredTypes(valueType, itemType)) {
+        return undefined;
+      }
+    }
     if (valueType === undefined) {
       return undefined;
     }
@@ -884,42 +956,46 @@ class PathTree<V> {
   }
 }
 
+function valueAtPath(datum: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = datum;
+  for (const key of path) {
+    if (current == null) {
+      return null;
+    }
+    if (isObject(current) && (Object.hasOwn(current, key) || key in current)) {
+      current = current[key];
+    } else {
+      return undefined;
+    }
+  }
+  return current;
+}
+
 function transposeData(
   data: Record<string, unknown>[],
   field: Field,
   path: string[] = [],
 ): Vector {
+  const valuesPath = [...path, field.name];
+  const values = data.map((datum) => valueAtPath(datum, valuesPath));
   if (field.type instanceof Struct) {
     const childFields = field.type.children;
-    const fullPath = [...path, field.name];
     const childVectors = childFields.map((child) => {
-      return transposeData(data, child, fullPath);
+      return transposeData(data, child, valuesPath);
     });
+    const nullCount = values.filter((value) => value === null).length;
     const structData = makeData({
       type: field.type,
+      length: values.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(values.map((value) => value !== null))
+          : undefined,
       children: childVectors as unknown as ArrowData<DataType>[],
     });
     return arrowMakeVector(structData);
   } else {
-    const valuesPath = [...path, field.name];
-    const values = data.map((datum) => {
-      let current: unknown = datum;
-      for (const key of valuesPath) {
-        if (current == null) {
-          return null;
-        }
-
-        if (
-          isObject(current) &&
-          (Object.hasOwn(current, key) || key in current)
-        ) {
-          current = current[key];
-        } else {
-          return null;
-        }
-      }
-      return current;
-    });
     return makeVector(values, field.type, undefined, field.nullable);
   }
 }
@@ -1628,8 +1704,12 @@ export function ensureNestedFieldsExist(
           completeRow[field.name] = row[field.name];
         }
       } else {
-        // Field is missing from the data - set to null
-        completeRow[field.name] = null;
+        // Keep a missing struct valid while filling each of its children with
+        // null. This is distinct from an explicitly null struct value.
+        completeRow[field.name] =
+          field.type.constructor.name === "Struct"
+            ? ensureStructFieldsExist({}, field.type as Struct)
+            : null;
       }
     }
 
@@ -1664,8 +1744,12 @@ function ensureStructFieldsExist(
         completeStruct[childField.name] = data[childField.name];
       }
     } else {
-      // Field is missing - set to null
-      completeStruct[childField.name] = null;
+      // Keep a missing struct valid while filling each of its children with
+      // null. This is distinct from an explicitly null struct value.
+      completeStruct[childField.name] =
+        childField.type.constructor.name === "Struct"
+          ? ensureStructFieldsExist({}, childField.type as Struct)
+          : null;
     }
   }
 
