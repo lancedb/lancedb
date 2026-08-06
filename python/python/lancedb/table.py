@@ -1346,7 +1346,7 @@ class Table(ABC):
         2  3  y
         3  4  z
         """  # noqa: E501
-        on = [on] if isinstance(on, str) else list(iter(on))
+        on = [on] if isinstance(on, str) else list(on)
 
         return LanceMergeInsertBuilder(self, on)
 
@@ -5236,7 +5236,7 @@ class AsyncTable:
         2  3  y
         3  4  z
         """  # noqa: E501
-        on = [on] if isinstance(on, str) else list(iter(on))
+        on = [on] if isinstance(on, str) else list(on)
 
         return LanceMergeInsertBuilder(self, on)
 

@@ -2265,6 +2265,31 @@ def test_update_types(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_merge_insert_accepts_column_list(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1], "b": [2]}),
+    )
+
+    builder = table.merge_insert(["a", "b"])
+
+    assert builder._on == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_accepts_column_list_async(
+    mem_db_async: AsyncConnection,
+):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=pa.table({"a": [1], "b": [2]}),
+    )
+
+    builder = table.merge_insert(["a", "b"])
+
+    assert builder._on == ["a", "b"]
+
+
 def test_merge_insert(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
