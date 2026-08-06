@@ -6,19 +6,136 @@
 //! This module contains the implementation of optimization operations that help
 //! maintain good performance for LanceDB tables.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
+use arrow_schema::DataType;
 use lance::dataset::cleanup::RemovalStats;
-use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
+use lance::dataset::optimize::{
+    CompactionMetrics, IndexRemapperOptions, compact_files, plan_compaction,
+};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
 use log::info;
+use serde::Deserialize;
 
+use super::NativeTable;
+use crate::error::{Error, Result};
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 
-use super::NativeTable;
-use crate::error::Result;
+const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
+
+#[derive(Debug, Deserialize)]
+struct VectorIndexStatistics {
+    indices: Vec<VectorIndexSegmentStatistics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorIndexSegmentStatistics {
+    partitions: Vec<VectorIndexPartitionStatistics>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VectorIndexPartitionStatistics {
+    size: u64,
+}
+
+fn oversized_sq_partition(statistics: &str, dimension: u64) -> Result<Option<u64>> {
+    let statistics: VectorIndexStatistics =
+        serde_json::from_str(statistics).map_err(|source| Error::InvalidInput {
+            message: format!("Could not parse vector index statistics: {source}"),
+        })?;
+
+    Ok(statistics
+        .indices
+        .iter()
+        .flat_map(|index| &index.partitions)
+        .map(|partition| partition.size)
+        .find(|partition_size| {
+            partition_size
+                .checked_mul(dimension)
+                .is_none_or(|child_len| child_len > MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
+        }))
+}
+
+async fn validate_sq_index_remapping(
+    dataset: &lance::Dataset,
+    options: &CompactionOptions,
+    has_custom_remapper: bool,
+) -> Result<()> {
+    if options.defer_index_remap || has_custom_remapper || dataset.manifest().uses_stable_row_ids()
+    {
+        return Ok(());
+    }
+
+    let plan = plan_compaction(dataset, options).await?;
+    if plan.tasks.is_empty() {
+        return Ok(());
+    }
+    let affected_fragments: HashSet<u64> = plan
+        .tasks
+        .iter()
+        .flat_map(|task| task.fragments.iter().map(|fragment| fragment.id))
+        .collect();
+
+    for index in dataset.describe_indices(None).await? {
+        if !matches!(index.index_type(), "IVF_SQ" | "IVF_HNSW_SQ")
+            || !index.segments().iter().any(|segment| {
+                segment.fragment_bitmap.as_ref().is_none_or(|bitmap| {
+                    bitmap
+                        .iter()
+                        .any(|fragment| affected_fragments.contains(&(fragment as u64)))
+                })
+            })
+        {
+            continue;
+        }
+
+        let Some(field_id) = index.field_ids().first() else {
+            continue;
+        };
+        let Some(field) = dataset.schema().field_by_id(*field_id as i32) else {
+            continue;
+        };
+        let DataType::FixedSizeList(_, dimension) = field.data_type() else {
+            continue;
+        };
+        let dimension = u64::try_from(dimension).map_err(|_| Error::InvalidInput {
+            message: format!(
+                "SQ index '{}' has an invalid vector dimension of {}",
+                index.name(),
+                dimension
+            ),
+        })?;
+
+        // If the entire index fits then every individual partition does too,
+        // avoiding the index-file read needed for detailed statistics.
+        if index
+            .rows_indexed()
+            .checked_mul(dimension)
+            .is_some_and(|child_len| child_len <= MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
+        {
+            continue;
+        }
+
+        let statistics = dataset.index_statistics(index.name()).await?;
+        if let Some(partition_size) = oversized_sq_partition(&statistics, dimension)? {
+            let max_partition_size = MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX / dimension;
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Cannot compact table because SQ index '{}' has a partition with {} vectors of dimension {}. Arrow's fixed-size-list take kernel cannot remap partitions whose child array exceeds {} values. Recreate the index with default IVF partitioning, or enough partitions to keep each partition at or below {} vectors, before compacting.",
+                    index.name(),
+                    partition_size,
+                    dimension,
+                    MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX,
+                    max_partition_size,
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
 
 /// Optimize the dataset.
 ///
@@ -152,6 +269,7 @@ pub(crate) async fn compact_files_impl(
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    validate_sq_index_remapping(&dataset, &options, remap_options.is_some()).await?;
     let metrics = compact_files(&mut dataset, options, remap_options).await?;
     table.dataset.update(dataset);
     Ok(metrics)
@@ -214,6 +332,7 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
+    use super::oversized_sq_partition;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use rstest::rstest;
@@ -224,6 +343,39 @@ mod tests {
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/2866.
+    #[test]
+    fn test_detect_oversized_sq_partition() {
+        const DIMENSION: u64 = 4095;
+        let safe_size = u32::MAX as u64 / DIMENSION;
+        let statistics = serde_json::json!({
+            "indices": [{
+                "partitions": [
+                    { "size": safe_size },
+                    { "size": safe_size + 1 }
+                ]
+            }]
+        });
+
+        assert_eq!(
+            oversized_sq_partition(&statistics.to_string(), DIMENSION).unwrap(),
+            Some(safe_size + 1)
+        );
+
+        let split_statistics = serde_json::json!({
+            "indices": [{
+                "partitions": [
+                    { "size": safe_size / 2 },
+                    { "size": safe_size / 2 + 1 }
+                ]
+            }]
+        });
+        assert_eq!(
+            oversized_sq_partition(&split_statistics.to_string(), DIMENSION).unwrap(),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn test_optimize_compact_simple() {
