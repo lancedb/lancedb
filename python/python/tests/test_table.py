@@ -99,6 +99,30 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+def test_search_preserves_nulls_from_sliced_arrow_table(mem_db: DBConnection):
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3, 4],
+            "score_cn": [None, 22, None, 5, 8],
+            "score_mt": [None, 42, None, 5, 8],
+            "vector": [
+                [20, 19, -1, -1],
+                [41, 38, 22, 42],
+                [10, 10, -1, -1],
+                [5, 5, 5, 5],
+                [8, 8, 8, 8],
+            ],
+        }
+    ).slice(1)
+
+    table = mem_db.create_table("sliced_nullable", data=data)
+    result = table.search([41, 38, 22, 42]).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+    assert result["score_cn"].to_pylist() == [22]
+    assert result["score_mt"].to_pylist() == [42]
+
+
 def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
     pd = pytest.importorskip("pandas")
     data = pa.table({"id": [1, 2], "text": ["one", "two"]})
