@@ -11,7 +11,8 @@ use std::{collections::HashSet, sync::Arc};
 use arrow_schema::DataType;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
-    CompactionMetrics, IndexRemapperOptions, compact_files, plan_compaction,
+    CompactionMetrics, CompactionPlan, CompactionPlanner, IndexRemapperOptions,
+    compact_files_with_planner, plan_compaction,
 };
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
 use lance_index::IndexType;
@@ -25,6 +26,18 @@ pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 
 const MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX: u64 = u32::MAX as u64;
+
+struct PrecomputedCompactionPlanner {
+    plan: CompactionPlan,
+}
+
+#[async_trait::async_trait]
+impl CompactionPlanner for PrecomputedCompactionPlanner {
+    async fn plan(&self, dataset: &lance::Dataset) -> lance::Result<CompactionPlan> {
+        debug_assert_eq!(dataset.manifest().version, self.plan.read_version());
+        Ok(self.plan.clone())
+    }
+}
 
 fn sq_vector_dimension(data_type: &DataType) -> Option<i32> {
     match data_type {
@@ -63,15 +76,15 @@ async fn validate_sq_index_remapping(
     dataset: &lance::Dataset,
     options: &CompactionOptions,
     has_custom_remapper: bool,
-) -> Result<()> {
+) -> Result<CompactionPlan> {
+    let plan = plan_compaction(dataset, options).await?;
     if options.defer_index_remap || has_custom_remapper || dataset.manifest().uses_stable_row_ids()
     {
-        return Ok(());
+        return Ok(plan);
     }
 
-    let plan = plan_compaction(dataset, options).await?;
     if plan.tasks.is_empty() {
-        return Ok(());
+        return Ok(plan);
     }
     let affected_fragments: HashSet<u64> = plan
         .tasks
@@ -147,7 +160,7 @@ async fn validate_sq_index_remapping(
         }
     }
 
-    Ok(())
+    Ok(plan)
 }
 
 /// Optimize the dataset.
@@ -274,7 +287,7 @@ pub(crate) async fn cleanup_old_versions(
 /// This can be run after making several small appends to optimize the table
 /// for faster reads.
 ///
-/// This calls into [lance::dataset::optimize::compact_files].
+/// This calls into [lance::dataset::optimize::compact_files_with_planner].
 pub(crate) async fn compact_files_impl(
     table: &NativeTable,
     options: CompactionOptions,
@@ -282,8 +295,9 @@ pub(crate) async fn compact_files_impl(
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    validate_sq_index_remapping(&dataset, &options, remap_options.is_some()).await?;
-    let metrics = compact_files(&mut dataset, options, remap_options).await?;
+    let plan = validate_sq_index_remapping(&dataset, &options, remap_options.is_some()).await?;
+    let planner = PrecomputedCompactionPlanner { plan };
+    let metrics = compact_files_with_planner(&mut dataset, remap_options, &planner).await?;
     table.dataset.update(dataset);
     Ok(metrics)
 }
