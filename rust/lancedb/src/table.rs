@@ -2256,7 +2256,13 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
-        let params = params.unwrap_or_default();
+        let mut params = params.unwrap_or_default();
+        let effective_session = params
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        crate::io::object_store::install_atomic_aws_provider(&effective_session);
+        params.session(effective_session);
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -2530,9 +2536,15 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
         // Default params uses format v1.
-        let params = params.unwrap_or(WriteParams {
+        let mut params = params.unwrap_or(WriteParams {
             ..Default::default()
         });
+        let effective_session = params
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        crate::io::object_store::install_atomic_aws_provider(&effective_session);
+        params.session = Some(effective_session);
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -3581,6 +3593,10 @@ mod tests {
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
+    #[cfg(feature = "aws")]
+    use lance_io::object_store::{
+        ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry,
+    };
     use tempfile::tempdir;
 
     use super::*;
@@ -3589,6 +3605,53 @@ mod tests {
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
+
+    #[cfg(feature = "aws")]
+    #[derive(Debug)]
+    struct RecordingS3Provider {
+        saw_atomic_credentials: Arc<AtomicBool>,
+    }
+
+    #[cfg(feature = "aws")]
+    #[async_trait]
+    impl ObjectStoreProvider for RecordingS3Provider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            self.saw_atomic_credentials
+                .store(params.aws_credentials.is_some(), Ordering::SeqCst);
+            Err(lance_core::Error::invalid_input("recorded test request"))
+        }
+    }
+
+    #[cfg(feature = "aws")]
+    fn recording_s3_session() -> (Arc<lance::session::Session>, Arc<AtomicBool>) {
+        let saw_atomic_credentials = Arc::new(AtomicBool::new(false));
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert(
+            "s3",
+            Arc::new(RecordingS3Provider {
+                saw_atomic_credentials: saw_atomic_credentials.clone(),
+            }),
+        );
+        (
+            Arc::new(lance::session::Session::new(16, 16, registry)),
+            saw_atomic_credentials,
+        )
+    }
+
+    #[cfg(feature = "aws")]
+    fn explicit_s3_store_params() -> ObjectStoreParams {
+        crate::io::object_store::object_store_params_from_storage_options(HashMap::from([
+            ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+            (
+                "aws_secret_access_key".to_string(),
+                "explicit-secret".to_string(),
+            ),
+        ]))
+    }
 
     #[test]
     fn test_tokenize_uses_explicit_simple_tokenizer() {
@@ -3648,6 +3711,70 @@ mod tests {
         assert!(
             matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn direct_native_open_installs_the_atomic_provider() {
+        let (session, saw_atomic_credentials) = recording_s3_session();
+        let params = ReadParams {
+            session: Some(session),
+            store_options: Some(explicit_s3_store_params()),
+            ..Default::default()
+        };
+
+        let error = NativeTable::open_with_params(
+            "s3://bucket/table",
+            "table",
+            vec![],
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("recorded test request"));
+        assert!(
+            saw_atomic_credentials.load(Ordering::SeqCst),
+            "the public direct open path must install the wrapper on its session"
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn direct_native_create_installs_the_atomic_provider() {
+        let (session, saw_atomic_credentials) = recording_s3_session();
+        let params = WriteParams {
+            session: Some(session),
+            store_params: Some(explicit_s3_store_params()),
+            ..Default::default()
+        };
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+
+        let error = NativeTable::create(
+            "s3://bucket/table",
+            "table",
+            vec![],
+            reader,
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("recorded test request"));
+        assert!(
+            saw_atomic_credentials.load(Ordering::SeqCst),
+            "the public direct create path must install the wrapper on its session"
         );
     }
 

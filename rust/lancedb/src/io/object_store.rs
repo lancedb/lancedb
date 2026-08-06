@@ -20,7 +20,7 @@ use lance::io::{ObjectStoreParams, WrappingObjectStore};
 #[cfg(feature = "aws")]
 use lance_io::object_store::{
     ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry, StorageOptions,
-    providers::aws::build_aws_credential,
+    providers::aws::{AwsStoreProvider, build_aws_credential},
     throttle::{AimdThrottleConfig, AimdThrottledStore},
 };
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
@@ -96,6 +96,17 @@ fn is_aws_credential_key(key: &AmazonS3ConfigKey) -> bool {
             | AmazonS3ConfigKey::SecretAccessKey
             | AmazonS3ConfigKey::Token
     )
+}
+
+#[cfg(feature = "aws")]
+pub(crate) fn is_aws_credential_option(key: &str) -> bool {
+    AmazonS3ConfigKey::from_str(&key.to_ascii_lowercase())
+        .is_ok_and(|key| is_aws_credential_key(&key))
+}
+
+#[cfg(not(feature = "aws"))]
+pub(crate) fn is_aws_credential_option(_key: &str) -> bool {
+    false
 }
 
 #[cfg(feature = "aws")]
@@ -410,9 +421,27 @@ struct AtomicAwsStoreProvider {
 }
 
 #[cfg(feature = "aws")]
-#[async_trait]
-impl ObjectStoreProvider for AtomicAwsStoreProvider {
-    async fn new_store(
+impl AtomicAwsStoreProvider {
+    const CACHE_GENERATION: &'static str = "lancedb-atomic-aws-v1";
+
+    /// Lance does not expose provider downcasting. Its built-in provider is a unit struct with a
+    /// stable derived Debug representation, which is the only available way to distinguish the
+    /// one provider whose OpenDAL implementation needs adaptation from an unknown custom one.
+    fn is_builtin_aws_provider(&self) -> bool {
+        format!("{:?}", self.inner.as_ref()) == format!("{:?}", AwsStoreProvider)
+    }
+
+    fn generated_prefix(
+        &self,
+        url: &url::Url,
+        storage_options: Option<&HashMap<String, String>>,
+    ) -> lance_core::Result<String> {
+        self.inner
+            .calculate_object_store_prefix(url, storage_options)
+            .map(|prefix| format!("{prefix}${}", Self::CACHE_GENERATION))
+    }
+
+    async fn new_store_inner(
         &self,
         base_path: url::Url,
         params: &ObjectStoreParams,
@@ -423,6 +452,13 @@ impl ObjectStoreProvider for AtomicAwsStoreProvider {
             .is_some_and(|value| value == "true");
 
         if use_opendal {
+            // A registered custom provider owns its store construction contract. In particular,
+            // its returned store may add encryption, authorization, or wrapping behavior that
+            // cannot be reconstructed from ObjectStoreParams. Only adapt Lance's known built-in
+            // provider, whose OpenDAL path ignores both supported credential-provider fields.
+            if !self.is_builtin_aws_provider() {
+                return self.inner.new_store(base_path, params).await;
+            }
             if storage_options
                 .get("aws_provider_scheme")
                 .is_some_and(|scheme| !scheme.is_empty())
@@ -532,6 +568,23 @@ impl ObjectStoreProvider for AtomicAwsStoreProvider {
         atomic_params.aws_credentials = Some(credential_provider);
         self.inner.new_store(base_path, &atomic_params).await
     }
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl ObjectStoreProvider for AtomicAwsStoreProvider {
+    async fn new_store(
+        &self,
+        base_path: url::Url,
+        params: &ObjectStoreParams,
+    ) -> lance_core::Result<LanceObjectStore> {
+        let store_prefix = self.generated_prefix(&base_path, params.storage_options())?;
+        let mut store = self.new_store_inner(base_path, params).await?;
+        // The registry cache and the returned store must use the same identity. Lance compares
+        // these values when resolving external blob bases.
+        store.store_prefix = store_prefix;
+        Ok(store)
+    }
 
     fn extract_path(&self, url: &url::Url) -> lance_core::Result<Path> {
         self.inner.extract_path(url)
@@ -542,9 +595,7 @@ impl ObjectStoreProvider for AtomicAwsStoreProvider {
         url: &url::Url,
         storage_options: Option<&HashMap<String, String>>,
     ) -> lance_core::Result<String> {
-        self.inner
-            .calculate_object_store_prefix(url, storage_options)
-            .map(|prefix| format!("{prefix}$lancedb-atomic-aws-v1"))
+        self.generated_prefix(url, storage_options)
     }
 }
 
@@ -866,6 +917,24 @@ mod credential_tests {
 
         fn extract_path(&self, _url: &url::Url) -> lance_core::Result<Path> {
             Ok(Path::from("custom/tenant/path"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct CustomStoreProvider {
+        marker: Arc<dyn ObjectStore>,
+    }
+
+    #[async_trait]
+    impl ObjectStoreProvider for CustomStoreProvider {
+        async fn new_store(
+            &self,
+            base_path: url::Url,
+            params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            let mut store = AwsStoreProvider.new_store(base_path, params).await?;
+            store.inner = self.marker.clone();
+            Ok(store)
         }
     }
 
@@ -1264,6 +1333,48 @@ mod credential_tests {
             !Arc::ptr_eq(&before, &after),
             "the wrapper cache generation must isolate pre-install stores"
         );
+    }
+
+    #[tokio::test]
+    async fn opendal_preserves_custom_provider_store_behavior() {
+        let marker: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let provider = AtomicAwsStoreProvider {
+            inner: Arc::new(CustomStoreProvider {
+                marker: marker.clone(),
+            }),
+        };
+        let mut options = local_s3_options();
+        options.insert("use_opendal".to_string(), "true".to_string());
+
+        let store = provider
+            .new_store(
+                url::Url::parse("s3://bucket/table").unwrap(),
+                &object_store_params_from_storage_options(options),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            Arc::ptr_eq(&store.inner, &marker),
+            "the wrapper must not discard custom provider store behavior"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrapper_store_prefix_matches_registry_identity() {
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        let session = lance::session::Session::new(16, 16, registry.clone());
+        install_atomic_aws_provider(&session);
+        let uri = "s3://bucket/table";
+        let url = url::Url::parse(uri).unwrap();
+        let params = object_store_params_from_storage_options(local_s3_options());
+
+        let store = registry.get_store(url, &params).await.unwrap();
+        let registry_prefix = registry
+            .calculate_object_store_prefix(uri, params.storage_options())
+            .unwrap();
+
+        assert_eq!(store.store_prefix, registry_prefix);
     }
 
     #[tokio::test]

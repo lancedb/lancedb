@@ -24,7 +24,7 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::{
-    MirroringObjectStoreWrapper, install_atomic_aws_provider,
+    MirroringObjectStoreWrapper, install_atomic_aws_provider, is_aws_credential_option,
     object_store_params_from_storage_options, set_storage_options,
 };
 use crate::table::NativeTable;
@@ -739,8 +739,14 @@ impl ListingDatabase {
 
     /// Inherit storage options from the connection into the target map
     fn inherit_storage_options(&self, target: &mut HashMap<String, String>) {
+        // Credential precedence applies to the whole family, not individual members. Once an
+        // operation supplies any member, the lower-precedence connection family must not fill in
+        // its missing token (or key/secret); the provider boundary validates completeness later.
+        let operation_has_aws_credentials = target.keys().any(|key| is_aws_credential_option(key));
         for (key, value) in self.storage_options.iter() {
-            if !target.contains_key(key) {
+            if !target.contains_key(key)
+                && !(operation_has_aws_credentials && is_aws_credential_option(key))
+            {
                 target.insert(key.clone(), value.clone());
             }
         }
@@ -1368,6 +1374,71 @@ mod tests {
         assert!(
             store_params.aws_credentials.is_none(),
             "credential allocation must happen after the registry cache lookup"
+        );
+    }
+
+    #[cfg(feature = "aws")]
+    #[tokio::test]
+    async fn operation_credential_family_does_not_inherit_connection_token() {
+        let tempdir = tempdir().unwrap();
+        let request = ConnectRequest {
+            uri: tempdir.path().to_string_lossy().into_owned(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: HashMap::from([
+                (
+                    "aws_access_key_id".to_string(),
+                    "connection-key".to_string(),
+                ),
+                (
+                    "aws_secret_access_key".to_string(),
+                    "connection-secret".to_string(),
+                ),
+                (
+                    "aws_session_token".to_string(),
+                    "connection-token".to_string(),
+                ),
+            ]),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let create_request = CreateTableRequest {
+            name: "operation_credentials".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(operation_aws_store_params()),
+                    ..Default::default()
+                }),
+            },
+            location: None,
+            namespace_client: None,
+        };
+
+        let write_params = db.prepare_write_params(&create_request, None, None, None);
+        let options = write_params
+            .store_params
+            .unwrap()
+            .storage_options()
+            .unwrap()
+            .clone();
+
+        assert_eq!(options.get("aws_access_key_id").unwrap(), "operation-key");
+        assert_eq!(
+            options.get("aws_secret_access_key").unwrap(),
+            "operation-secret"
+        );
+        assert!(
+            !options.contains_key("aws_session_token"),
+            "an explicit operation family must not inherit a lower-precedence token"
         );
     }
 
