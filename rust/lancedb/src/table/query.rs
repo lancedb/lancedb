@@ -378,6 +378,12 @@ fn leaf_field_paths(schema: &Schema) -> Vec<String> {
 
     fn visit(fields: &arrow_schema::Fields, path: &mut Vec<String>, paths: &mut Vec<String>) {
         for field in fields {
+            // Neither local planner can address an empty field-path segment,
+            // even when it is backtick-quoted. Do not advertise leaves beneath
+            // such a segment as valid filter fields.
+            if field.name().is_empty() {
+                continue;
+            }
             path.push(field.name().clone());
             match field.data_type() {
                 DataType::Struct(children) if !children.is_empty() => {
@@ -972,6 +978,10 @@ mod tests {
                 Arc::new(Field::new("true", DataType::Int32, false)),
                 Arc::new(Int32Array::from(vec![8])) as ArrayRef,
             ),
+            (
+                Arc::new(Field::new("", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![10])) as ArrayRef,
+            ),
         ]));
         let vector = Arc::new(fixed_size_list_array(vec![0.0, 1.0], 2));
         let schema = Arc::new(Schema::new(vec![
@@ -1072,6 +1082,8 @@ mod tests {
             nested_field(&["metadata", "Title"]),
             nested_field(&["metadata", "123child"]),
             nested_field(&["metadata", "child`tick"]),
+            nested_field(&["metadata", ""]),
+            nested_field(&["", "child"]),
         ]);
 
         assert_eq!(
