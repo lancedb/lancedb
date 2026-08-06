@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
+use lancedb::table::optimize::validate_cleanup_options;
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
@@ -559,6 +560,7 @@ impl Table {
         } else {
             None
         };
+        validate_cleanup_options(older_than, delete_unverified).default_error()?;
 
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {

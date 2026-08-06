@@ -16,7 +16,10 @@ cleanupOlderThan: Date;
 
 If set then all versions older than the given date
 be removed.  The current version will never be removed.
-The default is 7 days
+The default is 7 days. The resulting retention period must be longer than
+the longest expected write. Values shorter than 10 minutes require
+`deleteUnverified: true` and are only safe when no other process can write
+to the dataset.
 
 #### Example
 
@@ -26,8 +29,8 @@ const olderThan = new Date();
 olderThan.setDate(olderThan.getDate() - 1));
 tbl.optimize({cleanupOlderThan: olderThan});
 
-// Delete all versions except the current version
-tbl.optimize({cleanupOlderThan: new Date()});
+// With exclusive access, delete all versions except the current version
+tbl.optimize({cleanupOlderThan: new Date(), deleteUnverified: true});
 ```
 
 ***

@@ -18,7 +18,33 @@ pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 
 use super::NativeTable;
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+const MIN_SAFE_CLEANUP_AGE_MINUTES: i64 = 10;
+
+/// Validate version-cleanup options before starting an optimization operation.
+///
+/// This is public for the language bindings, which run compaction and cleanup as
+/// separate operations and must reject unsafe cleanup options before compaction
+/// changes the table.
+#[doc(hidden)]
+pub fn validate_cleanup_options(
+    older_than: Option<Duration>,
+    delete_unverified: Option<bool>,
+) -> Result<()> {
+    let minimum_age =
+        Duration::try_minutes(MIN_SAFE_CLEANUP_AGE_MINUTES).expect("minimum cleanup age is valid");
+    if older_than.is_some_and(|age| age < minimum_age) && delete_unverified != Some(true) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "cleanup age must be at least {MIN_SAFE_CLEANUP_AGE_MINUTES} minutes unless \
+                 delete_unverified is true; short cleanup windows can remove a manifest still \
+                 needed by an in-progress write"
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// Optimize the dataset.
 ///
@@ -60,7 +86,9 @@ pub enum OptimizeAction {
     ///
     /// Once a version is pruned it can no longer be checked out.
     Prune {
-        /// The duration of time to keep versions of the dataset.
+        /// The duration of time to keep versions of the dataset. This should be longer than the
+        /// longest expected write. Values shorter than 10 minutes require `delete_unverified` to
+        /// be true and are only safe when no other process can write to the dataset.
         older_than: Option<Duration>,
         /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
         /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
@@ -164,6 +192,15 @@ pub(crate) async fn execute_optimize(
     table: &NativeTable,
     action: OptimizeAction,
 ) -> Result<OptimizeStats> {
+    if let OptimizeAction::Prune {
+        older_than,
+        delete_unverified,
+        ..
+    } = &action
+    {
+        validate_cleanup_options(*older_than, *delete_unverified)?;
+    }
+
     let mut stats = OptimizeStats {
         compaction: None,
         prune: None,
@@ -222,7 +259,7 @@ mod tests {
     use crate::connect;
     use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::ExecutableQuery;
-    use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
+    use crate::table::{CompactionOptions, Duration, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;
 
     #[tokio::test]
@@ -378,6 +415,48 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..60).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rejects_unsafe_cleanup_age() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_unsafe_prune", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let versions_before = table
+            .list_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|version| version.version)
+            .collect::<Vec<_>>();
+        let err = table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(Duration::zero()),
+                delete_unverified: Some(false),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("at least 10 minutes"));
+        let versions_after = table
+            .list_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|version| version.version)
+            .collect::<Vec<_>>();
+        assert_eq!(versions_after, versions_before);
     }
 
     #[tokio::test]

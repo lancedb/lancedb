@@ -129,15 +129,18 @@ export interface OptimizeOptions {
   /**
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
-   * The default is 7 days
+   * The default is 7 days. The resulting retention period must be longer than
+   * the longest expected write. Values shorter than 10 minutes require
+   * `deleteUnverified: true` and are only safe when no other process can write
+   * to the dataset.
    * @example
    * // Delete all versions older than 1 day
    * const olderThan = new Date();
    * olderThan.setDate(olderThan.getDate() - 1));
    * tbl.optimize({cleanupOlderThan: olderThan});
    *
-   * // Delete all versions except the current version
-   * tbl.optimize({cleanupOlderThan: new Date()});
+   * // With exclusive access, delete all versions except the current version
+   * tbl.optimize({cleanupOlderThan: new Date(), deleteUnverified: true});
    */
   cleanupOlderThan: Date;
   /**
@@ -744,6 +747,9 @@ export abstract class Table {
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
    *  modification operations.
+   *
+   *  Cleanup retention must exceed the longest expected write. Retention shorter
+   *  than 10 minutes requires `deleteUnverified: true` and exclusive write access.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /** List all indices that have been created with {@link Table.createIndex} */

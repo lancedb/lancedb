@@ -19,6 +19,7 @@ use arrow::{
 };
 use lancedb::blob::{BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
+use lancedb::table::optimize::validate_cleanup_options;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
@@ -1214,6 +1215,7 @@ impl Table {
         } else {
             None
         };
+        validate_cleanup_options(older_than, delete_unverified).infer_error()?;
         future_into_py(self_.py(), async move {
             let compaction_stats = inner
                 .optimize(OptimizeAction::Compact {

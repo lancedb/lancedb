@@ -2958,6 +2958,9 @@ def test_compact_cleanup(tmp_db: DBConnection):
     stats = table.cleanup_old_versions()
     assert stats.bytes_removed == 0
 
+    with pytest.raises(ValueError, match="at least 10 minutes"):
+        table.cleanup_old_versions(older_than=timedelta(0))
+
     stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
     assert stats.bytes_removed > 0
     assert table.version == 4
@@ -3374,7 +3377,14 @@ async def test_optimize(mem_db_async: AsyncConnection):
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
-    stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    version_before_rejected_cleanup = await table.version()
+    with pytest.raises(ValueError, match="at least 10 minutes"):
+        await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    assert await table.version() == version_before_rejected_cleanup
+
+    stats = await table.optimize(
+        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+    )
     assert stats.prune.bytes_removed > 0
     assert stats.prune.old_versions_removed == 3
 

@@ -2196,7 +2196,15 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    await expect(
+      table.optimize({ cleanupOlderThan: new Date() }),
+    ).rejects.toThrow("at least 10 minutes");
+    expect(await table.version()).toBe(2);
+
+    const stats = await table.optimize({
+      cleanupOlderThan: new Date(),
+      deleteUnverified: true,
+    });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });

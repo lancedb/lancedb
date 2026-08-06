@@ -587,6 +587,9 @@ Modeled after ``VACUUM`` in PostgreSQL.
  you have added or modified 100,000 or more records or run more than 20 data
  modification operations.
 
+ Cleanup retention must exceed the longest expected write. Retention shorter
+ than 10 minutes requires `deleteUnverified: true` and exclusive write access.
+
 #### Parameters
 
 * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;

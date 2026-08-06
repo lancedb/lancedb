@@ -117,6 +117,23 @@ _MODEL_BACKED_TOKENIZER_ERRORS = (
     "Failed to initialize default tokenizer",
 )
 
+_MIN_SAFE_CLEANUP_AGE = timedelta(minutes=10)
+
+
+def _validate_cleanup_options(
+    older_than: Optional[timedelta], delete_unverified: bool
+) -> None:
+    if (
+        older_than is not None
+        and older_than < _MIN_SAFE_CLEANUP_AGE
+        and not delete_unverified
+    ):
+        raise ValueError(
+            "cleanup age must be at least 10 minutes unless delete_unverified is "
+            "true; short cleanup windows can remove a manifest still needed by an "
+            "in-progress write"
+        )
+
 
 def _add_unique_note(exception: BaseException, note: str) -> None:
     existing_notes = getattr(exception, "__notes__", ()) or ()
@@ -1767,7 +1784,9 @@ class Table(ABC):
         ----------
         older_than: timedelta, default None
             The minimum age of the version to delete. If None, then this defaults
-            to two weeks.
+            to two weeks. This must be longer than the longest expected write.
+            Values shorter than 10 minutes require `delete_unverified=True` and
+            are only safe when no other process can write to the dataset.
         delete_unverified: bool, default False
             Because they may be part of an in-progress transaction, files newer
             than 7 days old are not deleted by default. If you are sure that
@@ -1835,9 +1854,11 @@ class Table(ABC):
         Parameters
         ----------
         cleanup_older_than: timedelta, optional default 7 days
-            All files belonging to versions older than this will be removed.  Set
-            to 0 days to remove all versions except the latest.  The latest version
-            is never removed.
+            All files belonging to versions older than this will be removed. The
+            latest version is never removed. This must be longer than the longest
+            expected write. Values shorter than 10 minutes require
+            `delete_unverified=True` and are only safe when no other process can
+            write to the dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -3782,7 +3803,9 @@ class LanceTable(Table):
         ----------
         older_than: timedelta, default None
             The minimum age of the version to delete. If None, then this defaults
-            to two weeks.
+            to two weeks. This must be longer than the longest expected write.
+            Values shorter than 10 minutes require `delete_unverified=True` and
+            are only safe when no other process can write to the dataset.
         delete_unverified: bool, default False
             Because they may be part of an in-progress transaction, files newer
             than 7 days old are not deleted by default. If you are sure that
@@ -3795,6 +3818,7 @@ class LanceTable(Table):
             The stats of the cleanup operation, including how many bytes were
             freed.
         """
+        _validate_cleanup_options(older_than, delete_unverified)
         return self.to_lance().cleanup_old_versions(
             older_than, delete_unverified=delete_unverified
         )
@@ -3840,9 +3864,11 @@ class LanceTable(Table):
         Parameters
         ----------
         cleanup_older_than: timedelta, optional default 7 days
-            All files belonging to versions older than this will be removed.  Set
-            to 0 days to remove all versions except the latest.  The latest version
-            is never removed.
+            All files belonging to versions older than this will be removed. The
+            latest version is never removed. This must be longer than the longest
+            expected write. Values shorter than 10 minutes require
+            `delete_unverified=True` and are only safe when no other process can
+            write to the dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -6034,9 +6060,11 @@ class AsyncTable:
         Parameters
         ----------
         cleanup_older_than: timedelta, optional default 7 days
-            All files belonging to versions older than this will be removed.  Set
-            to 0 days to remove all versions except the latest.  The latest version
-            is never removed.
+            All files belonging to versions older than this will be removed. The
+            latest version is never removed. This must be longer than the longest
+            expected write. Values shorter than 10 minutes require
+            `delete_unverified=True` and are only safe when no other process can
+            write to the dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
