@@ -164,7 +164,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -2106,6 +2106,22 @@ class Table(ABC):
         """
 
 
+@dataclass
+class _LanceTableReopenState:
+    """Process-independent coordinates for reopening a native table."""
+
+    connection_state: Optional[str]
+    can_reopen_after_fork: bool
+    name: str
+    namespace_path: List[str]
+    storage_options: Optional[Dict[str, str]]
+    index_cache_size: Optional[int]
+    location: Optional[str]
+    managed_versioning: Optional[bool]
+    branch: Optional[str]
+    checkout_version: Optional[int]
+
+
 class LanceTable(Table):
     """
     A table in a LanceDB database.
@@ -2143,6 +2159,7 @@ class LanceTable(Table):
         self._storage_options = storage_options
         self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -2173,8 +2190,6 @@ class LanceTable(Table):
         """Capture the state needed to replace inherited native handles."""
         self._name = name
         self._pid = os.getpid()
-        self._branch = self._table.current_branch()
-        self._checkout_version: Optional[int] = None
 
         # A native table owns object-store clients and connection pools. Those
         # handles must not be used after fork, so retain a process-independent
@@ -2182,19 +2197,126 @@ class LanceTable(Table):
         # connection. Some tables constructed from a bare Rust handle cannot
         # be serialized; those retain the historical best-effort behavior.
         try:
-            self._connection_state: Optional[str] = self._conn.serialize()
-            self._can_reopen_after_fork = not self._conn.uri.startswith("memory://")
+            connection_state: Optional[str] = self._conn.serialize()
+            can_reopen_after_fork = not self._conn.uri.startswith("memory://")
         except Exception:
-            self._connection_state = None
-            self._can_reopen_after_fork = False
+            connection_state = None
+            can_reopen_after_fork = False
+
+        self._reopen_state = _LanceTableReopenState(
+            connection_state=connection_state,
+            can_reopen_after_fork=can_reopen_after_fork,
+            name=name,
+            namespace_path=list(self._namespace_path),
+            storage_options=(
+                dict(self._storage_options)
+                if self._storage_options is not None
+                else None
+            ),
+            index_cache_size=self._index_cache_size,
+            location=self._location,
+            managed_versioning=self._managed_versioning,
+            branch=self._table.current_branch(),
+            checkout_version=None,
+        )
+
+    @property
+    def _connection_state(self) -> Optional[str]:
+        """Serialized connection retained for worker reconstruction."""
+        return self._reopen_state.connection_state
+
+    @property
+    def _can_reopen_after_fork(self) -> bool:
+        return self._reopen_state.can_reopen_after_fork
+
+    @property
+    def _branch(self) -> Optional[str]:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            return state.branch
+        return getattr(self, "_legacy_branch", None)
+
+    @_branch.setter
+    def _branch(self, value: Optional[str]) -> None:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            state.branch = value
+        else:
+            self._legacy_branch = value
+
+    @property
+    def _checkout_version(self) -> Optional[int]:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            return state.checkout_version
+        return getattr(self, "_legacy_checkout_version", None)
+
+    @_checkout_version.setter
+    def _checkout_version(self, value: Optional[int]) -> None:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            state.checkout_version = value
+        else:
+            self._legacy_checkout_version = value
+
+    @classmethod
+    def _open_from_reopen_state(
+        cls,
+        connection: "DBConnection",
+        state: "_LanceTableReopenState",
+    ) -> "LanceTable":
+        """Open a table from its complete process-independent descriptor."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        namespace_client = getattr(connection, "_namespace_client", None)
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state.name,
+                namespace_path=state.namespace_path,
+                storage_options=state.storage_options,
+                index_cache_size=state.index_cache_size,
+                location=state.location,
+                namespace_client=namespace_client,
+                managed_versioning=state.managed_versioning,
+            )
+        )
+        table = cls(
+            connection,
+            state.name,
+            namespace_path=state.namespace_path,
+            storage_options=state.storage_options,
+            index_cache_size=state.index_cache_size,
+            location=state.location,
+            namespace_client=namespace_client,
+            managed_versioning=state.managed_versioning,
+            pushdown_operations=getattr(
+                connection, "_namespace_client_pushdown_operations", None
+            ),
+            route_pushdown_to_rust=getattr(
+                connection, "_route_pushdown_to_rust", False
+            ),
+            _async=async_table,
+        )
+        if state.branch is not None:
+            table = table.branches.checkout(state.branch, state.checkout_version)
+        elif state.checkout_version is not None:
+            table.checkout(state.checkout_version)
+        return table
 
     def _ensure_open(self) -> None:
         """Reopen native table handles inherited from another process."""
         pid = os.getpid()
-        if self._pid == pid:
+        if getattr(self, "_pid", pid) == pid:
             return
 
-        if not self._can_reopen_after_fork or self._connection_state is None:
+        state = getattr(self, "_reopen_state", None)
+        if (
+            state is None
+            or not state.can_reopen_after_fork
+            or state.connection_state is None
+        ):
             # In-memory and opaque Rust-only connections cannot be recreated
             # from connection metadata. Their local handles retain the prior
             # best-effort fork behavior.
@@ -2203,14 +2325,10 @@ class LanceTable(Table):
 
         from lancedb import deserialize_conn
 
-        connection = deserialize_conn(self._connection_state, for_worker=True)
-        reopened = connection.open_table(
-            self._name,
-            namespace_path=self._namespace_path or None,
-            storage_options=self._storage_options,
-            index_cache_size=self._index_cache_size,
-            branch=self._branch,
-            version=self._checkout_version,
+        connection = deserialize_conn(state.connection_state, for_worker=True)
+        reopened = self._open_from_reopen_state(
+            connection,
+            state,
         )
 
         # Keep this Python object stable because user datasets commonly retain
@@ -2221,11 +2339,16 @@ class LanceTable(Table):
         self._namespace_client = reopened._namespace_client
         self._pushdown_operations = reopened._pushdown_operations
         self._route_pushdown_to_rust = reopened._route_pushdown_to_rust
+        self._reopen_state = reopened._reopen_state
         self._pid = pid
 
     @property
     def name(self) -> str:
-        return self._name
+        if hasattr(self, "_name"):
+            return self._name
+        # Preserve compatibility with lightweight / legacy instances that
+        # were constructed without running ``LanceTable.__init__``.
+        return self._table.name
 
     @property
     def namespace(self) -> List[str]:
@@ -2451,6 +2574,7 @@ class LanceTable(Table):
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
+            managed_versioning=self._managed_versioning,
             _async=async_table,
         )
         table._checkout_version = version
@@ -2495,7 +2619,7 @@ class LanceTable(Table):
         LOOP.run(self._table.checkout(version))
         # Resolve tags to their numeric version so a forked child can reopen
         # the same pinned view through ``open_table(version=...)``.
-        self._checkout_version = self.version
+        self._checkout_version = version if isinstance(version, int) else self.version
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -2552,6 +2676,9 @@ class LanceTable(Table):
         """
         if version is not None:
             LOOP.run(self._table.checkout(version))
+            self._checkout_version = (
+                version if isinstance(version, int) else self.version
+            )
         LOOP.run(self._table.restore())
         self._checkout_version = None
 
@@ -3666,6 +3793,7 @@ class LanceTable(Table):
         self._namespace_path = namespace_path
         self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust

@@ -2059,6 +2059,45 @@ def test_restore(mem_db: DBConnection):
         table.restore(0)
 
 
+def test_restore_tracks_checkout_when_restore_fails():
+    class FailingRestore:
+        def __init__(self):
+            self.live_version = None
+
+        async def checkout(self, version):
+            self.live_version = version
+
+        async def restore(self):
+            raise RuntimeError("injected restore failure")
+
+    inner = FailingRestore()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = None
+
+    with pytest.raises(RuntimeError, match="injected restore failure"):
+        table.restore(7)
+
+    assert table._checkout_version == inner.live_version
+
+
+def test_reopen_preserves_explicit_table_location(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    location = str(tmp_path / "physical-table")
+    table = LanceTable.create(
+        db,
+        "items",
+        pa.table({"x": [1]}),
+        location=location,
+    )
+
+    table._pid = -1
+    table._ensure_open()
+
+    assert table.count_rows() == 1
+    assert table._location == location
+
+
 def test_restore_with_tags(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",

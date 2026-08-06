@@ -6,6 +6,7 @@
 import tempfile
 import shutil
 import importlib
+from datetime import timedelta
 import pytest
 import pyarrow as pa
 import lancedb
@@ -419,7 +420,31 @@ class TestNamespaceConnection:
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("test_table", schema=schema, storage_options=table_opts)
+        created = db.create_table(
+            "test_table", schema=schema, storage_options=table_opts
+        )
+        assert created._storage_options == table_opts
+
+        opened = db.open_table(
+            "test_table",
+            storage_options={"allow_http": "true"},
+            index_cache_size=17,
+        )
+        assert opened._storage_options == {"allow_http": "true"}
+        assert opened._index_cache_size == 17
+        opened._pid = -1
+        opened._ensure_open()
+        assert opened.count_rows() == 0
+
+    def test_serialize_preserves_zero_read_consistency_interval(self):
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": self.temp_dir},
+            read_consistency_interval=timedelta(0),
+        )
+
+        restored = lancedb.deserialize_conn(db.serialize())
+        assert restored.read_consistency_interval == timedelta(0)
 
     def test_namespace_operations(self):
         """Test namespace management operations."""

@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import json
 import re
 import sys
 from datetime import timedelta
@@ -92,6 +93,17 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     assert db.read_consistency_interval == consistency_interval
     assert db_from_inner.read_consistency_interval == consistency_interval
+
+
+def test_serialize_preserves_zero_read_consistency_interval(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("items", pa.table({"x": [1]}))
+
+    encoded = json.loads(table._connection_state)
+    assert encoded["read_consistency_interval_seconds"] == 0.0
+
+    restored = lancedb.deserialize_conn(table._connection_state)
+    assert restored.read_consistency_interval == timedelta(0)
 
 
 def test_ingest_pd(tmp_path):

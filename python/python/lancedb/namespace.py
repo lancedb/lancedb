@@ -493,7 +493,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 "storage_options": self.storage_options or None,
                 "read_consistency_interval_seconds": (
                     self.read_consistency_interval.total_seconds()
-                    if self.read_consistency_interval
+                    if self.read_consistency_interval is not None
                     else None
                 ),
             }
@@ -569,6 +569,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -607,6 +608,8 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -899,10 +902,13 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
             location=table_uri,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             _async=async_table,
         )
 
