@@ -368,6 +368,25 @@ fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Optio
 }
 
 fn leaf_field_paths(schema: &Schema) -> Vec<String> {
+    fn format_segment(segment: &str) -> String {
+        let lance_quoted = lance_core::datatypes::format_field_path(&[segment]);
+        if lance_quoted == segment {
+            // Lance quotes punctuation that changes field-path parsing, while
+            // DataFusion also quotes identifiers whose spelling its SQL parser
+            // would otherwise normalize (for example, `Title` to `title`).
+            // Apply both rules so every advertised path can be copied into a
+            // filter without changing the field it identifies.
+            if segment.is_empty() || datafusion_common::utils::quote_identifier(segment) != segment
+            {
+                format!("`{}`", segment.replace('`', "``"))
+            } else {
+                lance_quoted
+            }
+        } else {
+            lance_quoted
+        }
+    }
+
     fn visit(fields: &arrow_schema::Fields, path: &mut Vec<String>, paths: &mut Vec<String>) {
         for field in fields {
             path.push(field.name().clone());
@@ -376,8 +395,12 @@ fn leaf_field_paths(schema: &Schema) -> Vec<String> {
                     visit(children, path, paths);
                 }
                 _ => {
-                    let segments = path.iter().map(String::as_str).collect::<Vec<_>>();
-                    paths.push(lance_core::datatypes::format_field_path(&segments));
+                    paths.push(
+                        path.iter()
+                            .map(|segment| format_segment(segment))
+                            .collect::<Vec<_>>()
+                            .join("."),
+                    );
                 }
             }
             path.pop();
@@ -952,6 +975,10 @@ mod tests {
                 Arc::new(Field::new("genre", DataType::Utf8, false)),
                 Arc::new(StringArray::from(vec!["fiction"])) as ArrayRef,
             ),
+            (
+                Arc::new(Field::new("Title", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+            ),
         ]));
         let vector = Arc::new(fixed_size_list_array(vec![0.0, 1.0], 2));
         let schema = Arc::new(Schema::new(vec![
@@ -983,12 +1010,21 @@ mod tests {
             .await
             .err()
             .expect("query should reject the unqualified nested field");
-        let expected = "No field named year. Valid fields are id, vector, content, metadata.year, metadata.genre.";
+        let suggested_path = "metadata.`Title`";
+        let expected = format!(
+            "No field named year. Valid fields are id, vector, content, metadata.year, metadata.genre, {suggested_path}."
+        );
 
         assert!(
-            error.to_string().contains(expected),
+            error.to_string().contains(&expected),
             "unexpected error: {error}"
         );
+        table
+            .query()
+            .only_if(format!("{suggested_path} = 7"))
+            .execute()
+            .await
+            .expect("the case-sensitive path advertised by the diagnostic should be reusable");
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
@@ -1004,9 +1040,17 @@ mod tests {
             .expect("LSM query should reject the unqualified nested field");
 
         assert!(
-            lsm_error.to_string().contains(expected),
+            lsm_error.to_string().contains(&expected),
             "unexpected LSM error: {lsm_error}"
         );
+        table
+            .query()
+            .only_if(format!("{suggested_path} = 7"))
+            .execute()
+            .await
+            .expect(
+                "the case-sensitive path advertised by the diagnostic should be reusable in LSM queries",
+            );
     }
 
     #[test]
@@ -1029,11 +1073,18 @@ mod tests {
         let schema = Schema::new(vec![
             nested_field(&["a", "b", "c", "d", "e"]),
             nested_field(&["metadata", "child.with.dot"]),
+            nested_field(&["metadata", "Title"]),
+            nested_field(&["metadata", "123child"]),
         ]);
 
         assert_eq!(
             leaf_field_paths(&schema),
-            vec!["a.b.c.d.e", "metadata.`child.with.dot`"]
+            vec![
+                "a.b.c.d.e",
+                "metadata.`child.with.dot`",
+                "metadata.`Title`",
+                "metadata.`123child`",
+            ]
         );
 
         let source = DataFusionError::SchemaError(
@@ -1045,9 +1096,9 @@ mod tests {
         );
         let error = field_not_found_diagnostic(&source, &schema).unwrap();
         assert!(
-            error
-                .to_string()
-                .contains("Valid fields are a.b.c.d.e, metadata.`child.with.dot`"),
+            error.to_string().contains(
+                "Valid fields are a.b.c.d.e, metadata.`child.with.dot`, metadata.`Title`, metadata.`123child`"
+            ),
             "unexpected error: {error}"
         );
     }
