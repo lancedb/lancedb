@@ -32,6 +32,7 @@ struct VectorIndexStatistics {
 
 #[derive(Debug, Deserialize)]
 struct VectorIndexSegmentStatistics {
+    uuid: String,
     partitions: Vec<VectorIndexPartitionStatistics>,
 }
 
@@ -40,7 +41,22 @@ struct VectorIndexPartitionStatistics {
     size: u64,
 }
 
-fn oversized_sq_partition(statistics: &str, dimension: u64) -> Result<Option<u64>> {
+fn sq_vector_dimension(data_type: &DataType) -> Option<i32> {
+    match data_type {
+        DataType::FixedSizeList(_, dimension) => Some(*dimension),
+        DataType::List(field) => match field.data_type() {
+            DataType::FixedSizeList(_, dimension) => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn oversized_sq_partition(
+    statistics: &str,
+    dimension: u64,
+    affected_segment_uuids: &HashSet<String>,
+) -> Result<Option<u64>> {
     let statistics: VectorIndexStatistics =
         serde_json::from_str(statistics).map_err(|source| Error::InvalidInput {
             message: format!("Could not parse vector index statistics: {source}"),
@@ -49,6 +65,7 @@ fn oversized_sq_partition(statistics: &str, dimension: u64) -> Result<Option<u64
     Ok(statistics
         .indices
         .iter()
+        .filter(|index| affected_segment_uuids.contains(&index.uuid))
         .flat_map(|index| &index.partitions)
         .map(|partition| partition.size)
         .find(|partition_size| {
@@ -79,15 +96,22 @@ async fn validate_sq_index_remapping(
         .collect();
 
     for index in dataset.describe_indices(None).await? {
-        if !matches!(index.index_type(), "IVF_SQ" | "IVF_HNSW_SQ")
-            || !index.segments().iter().any(|segment| {
+        if !matches!(index.index_type(), "IVF_SQ" | "IVF_HNSW_SQ") {
+            continue;
+        }
+        let affected_segment_uuids: HashSet<String> = index
+            .segments()
+            .iter()
+            .filter(|segment| {
                 segment.fragment_bitmap.as_ref().is_none_or(|bitmap| {
                     bitmap
                         .iter()
                         .any(|fragment| affected_fragments.contains(&(fragment as u64)))
                 })
             })
-        {
+            .map(|segment| segment.uuid.to_string())
+            .collect();
+        if affected_segment_uuids.is_empty() {
             continue;
         }
 
@@ -97,7 +121,8 @@ async fn validate_sq_index_remapping(
         let Some(field) = dataset.schema().field_by_id(*field_id as i32) else {
             continue;
         };
-        let DataType::FixedSizeList(_, dimension) = field.data_type() else {
+        let data_type = field.data_type();
+        let Some(dimension) = sq_vector_dimension(&data_type) else {
             continue;
         };
         let dimension = u64::try_from(dimension).map_err(|_| Error::InvalidInput {
@@ -110,16 +135,19 @@ async fn validate_sq_index_remapping(
 
         // If the entire index fits then every individual partition does too,
         // avoiding the index-file read needed for detailed statistics.
-        if index
-            .rows_indexed()
-            .checked_mul(dimension)
-            .is_some_and(|child_len| child_len <= MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
+        if matches!(data_type, DataType::FixedSizeList(..))
+            && index
+                .rows_indexed()
+                .checked_mul(dimension)
+                .is_some_and(|child_len| child_len <= MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX)
         {
             continue;
         }
 
         let statistics = dataset.index_statistics(index.name()).await?;
-        if let Some(partition_size) = oversized_sq_partition(&statistics, dimension)? {
+        if let Some(partition_size) =
+            oversized_sq_partition(&statistics, dimension, &affected_segment_uuids)?
+        {
             let max_partition_size = MAX_ARROW_FIXED_SIZE_LIST_CHILD_INDEX / dimension;
             return Err(Error::InvalidInput {
                 message: format!(
@@ -332,13 +360,18 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use super::oversized_sq_partition;
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use super::{oversized_sq_partition, sq_vector_dimension};
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+    };
     use arrow_schema::{DataType, Field, Schema};
+    use lance_arrow::FixedSizeListArrayExt;
     use rstest::rstest;
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     use crate::connect;
+    use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+    use crate::index::vector::IvfRqIndexBuilder;
     use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
@@ -349,8 +382,10 @@ mod tests {
     fn test_detect_oversized_sq_partition() {
         const DIMENSION: u64 = 4095;
         let safe_size = u32::MAX as u64 / DIMENSION;
+        let affected_segments = HashSet::from(["affected".to_string()]);
         let statistics = serde_json::json!({
             "indices": [{
+                "uuid": "affected",
                 "partitions": [
                     { "size": safe_size },
                     { "size": safe_size + 1 }
@@ -359,12 +394,16 @@ mod tests {
         });
 
         assert_eq!(
-            oversized_sq_partition(&statistics.to_string(), DIMENSION).unwrap(),
+            oversized_sq_partition(&statistics.to_string(), DIMENSION, &affected_segments).unwrap(),
             Some(safe_size + 1)
         );
 
-        let split_statistics = serde_json::json!({
+        let segmented_statistics = serde_json::json!({
             "indices": [{
+                "uuid": "unaffected",
+                "partitions": [{ "size": safe_size + 1 }]
+            }, {
+                "uuid": "affected",
                 "partitions": [
                     { "size": safe_size / 2 },
                     { "size": safe_size / 2 + 1 }
@@ -372,9 +411,28 @@ mod tests {
             }]
         });
         assert_eq!(
-            oversized_sq_partition(&split_statistics.to_string(), DIMENSION).unwrap(),
+            oversized_sq_partition(
+                &segmented_statistics.to_string(),
+                DIMENSION,
+                &affected_segments,
+            )
+            .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn test_sq_vector_dimension_includes_multivectors() {
+        const DIMENSION: i32 = 4095;
+        let vector = DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, false)),
+            DIMENSION,
+        );
+        let multivector = DataType::List(Arc::new(Field::new("item", vector.clone(), false)));
+
+        assert_eq!(sq_vector_dimension(&vector), Some(DIMENSION));
+        assert_eq!(sq_vector_dimension(&multivector), Some(DIMENSION));
+        assert_eq!(sq_vector_dimension(&DataType::Float32), None);
     }
 
     #[tokio::test]
@@ -454,6 +512,96 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..600).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_concurrent_add() {
+        const NUM_FRAGMENTS: usize = 5;
+        const ROWS_PER_FRAGMENT: i32 = 300;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(0..ROWS_PER_FRAGMENT))],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_concurrent_compact", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        for _ in 0..NUM_FRAGMENTS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Use separate handles so the two writes actually overlap, as they can
+        // when different Node connections operate on the same S3 table.
+        let compact_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let append_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let compact_task = tokio::spawn(async move {
+            compact_table
+                .optimize(OptimizeAction::Compact {
+                    options: CompactionOptions {
+                        target_rows_per_fragment: 1_000,
+                        ..Default::default()
+                    },
+                    remap_options: None,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        for _ in 0..NUM_FRAGMENTS {
+            append_table.add(batch.clone()).execute().await.unwrap();
+        }
+        compact_task.await.unwrap().unwrap();
+
+        let table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let fragment_ids = dataset
+            .get_fragments()
+            .iter()
+            .map(|fragment| fragment.id())
+            .collect::<Vec<_>>();
+        assert!(fragment_ids.windows(2).all(|ids| ids[0] < ids[1]));
+
+        // A second compaction exposed the original out-of-order row-id bug.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1_000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table.count_rows(None).await.unwrap(),
+            ROWS_PER_FRAGMENT as usize * (NUM_FRAGMENTS * 2 + 1)
+        );
     }
 
     #[tokio::test]
@@ -592,6 +740,58 @@ mod tests {
         // Verify data integrity
         let final_row_count = table.count_rows(None).await.unwrap();
         assert_eq!(final_row_count, 200);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_vector_index_after_delete_with_stable_row_ids() {
+        const NUM_ROWS: i32 = 400;
+        const DIMENSION: i32 = 32;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..NUM_ROWS).flat_map(|id| {
+                (0..DIMENSION).map(move |offset| ((id as f32 * 0.1) + (offset as f32 * 0.3)).sin())
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..NUM_ROWS)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_vector_index_optimize_after_delete", batch)
+            .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(IvfRqIndexBuilder::default().num_partitions(4)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table.delete("id % 3 = 0").await.unwrap();
+
+        // Regression test for #3330: deleted stable row IDs used to become
+        // misaligned with row addresses while joining small IVF partitions.
+        table
+            .optimize(OptimizeAction::Index(Default::default()))
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 266);
     }
 
     #[tokio::test]
