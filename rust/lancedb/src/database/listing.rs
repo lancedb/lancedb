@@ -8,8 +8,10 @@ use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
-use lance::dataset::refs::Ref;
-use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
+use lance::dataset::transaction::{Operation, Transaction};
+use lance::dataset::{
+    CommitBuilder, ReadParams, WriteDestination, WriteMode, builder::DatasetBuilder,
+};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
@@ -23,9 +25,7 @@ use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
-use crate::io::object_store::MirroringObjectStoreWrapper;
-#[cfg(any(windows, test))]
-use crate::io::object_store::register_windows_file_store;
+use crate::io::object_store::{MirroringObjectStoreWrapper, new_default_session};
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
@@ -46,6 +46,15 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
 pub const OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS: &str = "new_table_enable_stable_row_ids";
+
+fn session_or_default(
+    session: Option<Arc<lance::session::Session>>,
+) -> (Arc<lance::session::Session>, bool) {
+    match session {
+        Some(session) => (session, false),
+        None => (new_default_session(), true),
+    }
+}
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -361,19 +370,20 @@ impl ListingDatabase {
         uri: &str,
         storage_options: &HashMap<String, String>,
         session: Arc<lance::session::Session>,
+        prepare_native_directory: bool,
     ) -> Result<String> {
         match url::Url::parse(uri) {
             Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
-                Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
-                #[cfg(windows)]
-                register_windows_file_store(&session.store_registry());
+                if prepare_native_directory {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
                 let (object_store, _) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     uri,
                     &ObjectStoreParams::default(),
                 )
                 .await?;
-                if object_store.is_local() {
+                if object_store.is_local() && prepare_native_directory {
                     Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
                 }
                 Ok(uri.to_string())
@@ -405,11 +415,10 @@ impl ListingDatabase {
                 let plain_uri = url.to_string();
 
                 #[cfg(windows)]
-                if url.scheme() == "file" {
+                if url.scheme() == "file" && prepare_native_directory {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
                         path: plain_uri.clone(),
                     })?;
-                    register_windows_file_store(&session.store_registry());
                 }
 
                 let os_params = ObjectStoreParams {
@@ -428,7 +437,7 @@ impl ListingDatabase {
                     &os_params,
                 )
                 .await?;
-                if object_store.is_local() {
+                if object_store.is_local() && prepare_native_directory {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
                         path: plain_uri.clone(),
                     })?;
@@ -437,16 +446,16 @@ impl ListingDatabase {
                 Ok(plain_uri)
             }
             Err(_) => {
-                Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
-                #[cfg(windows)]
-                register_windows_file_store(&session.store_registry());
+                if prepare_native_directory {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
                 let (object_store, _) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
                     uri,
                     &ObjectStoreParams::default(),
                 )
                 .await?;
-                if object_store.is_local() {
+                if object_store.is_local() && prepare_native_directory {
                     Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
                 }
                 Ok(uri.to_string())
@@ -458,13 +467,14 @@ impl ListingDatabase {
         request: &ConnectRequest,
     ) -> Result<LanceNamespaceDatabase> {
         let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
-        let session = request
-            .session
-            .clone()
-            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        let namespace_root =
-            Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
-                .await?;
+        let (session, owns_session) = session_or_default(request.session.clone());
+        let namespace_root = Self::prepare_namespace_root(
+            &request.uri,
+            &options.storage_options,
+            session.clone(),
+            owns_session || !cfg!(windows),
+        )
+        .await?;
         let ns_properties = Self::build_manifest_enabled_namespace_client_properties(
             &namespace_root,
             &options.storage_options,
@@ -563,16 +573,13 @@ impl ListingDatabase {
                     url.to_string()
                 };
 
-                let session = request
-                    .session
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+                let (session, owns_session) = session_or_default(request.session.clone());
+                let prepare_native_directory = owns_session || !cfg!(windows);
                 #[cfg(windows)]
-                if url.scheme() == "file" {
+                if url.scheme() == "file" && prepare_native_directory {
                     Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
                         path: storage_base_uri.clone(),
                     })?;
-                    register_windows_file_store(&session.store_registry());
                 }
                 let os_params = ObjectStoreParams {
                     storage_options_accessor: if options.storage_options.is_empty() {
@@ -590,7 +597,7 @@ impl ListingDatabase {
                     &os_params,
                 )
                 .await?;
-                if object_store.is_local() {
+                if object_store.is_local() && prepare_native_directory {
                     Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
                         path: storage_base_uri.clone(),
                     })?;
@@ -648,17 +655,18 @@ impl ListingDatabase {
         namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        Self::try_create_dir(path).context(CreateDirSnafu { path })?;
-        #[cfg(windows)]
-        register_windows_file_store(&session.store_registry());
+        let (session, owns_session) = session_or_default(session);
+        let prepare_native_directory = owns_session || !cfg!(windows);
+        if prepare_native_directory {
+            Self::try_create_dir(path).context(CreateDirSnafu { path })?;
+        }
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,
             &ObjectStoreParams::default(),
         )
         .await?;
-        if object_store.is_local() {
+        if object_store.is_local() && prepare_native_directory {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
 
@@ -702,23 +710,6 @@ impl ListingDatabase {
             create_dir_all(path)?;
         }
         Ok(())
-    }
-
-    #[cfg(any(windows, test))]
-    fn try_remove_dir_all(path: &str) -> core::result::Result<(), std::io::Error> {
-        let filesystem_path = match url::Url::parse(path) {
-            Ok(mut url) if url.scheme() == "file" => {
-                url.set_query(None);
-                url.to_file_path().map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("Unable to convert URL '{url}' to a local path"),
-                    )
-                })?
-            }
-            _ => Path::new(path).to_path_buf(),
-        };
-        std::fs::remove_dir_all(filesystem_path)
     }
 
     /// Get the URI of a table in the database.
@@ -791,28 +782,6 @@ impl ListingDatabase {
                     },
                     _ => Error::from(err),
                 })?;
-
-            // The prefixed Windows store deliberately uses a custom scheme so
-            // Lance never follows object deletion with cwd-relative native
-            // cleanup. Remove the now-empty directory through its full file URI.
-            #[cfg(any(windows, test))]
-            if self.object_store.scheme() == "lancedb-file" {
-                let table_uri = self.table_uri(&name)?;
-                Self::try_remove_dir_all(&table_uri).map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        Error::TableNotFound {
-                            name: name.clone(),
-                            source: Box::new(error),
-                        }
-                    } else {
-                        Error::Runtime {
-                            message: format!(
-                                "Failed to remove table directory '{table_uri}': {error}"
-                            ),
-                        }
-                    }
-                })?;
-            }
         }
         Ok(())
     }
@@ -1179,24 +1148,60 @@ impl Database for ListingDatabase {
             ..Default::default()
         };
 
-        let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
+        let source_dataset = DatasetBuilder::from_uri(&request.source_uri)
             .with_read_params(read_params.clone())
             .load()
             .await
             .map_err(|e| -> Error { e.into() })?;
 
-        let version_ref = match (request.source_version, request.source_tag) {
-            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
-            (None, Some(tag)) => Ok(Ref::Tag(tag)),
-            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
+        let (ref_name, version_number) = match (request.source_version, request.source_tag) {
+            (Some(version), None) => Ok((None, version)),
+            (None, Some(tag)) => {
+                let tag = source_dataset.tags().get(&tag).await?;
+                Ok((tag.branch, tag.version))
+            }
+            (None, None) => Ok((None, source_dataset.version().version)),
             _ => Err(Error::InvalidInput {
                 message: "Cannot specify both source_version and source_tag".to_string(),
             }),
         }?;
 
         let target_uri = self.table_uri(&request.target_table_name)?;
-        source_dataset
-            .shallow_clone(&target_uri, version_ref, Some(storage_params))
+        let source_location = source_dataset
+            .branch_location()
+            .find_branch(ref_name.as_deref())?;
+        let (source_store, _) = ObjectStore::from_uri_and_params(
+            self.session.store_registry(),
+            &source_location.uri,
+            &storage_params,
+        )
+        .await?;
+        let (target_store, _) = ObjectStore::from_uri_and_params(
+            self.session.store_registry(),
+            &target_uri,
+            &storage_params,
+        )
+        .await?;
+        let clone_op = Operation::Clone {
+            is_shallow: true,
+            ref_name,
+            ref_version: version_number,
+            ref_path: source_location.uri,
+            branch_name: None,
+        };
+        let transaction = Transaction::new(version_number, clone_op, None);
+        CommitBuilder::new(WriteDestination::Uri(&target_uri))
+            .with_store_params(storage_params)
+            .with_object_store(target_store)
+            .with_source_store(source_store)
+            .with_session(self.session.clone())
+            .with_storage_format(
+                source_dataset
+                    .manifest
+                    .data_storage_format
+                    .lance_file_version()?,
+            )
+            .execute(transaction)
             .await
             .map_err(|e| -> Error { e.into() })?;
 
@@ -1205,7 +1210,7 @@ impl Database for ListingDatabase {
             &request.target_table_name,
             request.target_namespace_path,
             self.store_wrapper.clone(),
-            None,
+            Some(read_params),
             self.read_consistency_interval,
             request.namespace_client,
             HashSet::new(), // listing database doesn't support server-side queries
@@ -1383,12 +1388,27 @@ mod tests {
         (tempdir, db)
     }
 
+    #[test]
+    fn preserves_caller_owned_session_provider() {
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let provider = registry.get_provider("file").unwrap();
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+
+        let (selected, owns_session) = session_or_default(Some(session.clone()));
+
+        assert!(!owns_session);
+        assert!(Arc::ptr_eq(&selected, &session));
+        assert!(Arc::ptr_eq(
+            &registry.get_provider("file").unwrap(),
+            &provider
+        ));
+    }
+
     #[tokio::test]
     async fn test_listing_database_with_prefixed_file_store() {
         let tempdir = tempdir().unwrap();
         let uri = tempdir.path().to_str().unwrap();
-        let session = Arc::new(lance::session::Session::default());
-        register_windows_file_store(&session.store_registry());
+        let session = crate::io::object_store::new_prefixed_file_session();
 
         let request = ConnectRequest {
             uri: uri.to_string(),
@@ -1683,6 +1703,65 @@ mod tests {
         let cloned_count = cloned_table.count_rows(None).await.unwrap();
         assert_eq!(source_count, cloned_count);
         assert_eq!(source_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_across_databases_uses_target_store() {
+        let source_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let source_request = ConnectRequest {
+            uri: source_dir.path().to_string_lossy().into_owned(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let target_request = ConnectRequest {
+            uri: target_dir.path().to_string_lossy().into_owned(),
+            ..source_request.clone()
+        };
+        let source_db = ListingDatabase::connect_with_options(&source_request)
+            .await
+            .unwrap();
+        let target_db = ListingDatabase::connect_with_options(&target_request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        source_db
+            .create_table(CreateTableRequest {
+                name: "source".to_string(),
+                namespace_path: vec![],
+                data: Box::new(
+                    RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+                        .unwrap(),
+                ),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        let target = target_db
+            .clone_table(CloneTableRequest {
+                target_table_name: "target".to_string(),
+                target_namespace_path: vec![],
+                source_uri: source_db.table_uri("source").unwrap(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(target.count_rows(None).await.unwrap(), 3);
+        assert!(target_dir.path().join("target.lance").exists());
+        assert!(!source_dir.path().join("target.lance").exists());
     }
 
     #[tokio::test]

@@ -38,9 +38,9 @@ pub mod io_tracking;
 /// UNC-share root keeps the UNC authority in the filesystem prefix and exposes
 /// only paths relative to that prefix to `object_store`.
 ///
-/// The returned Lance store deliberately uses the `lancedb-file` scheme.
-/// The regular `file` scheme enables optimized readers and writers that bypass
-/// the configured object store and would reintroduce the broken UNC conversion.
+/// Extracted paths retain the native drive or UNC-share root as a structural
+/// first component. This keeps Lance's local classification and optimized I/O
+/// safe without recovering absolute path provenance from ambiguous path text.
 #[cfg(any(windows, test))]
 #[derive(Debug)]
 struct PrefixedFileStoreProvider;
@@ -95,18 +95,21 @@ impl PrefixedFileStoreProvider {
         Ok((root, Path::parse(relative)?))
     }
 
-    /// Select the immutable path scope shared by a database and its tables.
+    /// Preserve the native filesystem root as a structural path component.
     ///
-    /// LanceDB table URIs end in `.lance`. Their parent is the listing database
-    /// path, so using it as the store scope lets opens and shallow clones reuse
-    /// the connection store while databases elsewhere on the same drive or UNC
-    /// share retain distinct cache identities.
-    fn store_scope_path(path: &Path) -> Path {
-        if path.extension() == Some("lance") {
-            path.parent().unwrap_or_default()
-        } else {
-            path.clone()
+    /// `object_store::Path::from_absolute_path` converts a UNC path to its URL
+    /// path and loses the server. Keeping `C:` or `\\server\share` as the first
+    /// component distinguishes an absolute path from every relative path while
+    /// remaining directly usable by Windows filesystem APIs.
+    fn rooted_path(root: &std::path::Path, relative: &Path) -> LanceResult<Path> {
+        let root = root.to_string_lossy();
+        let root = root.trim_end_matches(['/', '\\']);
+        if root.is_empty() {
+            return Ok(relative.clone());
         }
+        Ok(relative
+            .parts()
+            .fold(Path::parse(root)?, |path, part| path.join(part)))
     }
 }
 
@@ -123,18 +126,16 @@ impl PrefixedFileStoreProvider {
 struct RootedLocalFileSystem {
     inner: Arc<LocalFileSystem>,
     root: std::path::PathBuf,
-    base_path: Path,
     absolute_alias: Path,
 }
 
 #[cfg(any(windows, test))]
 impl RootedLocalFileSystem {
-    fn new(root: std::path::PathBuf, base_path: Path) -> LanceResult<Self> {
-        let absolute_alias = Path::from_absolute_path(&root)?;
+    fn new(root: std::path::PathBuf) -> LanceResult<Self> {
+        let absolute_alias = PrefixedFileStoreProvider::rooted_path(&root, &Path::default())?;
         Ok(Self {
             inner: Arc::new(LocalFileSystem::new_with_prefix(&root)?),
             root,
-            base_path,
             absolute_alias,
         })
     }
@@ -150,17 +151,7 @@ impl RootedLocalFileSystem {
         let Some(suffix) = path.prefix_match(&self.absolute_alias) else {
             return path.clone();
         };
-        let suffix = Self::path_from_parts(suffix);
-
-        // A UNC absolute path loses its server when converted to an object-store
-        // path, leaving `share/<path>`. Each store is cached for exactly one base
-        // path, so only strip that ambiguous share segment when the remainder is
-        // inside this store's immutable base.
-        if self.base_path.as_ref().is_empty() || suffix.prefix_matches(&self.base_path) {
-            suffix
-        } else {
-            path.clone()
-        }
+        Self::path_from_parts(suffix)
     }
 
     fn restore_prefix(&self, path: Path, requested: &Path, normalized: &Path) -> Path {
@@ -276,11 +267,17 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         base_path: Url,
         params: &ObjectStoreParams,
     ) -> LanceResult<lance::io::ObjectStore> {
-        let (root, relative_path) = Self::root_and_relative_path(&base_path)?;
-        let store_scope = Self::store_scope_path(&relative_path);
-        let raw_store: Arc<dyn ObjectStore> =
-            Arc::new(RootedLocalFileSystem::new(root, store_scope)?);
-        let location = Url::parse("lancedb-file:///").expect("static URL must be valid");
+        let (root, _) = Self::root_and_relative_path(&base_path)?;
+        let raw_store: Arc<dyn ObjectStore> = Arc::new(RootedLocalFileSystem::new(root)?);
+        // `file` keeps local planning and manifest behavior. With a custom
+        // wrapper, `file+uring` is also classified as local but (on Windows)
+        // routes readers and writers through the wrapped object store instead
+        // of the native fast path.
+        let location = if params.object_store_wrapper.is_some() {
+            Url::parse("file+uring:///").expect("static URL must be valid")
+        } else {
+            Url::parse("file:///").expect("static URL must be valid")
+        };
         let storage_options =
             StorageOptions::new(params.storage_options().cloned().unwrap_or_default());
 
@@ -305,7 +302,8 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
     }
 
     fn extract_path(&self, url: &Url) -> LanceResult<Path> {
-        Self::root_and_relative_path(url).map(|(_, path)| path)
+        let (root, relative) = Self::root_and_relative_path(url)?;
+        Self::rooted_path(&root, &relative)
     }
 
     fn calculate_object_store_prefix(
@@ -313,23 +311,34 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         url: &Url,
         _storage_options: Option<&std::collections::HashMap<String, String>>,
     ) -> LanceResult<String> {
-        let (root, path) = Self::root_and_relative_path(url)?;
+        let (root, _) = Self::root_and_relative_path(url)?;
         let root = root.canonicalize()?;
-        let store_scope = Self::store_scope_path(&path);
-        // Scope the registry cache to one database path. A root-wide store
-        // cannot distinguish a legitimate relative path beginning with a UNC
-        // share name from the absolute alias produced by the default file
-        // provider, while a table-wide store cannot service sibling targets
-        // during shallow clone.
-        Ok(format!("file${}${store_scope}", root.display()))
+        // One store per drive or UNC share keeps registry and metrics
+        // cardinality bounded. Absolute-vs-relative provenance is carried by
+        // the extracted path instead of the cache key.
+        Ok(format!("file${}", root.display()))
     }
 }
 
-/// Replace Lance's default Windows file provider with one that preserves UNC
-/// roots by using `LocalFileSystem::new_with_prefix`.
-#[cfg(any(windows, test))]
-pub(crate) fn register_windows_file_store(registry: &Arc<ObjectStoreRegistry>) {
-    registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+/// Build LanceDB's default session with the Windows file fallback installed.
+///
+/// Callers that provide a Session retain its registry unchanged.
+pub(crate) fn new_default_session() -> Arc<lance::session::Session> {
+    let session = Arc::new(lance::session::Session::default());
+    #[cfg(windows)]
+    session
+        .store_registry()
+        .insert("file", Arc::new(PrefixedFileStoreProvider));
+    session
+}
+
+#[cfg(test)]
+pub(crate) fn new_prefixed_file_session() -> Arc<lance::session::Session> {
+    let session = Arc::new(lance::session::Session::default());
+    session
+        .store_registry()
+        .insert("file", Arc::new(PrefixedFileStoreProvider));
+    session
 }
 
 #[cfg(test)]
@@ -364,8 +373,8 @@ mod prefixed_file_store_test {
         let registry = Arc::new(ObjectStoreRegistry::default());
         registry.insert("file", Arc::new(PrefixedFileStoreProvider));
 
-        // A new table is relative to its filesystem root. The non-`file`
-        // scheme proves Lance will not bypass this prefixed store.
+        // The extracted path remains absolute for Lance's local fast paths,
+        // while the inner store strips the structural root before delegation.
         let (store, base_path) = lance::io::ObjectStore::from_uri_and_params(
             registry.clone(),
             table_url.as_str(),
@@ -373,7 +382,9 @@ mod prefixed_file_store_test {
         )
         .await
         .unwrap();
-        assert_eq!(store.scheme(), "lancedb-file");
+        assert_eq!(store.scheme(), "file");
+        assert!(store.is_local());
+        assert!(!store.is_cloud());
         assert_eq!(store.block_size(), 4 * 1024);
         assert_eq!(store.io_parallelism(), DEFAULT_LOCAL_IO_PARALLELISM);
         assert_eq!(base_path.filename(), Some("test.lance"));
@@ -426,6 +437,9 @@ mod prefixed_file_store_test {
                 .await
                 .unwrap();
         assert_eq!(wrapper.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(store.scheme(), "file+uring");
+        assert!(store.is_local());
+        assert!(!store.is_cloud());
 
         store
             .inner
@@ -441,7 +455,7 @@ mod prefixed_file_store_test {
     }
 
     #[tokio::test]
-    async fn scopes_store_cache_to_requested_base_path() {
+    async fn reuses_store_cache_across_database_paths() {
         let tempdir = tempfile::tempdir().unwrap();
         let first_url = Url::from_directory_path(tempdir.path().join("database")).unwrap();
         let second_url = Url::from_directory_path(tempdir.path().join("share/database")).unwrap();
@@ -463,8 +477,9 @@ mod prefixed_file_store_test {
         .await
         .unwrap();
 
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(registry.stats().misses, 2);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(registry.stats().misses, 1);
+        assert_eq!(registry.stats().hits, 1);
     }
 
     #[tokio::test]
@@ -509,21 +524,17 @@ mod prefixed_file_store_test {
     #[test]
     fn normalizes_absolute_drive_and_unc_aliases() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut drive_store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("Users/db"))
-                .unwrap();
+        let mut drive_store = RootedLocalFileSystem::new(tempdir.path().to_path_buf()).unwrap();
         drive_store.absolute_alias = Path::from("C:");
         assert_eq!(
             drive_store.normalize(&Path::from("C:/Users/db/table.lance")),
             Path::from("Users/db/table.lance")
         );
 
-        let mut unc_store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/db"))
-                .unwrap();
-        unc_store.absolute_alias = Path::from("share");
+        let mut unc_store = RootedLocalFileSystem::new(tempdir.path().to_path_buf()).unwrap();
+        unc_store.absolute_alias = Path::parse(r"\\server\share").unwrap();
         assert_eq!(
-            unc_store.normalize(&Path::from("share/share/db/table.lance")),
+            unc_store.normalize(&Path::parse(r"\\server\share/share/db/table.lance").unwrap()),
             Path::from("share/db/table.lance")
         );
         assert_eq!(
@@ -535,15 +546,15 @@ mod prefixed_file_store_test {
     #[test]
     fn relative_unc_alias_does_not_cross_database_roots() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/database"))
-                .unwrap();
-        store.absolute_alias = Path::from("share");
+        let mut store = RootedLocalFileSystem::new(tempdir.path().to_path_buf()).unwrap();
+        store.absolute_alias = Path::parse(r"\\server\share").unwrap();
 
         let relative = Path::from("share/database/table.lance/marker");
         assert_eq!(store.normalize(&relative), relative);
         assert_eq!(
-            store.normalize(&Path::from("share/share/database/table.lance/marker")),
+            store.normalize(
+                &Path::parse(r"\\server\share/share/database/table.lance/marker").unwrap()
+            ),
             relative
         );
     }
@@ -551,11 +562,9 @@ mod prefixed_file_store_test {
     #[tokio::test]
     async fn routes_unc_alias_lifecycle_through_the_prefix() {
         let tempdir = tempfile::tempdir().unwrap();
-        let mut store =
-            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), Path::from("share/db"))
-                .unwrap();
-        store.absolute_alias = Path::from("share");
-        let table = Path::from("share/share/db/test.lance");
+        let mut store = RootedLocalFileSystem::new(tempdir.path().to_path_buf()).unwrap();
+        store.absolute_alias = Path::parse(r"\\server\share").unwrap();
+        let table = Path::parse(r"\\server\share/share/db/test.lance").unwrap();
         let marker = table.clone().join("marker");
 
         store
@@ -602,6 +611,26 @@ mod prefixed_file_store_test {
         .unwrap();
         assert_eq!(root, std::path::PathBuf::from(r"\\server\share\"));
         assert_eq!(path, Path::from("database"));
+    }
+
+    #[test]
+    fn preserves_drive_and_unc_roots_in_extracted_paths() {
+        assert_eq!(
+            PrefixedFileStoreProvider::rooted_path(
+                std::path::Path::new(r"C:\"),
+                &Path::from("database/table.lance")
+            )
+            .unwrap(),
+            Path::from("C:/database/table.lance")
+        );
+        assert_eq!(
+            PrefixedFileStoreProvider::rooted_path(
+                std::path::Path::new(r"\\server\share\"),
+                &Path::from("database/table.lance")
+            )
+            .unwrap(),
+            Path::parse(r"\\server\share/database/table.lance").unwrap()
+        );
     }
 }
 
