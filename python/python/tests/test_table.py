@@ -1824,6 +1824,33 @@ def test_add_nullable_struct_with_none(mem_db: DBConnection):
     assert result.column("data").to_pylist() == [{"x": 1.0}, None]
 
 
+def test_read_mostly_null_list_v2_2_page_boundary(tmp_path):
+    # Regression test for #3194. This row/value count crosses a v2.2 structural
+    # encoding page boundary where Lance 3.0.0 sliced repetition/definition
+    # levels by row offset and decoded child arrays at different lengths.
+    num_rows = 64_885
+    num_values = 217
+    list_type = pa.list_(pa.float32())
+    source = pa.table(
+        {
+            "id": np.arange(num_rows, dtype=np.int64),
+            "coords": pa.array(
+                [[1.0, 2.0, 3.0, 4.0]] * num_values + [None] * (num_rows - num_values),
+                type=list_type,
+            ),
+        }
+    )
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+    table = db.create_table("test_sparse_nullable_list", data=source)
+
+    result = table.search().select(["id", "coords"]).limit(num_rows).to_arrow()
+
+    assert result.equals(source)
+
+
 def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
