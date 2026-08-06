@@ -4035,7 +4035,10 @@ def _handle_bad_vectors(
             for vector_column in vector_columns:
                 dim = vector_column["expected_dim"]
                 if target_schema is not None and dim is None:
-                    dim = _infer_vector_dim(batch[vector_column["name"]])
+                    dim = _infer_vector_column_dim(
+                        batch[vector_column["name"]],
+                        vector_column["is_multivector"],
+                    )
                     pending_dims.append(vector_column)
                 batch = _handle_bad_vector_column(
                     batch,
@@ -4044,11 +4047,13 @@ def _handle_bad_vectors(
                     fill_value=fill_value,
                     expected_dim=dim,
                     expected_value_type=vector_column["expected_value_type"],
+                    is_multivector=vector_column["is_multivector"],
                 )
             for vector_column in pending_dims:
                 if vector_column["expected_dim"] is None:
-                    vector_column["expected_dim"] = _infer_vector_dim(
-                        batch[vector_column["name"]]
+                    vector_column["expected_dim"] = _infer_vector_column_dim(
+                        batch[vector_column["name"]],
+                        vector_column["is_multivector"],
                     )
             if batch.schema.equals(output_schema, check_metadata=True):
                 yield batch
@@ -4074,22 +4079,30 @@ def _find_vector_columns(
     if target_schema is None:
         vector_columns = []
         for field in reader_schema:
-            named_vector_col = (
-                _is_list_like(field.type)
-                and pa.types.is_floating(field.type.value_type)
-                and field.name == VECTOR_COLUMN_NAME
+            is_multivector = _is_multivector_type(field.type)
+            is_fixed_multivector = is_multivector and pa.types.is_fixed_size_list(
+                field.type.value_type
             )
+            named_vector_col = (
+                _is_float_vector_type(field.type) or is_multivector
+            ) and field.name == VECTOR_COLUMN_NAME
             likely_vector_col = (
                 pa.types.is_fixed_size_list(field.type)
                 and pa.types.is_floating(field.type.value_type)
                 and (field.type.list_size >= 10)
             )
-            if named_vector_col or likely_vector_col:
+            if named_vector_col or likely_vector_col or is_fixed_multivector:
+                vector_type = field.type.value_type if is_multivector else field.type
                 vector_columns.append(
                     {
                         "name": field.name,
-                        "expected_dim": None,
-                        "expected_value_type": None,
+                        "expected_dim": (
+                            vector_type.list_size
+                            if pa.types.is_fixed_size_list(vector_type)
+                            else None
+                        ),
+                        "expected_value_type": vector_type.value_type,
+                        "is_multivector": is_multivector,
                     }
                 )
         return vector_columns
@@ -4103,9 +4116,8 @@ def _find_vector_columns(
     for field in target_schema:
         if field.name not in reader_column_names:
             continue
-        if not _is_list_like(field.type) or not pa.types.is_floating(
-            field.type.value_type
-        ):
+        is_multivector = _is_multivector_type(field.type)
+        if not _is_float_vector_type(field.type) and not is_multivector:
             continue
 
         reader_field = reader_schema.field(field.name)
@@ -4120,16 +4132,18 @@ def _find_vector_columns(
             and reader_field.type.list_size >= 10
         )
 
-        if named_vector_col or typed_fixed_vector_col:
+        if named_vector_col or typed_fixed_vector_col or is_multivector:
+            vector_type = field.type.value_type if is_multivector else field.type
             vector_columns.append(
                 {
                     "name": field.name,
                     "expected_dim": (
-                        field.type.list_size
-                        if pa.types.is_fixed_size_list(field.type)
+                        vector_type.list_size
+                        if pa.types.is_fixed_size_list(vector_type)
                         else None
                     ),
-                    "expected_value_type": field.type.value_type,
+                    "expected_value_type": vector_type.value_type,
+                    "is_multivector": is_multivector,
                 }
             )
 
@@ -4180,6 +4194,7 @@ def _handle_bad_vector_column(
     fill_value: float = 0.0,
     expected_dim: Optional[int] = None,
     expected_value_type: Optional[pa.DataType] = None,
+    is_multivector: bool = False,
 ) -> pa.RecordBatch:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
@@ -4200,6 +4215,8 @@ def _handle_bad_vector_column(
     vec_arr = data[vector_column_name]
     if not _is_list_like(vec_arr.type):
         return data
+    if is_multivector and not _is_multivector_type(vec_arr.type):
+        return data
 
     if (
         expected_dim is not None
@@ -4216,12 +4233,21 @@ def _handle_bad_vector_column(
         vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(expected_value_type))
         data = data.set_column(position, vector_column_name, vec_arr)
 
-    if pa.types.is_floating(vec_arr.type.value_type):
+    if is_multivector or pa.types.is_floating(vec_arr.type.value_type):
         has_nan = has_nan_values(vec_arr)
     else:
         has_nan = pa.array([False] * len(vec_arr))
 
-    if expected_dim is not None:
+    if is_multivector:
+        dim = (
+            expected_dim
+            if expected_dim is not None
+            else _infer_vector_column_dim(vec_arr, True)
+        )
+        if dim is None:
+            return data
+        has_wrong_dim = _multivector_has_wrong_dim(vec_arr, dim)
+    elif expected_dim is not None:
         dim = expected_dim
     elif pa.types.is_fixed_size_list(vec_arr.type):
         dim = vec_arr.type.list_size
@@ -4230,15 +4256,16 @@ def _handle_bad_vector_column(
         if dim is None:
             return data
 
-    is_null = pc.is_null(vec_arr)
-    # pc.list_value_length returns null for null list entries, so
-    # pc.not_equal(null, dim) also returns null. Use or_kleene so that
-    # True OR null = True (Kleene three-valued logic), ensuring null vectors
-    # are counted as wrong-dim.
-    has_wrong_dim = pc.or_kleene(
-        is_null,
-        pc.not_equal(pc.list_value_length(vec_arr), dim),
-    )
+    if not is_multivector:
+        is_null = pc.is_null(vec_arr)
+        # pc.list_value_length returns null for null list entries, so
+        # pc.not_equal(null, dim) also returns null. Use or_kleene so that
+        # True OR null = True (Kleene three-valued logic), ensuring null vectors
+        # are counted as wrong-dim.
+        has_wrong_dim = pc.or_kleene(
+            is_null,
+            pc.not_equal(pc.list_value_length(vec_arr), dim),
+        )
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
 
@@ -4273,7 +4300,10 @@ def _handle_bad_vector_column(
                 raise ValueError(
                     "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
                 )
-            vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
+            if is_multivector:
+                vec_arr = _fill_bad_multivector_values(vec_arr, dim, fill_value)
+            else:
+                vec_arr = _fill_bad_vector_values(vec_arr, dim, fill_value)
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
@@ -4325,17 +4355,60 @@ def _fill_bad_vector_values(
     return filled.cast(arr.type)
 
 
+def _fill_bad_multivector_values(
+    arr: Union[pa.Array, pa.ChunkedArray], dim: int, fill_value: float
+) -> pa.Array:
+    if not isinstance(arr, pa.ChunkedArray):
+        arr = pa.chunked_array([arr])
+    arr = arr.combine_chunks()
+
+    filled_vectors = _fill_bad_vector_values(arr.values, dim, fill_value)
+    parent_nulls = pc.is_null(arr)
+    if pa.types.is_large_list(arr.type):
+        filled = pa.LargeListArray.from_arrays(
+            arr.offsets, filled_vectors, mask=parent_nulls
+        )
+    else:
+        filled = pa.ListArray.from_arrays(
+            arr.offsets, filled_vectors, mask=parent_nulls
+        )
+    return filled.cast(arr.type)
+
+
+def _multivector_has_wrong_dim(
+    arr: Union[pa.Array, pa.ChunkedArray], dim: int
+) -> pa.BooleanArray:
+    if isinstance(arr, pa.ChunkedArray):
+        results = [_multivector_has_wrong_dim(chunk, dim) for chunk in arr.chunks]
+        return pa.concat_arrays(results) if results else pa.array([], type=pa.bool_())
+
+    vectors = arr.flatten()
+    vector_is_wrong = pc.or_kleene(
+        pc.is_null(vectors),
+        pc.not_equal(pc.list_value_length(vectors), dim),
+    )
+    parent_indices = pc.list_parent_indices(arr)
+    wrong_parent_indices = pc.unique(pc.filter(parent_indices, vector_is_wrong))
+    indices = pa.array(range(len(arr)), type=pa.uint32())
+    return pc.or_(pc.is_null(arr), pc.is_in(indices, wrong_parent_indices))
+
+
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
     if isinstance(arr, pa.ChunkedArray):
-        values = pa.chunked_array([chunk.flatten() for chunk in arr.chunks])
-    else:
-        values = arr.flatten()
-    if pa.types.is_float16(values.type):
+        results = [has_nan_values(chunk) for chunk in arr.chunks]
+        return pa.concat_arrays(results) if results else pa.array([], type=pa.bool_())
+
+    values = arr.flatten()
+    if _is_list_like(values.type):
+        values_has_nan = has_nan_values(values)
+    elif pa.types.is_float16(values.type):
         # is_nan isn't yet implemented for f16, so we cast to f32
         # https://github.com/apache/arrow/issues/45083
         values_has_nan = pc.is_nan(values.cast(pa.float32()))
-    else:
+    elif pa.types.is_floating(values.type):
         values_has_nan = pc.is_nan(values)
+    else:
+        return pa.array([False] * len(arr))
     values_indices = pc.list_parent_indices(arr)
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
@@ -4348,6 +4421,16 @@ def _is_list_like(data_type: pa.DataType) -> bool:
         or pa.types.is_large_list(data_type)
         or pa.types.is_fixed_size_list(data_type)
     )
+
+
+def _is_float_vector_type(data_type: pa.DataType) -> bool:
+    return _is_list_like(data_type) and pa.types.is_floating(data_type.value_type)
+
+
+def _is_multivector_type(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_list(data_type) or pa.types.is_large_list(data_type)
+    ) and _is_float_vector_type(data_type.value_type)
 
 
 def _merge_metadata(*metadata_dicts: Optional[dict]) -> dict:
@@ -4439,6 +4522,16 @@ def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:
     if len(lengths) == 0:
         return None
     return pc.mode(lengths)[0].as_py()["mode"]
+
+
+def _infer_vector_column_dim(
+    arr: Union[pa.Array, pa.ChunkedArray], is_multivector: bool
+) -> Optional[int]:
+    if not is_multivector:
+        return _infer_vector_dim(arr)
+    if isinstance(arr, pa.ChunkedArray):
+        arr = arr.combine_chunks()
+    return _infer_vector_dim(arr.flatten())
 
 
 def _validate_schema(schema: pa.Schema):

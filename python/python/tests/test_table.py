@@ -1710,6 +1710,19 @@ def test_create_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+def test_create_with_nans_in_multivectors(mem_db: DBConnection):
+    multivector_type = pa.list_(pa.list_(pa.float32(), 128))
+    schema = pa.schema(
+        [pa.field("filename", pa.string()), pa.field("vector", multivector_type)]
+    )
+    vector = [0.1] * 128
+    vector[-1] = np.nan
+    data = [{"filename": "img1.jpg", "vector": [vector]}]
+
+    with pytest.raises(RuntimeError, match="Vector column 'vector' has NaNs"):
+        mem_db.create_table("nan_multivector", data=data, schema=schema)
+
+
 def test_add_with_nans(mem_db: DBConnection):
     schema = pa.schema(
         [

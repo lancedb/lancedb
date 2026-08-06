@@ -258,6 +258,7 @@ mod tests {
         FixedSizeListArray, Float32Array, Int32Array, LargeStringArray, ListArray, RecordBatch,
         RecordBatchIterator, record_batch,
     };
+    use arrow_buffer::OffsetBuffer;
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance::dataset::{WriteMode, WriteParams};
@@ -883,6 +884,63 @@ mod tests {
 
         let row_count = table.count_rows(None).await.unwrap();
         assert_eq!(row_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_nan_multivectors() {
+        let vector_type =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", vector_type.clone(), true))),
+            false,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("nan_multivector_test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let vectors = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            4,
+            Arc::new(Float32Array::from(vec![
+                0.1,
+                0.2,
+                0.3,
+                0.4,
+                0.5,
+                f32::NAN,
+                0.7,
+                0.8,
+            ])),
+            None,
+        )
+        .unwrap();
+        let multivectors = ListArray::try_new(
+            Arc::new(Field::new("item", vector_type, true)),
+            OffsetBuffer::from_lengths([2]),
+            Arc::new(vectors),
+            None,
+        )
+        .unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(multivectors)]).unwrap();
+
+        let err = table.add(batch.clone()).execute().await.unwrap_err();
+        assert!(
+            err.to_string().contains("NaN"),
+            "Expected error mentioning NaN values, but got: {err:?}"
+        );
+
+        table
+            .add(batch)
+            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 
     #[tokio::test]

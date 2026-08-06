@@ -400,6 +400,83 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
     assert output["vector"].combine_chunks() == expected
 
 
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_handle_bad_multivectors_nan(on_bad_vectors):
+    multivector_type = pa.list_(pa.list_(pa.float32(), 2))
+    vectors = pa.array(
+        [
+            [[1.0, float("nan")], [2.0, 3.0]],
+            [[4.0, 5.0]],
+        ],
+        type=multivector_type,
+    )
+    data = pa.table({"vector": vectors})
+
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="Vector column 'vector' has NaNs"):
+            _handle_bad_vectors(data.to_reader()).read_all()
+        return
+
+    output = _handle_bad_vectors(
+        data.to_reader(),
+        on_bad_vectors=on_bad_vectors,
+        fill_value=42.0,
+    ).read_all()
+
+    if on_bad_vectors == "drop":
+        expected = pa.array([[[4.0, 5.0]]], type=multivector_type)
+    elif on_bad_vectors == "fill":
+        expected = pa.array(
+            [[[1.0, 42.0], [2.0, 3.0]], [[4.0, 5.0]]],
+            type=multivector_type,
+        )
+    else:
+        expected = pa.array([None, [[4.0, 5.0]]], type=multivector_type)
+
+    assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_handle_bad_variable_multivectors(on_bad_vectors):
+    target_type = pa.list_(pa.list_(pa.float32(), 2))
+    vectors = pa.array(
+        [
+            [[1.0, float("nan")], [2.0, 3.0]],
+            [[4.0]],
+            [[5.0, 6.0]],
+        ]
+    )
+    data = pa.table({"vector": vectors})
+
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="variable length vectors"):
+            _handle_bad_vectors(
+                data.to_reader(),
+                target_schema=pa.schema({"vector": target_type}),
+            ).read_all()
+        return
+
+    output = _handle_bad_vectors(
+        data.to_reader(),
+        on_bad_vectors=on_bad_vectors,
+        fill_value=42.0,
+        target_schema=pa.schema({"vector": target_type}),
+    ).read_all()
+
+    if on_bad_vectors == "drop":
+        expected = [[[5.0, 6.0]]]
+    elif on_bad_vectors == "fill":
+        expected = [
+            [[1.0, 42.0], [2.0, 3.0]],
+            [[4.0, 42.0]],
+            [[5.0, 6.0]],
+        ]
+    else:
+        expected = [None, None, [[5.0, 6.0]]]
+
+    assert output["vector"].combine_chunks().to_pylist() == expected
+
+
 def test_handle_bad_vectors_noop():
     # ChunkedArray should be preserved as-is
     vector = pa.chunked_array(

@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use arrow_array::{Array, FixedSizeListArray};
+use arrow_array::{Array, FixedSizeListArray, ListArray};
 use arrow_schema::{DataType, Field, FieldRef};
 use datafusion_common::config::ConfigOptions;
 use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
@@ -19,16 +19,20 @@ use crate::{Error, Result};
 static REJECT_NAN_UDF: LazyLock<Arc<datafusion_expr::ScalarUDF>> =
     LazyLock::new(|| Arc::new(datafusion_expr::ScalarUDF::from(RejectNanUdf::new())));
 
-/// Returns true if the field is a vector column: FixedSizeList<Float16/32/64>.
+/// Returns true if the field is a vector or multivector column.
 fn is_vector_field(field: &Field) -> bool {
-    if let DataType::FixedSizeList(child, _) = field.data_type() {
-        matches!(
-            child.data_type(),
-            DataType::Float16 | DataType::Float32 | DataType::Float64
-        )
-    } else {
-        false
+    fn is_vector_data_type(data_type: &DataType) -> bool {
+        match data_type {
+            DataType::FixedSizeList(child, _) => matches!(
+                child.data_type(),
+                DataType::Float16 | DataType::Float32 | DataType::Float64
+            ),
+            DataType::List(child) => is_vector_data_type(child.data_type()),
+            _ => false,
+        }
     }
+
+    is_vector_data_type(field.data_type())
 }
 
 /// Wraps the input plan with a projection that checks vector columns for NaN values.
@@ -69,8 +73,8 @@ pub fn reject_nan_vectors(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn Execu
     Ok(Arc::new(projection))
 }
 
-/// A scalar UDF that passes through FixedSizeList arrays unchanged, but errors
-/// if any float values in the list are NaN.
+/// A scalar UDF that passes through vector arrays unchanged, but errors if any
+/// float values in the vector or multivector are NaN.
 #[derive(Debug, Hash, PartialEq, Eq)]
 struct RejectNanUdf {
     signature: Signature,
@@ -113,44 +117,54 @@ impl ScalarUDFImpl for RejectNanUdf {
 }
 
 fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
-    let fsl = array
-        .as_any()
-        .downcast_ref::<FixedSizeListArray>()
-        .ok_or_else(|| {
-            datafusion_common::DataFusionError::Internal(
-                "reject_nan expected FixedSizeList".to_string(),
-            )
-        })?;
-
-    // Only inspect elements that are both in a valid parent row and non-null
-    // themselves. Values backing null parent rows or null child elements may
-    // contain garbage (including NaN) per the Arrow spec.
-    let has_nan = (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
-        let row = fsl.value(i);
-        match row.data_type() {
-            DataType::Float16 => row
+    fn contains_nan(array: &dyn Array) -> datafusion_common::Result<bool> {
+        match array.data_type() {
+            DataType::Float16 => Ok(array
                 .as_any()
                 .downcast_ref::<arrow_array::Float16Array>()
                 .unwrap()
                 .iter()
-                .any(|v| v.is_some_and(|v| v.is_nan())),
-            DataType::Float32 => row
+                .any(|v| v.is_some_and(|v| v.is_nan()))),
+            DataType::Float32 => Ok(array
                 .as_any()
                 .downcast_ref::<arrow_array::Float32Array>()
                 .unwrap()
                 .iter()
-                .any(|v| v.is_some_and(|v| v.is_nan())),
-            DataType::Float64 => row
+                .any(|v| v.is_some_and(|v| v.is_nan()))),
+            DataType::Float64 => Ok(array
                 .as_any()
                 .downcast_ref::<arrow_array::Float64Array>()
                 .unwrap()
                 .iter()
-                .any(|v| v.is_some_and(|v| v.is_nan())),
-            _ => false,
+                .any(|v| v.is_some_and(|v| v.is_nan()))),
+            DataType::FixedSizeList(_, _) => {
+                let lists = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+                for i in (0..lists.len()).filter(|i| lists.is_valid(*i)) {
+                    if contains_nan(lists.value(i).as_ref())? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            DataType::List(_) => {
+                let lists = array.as_any().downcast_ref::<ListArray>().unwrap();
+                for i in (0..lists.len()).filter(|i| lists.is_valid(*i)) {
+                    if contains_nan(lists.value(i).as_ref())? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            data_type => Err(datafusion_common::DataFusionError::Internal(format!(
+                "reject_nan expected a vector or multivector, got {data_type}"
+            ))),
         }
-    });
+    }
 
-    if has_nan {
+    // Only inspect elements that are both in a valid parent row and non-null
+    // themselves. Values backing null parent rows or null child elements may
+    // contain garbage (including NaN) per the Arrow spec.
+    if contains_nan(array)? {
         return Err(datafusion_common::DataFusionError::ArrowError(
             Box::new(arrow_schema::ArrowError::ComputeError(
                 "Vector column contains NaN values".to_string(),
@@ -166,6 +180,7 @@ fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
 mod tests {
     use super::*;
     use arrow_array::Float32Array;
+    use arrow_buffer::OffsetBuffer;
 
     #[test]
     fn test_passes_clean_vectors() {
@@ -189,6 +204,46 @@ mod tests {
         )
         .unwrap();
         assert!(check_no_nans(&fsl).is_err());
+    }
+
+    #[test]
+    fn test_rejects_nan_multivectors() {
+        let vectors = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            2,
+            Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, f32::NAN])),
+            None,
+        )
+        .unwrap();
+        let multivectors = ListArray::try_new(
+            Arc::new(Field::new("item", vectors.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([2]),
+            Arc::new(vectors),
+            None,
+        )
+        .unwrap();
+
+        assert!(check_no_nans(&multivectors).is_err());
+    }
+
+    #[test]
+    fn test_skips_null_multivector_rows() {
+        let vectors = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            2,
+            Arc::new(Float32Array::from(vec![f32::NAN, f32::NAN, 1.0, 2.0])),
+            None,
+        )
+        .unwrap();
+        let multivectors = ListArray::try_new(
+            Arc::new(Field::new("item", vectors.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([1, 1]),
+            Arc::new(vectors),
+            Some(vec![false, true].into()),
+        )
+        .unwrap();
+
+        assert!(check_no_nans(&multivectors).is_ok());
     }
 
     #[test]
@@ -252,6 +307,15 @@ mod tests {
         assert!(is_vector_field(&Field::new(
             "v",
             DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 4),
+            false,
+        )));
+        assert!(is_vector_field(&Field::new(
+            "v",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4,),
+                true,
+            ))),
             false,
         )));
         assert!(!is_vector_field(&Field::new("id", DataType::Int32, false)));
