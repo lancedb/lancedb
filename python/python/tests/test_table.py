@@ -2561,6 +2561,31 @@ def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
     assert "s-2" in expected["text"].to_pylist()
 
 
+def test_create_f16_table(mem_db: DBConnection):
+    class MyTable(LanceModel):
+        text: str
+        vector: Vector(32, value_type=pa.float16())
+
+    rng = np.random.default_rng(42)
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
+        }
+    )
+    table = mem_db.create_table(
+        "f16_tbl",
+        schema=MyTable,
+    )
+    table.add(df)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_add_with_embedding_function(mem_db: DBConnection):
     emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
 
