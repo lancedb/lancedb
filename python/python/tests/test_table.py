@@ -309,6 +309,21 @@ async def test_update_async(mem_db_async: AsyncConnection):
     assert await table.count_rows("id == 10") == 1
 
 
+@pytest.mark.asyncio
+async def test_update_expr_filter_literals_async(mem_db_async: AsyncConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = await mem_db_async.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = await table.update({"result": value}, where=col("field") == value)
+        assert update_res.rows_updated == 1
+
+    assert (await table.to_arrow())["result"].to_pylist() == values
+
+
 def test_create_table(mem_db: DBConnection):
     schema = pa.schema(
         {
@@ -2194,6 +2209,20 @@ def test_update(mem_db: DBConnection):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_expr_filter_literals(mem_db: DBConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = mem_db.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = table.update(where=col("field") == value, values={"result": value})
+        assert update_res.rows_updated == 1
+
+    assert table.to_arrow()["result"].to_pylist() == values
 
 
 def test_update_types(mem_db: DBConnection):
