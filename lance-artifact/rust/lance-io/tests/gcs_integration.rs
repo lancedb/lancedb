@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+// SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 //! These integration tests can only be run against a real GCS bucket.  
 //! They do not work against any local emulator right now.
