@@ -746,6 +746,9 @@ impl Table {
 
     #[allow(private_interfaces)]
     pub fn delete(self_: PyRef<'_, Self>, condition: PredicateArg) -> PyResult<Bound<'_, PyAny>> {
+        // Do not hold the Python borrow across the await.  The cloned Rust table
+        // handle is thread-safe and allows deletes on the same Python table to
+        // run concurrently without PyO3 reporting "Already borrowed".
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = match &condition {
