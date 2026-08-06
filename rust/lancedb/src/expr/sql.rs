@@ -30,6 +30,98 @@ impl Dialect for LanceSqlDialect {
     }
 }
 
+/// Translate SQL-standard double-quoted identifiers into the backtick-quoted
+/// identifiers expected by Lance's SQL parser.
+///
+/// Lance historically interpreted double-quoted values as string literals.
+/// Rewriting them at the query boundary avoids silently evaluating a predicate
+/// such as `"mixedCase" = 'value'` as a comparison between two literals. String
+/// contents and existing backtick-quoted identifiers are left unchanged.
+pub fn normalize_sql_filter(filter: &str) -> crate::Result<String> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Quote {
+        None,
+        Single,
+        Backtick,
+        Double,
+    }
+
+    let mut normalized = String::with_capacity(filter.len());
+    let mut chars = filter.chars().peekable();
+    let mut quote = Quote::None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Quote::None => match ch {
+                '\'' => {
+                    normalized.push(ch);
+                    quote = Quote::Single;
+                }
+                '`' => {
+                    normalized.push(ch);
+                    quote = Quote::Backtick;
+                }
+                '"' => {
+                    normalized.push('`');
+                    quote = Quote::Double;
+                }
+                _ => normalized.push(ch),
+            },
+            Quote::Single => {
+                normalized.push(ch);
+                if ch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        normalized.push(escaped);
+                    }
+                } else if ch == '\'' {
+                    if chars.peek() == Some(&'\'') {
+                        normalized.push(chars.next().expect("peeked character must exist"));
+                    } else {
+                        quote = Quote::None;
+                    }
+                }
+            }
+            Quote::Backtick => {
+                normalized.push(ch);
+                if ch == '`' {
+                    if chars.peek() == Some(&'`') {
+                        normalized.push(chars.next().expect("peeked character must exist"));
+                    } else {
+                        quote = Quote::None;
+                    }
+                }
+            }
+            Quote::Double => {
+                if ch == '"' {
+                    if chars.peek() == Some(&'"') {
+                        // SQL escapes a double quote within an identifier by
+                        // doubling it. A quote needs no escaping inside Lance's
+                        // backtick-delimited form.
+                        normalized.push('"');
+                        chars.next();
+                    } else {
+                        normalized.push('`');
+                        quote = Quote::None;
+                    }
+                } else if ch == '`' {
+                    // Lance escapes a backtick within an identifier by doubling it.
+                    normalized.push_str("``");
+                } else {
+                    normalized.push(ch);
+                }
+            }
+        }
+    }
+
+    if quote == Quote::Double {
+        return Err(crate::Error::InvalidInput {
+            message: "unterminated double-quoted identifier in SQL filter".to_string(),
+        });
+    }
+
+    Ok(normalized)
+}
+
 /// Prefix for placeholder strings inserted in place of binary literals.  Chosen
 /// to be extremely unlikely to occur in user data.
 const BINARY_PLACEHOLDER_PREFIX: &str = "__lancedb_binary_placeholder_";
@@ -112,4 +204,38 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
         sql = sql.replace(&quoted, &bytes_to_hex_sql(bytes));
     }
     Ok(sql)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_sql_filter;
+
+    #[test]
+    fn normalizes_double_quoted_identifiers() {
+        assert_eq!(
+            normalize_sql_filter(r#""PartyAbbrev" = 'D'"#).unwrap(),
+            "`PartyAbbrev` = 'D'"
+        );
+        assert_eq!(
+            normalize_sql_filter(r#""MetaData"."userId" = 5"#).unwrap(),
+            "`MetaData`.`userId` = 5"
+        );
+        assert_eq!(normalize_sql_filter(r#""a""b" = 1"#).unwrap(), "`a\"b` = 1");
+    }
+
+    #[test]
+    fn preserves_quotes_inside_literals_and_backticks() {
+        let filter = r#"name = 'Alice "Ace"' AND `quoted"field` = 1"#;
+        assert_eq!(normalize_sql_filter(filter).unwrap(), filter);
+    }
+
+    #[test]
+    fn rejects_unterminated_double_quoted_identifier() {
+        let error = normalize_sql_filter(r#""PartyAbbrev = 'D'"#).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unterminated double-quoted identifier")
+        );
+    }
 }

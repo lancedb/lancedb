@@ -20,6 +20,7 @@
 mod sql;
 
 pub use sql::expr_to_sql_string;
+pub(crate) use sql::normalize_sql_filter;
 
 use std::sync::Arc;
 

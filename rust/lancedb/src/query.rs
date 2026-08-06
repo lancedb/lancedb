@@ -399,6 +399,9 @@ pub trait QueryBase {
     /// x > 5 OR y = 'test'
     /// ```
     ///
+    /// Identifiers may be delimited with SQL-standard double quotes or
+    /// backticks. String literals must use single quotes.
+    ///
     /// Filtering performance can often be improved by creating a scalar index
     /// on the filter column(s).
     ///
@@ -913,6 +916,17 @@ impl QueryRequest {
     /// use different representations) the error is recorded and surfaced later
     /// by [`Self::check_filter`].
     pub(crate) fn add_filter(&mut self, new: QueryFilter) {
+        let new = match new {
+            QueryFilter::Sql(filter) => match crate::expr::normalize_sql_filter(&filter) {
+                Ok(filter) => QueryFilter::Sql(filter),
+                Err(err) => {
+                    self.filter_error = Some(err.to_string());
+                    return;
+                }
+            },
+            other => other,
+        };
+
         self.filter = Some(match self.filter.take() {
             None => new,
             Some(existing) => match and_filters(existing, new) {
@@ -1885,6 +1899,37 @@ mod tests {
         assert!(query.request.check_filter().is_ok());
         // The combined filter executes without error.
         query.execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_double_quoted_filter_identifier() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new(
+            "PartyAbbrev",
+            DataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["D", "R", "R", "D"]))],
+        )
+        .unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.create_table("parties", batch).execute().await.unwrap();
+        let batches = table
+            .query()
+            .only_if(r#""PartyAbbrev" = 'D'"#)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     }
 
     #[tokio::test]
