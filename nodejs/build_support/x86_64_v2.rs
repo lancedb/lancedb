@@ -112,7 +112,16 @@ fn codegen_options(encoded: &str) -> Result<Vec<&str>, String> {
 
     while index < arguments.len() {
         let argument = arguments[index];
-        if argument == "-C" || argument == "--codegen" {
+        if argument == "--cfg" {
+            index += 1;
+            let cfg = arguments
+                .get(index)
+                .copied()
+                .ok_or_else(|| "missing value after --cfg".to_owned())?;
+            reject_builtin_target_feature_cfg(cfg)?;
+        } else if let Some(cfg) = argument.strip_prefix("--cfg=") {
+            reject_builtin_target_feature_cfg(cfg)?;
+        } else if argument == "-C" || argument == "--codegen" {
             index += 1;
             let option = arguments
                 .get(index)
@@ -130,6 +139,15 @@ fn codegen_options(encoded: &str) -> Result<Vec<&str>, String> {
     }
 
     Ok(options)
+}
+
+fn reject_builtin_target_feature_cfg(cfg: &str) -> Result<(), String> {
+    let name = cfg.split_once('=').map_or(cfg, |(name, _)| name).trim();
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    if name == "target_feature" {
+        return Err("built-in target_feature cfgs can override runtime CPU detection".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -166,6 +184,13 @@ mod tests {
     #[test]
     fn accepts_default_cpu_with_non_codegen_flags() {
         let flags = encoded(&["-D", "warnings"]);
+
+        assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
+    }
+
+    #[test]
+    fn accepts_unrelated_custom_cfg() {
+        let flags = encoded(&["--cfg=tokio_unstable"]);
 
         assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
     }
@@ -274,6 +299,49 @@ mod tests {
         assert_eq!(
             validate_encoded_rustflags(&flags),
             Err("rustc response-file arguments cannot be validated".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_split_builtin_target_feature_cfg() {
+        let flags = encoded(&[
+            "-Ctarget-cpu=x86-64-v2",
+            "--cfg",
+            r#"target_feature="avx2""#,
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("built-in target_feature cfgs can override runtime CPU detection".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_equals_builtin_target_feature_cfg() {
+        let flags = encoded(&[
+            "-Ctarget-cpu=x86-64-v2",
+            r#"--cfg=target_feature="avx2""#,
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("built-in target_feature cfgs can override runtime CPU detection".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_raw_identifier_builtin_target_feature_cfg() {
+        let flags = encoded(&[
+            "-Ctarget-cpu=x86-64-v2",
+            r#"--cfg=r#target_feature="avx2""#,
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("built-in target_feature cfgs can override runtime CPU detection".to_owned())
         );
     }
 }
