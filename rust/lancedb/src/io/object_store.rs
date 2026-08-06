@@ -94,6 +94,20 @@ impl PrefixedFileStoreProvider {
 
         Ok((root, Path::parse(relative)?))
     }
+
+    /// Select the immutable path scope shared by a database and its tables.
+    ///
+    /// LanceDB table URIs end in `.lance`. Their parent is the listing database
+    /// path, so using it as the store scope lets opens and shallow clones reuse
+    /// the connection store while databases elsewhere on the same drive or UNC
+    /// share retain distinct cache identities.
+    fn store_scope_path(path: &Path) -> Path {
+        if path.extension() == Some("lance") {
+            path.parent().unwrap_or_default()
+        } else {
+            path.clone()
+        }
+    }
 }
 
 /// A local store rooted at a Windows drive or UNC share.
@@ -263,8 +277,9 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         params: &ObjectStoreParams,
     ) -> LanceResult<lance::io::ObjectStore> {
         let (root, relative_path) = Self::root_and_relative_path(&base_path)?;
+        let store_scope = Self::store_scope_path(&relative_path);
         let raw_store: Arc<dyn ObjectStore> =
-            Arc::new(RootedLocalFileSystem::new(root, relative_path)?);
+            Arc::new(RootedLocalFileSystem::new(root, store_scope)?);
         let location = Url::parse("lancedb-file:///").expect("static URL must be valid");
         let storage_options =
             StorageOptions::new(params.storage_options().cloned().unwrap_or_default());
@@ -300,12 +315,13 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
     ) -> LanceResult<String> {
         let (root, path) = Self::root_and_relative_path(url)?;
         let root = root.canonicalize()?;
-        // Scope the registry cache to one requested base path. A root-wide
-        // store cannot distinguish a legitimate relative path beginning with a
-        // UNC share name from the absolute alias produced by the default file
-        // provider, and mutable path history can therefore redirect I/O between
-        // sibling databases.
-        Ok(format!("file${}${path}", root.display()))
+        let store_scope = Self::store_scope_path(&path);
+        // Scope the registry cache to one database path. A root-wide store
+        // cannot distinguish a legitimate relative path beginning with a UNC
+        // share name from the absolute alias produced by the default file
+        // provider, while a table-wide store cannot service sibling targets
+        // during shallow clone.
+        Ok(format!("file${}${store_scope}", root.display()))
     }
 }
 
@@ -449,6 +465,45 @@ mod prefixed_file_store_test {
 
         assert!(!Arc::ptr_eq(&first, &second));
         assert_eq!(registry.stats().misses, 2);
+    }
+
+    #[tokio::test]
+    async fn reuses_database_store_for_table_and_clone_targets() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let database_url = Url::from_directory_path(tempdir.path().join("database")).unwrap();
+        let source_url =
+            Url::from_directory_path(tempdir.path().join("database/source.lance")).unwrap();
+        let target_url =
+            Url::from_directory_path(tempdir.path().join("database/target.lance")).unwrap();
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+
+        let (database, _) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            database_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+        let (source, _) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            source_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+        let (target, _) = lance::io::ObjectStore::from_uri_and_params(
+            registry.clone(),
+            target_url.as_str(),
+            &ObjectStoreParams::default(),
+        )
+        .await
+        .unwrap();
+
+        assert!(Arc::ptr_eq(&database, &source));
+        assert!(Arc::ptr_eq(&database, &target));
+        assert_eq!(registry.stats().misses, 1);
+        assert_eq!(registry.stats().hits, 2);
     }
 
     #[test]
