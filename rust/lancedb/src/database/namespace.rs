@@ -621,7 +621,10 @@ impl Database for LanceNamespaceDatabase {
 }
 
 #[cfg(test)]
-#[cfg(not(windows))] // TODO: support windows for lance-namespace
+#[cfg(not(windows))]
+// TODO: support windows for lance-namespace
+// `table_names` is deprecated but still supported, so its tests still call it.
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::connect_namespace;

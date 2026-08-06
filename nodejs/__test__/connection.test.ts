@@ -4,7 +4,13 @@
 import { readdirSync } from "fs";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import { Connection, Table, connect, connectNamespace } from "../lancedb";
+import {
+  Connection,
+  ListTablesResponse,
+  Table,
+  connect,
+  connectNamespace,
+} from "../lancedb";
 import { LocalTable } from "../lancedb/table";
 
 describe("when connecting", () => {
@@ -117,6 +123,56 @@ describe("given a connection", () => {
 
     tables = await db.tableNames({ startAfter: "a" });
     expect(tables).toEqual(["b", "c"]);
+  });
+
+  it("should list tables with a page token", async () => {
+    const db = await connect(tmpDir.name);
+
+    await db.createTable("b", [{ id: 1 }]);
+    await db.createTable("a", [{ id: 1 }]);
+    await db.createTable("c", [{ id: 1 }]);
+
+    const all = await db.listTables();
+    expect(all.tables).toEqual(["a", "b", "c"]);
+    expect(all.pageToken).toBeUndefined();
+
+    const first = await db.listTables({ limit: 1 });
+    expect(first.tables).toEqual(["a"]);
+    expect(first.pageToken).toBeDefined();
+
+    const second = await db.listTables({
+      limit: 1,
+      pageToken: first.pageToken,
+    });
+    expect(second.tables).toEqual(["b"]);
+  });
+
+  it("should visit every table exactly once when paging", async () => {
+    const db = await connect(tmpDir.name);
+
+    const created = ["a", "b", "c", "d", "e"];
+    for (const name of created) {
+      await db.createTable(name, [{ id: 1 }]);
+    }
+
+    const seen: string[] = [];
+    let pageToken: string | undefined = undefined;
+    do {
+      const page: ListTablesResponse = await db.listTables({
+        limit: 2,
+        pageToken,
+      });
+      seen.push(...page.tables);
+      pageToken = page.pageToken;
+    } while (pageToken);
+
+    expect(seen.sort()).toEqual(created);
+  });
+
+  it("should reject listTables on a closed connection", async () => {
+    const db = await connect(tmpDir.name);
+    db.close();
+    await expect(db.listTables()).rejects.toThrow("Connection is closed");
   });
 
   it("should create tables in v2 mode", async () => {

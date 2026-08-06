@@ -1018,17 +1018,15 @@ impl Database for ListingDatabase {
             f.drain(0..index);
         }
 
-        // Determine if there's a next page
-        let next_page_token = if let Some(limit) = request.limit {
-            if f.len() > limit as usize {
-                let token = f[limit as usize].clone();
+        // Determine if there's a next page. The token is the last name of this page,
+        // not the first of the next one: the next page resumes strictly after the
+        // token, so naming the next page's first entry would skip it.
+        let next_page_token = match request.limit {
+            Some(limit) if f.len() > limit as usize => {
                 f.truncate(limit as usize);
-                Some(token)
-            } else {
-                None
+                f.last().cloned()
             }
-        } else {
-            None
+            _ => None,
         };
 
         Ok(ListTablesResponse {
