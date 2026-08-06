@@ -1658,9 +1658,22 @@ mod tests {
         };
         let drive_root = PathBuf::from(format!("{}:\\", drive as char));
         let relative = tempdir.path().strip_prefix(&drive_root).unwrap();
-        let unc_path = PathBuf::from(format!(r"\\localhost\{}$", drive as char)).join(relative);
+        // `url` treats `localhost` as an empty file-URL authority, turning
+        // `file://localhost/C$/...` into the invalid drive-relative
+        // `file:///C$/...`. Use the machine's actual network name so this
+        // remains a genuine UNC URL throughout the connection lifecycle.
+        let Some(computer_name) = std::env::var_os("COMPUTERNAME") else {
+            eprintln!("skipping UNC lifecycle test because COMPUTERNAME is unavailable");
+            return;
+        };
+        let unc_path = PathBuf::from(format!(
+            r"\\{}\{}$",
+            computer_name.to_string_lossy(),
+            drive as char
+        ))
+        .join(relative);
         if !unc_path.try_exists().unwrap_or(false) {
-            eprintln!("skipping UNC lifecycle test because the localhost admin share is disabled");
+            eprintln!("skipping UNC lifecycle test because the local admin share is unavailable");
             return;
         }
         let uri = url::Url::from_directory_path(&unc_path)

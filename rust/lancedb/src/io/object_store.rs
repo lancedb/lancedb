@@ -27,10 +27,11 @@ use async_trait::async_trait;
 
 #[cfg(any(windows, test))]
 use lance_core::{Error as LanceError, Result as LanceResult};
+#[cfg(test)]
+use lance_io::object_store::ObjectStoreRegistry;
 #[cfg(any(windows, test))]
 use lance_io::object_store::{
-    DEFAULT_LOCAL_IO_PARALLELISM, ObjectStoreParams, ObjectStoreProvider, ObjectStoreRegistry,
-    StorageOptions,
+    DEFAULT_LOCAL_IO_PARALLELISM, ObjectStoreParams, ObjectStoreProvider, StorageOptions,
 };
 #[cfg(any(windows, test))]
 use object_store::local::LocalFileSystem;
