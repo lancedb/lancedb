@@ -11,6 +11,7 @@ import {
   Float16,
   Float32,
   Float64,
+  Int32,
   Schema,
   Utf8,
 } from "../lancedb/arrow";
@@ -184,6 +185,51 @@ describe("embedding functions", () => {
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
   });
+
+  it("should append generated vectors to a non-nullable schema", async () => {
+    @register("non_nullable_schema_test")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float64();
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+
+    const schema = new Schema([
+      new Field("id", new Int32()),
+      new Field("text", new Utf8()),
+      new Field("type", new Utf8()),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float64())),
+      ),
+    ]);
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test_non_nullable", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+      },
+    });
+
+    await table.add([
+      { id: 1, text: "Carrot", type: "vegetable" },
+      { id: 2, text: "Apple", type: "fruit" },
+    ]);
+
+    const rows = await table.query().toArray();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect([...row.vector]).toEqual([1, 2, 3]);
+    }
+  });
+
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
