@@ -103,6 +103,10 @@ pub(crate) fn validate_encoded_rustflags(encoded: &str) -> Result<(), String> {
 
 fn codegen_options(encoded: &str) -> Result<Vec<&str>, String> {
     let arguments = encoded.split('\u{1f}').collect::<Vec<_>>();
+    if arguments.iter().any(|argument| argument.starts_with('@')) {
+        return Err("rustc response-file arguments cannot be validated".to_owned());
+    }
+
     let mut options = Vec::new();
     let mut index = 0;
 
@@ -260,6 +264,16 @@ mod tests {
         assert_eq!(
             validate_encoded_rustflags(&flags),
             Err("LLVM arguments can override the CPU baseline".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_response_file_arguments() {
+        let flags = encoded(&["-Ctarget-cpu=x86-64-v2", "@flags.rsp"]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("rustc response-file arguments cannot be validated".to_owned())
         );
     }
 }
