@@ -156,7 +156,7 @@ mod tests {
         use datafusion_common::ScalarValue;
         let expr = col("data").eq(lit(ScalarValue::Binary(Some(vec![0xca, 0xfe]))));
         let sql = expr_to_sql_string(&expr).unwrap();
-        assert_eq!(sql, "(data = X'CAFE')");
+        assert_eq!(sql, "(`data` = X'CAFE')");
     }
 
     #[test]
@@ -166,7 +166,7 @@ mod tests {
         let int_expr = col("id").gt(lit(5i64));
         let combined = bin_expr.and(int_expr);
         let sql = expr_to_sql_string(&combined).unwrap();
-        assert_eq!(sql, "((data = X'01') AND (id > 5))");
+        assert_eq!(sql, "((`data` = X'01') AND (id > 5))");
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
         // serialized correctly (regression test for placeholder rewrite path).
         let expr = contains(col("data"), lit(ScalarValue::Binary(Some(vec![0xff]))));
         let sql = expr_to_sql_string(&expr).unwrap();
-        assert_eq!(sql, "contains(data, X'FF')");
+        assert_eq!(sql, "contains(`data`, X'FF')");
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
             .eq(lit(ScalarValue::Binary(Some(vec![0xab, 0xcd]))))
             .not();
         let sql = expr_to_sql_string(&expr).unwrap();
-        assert_eq!(sql, "NOT (data = X'ABCD')");
+        assert_eq!(sql, "NOT (`data` = X'ABCD')");
     }
 
     #[test]
@@ -203,6 +203,45 @@ mod tests {
         let expr = is_in(col("id"), vec![lit(1i64), lit(2i64), lit(3i64)]);
         let sql = expr_to_sql_string(&expr).unwrap();
         assert!(sql.contains("IN"), "expected IN in: {}", sql);
+    }
+
+    #[test]
+    fn test_empty_is_in() {
+        let expr = is_in(col("id"), vec![]);
+        assert_eq!(expr_to_sql_string(&expr).unwrap(), "false");
+    }
+
+    #[test]
+    fn test_keyword_identifier() {
+        let expr = col("null").eq(lit(1i64));
+        assert_eq!(expr_to_sql_string(&expr).unwrap(), "(`null` = 1)");
+    }
+
+    #[test]
+    fn test_decimal_literal_preserves_type() {
+        use datafusion_common::ScalarValue;
+
+        let expr = col("val").lt(lit(ScalarValue::Decimal128(
+            Some(1_234_567_890_123_456_790),
+            19,
+            18,
+        )));
+        let sql = expr_to_sql_string(&expr).unwrap().replace(' ', "");
+        assert_eq!(sql, "(val<CAST('1.234567890123456790'ASDECIMAL(19,18)))");
+    }
+
+    #[test]
+    fn test_binary_placeholder_does_not_rewrite_user_string() {
+        use datafusion_common::ScalarValue;
+
+        let marker = "__lancedb_binary_placeholder_0__";
+        let expr = col("payload")
+            .eq(lit(ScalarValue::Binary(Some(vec![0x01]))))
+            .or(col("text").eq(lit(marker)));
+        assert_eq!(
+            expr_to_sql_string(&expr).unwrap(),
+            "((payload = X'01') OR (`text` = '__lancedb_binary_placeholder_0__'))"
+        );
     }
 
     #[test]
