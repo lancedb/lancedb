@@ -90,6 +90,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .max_iterations(params.max_iterations)
                     .sample_rate(params.sample_rate)
                     .num_bits(params.num_bits);
+                if let Some(seed) = params.seed {
+                    ivf_pq_builder = ivf_pq_builder.seed(seed);
+                }
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
                 }
@@ -232,6 +235,7 @@ struct IvfPqParams {
     num_bits: u32,
     max_iterations: u32,
     sample_rate: u32,
+    seed: Option<u64>,
     target_partition_size: Option<u32>,
 }
 

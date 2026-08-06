@@ -769,6 +769,11 @@ class IvfPq:
 
         The default value is 256.
 
+    seed: int, optional
+        Seed used for deterministic sampling and training. Given identical data in
+        the same row order and identical index parameters, the same seed produces
+        the same IVF centroids and PQ codebook. If omitted, training remains random.
+
     target_partition_size: int, default is 8192
 
         The target size of each partition.
@@ -783,6 +788,7 @@ class IvfPq:
     num_bits: int = 8
     max_iterations: int = 50
     sample_rate: int = 256
+    seed: Optional[int] = None
     target_partition_size: Optional[int] = None
     # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
     # create_index() dispatches to pylance to build the index on the accelerator.

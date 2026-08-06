@@ -375,7 +375,7 @@ async def test_create_vector_index(some_table: AsyncTable):
 @pytest.mark.asyncio
 async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
     # Can create
-    await some_table.create_index("vector", config=IvfPq(num_bits=4))
+    await some_table.create_index("vector", config=IvfPq(num_bits=4, seed=42))
     # Can recreate if replace=True
     await some_table.create_index("vector", config=IvfPq(num_bits=4), replace=True)
     # Can't recreate if replace=False

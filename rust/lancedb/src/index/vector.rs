@@ -274,6 +274,8 @@ pub struct IvfPqIndexBuilder {
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 
     // PQ
@@ -292,6 +294,7 @@ impl Default for IvfPqIndexBuilder {
             num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
+            seed: None,
             target_partition_size: None,
         }
     }
@@ -301,6 +304,27 @@ impl IvfPqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
     impl_pq_params_setter!();
+
+    /// Use a deterministic seed when sampling and training the IVF and PQ models.
+    ///
+    /// Given identical data in the same row order and identical index parameters,
+    /// using the same seed produces the same IVF centroids and PQ codebook. This is
+    /// useful when independently-built tables need reproducible approximate-search
+    /// results.
+    ///
+    /// If no seed is provided, index training uses random sampling and initialization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lancedb::index::vector::IvfPqIndexBuilder;
+    ///
+    /// let index = IvfPqIndexBuilder::default().seed(42);
+    /// ```
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
 }
 
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
