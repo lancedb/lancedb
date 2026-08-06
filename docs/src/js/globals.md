@@ -94,6 +94,8 @@
 - [JobInfo](interfaces/JobInfo.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
+- [ListTablesOptions](interfaces/ListTablesOptions.md)
+- [ListTablesResponse](interfaces/ListTablesResponse.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MergeBlocker](interfaces/MergeBlocker.md)
 - [MergeBranchResult](interfaces/MergeBranchResult.md)

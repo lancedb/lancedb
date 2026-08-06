@@ -1134,6 +1134,8 @@ impl From<StorageOptions> for RemoteOptions {
 }
 
 #[cfg(test)]
+// `table_names` is deprecated but still supported, so its tests still call it.
+#[allow(deprecated)]
 mod tests {
     use super::{NamespaceHeaderProviderContext, build_cache_key};
     use std::collections::HashMap;
@@ -2272,10 +2274,9 @@ mod tests {
 
             // List tables in the child namespace
             let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
+                .list_tables()
+                .namespace(namespace.clone())
+                .execute()
                 .await
                 .expect("Failed to list tables");
             assert_eq!(list_response.tables, vec!["test_table"]);
@@ -2346,10 +2347,9 @@ mod tests {
 
             // List tables in the child namespace
             let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
+                .list_tables()
+                .namespace(namespace.clone())
+                .execute()
                 .await
                 .unwrap();
             assert_eq!(list_response.tables.len(), 3);

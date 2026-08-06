@@ -121,6 +121,8 @@ impl Connection {
     }
 
     #[pyo3(signature = (namespace_path=None, start_after=None, limit=None))]
+    // Deprecated in favour of `list_tables`, but still exposed to Python.
+    #[allow(deprecated)]
     pub fn table_names(
         self_: PyRef<'_, Self>,
         namespace_path: Option<Vec<String>>,
@@ -522,14 +524,17 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::ListTablesRequest;
-            let request = ListTablesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_tables(request).await.infer_error()?;
+            let mut request = inner.list_tables();
+            if let Some(namespace_path) = namespace_path {
+                request = request.namespace(namespace_path);
+            }
+            if let Some(page_token) = page_token {
+                request = request.page_token(page_token);
+            }
+            if let Some(limit) = limit {
+                request = request.limit(limit);
+            }
+            let response = request.execute().await.infer_error()?;
             Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("tables", response.tables)?;
