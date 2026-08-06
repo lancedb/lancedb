@@ -2282,6 +2282,20 @@ def test_update(mem_db: DBConnection):
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
 
 
+def test_update_with_arrow_scalar(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
+    table = mem_db.create_table("my_table", schema=schema)
+    table.add([{"id": 1, "vector": [1.0, 2.0, 3.0, 4.0]}])
+
+    value = table.search().select(["vector"]).limit(1).to_arrow()["vector"][0]
+    assert isinstance(value, pa.FixedSizeListScalar)
+
+    result = table.update(where="id == 1", values={"vector": value})
+
+    assert result.rows_updated == 1
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
 def test_update_types(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
