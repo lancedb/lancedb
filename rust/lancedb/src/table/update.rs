@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use arrow_schema::DataType;
 use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -84,10 +85,11 @@ pub(crate) async fn execute_update(
     let dataset = table.dataset.get().await?;
 
     // 2. Initialize the Lance Core builder
-    let mut builder = LanceUpdateBuilder::new(dataset);
+    let mut builder = LanceUpdateBuilder::new(dataset.clone());
 
     // 3. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
+        let predicate = safe_update_filter(&predicate, dataset.schema());
         builder = builder.update_where(&predicate)?;
     }
 
@@ -109,19 +111,63 @@ pub(crate) async fn execute_update(
     })
 }
 
+/// Keep filtered updates with 32-bit Arrow offsets on the sequential scan path.
+///
+/// An indexed scan materializes matching rows with `TakeExec`, which concatenates
+/// values read from multiple fragments. That can overflow a single `Utf8`,
+/// `Binary`, or `List` array's 32-bit offsets. `IS TRUE` has the same filtering
+/// semantics (null still does not match) but intentionally prevents scalar-index
+/// extraction, keeping offset-bearing columns in fragment-sized scan batches.
+fn safe_update_filter(predicate: &str, schema: &lance_core::datatypes::Schema) -> String {
+    let has_offset_columns = schema
+        .fields
+        .iter()
+        .any(|field| has_32_bit_offsets(&field.data_type()));
+
+    if has_offset_columns {
+        format!("({predicate}) IS TRUE")
+    } else {
+        predicate.to_owned()
+    }
+}
+
+fn has_32_bit_offsets(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Binary
+        | DataType::Utf8
+        | DataType::List(_)
+        | DataType::ListView(_)
+        | DataType::Map(_, _)
+        | DataType::Union(_, _) => true,
+        DataType::FixedSizeList(field, _)
+        | DataType::LargeList(field)
+        | DataType::LargeListView(field) => has_32_bit_offsets(field.data_type()),
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| has_32_bit_offsets(field.data_type())),
+        DataType::Dictionary(_, values) => has_32_bit_offsets(values),
+        DataType::RunEndEncoded(_, values) => has_32_bit_offsets(values.data_type()),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::connect;
+    use crate::connection::LanceFileVersion;
+    use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
+    use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
     use arrow_array::{
-        Array, ArrayRef, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
+        Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
         Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
         TimestampMillisecondArray, TimestampNanosecondArray, UInt32Array, record_batch,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
+    use lance::io::exec::Planner;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -410,54 +456,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_wide_table_across_fragments() {
-        const NUM_PAYLOAD_COLUMNS: usize = 12;
-        const NUM_FRAGMENTS: usize = 16;
-        const ROWS_PER_FRAGMENT: usize = 512;
-
-        fn make_batch(fragment: usize) -> RecordBatch {
-            let mut fields = vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("split", DataType::Utf8, false),
-            ];
-            let mut columns: Vec<ArrayRef> = vec![
-                Arc::new(Int32Array::from_iter_values(
-                    (0..ROWS_PER_FRAGMENT).map(|row| (fragment * ROWS_PER_FRAGMENT + row) as i32),
-                )),
-                Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
-                    "test",
-                    ROWS_PER_FRAGMENT,
-                ))),
-            ];
-
-            for column in 0..NUM_PAYLOAD_COLUMNS {
-                fields.push(Field::new(
-                    format!("payload_{column}"),
-                    DataType::Utf8,
-                    false,
-                ));
-                columns.push(Arc::new(StringArray::from_iter_values(
-                    (0..ROWS_PER_FRAGMENT)
-                        .map(|row| format!("fragment-{fragment}-column-{column}-row-{row}")),
-                )));
-            }
-
-            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    async fn test_update_materializes_offset_columns_before_filter() {
+        fn contains_take(plan: &dyn datafusion_physical_plan::ExecutionPlan) -> bool {
+            plan.name() == "TakeExec"
+                || plan
+                    .children()
+                    .iter()
+                    .any(|child| contains_take(child.as_ref()))
         }
 
-        let conn = connect("memory://").execute().await.unwrap();
-        let table = conn
-            .create_table("wide_table", make_batch(0))
+        let batch = record_batch!(
+            ("id", Int32, [0, 1, 2, 3]),
+            (
+                "split",
+                Utf8,
+                [Some("test"), None, Some("test"), Some("train")]
+            ),
+            ("payload", Utf8, ["a", "b", "c", "d"])
+        )
+        .unwrap();
+        let conn = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    data_storage_version: Some(LanceFileVersion::Legacy),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .execute()
             .await
             .unwrap();
-        for fragment in 1..NUM_FRAGMENTS {
-            table.add(make_batch(fragment)).execute().await.unwrap();
-        }
+        let table = conn
+            .create_table("offset_table", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch).execute().await.unwrap();
+        table
+            .create_index(&["split"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
 
-        // Regression test for #1291. Updates used to concatenate all incoming
-        // batches while finding output file boundaries. On wide tables this
-        // could exceed Arrow's i32 string offsets before any data was written.
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let planner = Planner::new(Arc::new(dataset.schema().into()));
+
+        let filter = planner.parse_filter("split = 'test'").unwrap();
+        let filter = planner.optimize_expr(filter).unwrap();
+        let mut scanner = dataset.scan();
+        scanner.with_row_id().filter_expr(filter);
+        let explanation = scanner.explain_plan(false).await.unwrap();
+        let plan = scanner.create_plan().await.unwrap();
+        assert!(
+            contains_take(plan.as_ref()),
+            "test setup must late-materialize payload:\n{explanation}"
+        );
+
+        let guarded_filter = super::safe_update_filter("split = 'test'", dataset.schema());
+        let filter = planner.parse_filter(&guarded_filter).unwrap();
+        let filter = planner.optimize_expr(filter).unwrap();
+        let mut scanner = dataset.scan();
+        scanner.with_row_id().filter_expr(filter);
+        let explanation = scanner.explain_plan(false).await.unwrap();
+        let plan = scanner.create_plan().await.unwrap();
+
+        // Regression test for #1291: the payload must be read by the scan, not
+        // concatenated across fragments by a late-materializing TakeExec.
+        assert!(
+            !contains_take(plan.as_ref()),
+            "unexpected late materialization:\n{explanation}"
+        );
+
         let result = table
             .update()
             .only_if("split = 'test'")
@@ -466,21 +535,20 @@ mod tests {
             .await
             .unwrap();
 
-        let expected_rows = NUM_FRAGMENTS * ROWS_PER_FRAGMENT;
-        assert_eq!(result.rows_updated, expected_rows as u64);
+        assert_eq!(result.rows_updated, 4);
         assert_eq!(
             table
                 .count_rows(Some("split = 'TEST'".to_string()))
                 .await
                 .unwrap(),
-            expected_rows
+            4
         );
         assert_eq!(
             table
-                .count_rows(Some("payload_0 LIKE 'fragment-%'".to_string()))
+                .count_rows(Some("payload IN ('a', 'b', 'c', 'd')".to_string()))
                 .await
                 .unwrap(),
-            expected_rows
+            8
         );
     }
 
