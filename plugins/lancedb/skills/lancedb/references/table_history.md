@@ -73,8 +73,8 @@ The options are **query parameters, not body fields**. The body is `{}`.
 | `limit=N`, `page_token=...` | paginate | pinned |
 | `branch=<name>` | that branch's chain instead of main's | pinned |
 
-Pagination is part of completeness: a `page_token` in the **response** means another page
-exists. Keep requesting until it is absent — every range and retention check in this guide
+Pagination is part of completeness: a non-null, non-empty `page_token` in the **response** means another page
+exists. Keep requesting until it is absent, null, or empty string — every range and retention check in this guide
 assumes the full chain was loaded, so a listing cut short by pagination is an incomplete audit.
 
 `include_operations` and the fields it adds are **not part of the pinned Lance Namespace
@@ -163,9 +163,15 @@ schema at either end, describe that version (below) rather than reconstructing i
 
 Compare each version's `timestamp` (ISO-8601 `...Z`) or `timestamp_millis` against the cutoff.
 
-- Check the cutoff falls **inside retained history**: if the oldest retained version is
-  already newer than the cutoff, older commits have been pruned. Report the answer as
-  "changes within retained history (from vK)", not as everything since the cutoff.
+- If the oldest retained version is newer than the cutoff, decide **why** before reporting
+  anything: pruning is only one explanation. Identify the chain's expected baseline first —
+  version 1 on main, the source version on a branch. If that baseline is retained, nothing
+  was pruned: the table (or branch) simply didn't exist yet at the cutoff, the history is
+  complete, and the answer is everything — starting from creation or from the fork (for
+  pre-fork changes, continue in the parent chain). Only when the expected baseline is
+  missing — main starts at vK > 1, or a branch starts above its source — have older commits
+  actually been pruned; report the answer as "changes within retained history (from vK)",
+  not as everything since the cutoff.
 - Timestamp precision and timezone **vary by surface**. Lance manifests store nanoseconds,
   but Python's `list_versions()` returns a **naive local-time** datetime at microsecond
   precision, and TypeScript returns a JS `Date` (milliseconds). REST returns an RFC 3339
@@ -176,6 +182,8 @@ Compare each version's `timestamp` (ISO-8601 `...Z`) or `timestamp_millis` again
   never by timestamp.
 - Keep the categories separate when classifying: **schema** (non-empty column arrays),
   **index** (`CreateIndex`), **data** (`Append`, `Delete`, `Update` with empty arrays),
+  **creation/replacement** (`Overwrite` — the table created, or its data fully replaced;
+  when its column arrays are non-empty it is schema movement too, reported separately),
   **metadata** (`UpdateConfig`), **maintenance/rollback** (`Rewrite`, `Restore`, clone and
   reservation internals), and **unknown** for names not in the table above. Everything inside
   the window is part of the answer — report each version as what it is instead of folding
@@ -239,8 +247,13 @@ matching a version number against job specs is **correlation, not attribution**.
 
 To attribute a commit to a job, in order of strength:
 
-1. **The version's own `metadata`** (in the version listing): writers can stamp commit
-   metadata, and a job id or job name there is a documented link.
+1. **The version's own `metadata`** (in the version listing) — but only under a producer
+   guarantee. The field is contractually arbitrary key-value pairs: anyone can stamp
+   anything, so a value that merely *looks like* a job id or job name proves nothing — a
+   user-set label can coincide with an unrelated job. It is attribution only when the key
+   is one a specific writer documents stamping on its own commits and that guarantee is
+   verified for this deployment; a look-alike value under any other key is level-3
+   correlation, not a link.
 2. **A documented output link on the job**: an explicit committed-version reference in the
    job's `status`/output (job-type-specific — look for the field, don't assume it). Geneva's
    `manifest_id` is **opaque** — there is no documented mapping between it and a version's
