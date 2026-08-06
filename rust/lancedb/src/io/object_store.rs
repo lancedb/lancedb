@@ -5,8 +5,18 @@
 
 use std::{fmt::Formatter, sync::Arc};
 
+#[cfg(any(windows, test))]
+use futures::TryStreamExt;
 use futures::{StreamExt, TryFutureExt, stream::BoxStream};
 use lance::io::WrappingObjectStore;
+#[cfg(any(windows, test))]
+use lance_table::{
+    format::{IndexMetadata, Manifest, Transaction},
+    io::commit::{
+        CommitError, CommitHandler, ManifestLocation, ManifestNamingScheme, ManifestWriter,
+        RenameCommitHandler,
+    },
+};
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
@@ -29,6 +39,59 @@ use url::Url;
 
 #[cfg(test)]
 pub mod io_tracking;
+
+/// A local commit handler that resolves the latest manifest through the object store.
+///
+/// Lance's native local shortcut reconstructs the selected manifest from a
+/// filesystem path. On Windows that conversion drops the authority from a UNC
+/// path. Listing through the already-rooted object store preserves the structural
+/// server/share prefix while retaining the normal atomic-rename commit behavior.
+#[derive(Debug)]
+#[cfg(any(windows, test))]
+struct RootedFileCommitHandler;
+
+#[cfg(any(windows, test))]
+#[async_trait]
+impl CommitHandler for RootedFileCommitHandler {
+    async fn resolve_latest_location(
+        &self,
+        base_path: &Path,
+        object_store: &lance::io::ObjectStore,
+    ) -> LanceResult<ManifestLocation> {
+        self.list_manifest_locations(base_path, object_store, true)
+            .try_next()
+            .await?
+            .ok_or_else(|| LanceError::not_found(base_path.to_string()))
+    }
+
+    async fn commit(
+        &self,
+        manifest: &mut Manifest,
+        indices: Option<Vec<IndexMetadata>>,
+        base_path: &Path,
+        object_store: &lance::io::ObjectStore,
+        manifest_writer: ManifestWriter,
+        naming_scheme: ManifestNamingScheme,
+        transaction: Option<Transaction>,
+    ) -> std::result::Result<ManifestLocation, CommitError> {
+        RenameCommitHandler
+            .commit(
+                manifest,
+                indices,
+                base_path,
+                object_store,
+                manifest_writer,
+                naming_scheme,
+                transaction,
+            )
+            .await
+    }
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn rooted_file_commit_handler() -> Arc<dyn CommitHandler> {
+    Arc::new(RootedFileCommitHandler)
+}
 
 /// A file-store provider that anchors each request at its filesystem root.
 ///
@@ -269,12 +332,13 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
     ) -> LanceResult<lance::io::ObjectStore> {
         let (root, _) = Self::root_and_relative_path(&base_path)?;
         let raw_store: Arc<dyn ObjectStore> = Arc::new(RootedLocalFileSystem::new(root)?);
-        // `file` keeps local planning and manifest behavior. With a custom
-        // wrapper, `file+uring` is also classified as local but (on Windows)
-        // routes readers and writers through the wrapped object store instead
-        // of the native fast path.
+        // Native local shortcuts are safe only when the rooted filesystem is
+        // the final store. An arbitrary wrapper can redirect I/O, so use
+        // Lance's non-cloud object-store route in that case. This keeps local
+        // scan planning without enabling native copy/delete or the io_uring
+        // scheduler, all of which would bypass the wrapper.
         let location = if params.object_store_wrapper.is_some() {
-            Url::parse("file+uring:///").expect("static URL must be valid")
+            Url::parse("memory:///").expect("static URL must be valid")
         } else {
             Url::parse("file:///").expect("static URL must be valid")
         };
@@ -344,6 +408,7 @@ pub(crate) fn new_prefixed_file_session() -> Arc<lance::session::Session> {
 #[cfg(test)]
 mod prefixed_file_store_test {
     use super::*;
+    use object_store::memory::InMemory;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, Default)]
@@ -359,6 +424,21 @@ mod prefixed_file_store_test {
         ) -> Arc<dyn ObjectStore> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             original
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct MemoryRedirectWrapper {
+        store: Arc<InMemory>,
+    }
+
+    impl WrappingObjectStore for MemoryRedirectWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn ObjectStore>,
+        ) -> Arc<dyn ObjectStore> {
+            self.store.clone()
         }
     }
 
@@ -437,9 +517,10 @@ mod prefixed_file_store_test {
                 .await
                 .unwrap();
         assert_eq!(wrapper.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(store.scheme(), "file+uring");
-        assert!(store.is_local());
+        assert_eq!(store.scheme(), "memory");
+        assert!(!store.is_local());
         assert!(!store.is_cloud());
+        assert!(!store.prefers_lite_scheduler());
 
         store
             .inner
@@ -452,6 +533,90 @@ mod prefixed_file_store_test {
         let stats = store.io_tracker().stats();
         assert_eq!(stats.write_iops, 1);
         assert_eq!(stats.written_bytes, 7);
+    }
+
+    #[tokio::test]
+    async fn wrapped_store_cleanup_does_not_bypass_the_wrapper() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let table_path = tempdir.path().join("test.lance");
+        std::fs::create_dir(&table_path).unwrap();
+        std::fs::write(table_path.join("native-marker"), b"native").unwrap();
+
+        let table_url = Url::from_directory_path(&table_path).unwrap();
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+        let wrapper = Arc::new(MemoryRedirectWrapper::default());
+        let params = ObjectStoreParams {
+            object_store_wrapper: Some(wrapper.clone()),
+            ..Default::default()
+        };
+        let (store, base_path) =
+            lance::io::ObjectStore::from_uri_and_params(registry, table_url.as_str(), &params)
+                .await
+                .unwrap();
+        let wrapped_marker = base_path.clone().join("wrapped-marker");
+        store
+            .inner
+            .put(
+                &wrapped_marker,
+                bytes::Bytes::from_static(b"wrapped").into(),
+            )
+            .await
+            .unwrap();
+
+        store.remove_dir_all(base_path).await.unwrap();
+
+        assert!(table_path.join("native-marker").exists());
+        assert!(matches!(
+            wrapper.store.head(&wrapped_marker).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn rooted_commit_handler_uses_store_paths_for_latest_manifest() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let versions = tempdir.path().join("_versions");
+        std::fs::create_dir(&versions).unwrap();
+        std::fs::write(versions.join("2.manifest"), b"native").unwrap();
+
+        let base_path = Path::from_absolute_path(tempdir.path()).unwrap();
+        let raw_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        raw_store
+            .put(
+                &base_path.clone().join("_versions").join("1.manifest"),
+                bytes::Bytes::from_static(b"wrapped").into(),
+            )
+            .await
+            .unwrap();
+        let mut store = lance::io::ObjectStore::new(
+            raw_store.clone(),
+            Url::parse("file:///").unwrap(),
+            Some(4 * 1024),
+            None,
+            false,
+            false,
+            DEFAULT_LOCAL_IO_PARALLELISM,
+            0,
+            None,
+        );
+        store.inner = raw_store;
+
+        let native = RenameCommitHandler
+            .resolve_latest_location(&base_path, &store)
+            .await
+            .unwrap();
+        assert_eq!(native.version, 2);
+
+        let rooted = rooted_file_commit_handler()
+            .resolve_latest_location(&base_path, &store)
+            .await
+            .unwrap();
+        assert_eq!(rooted.version, 1);
+        assert_eq!(
+            rooted.path,
+            base_path.clone().join("_versions").join("1.manifest")
+        );
     }
 
     #[tokio::test]
