@@ -142,6 +142,10 @@ fn codegen_options(encoded: &str) -> Result<Vec<&str>, String> {
 }
 
 fn reject_builtin_target_feature_cfg(cfg: &str) -> Result<(), String> {
+    if cfg.contains("/*") || cfg.contains("//") {
+        return Err("comment-bearing cfgs cannot be validated".to_owned());
+    }
+
     let name = cfg.split_once('=').map_or(cfg, |(name, _)| name).trim();
     let name = name.strip_prefix("r#").unwrap_or(name);
     if name == "target_feature" {
@@ -342,6 +346,47 @@ mod tests {
         assert_eq!(
             validate_encoded_rustflags(&flags),
             Err("built-in target_feature cfgs can override runtime CPU detection".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_block_comment_after_cfg_name() {
+        let flags = encoded(&[
+            "--cfg",
+            r#"target_feature/*gate*/="avx2""#,
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("comment-bearing cfgs cannot be validated".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_block_comment_before_cfg_name() {
+        let flags = encoded(&[
+            r#"--cfg=/*gate*/target_feature="avx2""#,
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("comment-bearing cfgs cannot be validated".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_line_comment_cfg_trivia() {
+        let flags = encoded(&[
+            "--cfg",
+            "target_feature// gate\n=\"avx2\"",
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("comment-bearing cfgs cannot be validated".to_owned())
         );
     }
 }
