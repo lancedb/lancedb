@@ -172,7 +172,7 @@ export class PermutationBuilder {
    */
   async execute(): Promise<Table> {
     const nativeTable: NativeTable = await this.inner.execute();
-    return new LocalTable(nativeTable);
+    return await LocalTable.create(nativeTable);
   }
 }
 

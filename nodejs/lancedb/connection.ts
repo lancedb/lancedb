@@ -535,7 +535,7 @@ export class LocalConnection extends Connection {
       options?.indexCacheSize,
     );
 
-    let table: Table = new LocalTable(innerTable);
+    let table: Table = await LocalTable.create(innerTable);
     // "main" is the default branch, so treat it as no branch. On a real branch,
     // scope and pin in one step (yielding "version V of branch B"); otherwise
     // pin the version, if any, against main.
@@ -570,7 +570,7 @@ export class LocalConnection extends Connection {
       options?.isShallow ?? true,
     );
 
-    return new LocalTable(innerTable);
+    return await LocalTable.create(innerTable);
   }
 
   private getStorageOptions(
@@ -652,7 +652,7 @@ export class LocalConnection extends Connection {
       storageOptions,
     );
 
-    return new LocalTable(innerTable);
+    return await LocalTable.create(innerTable);
   }
 
   async createEmptyTable(
@@ -698,7 +698,7 @@ export class LocalConnection extends Connection {
       namespacePath ?? [],
       storageOptions,
     );
-    return new LocalTable(innerTable);
+    return await LocalTable.create(innerTable);
   }
 
   async dropTable(name: string, namespacePath?: string[]): Promise<void> {

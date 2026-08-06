@@ -814,10 +814,30 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
+  private readonly hasEmbeddingFunctions: boolean;
 
-  constructor(inner: _NativeTable) {
+  private constructor(inner: _NativeTable, hasEmbeddingFunctions: boolean) {
     super();
     this.inner = inner;
+    this.hasEmbeddingFunctions = hasEmbeddingFunctions;
+  }
+
+  static async create(inner: _NativeTable): Promise<LocalTable> {
+    const schemaBuf = await inner.schema();
+    const schema = tableFromIPC(schemaBuf).schema;
+    const serializedFunctions = schema.metadata.get("embedding_functions");
+    let hasEmbeddingFunctions = false;
+    if (serializedFunctions !== undefined) {
+      try {
+        const functions: unknown = JSON.parse(serializedFunctions);
+        hasEmbeddingFunctions =
+          !Array.isArray(functions) || functions.length > 0;
+      } catch {
+        // Let parseFunctions report malformed metadata when the query executes.
+        hasEmbeddingFunctions = true;
+      }
+    }
+    return new LocalTable(inner, hasEmbeddingFunctions);
   }
   get name(): string {
     return this.inner.name;
@@ -1038,7 +1058,7 @@ export class LocalTable extends Table {
     // fall back to full text search if no embedding functions are defined and the query is a string
     if (
       queryType === "auto" &&
-      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
+      (!this.hasEmbeddingFunctions || instanceOfFullTextQuery(query))
     ) {
       return this.query().fullTextSearch(query, {
         columns: ftsColumns,
@@ -1461,7 +1481,9 @@ export class Branches {
     fromRef?: string,
     fromVersion?: number,
   ): Promise<Table> {
-    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+    return await LocalTable.create(
+      await this.#inner.create(name, fromRef, fromVersion),
+    );
   }
 
   /**
@@ -1472,7 +1494,7 @@ export class Branches {
    * latest and stays writable.
    */
   async checkout(name: string, version?: number): Promise<Table> {
-    return new LocalTable(await this.#inner.checkout(name, version));
+    return await LocalTable.create(await this.#inner.checkout(name, version));
   }
 
   /** Delete a branch. */

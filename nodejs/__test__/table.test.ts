@@ -2298,7 +2298,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
-    test("full text search if no embedding function provided", async () => {
+    test("full text search if only an unrelated embedding function is registered", async () => {
+      register("unused")(
+        class extends EmbeddingFunction<string> {
+          ndims() {
+            return 3;
+          }
+          embeddingDataType() {
+            return new Float32();
+          }
+          async computeQueryEmbeddings(_data: string) {
+            return [1, 2, 3];
+          }
+          async computeSourceEmbeddings(data: string[]) {
+            return data.map(() => [1, 2, 3]);
+          }
+        },
+      );
+
       const db = await connect(tmpDir.name);
       const data = [
         { text: "hello world", vector: [0.1, 0.2, 0.3] },
