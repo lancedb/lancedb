@@ -6,7 +6,17 @@ extern crate napi_build;
 use std::env;
 
 const ENFORCE_BASELINE: &str = "LANCEDB_NODE_ENFORCE_X86_64_V2";
-const UNSUPPORTED_FEATURES: [&str; 4] = ["avx", "avx2", "fma", "f16c"];
+const X86_64_V2_FEATURES: [&str; 9] = [
+    "cmpxchg16b",
+    "fxsr",
+    "popcnt",
+    "sse",
+    "sse2",
+    "sse3",
+    "sse4.1",
+    "sse4.2",
+    "ssse3",
+];
 
 fn main() {
     napi_build::setup();
@@ -22,16 +32,14 @@ fn main() {
     }
 
     let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
-    let enabled_features = target_features.split(',').collect::<Vec<_>>();
-    let leaked_features = UNSUPPORTED_FEATURES
-        .iter()
-        .filter(|feature| enabled_features.contains(feature))
-        .copied()
+    let features_above_v2 = target_features
+        .split(',')
+        .filter(|feature| !feature.is_empty() && !X86_64_V2_FEATURES.contains(feature))
         .collect::<Vec<_>>();
 
     assert!(
-        leaked_features.is_empty(),
-        "Linux x64 Node addons must use the x86-64-v2 baseline; unsupported target features: {}",
-        leaked_features.join(", ")
+        features_above_v2.is_empty(),
+        "Linux x64 Node addons must use the x86-64-v2 baseline; features above v2: {}",
+        features_above_v2.join(", ")
     );
 }
