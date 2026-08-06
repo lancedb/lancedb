@@ -115,34 +115,16 @@ def test_embedding_function_variables():
     assert func.safe_model_dump()["secret_key"] == "$var:secret"
 
 
-def test_parse_functions_with_variables():
-    @register("variable-parsing-test")
-    class VariableParsingFunction(TextEmbeddingFunction):
-        api_key: str
-        base_url: Optional[str] = None
-
-        @staticmethod
-        def sensitive_keys():
-            return ["api_key"]
-
-        def ndims(self):
-            return 10
-
-        def generate_embeddings(self, texts):
-            # Mock implementation that just returns random embeddings
-            # In real usage, this would use the api_key to call an API
-            return [np.random.rand(self.ndims()).tolist() for _ in texts]
-
+def test_openai_variables_survive_metadata_round_trip():
     registry = EmbeddingFunctionRegistry.get_instance()
 
     registry.set_var("test_api_key", "sk-test-key-12345")
-    registry.set_var("test_base_url", "https://api.example.com")
 
     conf = EmbeddingFunctionConfig(
         source_column="text",
         vector_column="vector",
-        function=registry.get("variable-parsing-test").create(
-            api_key="$var:test_api_key", base_url="$var:test_base_url"
+        function=registry.get("openai").create(
+            api_key="$var:test_api_key", base_url="https://api.example.com"
         ),
     )
 
@@ -150,7 +132,10 @@ def test_parse_functions_with_variables():
 
     # Create a mock arrow table with the metadata
     schema = pa.schema(
-        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+        [
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 1536)),
+        ]
     )
     table = pa.table({"text": [], "vector": []}, schema=schema)
     table = table.replace_schema_metadata(metadata)
@@ -164,12 +149,14 @@ def test_parse_functions_with_variables():
 
     assert parsed_func.api_key == "sk-test-key-12345"
     assert parsed_func.base_url == "https://api.example.com"
-
-    embeddings = parsed_func.generate_embeddings(["test text"])
-    assert len(embeddings) == 1
-    assert len(embeddings[0]) == 10
-
     assert parsed_func.safe_model_dump()["api_key"] == "$var:test_api_key"
+
+    with patch("lancedb.embeddings.openai.attempt_import_or_raise") as import_openai:
+        parsed_func._openai_client
+
+    import_openai.return_value.OpenAI.assert_called_once_with(
+        api_key="sk-test-key-12345", base_url="https://api.example.com"
+    )
 
 
 def test_embedding_with_bad_results(tmp_path):
