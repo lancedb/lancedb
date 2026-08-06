@@ -697,6 +697,7 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        self.ensure_storage_supported()?;
         Ok((self.ns_impl.clone(), self.ns_properties.clone()))
     }
 }
@@ -767,6 +768,10 @@ mod tests {
             .list_tables(ListTablesRequest::default())
             .await
             .unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("UNC roots"));
+
+        let error = db.namespace_client_config().await.unwrap_err();
         assert!(matches!(error, Error::NotSupported { .. }));
         assert!(error.to_string().contains("UNC roots"));
     }

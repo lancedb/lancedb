@@ -1230,6 +1230,40 @@ def test_clone_table_deep_clone_fails(tmp_path):
         db.clone_table("cloned", source_uri, is_shallow=False)
 
 
+class _UnsupportedNamespaceConfig:
+    async def namespace_client_config(self):
+        raise RuntimeError("UNC namespace client export is not supported")
+
+
+def test_sync_namespace_client_propagates_export_guard(monkeypatch):
+    from lancedb.db import AsyncConnection, LanceDBConnection
+
+    monkeypatch.setattr(
+        "lancedb.db.namespace_connect",
+        lambda *_args, **_kwargs: pytest.fail("guarded config was reconstructed"),
+    )
+    db = LanceDBConnection.__new__(LanceDBConnection)
+    db._conn = AsyncConnection(_UnsupportedNamespaceConfig())
+    db._cached_namespace_client = None
+
+    with pytest.raises(RuntimeError, match="UNC namespace client export"):
+        db.namespace_client()
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_client_propagates_export_guard(monkeypatch):
+    from lancedb.db import AsyncConnection
+
+    monkeypatch.setattr(
+        "lancedb.db.namespace_connect",
+        lambda *_args, **_kwargs: pytest.fail("guarded config was reconstructed"),
+    )
+    db = AsyncConnection(_UnsupportedNamespaceConfig())
+
+    with pytest.raises(RuntimeError, match="UNC namespace client export"):
+        await db.namespace_client()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
 def test_namespace_client_native_storage(tmp_path):
     """Test namespace_client() returns DirectoryNamespace for native storage."""

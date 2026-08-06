@@ -919,17 +919,7 @@ class LanceNamespaceDBConnection(DBConnection):
             The namespace client for this connection.
         """
         if self._namespace_client is None:
-            if (
-                self._namespace_client_impl is None
-                or self._namespace_client_properties is None
-            ):
-                raise ValueError(
-                    "Cannot construct a Python namespace client without "
-                    "namespace implementation properties"
-                )
-            self._namespace_client = namespace_connect(
-                self._namespace_client_impl, self._namespace_client_properties
-            )
+            self._namespace_client = LOOP.run(self._inner.namespace_client())
         return self._namespace_client
 
 
@@ -1370,17 +1360,7 @@ class AsyncLanceNamespaceDBConnection:
             The namespace client for this connection.
         """
         if self._namespace_client is None:
-            if (
-                self._namespace_client_impl is None
-                or self._namespace_client_properties is None
-            ):
-                raise ValueError(
-                    "Cannot construct a Python namespace client without "
-                    "namespace implementation properties"
-                )
-            self._namespace_client = namespace_connect(
-                self._namespace_client_impl, self._namespace_client_properties
-            )
+            self._namespace_client = await self._inner.namespace_client()
         return self._namespace_client
 
 
