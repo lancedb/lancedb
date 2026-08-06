@@ -305,6 +305,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_compact_with_concurrent_add() {
+        const NUM_FRAGMENTS: usize = 5;
+        const ROWS_PER_FRAGMENT: i32 = 300;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(0..ROWS_PER_FRAGMENT))],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_concurrent_compact", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        for _ in 0..NUM_FRAGMENTS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Use separate handles so the two writes actually overlap, as they can
+        // when different Node connections operate on the same S3 table.
+        let compact_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let append_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let compact_task = tokio::spawn(async move {
+            compact_table
+                .optimize(OptimizeAction::Compact {
+                    options: CompactionOptions {
+                        target_rows_per_fragment: 1_000,
+                        ..Default::default()
+                    },
+                    remap_options: None,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        for _ in 0..NUM_FRAGMENTS {
+            append_table.add(batch.clone()).execute().await.unwrap();
+        }
+        compact_task.await.unwrap().unwrap();
+
+        let table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let fragment_ids = dataset
+            .get_fragments()
+            .iter()
+            .map(|fragment| fragment.id())
+            .collect::<Vec<_>>();
+        assert!(fragment_ids.windows(2).all(|ids| ids[0] < ids[1]));
+
+        // A second compaction exposed the original out-of-order row-id bug.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1_000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table.count_rows(None).await.unwrap(),
+            ROWS_PER_FRAGMENT as usize * (NUM_FRAGMENTS * 2 + 1)
+        );
+    }
+
+    #[tokio::test]
     async fn test_optimize_prune_versions() {
         let conn = connect("memory://").execute().await.unwrap();
 
