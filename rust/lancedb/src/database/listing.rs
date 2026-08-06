@@ -24,7 +24,7 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::{
-    MirroringObjectStoreWrapper, install_atomic_aws_provider, is_aws_credential_option,
+    MirroringObjectStoreWrapper, atomic_aws_session, is_aws_credential_option,
     object_store_params_from_storage_options, set_storage_options,
 };
 use crate::table::NativeTable;
@@ -436,11 +436,7 @@ impl ListingDatabase {
         request: &ConnectRequest,
     ) -> Result<LanceNamespaceDatabase> {
         let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
-        let session = request
-            .session
-            .clone()
-            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        install_atomic_aws_provider(&session);
+        let session = atomic_aws_session(request.session.clone());
         let namespace_root =
             Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
                 .await?;
@@ -542,11 +538,7 @@ impl ListingDatabase {
                     url.to_string()
                 };
 
-                let session = request
-                    .session
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-                install_atomic_aws_provider(&session);
+                let session = atomic_aws_session(request.session.clone());
                 let os_params =
                     object_store_params_from_storage_options(options.storage_options.clone());
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
@@ -613,8 +605,7 @@ impl ListingDatabase {
         namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        install_atomic_aws_provider(&session);
+        let session = atomic_aws_session(session);
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,

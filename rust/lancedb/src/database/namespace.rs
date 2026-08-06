@@ -34,7 +34,7 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
-use crate::io::object_store::install_atomic_aws_provider;
+use crate::io::object_store::{atomic_aws_session, install_atomic_aws_provider};
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
@@ -160,10 +160,7 @@ impl LanceNamespaceDatabase {
         // Namespace construction needs a protected session even when the connection did not
         // supply one. Keep the original option separately so per-operation sessions retain
         // precedence when tables are opened or created later.
-        let builder_session = session
-            .clone()
-            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        install_atomic_aws_provider(&builder_session);
+        let builder_session = atomic_aws_session(session.clone());
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
             builder = builder.property(key, value);

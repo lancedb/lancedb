@@ -20,7 +20,7 @@ use lance::io::{ObjectStoreParams, WrappingObjectStore};
 #[cfg(feature = "aws")]
 use lance_io::object_store::{
     ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry, StorageOptions,
-    providers::aws::{AwsStoreProvider, build_aws_credential},
+    providers::aws::build_aws_credential,
     throttle::{AimdThrottleConfig, AimdThrottledStore},
 };
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
@@ -418,18 +418,12 @@ impl ObjectStore for AtomicOpenDalStore {
 #[derive(Debug)]
 struct AtomicAwsStoreProvider {
     inner: Arc<dyn ObjectStoreProvider>,
+    adapt_builtin_opendal: bool,
 }
 
 #[cfg(feature = "aws")]
 impl AtomicAwsStoreProvider {
     const CACHE_GENERATION: &'static str = "lancedb-atomic-aws-v1";
-
-    /// Lance does not expose provider downcasting. Its built-in provider is a unit struct with a
-    /// stable derived Debug representation, which is the only available way to distinguish the
-    /// one provider whose OpenDAL implementation needs adaptation from an unknown custom one.
-    fn is_builtin_aws_provider(&self) -> bool {
-        format!("{:?}", self.inner.as_ref()) == format!("{:?}", AwsStoreProvider)
-    }
 
     fn generated_prefix(
         &self,
@@ -456,7 +450,7 @@ impl AtomicAwsStoreProvider {
             // its returned store may add encryption, authorization, or wrapping behavior that
             // cannot be reconstructed from ObjectStoreParams. Only adapt Lance's known built-in
             // provider, whose OpenDAL path ignores both supported credential-provider fields.
-            if !self.is_builtin_aws_provider() {
+            if !self.adapt_builtin_opendal {
                 return self.inner.new_store(base_path, params).await;
             }
             if storage_options
@@ -605,7 +599,10 @@ static ATOMIC_AWS_REGISTRIES: LazyLock<Mutex<Vec<Weak<ObjectStoreRegistry>>>> =
 
 /// Install the credential-safe S3 provider once on a session's shared object-store registry.
 #[cfg(feature = "aws")]
-pub(crate) fn install_atomic_aws_provider(session: &lance::session::Session) {
+fn install_atomic_aws_provider_inner(
+    session: &lance::session::Session,
+    adapt_builtin_opendal: bool,
+) {
     let registry = session.store_registry();
     let mut installed = ATOMIC_AWS_REGISTRIES
         .lock()
@@ -621,14 +618,48 @@ pub(crate) fn install_atomic_aws_provider(session: &lance::session::Session) {
 
     for scheme in ["s3", "s3+ddb"] {
         if let Some(inner) = registry.get_provider(scheme) {
-            registry.insert(scheme, Arc::new(AtomicAwsStoreProvider { inner }));
+            registry.insert(
+                scheme,
+                Arc::new(AtomicAwsStoreProvider {
+                    inner,
+                    adapt_builtin_opendal,
+                }),
+            );
         }
     }
     installed.push(Arc::downgrade(&registry));
 }
 
+/// Protect a caller-supplied session while treating every registered provider as unknown.
+///
+/// Unknown providers retain unconditional control of their OpenDAL store composition. Only a
+/// fresh default session created by [`atomic_aws_session`] has the explicit capability to adapt
+/// Lance's built-in AWS provider.
+#[cfg(feature = "aws")]
+pub(crate) fn install_atomic_aws_provider(session: &lance::session::Session) {
+    install_atomic_aws_provider_inner(session, false);
+}
+
 #[cfg(not(feature = "aws"))]
 pub(crate) fn install_atomic_aws_provider(_session: &lance::session::Session) {}
+
+/// Select a supplied session or create a fresh session with a known built-in AWS provider.
+pub(crate) fn atomic_aws_session(
+    session: Option<Arc<lance::session::Session>>,
+) -> Arc<lance::session::Session> {
+    match session {
+        Some(session) => {
+            install_atomic_aws_provider(&session);
+            session
+        }
+        None => {
+            let session = Arc::new(lance::session::Session::default());
+            #[cfg(feature = "aws")]
+            install_atomic_aws_provider_inner(&session, true);
+            session
+        }
+    }
+}
 
 /// Apply storage options to object store parameters.
 ///
@@ -920,9 +951,15 @@ mod credential_tests {
         }
     }
 
-    #[derive(Debug)]
     struct CustomStoreProvider {
         marker: Arc<dyn ObjectStore>,
+    }
+
+    impl std::fmt::Debug for CustomStoreProvider {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+            // Diagnostic output must never grant authority to replace a custom provider's store.
+            formatter.write_str("AwsStoreProvider")
+        }
     }
 
     #[async_trait]
@@ -999,6 +1036,7 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
+            adapt_builtin_opendal: false,
         };
 
         provider
@@ -1218,12 +1256,14 @@ mod credential_tests {
             ..Default::default()
         };
 
-        AtomicAwsStoreProvider {
-            inner: Arc::new(AwsStoreProvider),
-        }
-        .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
-        .await
-        .unwrap();
+        let session = atomic_aws_session(None);
+        session
+            .store_registry()
+            .get_provider("s3")
+            .unwrap()
+            .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
+            .await
+            .unwrap();
 
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
@@ -1245,6 +1285,7 @@ mod credential_tests {
 
         let error = AtomicAwsStoreProvider {
             inner: Arc::new(AwsStoreProvider),
+            adapt_builtin_opendal: true,
         }
         .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
         .await
@@ -1276,6 +1317,7 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
+            adapt_builtin_opendal: false,
         }
         .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
         .await
@@ -1295,6 +1337,7 @@ mod credential_tests {
     fn wrapper_delegates_custom_path_extraction() {
         let provider = AtomicAwsStoreProvider {
             inner: Arc::new(CustomPathProvider),
+            adapt_builtin_opendal: false,
         };
 
         assert_eq!(
@@ -1338,15 +1381,21 @@ mod credential_tests {
     #[tokio::test]
     async fn opendal_preserves_custom_provider_store_behavior() {
         let marker: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let provider = AtomicAwsStoreProvider {
-            inner: Arc::new(CustomStoreProvider {
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert(
+            "s3",
+            Arc::new(CustomStoreProvider {
                 marker: marker.clone(),
             }),
-        };
+        );
+        let session = lance::session::Session::new(16, 16, registry.clone());
+        install_atomic_aws_provider(&session);
         let mut options = local_s3_options();
         options.insert("use_opendal".to_string(), "true".to_string());
 
-        let store = provider
+        let store = registry
+            .get_provider("s3")
+            .unwrap()
             .new_store(
                 url::Url::parse("s3://bucket/table").unwrap(),
                 &object_store_params_from_storage_options(options),
@@ -1406,6 +1455,7 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
+            adapt_builtin_opendal: false,
         };
         let params = ObjectStoreParams {
             storage_options_accessor: Some(Arc::new(
@@ -1448,6 +1498,7 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
+            adapt_builtin_opendal: false,
         };
         let params = ObjectStoreParams {
             aws_credentials: Some(Arc::new(StaticCredentialProvider::new(AwsCredential {
