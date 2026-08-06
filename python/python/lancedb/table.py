@@ -4663,9 +4663,9 @@ class AsyncTable:
 
         Returns ``None`` when the MemWAL LSM write path is not enabled (no
         spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The returned spec — including its ``maintained_indexes`` and
-        ``writer_config_defaults`` — mirrors what was passed to
-        `set_lsm_write_spec`.
+        The returned spec mirrors what was passed to `set_lsm_write_spec`,
+        except that ``maintained_indexes`` always reports the concrete list
+        resolved when the spec was set — ``None`` never round-trips.
         """
         return await self._inner.get_lsm_write_spec()
 

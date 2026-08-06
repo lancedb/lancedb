@@ -431,9 +431,10 @@ Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on th
 
 Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
 spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
-The returned spec — including its `maintainedIndexes` and
-`writerConfigDefaults` — mirrors what was passed to
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec).
+The returned spec mirrors what was passed to
+[Table#setLsmWriteSpec](Table.md#setlsmwritespec), except that `maintainedIndexes` always
+reports the concrete list resolved when the spec was set — `undefined`
+never round-trips.
 
 #### Returns
 
@@ -805,6 +806,10 @@ LSM-style write path for future `mergeInsert` calls.
 All variants require the table to have an unenforced primary key
 ([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
 requires it to be the single column being bucketed.
+
+Omitting `maintainedIndexes` maintains every supported index, resolved
+here. Naming them pins an exact set, and a still-building index is
+rejected rather than quietly omitted.
 
 #### Parameters
 
