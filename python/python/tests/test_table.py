@@ -3489,8 +3489,8 @@ def test_create_table_empty_list_no_schema_error(mem_db: DBConnection):
         mem_db.create_table("test_empty_no_schema", data=[])
 
 
-def test_add_table_with_empty_embeddings(tmp_path):
-    """Test exact scenario from issue #1968
+def test_create_table_without_data_with_vector_schema(tmp_path):
+    """Test exact scenario from issue #1968.
 
     Regression test for issue #1968:
     https://github.com/lancedb/lancedb/issues/1968
@@ -3502,6 +3502,9 @@ def test_add_table_with_empty_embeddings(tmp_path):
         embedding: Vector(16)
 
     table = db.create_table("test", schema=MySchema)
+    assert table.count_rows() == 0
+    assert table.schema == MySchema.to_arrow_schema()
+
     table.add(
         [{"text": "bar", "embedding": [0.1] * 16}],
         on_bad_vectors="drop",
