@@ -1336,9 +1336,11 @@ mod tests {
 
         let write_params = db.prepare_write_params(&request, None, None, None);
 
+        let store_params = write_params.store_params.unwrap();
+        assert!(store_params.storage_options_accessor.is_some());
         assert!(
-            write_params.store_params.unwrap().aws_credentials.is_some(),
-            "operation-only explicit credentials must be installed atomically"
+            store_params.aws_credentials.is_none(),
+            "credential allocation must happen after the registry cache lookup"
         );
     }
 
@@ -1361,15 +1363,11 @@ mod tests {
 
         db.prepare_open_table_request(&mut request);
 
+        let store_params = request.lance_read_params.unwrap().store_options.unwrap();
+        assert!(store_params.storage_options_accessor.is_some());
         assert!(
-            request
-                .lance_read_params
-                .unwrap()
-                .store_options
-                .unwrap()
-                .aws_credentials
-                .is_some(),
-            "operation-only explicit credentials must be installed atomically"
+            store_params.aws_credentials.is_none(),
+            "credential allocation must happen after the registry cache lookup"
         );
     }
 

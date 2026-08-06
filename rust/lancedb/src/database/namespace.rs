@@ -102,8 +102,9 @@ impl LanceNamespaceDatabase {
         session: Option<Arc<lance::session::Session>>,
         namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
-        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        install_atomic_aws_provider(&session);
+        if let Some(session) = &session {
+            install_atomic_aws_provider(session);
+        }
         // Client is pre-built, so we can't install the freshness provider here;
         // baselines are still tracked for a uniform bump path.
         let delimiter = resolve_delimiter(&namespace_client_properties);
@@ -111,7 +112,7 @@ impl LanceNamespaceDatabase {
             namespace: namespace_client,
             storage_options,
             read_consistency_interval,
-            session: Some(session),
+            session,
             uri: format!("namespace://{}", namespace_client_impl),
             pushdown_operations: namespace_client_pushdown_operations,
             ns_impl: namespace_client_impl,
@@ -156,13 +157,18 @@ impl LanceNamespaceDatabase {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         new_table_config: NewTableConfig,
     ) -> Result<Self> {
-        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
-        install_atomic_aws_provider(&session);
+        // Namespace construction needs a protected session even when the connection did not
+        // supply one. Keep the original option separately so per-operation sessions retain
+        // precedence when tables are opened or created later.
+        let builder_session = session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        install_atomic_aws_provider(&builder_session);
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
             builder = builder.property(key, value);
         }
-        builder = builder.session(session.clone());
+        builder = builder.session(builder_session);
 
         // Install the read-freshness provider before building the client.
         let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
@@ -180,7 +186,7 @@ impl LanceNamespaceDatabase {
             namespace,
             storage_options,
             read_consistency_interval,
-            session: Some(session),
+            session,
             uri: format!("namespace://{}", ns_impl),
             pushdown_operations,
             ns_impl: ns_impl.to_string(),
@@ -631,8 +637,36 @@ mod tests {
     use crate::query::ExecutableQuery;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use async_trait::async_trait;
     use futures::TryStreamExt;
+    use lance_io::object_store::{
+        ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider,
+        ObjectStoreRegistry, uri_to_url,
+    };
     use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct FailingFileProvider;
+
+    #[async_trait]
+    impl ObjectStoreProvider for FailingFileProvider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            _params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            Err(lance_core::Error::invalid_input(
+                "operation-supplied session was used",
+            ))
+        }
+    }
+
+    fn file_object_store_uri(path: &str) -> String {
+        let file_url = uri_to_url(path).unwrap();
+        let mut url = url::Url::parse("file-object-store:///").unwrap();
+        url.set_path(file_url.path());
+        url.to_string()
+    }
 
     /// Helper function to create test data
     fn create_test_data() -> RecordBatch {
@@ -667,7 +701,81 @@ mod tests {
             .downcast_ref::<LanceNamespaceDatabase>()
             .unwrap();
 
-        assert!(database.session.is_some());
+        assert!(
+            database.session.is_none(),
+            "a builder-only default session must not override operation parameters"
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_read_session_takes_precedence_when_connection_has_no_session() {
+        let tmp_dir = tempdir().unwrap();
+        let properties = HashMap::from([(
+            "root".to_string(),
+            file_object_store_uri(tmp_dir.path().to_str().unwrap()),
+        )]);
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        connection
+            .create_table("test", create_test_data())
+            .execute()
+            .await
+            .unwrap();
+
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file-object-store", Arc::new(FailingFileProvider));
+        let read_params = lance::dataset::ReadParams {
+            session: Some(Arc::new(lance::session::Session::new(16, 16, registry))),
+            ..Default::default()
+        };
+
+        let error = connection
+            .open_table("test")
+            .lance_read_params(read_params)
+            .execute()
+            .await
+            .expect_err("operation-supplied session was silently replaced");
+        assert!(
+            error
+                .to_string()
+                .contains("operation-supplied session was used")
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_write_session_takes_precedence_when_connection_has_no_session() {
+        let tmp_dir = tempdir().unwrap();
+        let properties = HashMap::from([(
+            "root".to_string(),
+            file_object_store_uri(tmp_dir.path().to_str().unwrap()),
+        )]);
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file-object-store", Arc::new(FailingFileProvider));
+        let write_params = lance::dataset::WriteParams {
+            session: Some(Arc::new(lance::session::Session::new(16, 16, registry))),
+            ..Default::default()
+        };
+
+        let error = connection
+            .create_table("test", create_test_data())
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(write_params),
+            })
+            .execute()
+            .await
+            .expect_err("operation-supplied session was silently replaced");
+        assert!(
+            error
+                .to_string()
+                .contains("operation-supplied session was used")
+        );
     }
 
     #[tokio::test]

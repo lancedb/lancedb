@@ -2413,10 +2413,15 @@ impl NativeTable {
     ) -> Result<Self> {
         let mut params = params.unwrap_or_default();
 
-        // Set the session in read params
-        if let Some(sess) = session {
-            params.session(sess);
-        }
+        // Advanced operation parameters take precedence over the connection session. A fresh
+        // session is needed only when neither source supplied one.
+        let effective_session = params
+            .session
+            .clone()
+            .or(session)
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        crate::io::object_store::install_atomic_aws_provider(&effective_session);
+        params.session(effective_session);
 
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
@@ -2636,10 +2641,15 @@ impl NativeTable {
         // Start with provided params or defaults
         let mut params = params.unwrap_or_default();
 
-        // Set the session in write params
-        if let Some(sess) = session {
-            params.session = Some(sess);
-        }
+        // Advanced operation parameters take precedence over the connection session. A fresh
+        // session is needed only when neither source supplied one.
+        let effective_session = params
+            .session
+            .clone()
+            .or(session)
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        crate::io::object_store::install_atomic_aws_provider(&effective_session);
+        params.session = Some(effective_session);
 
         // Ensure store_params exists and set the storage options provider
         let store_params = params
