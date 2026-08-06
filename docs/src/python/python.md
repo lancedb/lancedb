@@ -180,6 +180,21 @@ instead of being materialized with the rest of the row.
 
 ::: lancedb.otel.instrument_lancedb_metrics
 
+## Legacy V2 migration
+
+Tables created with the experimental V2 format in LanceDB Node 0.5.x can be
+rewritten with the legacy PyLance reader. In a dedicated environment, install
+LanceDB normally, then install the legacy reader without its obsolete PyArrow
+upper bound and run the migration:
+
+```shell
+pip install lancedb
+pip install --no-deps pylance==0.12.1
+python -m lancedb.legacy_v2 <database-uri>
+```
+
+::: lancedb.legacy_v2.migrate_legacy_v2_tables
+
 ## Exceptions
 
 ::: lancedb.exceptions.MissingValueError
