@@ -2280,7 +2280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_table_uri() {
-        let (_tempdir, db) = setup_database().await;
+        let (_tempdir, mut db) = setup_database().await;
 
         let mut pb = PathBuf::new();
         pb.push(db.uri.clone());
@@ -2289,6 +2289,18 @@ mod tests {
         let expected = pb.to_str().unwrap();
         let uri = db.table_uri("test").ok().unwrap();
         assert_eq!(uri, expected);
+
+        // URI paths always use forward slashes, even on Windows. Using
+        // `Path::join` here used to produce `az://container/prefix\\test.lance`,
+        // which Azure treated as a different object from the table returned by
+        // `table_names` (https://github.com/lancedb/lancedb/issues/1072).
+        for base_uri in ["az://container/prefix", "az://container/prefix/"] {
+            db.uri = base_uri.to_string();
+            assert_eq!(
+                db.table_uri("test").unwrap(),
+                "az://container/prefix/test.lance"
+            );
+        }
     }
 
     /// Regression: connecting via a URL-style URI (which goes through
