@@ -165,13 +165,16 @@ Compare each version's `timestamp` (ISO-8601 `...Z`) or `timestamp_millis` again
 
 - If the oldest retained version is newer than the cutoff, decide **why** before reporting
   anything: pruning is only one explanation. Identify the chain's expected baseline first —
-  version 1 on main, the source version on a branch. If that baseline is retained, nothing
-  was pruned: the table (or branch) simply didn't exist yet at the cutoff, the history is
-  complete, and the answer is everything — starting from creation or from the fork (for
-  pre-fork changes, continue in the parent chain). Only when the expected baseline is
-  missing — main starts at vK > 1, or a branch starts above its source — have older commits
-  actually been pruned; report the answer as "changes within retained history (from vK)",
-  not as everything since the cutoff.
+  version 1 on main, the source version on a branch. If the baseline is missing — main
+  starts at vK > 1, or a branch starts above its source — older commits have been pruned;
+  report the answer as "changes within retained history (from vK)", not as everything
+  since the cutoff. If the baseline is retained, the start wasn't truncated: the table (or
+  branch) simply didn't exist yet at the cutoff, and the answer starts from creation or
+  from the fork (for pre-fork changes, continue in the parent chain). A retained baseline
+  alone does not make the audit complete, though — pruning can hollow out the middle, so
+  also confirm the versions from the baseline through the window are **contiguous**. Any
+  numbering gap is pruned history (per the version model above), and the answer stays
+  incomplete no matter what the endpoints show.
 - Timestamp precision and timezone **vary by surface**. Lance manifests store nanoseconds,
   but Python's `list_versions()` returns a **naive local-time** datetime at microsecond
   precision, and TypeScript returns a JS `Date` (milliseconds). REST returns an RFC 3339
