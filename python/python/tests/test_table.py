@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
@@ -25,7 +25,7 @@ from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
-from lancedb.table import LanceTable
+from lancedb.table import AsyncTable, LanceTable
 from pydantic import BaseModel
 
 
@@ -1410,6 +1410,113 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.wait()
     assert len(table.list_indices()) == 1
     job.cancel()
+
+
+def test_create_index_dispatches_mps_to_pylance(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "mps_sync",
+        data=[
+            {"vector": [3.1, 4.1]},
+            {"vector": [5.9, 26.5]},
+        ],
+    )
+    dataset = MagicMock()
+
+    with (
+        patch.object(table, "to_lance", return_value=dataset),
+        patch.object(table, "checkout_latest") as checkout_latest,
+    ):
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                metric="cosine",
+                num_partitions=4,
+                num_sub_vectors=2,
+                accelerator="mps",
+                replace=False,
+                name="vector_mps",
+            )
+
+    dataset.create_index.assert_called_once_with(
+        column="vector",
+        replace=False,
+        index_cache_size=None,
+        name="vector_mps",
+        train=True,
+        index_type="IVF_PQ",
+        metric="cosine",
+        num_partitions=4,
+        num_sub_vectors=2,
+        accelerator="mps",
+        num_bits=8,
+        m=20,
+        ef_construction=300,
+        target_partition_size=None,
+    )
+    checkout_latest.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_create_index_dispatches_mps_to_pylance():
+    inner = MagicMock()
+    inner._is_native.return_value = True
+    inner.checkout_latest = AsyncMock()
+    table = AsyncTable(inner)
+    dataset = MagicMock()
+
+    with patch.object(table, "to_lance", AsyncMock(return_value=dataset)):
+        await table.create_index(
+            "vector",
+            config=IvfPq(
+                distance_type="cosine",
+                num_partitions=4,
+                num_sub_vectors=2,
+                accelerator="mps",
+            ),
+            name="vector_mps",
+        )
+
+    dataset.create_index.assert_called_once_with(
+        column="vector",
+        replace=True,
+        name="vector_mps",
+        train=True,
+        index_type="IVF_PQ",
+        metric="cosine",
+        num_partitions=4,
+        num_sub_vectors=2,
+        accelerator="mps",
+        num_bits=8,
+        m=20,
+        ef_construction=300,
+        target_partition_size=None,
+    )
+    inner.create_index.assert_not_called()
+    inner.checkout_latest.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_background_index_rejects_accelerator():
+    inner = MagicMock()
+    inner.create_index_async = AsyncMock()
+    table = AsyncTable(inner)
+
+    with pytest.raises(ValueError, match="Accelerated index creation does not support"):
+        await table.create_index_async("vector", config=IvfPq(accelerator="mps"))
+
+    inner.create_index_async.assert_not_awaited()
+
+
+def test_background_index_rejects_accelerator(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "mps_background",
+        data=[
+            {"vector": [3.1, 4.1]},
+            {"vector": [5.9, 26.5]},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Accelerated index creation does not support"):
+        table.create_index_async("vector", config=IvfPq(accelerator="mps"))
 
 
 @patch("lancedb.table.AsyncTable.create_index")

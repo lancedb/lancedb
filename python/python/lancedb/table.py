@@ -214,6 +214,47 @@ IndexConfigType = Union[
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
 
+_PYLANCE_ACCELERATED_INDEX_TYPES = {
+    IvfFlat: "IVF_FLAT",
+    IvfSq: "IVF_SQ",
+    IvfPq: "IVF_PQ",
+    IvfRq: "IVF_RQ",
+    HnswPq: "IVF_HNSW_PQ",
+    HnswSq: "IVF_HNSW_SQ",
+}
+
+
+def _pylance_accelerated_index_options(
+    config: IndexConfigType,
+    *,
+    accelerator: Optional[str] = None,
+    index_type: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Translate an accelerated vector config into PyLance index options."""
+    if accelerator is None:
+        accelerator = getattr(config, "accelerator", None)
+    if accelerator is None:
+        return None
+
+    if index_type is None:
+        index_type = _PYLANCE_ACCELERATED_INDEX_TYPES.get(type(config))
+    if index_type is None:
+        raise ValueError(
+            f"Index type {type(config).__name__} does not support an accelerator"
+        )
+
+    return {
+        "index_type": index_type,
+        "metric": getattr(config, "distance_type", "l2"),
+        "num_partitions": getattr(config, "num_partitions", None),
+        "num_sub_vectors": getattr(config, "num_sub_vectors", None),
+        "accelerator": accelerator,
+        "num_bits": getattr(config, "num_bits", 8),
+        "m": getattr(config, "m", 20),
+        "ef_construction": getattr(config, "ef_construction", 300),
+        "target_partition_size": getattr(config, "target_partition_size", None),
+    }
+
 
 def _into_pyarrow_reader(
     data, schema: Optional[pa.Schema] = None
@@ -2737,20 +2778,17 @@ class LanceTable(Table):
             )
 
             # Handle accelerator through pylance
-            if accelerator is not None:
+            accelerated_options = _pylance_accelerated_index_options(
+                config, accelerator=accelerator, index_type=index_type
+            )
+            if accelerated_options is not None:
                 self.to_lance().create_index(
                     column=column,
-                    index_type=index_type,
-                    metric=metric,
-                    num_partitions=num_partitions,
-                    num_sub_vectors=num_sub_vectors,
                     replace=replace,
-                    accelerator=accelerator,
                     index_cache_size=index_cache_size,
-                    num_bits=num_bits,
-                    m=m,
-                    ef_construction=ef_construction,
-                    target_partition_size=target_partition_size,
+                    name=name,
+                    train=train,
+                    **accelerated_options,
                 )
                 self.checkout_latest()
                 return
@@ -2758,39 +2796,21 @@ class LanceTable(Table):
             # New API: metric is the column name
             column = metric
 
-            # Check if config has accelerator set and dispatch to pylance
-            if config is not None and hasattr(config, "accelerator"):
-                acc = getattr(config, "accelerator", None)
-                if acc is not None:
-                    # Dispatch to pylance for GPU acceleration
-                    index_type_map = {
-                        "IvfFlat": "IVF_FLAT",
-                        "IvfSq": "IVF_SQ",
-                        "IvfPq": "IVF_PQ",
-                        "IvfRq": "IVF_RQ",
-                        "HnswPq": "IVF_HNSW_PQ",
-                        "HnswSq": "IVF_HNSW_SQ",
-                    }
-                    cfg_type = type(config).__name__
-                    lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
-
-                    self.to_lance().create_index(
-                        column=column,
-                        index_type=lance_index_type,
-                        metric=getattr(config, "distance_type", "l2"),
-                        num_partitions=getattr(config, "num_partitions", None),
-                        num_sub_vectors=getattr(config, "num_sub_vectors", None),
-                        replace=replace,
-                        accelerator=acc,
-                        num_bits=getattr(config, "num_bits", 8),
-                        m=getattr(config, "m", 20),
-                        ef_construction=getattr(config, "ef_construction", 300),
-                        target_partition_size=getattr(
-                            config, "target_partition_size", None
-                        ),
-                    )
-                    self.checkout_latest()
-                    return
+            accelerated_options = (
+                _pylance_accelerated_index_options(config)
+                if config is not None
+                else None
+            )
+            if accelerated_options is not None:
+                self.to_lance().create_index(
+                    column=column,
+                    replace=replace,
+                    name=name,
+                    train=train,
+                    **accelerated_options,
+                )
+                self.checkout_latest()
+                return
 
         return LOOP.run(
             self._table.create_index(
@@ -2818,6 +2838,11 @@ class LanceTable(Table):
         The job may already be complete when returned; callers must not assume
         the index exists until :meth:`Job.wait` returns.
         """
+        if _pylance_accelerated_index_options(config) is not None:
+            raise ValueError(
+                "Accelerated index creation does not support create_index_async; "
+                "use create_index instead."
+            )
         return Job(
             LOOP.run(
                 self._table.create_index_async(
@@ -4830,6 +4855,7 @@ class AsyncTable:
         config: Optional[
             Union[
                 IvfFlat,
+                IvfSq,
                 IvfPq,
                 IvfRq,
                 HnswPq,
@@ -4900,6 +4926,23 @@ class AsyncTable:
                     " BTree, Bitmap, LabelList, Fm, or FTS, but got "
                     + str(type(config))
                 )
+        accelerated_options = (
+            _pylance_accelerated_index_options(config) if config is not None else None
+        )
+        if accelerated_options is not None:
+            if not self._inner._is_native():
+                raise ValueError("GPU accelerator is not supported on LanceDB Cloud.")
+            dataset = await self.to_lance()
+            await asyncio.to_thread(
+                dataset.create_index,
+                column=column,
+                replace=True if replace is None else replace,
+                name=name,
+                train=train,
+                **accelerated_options,
+            )
+            await self.checkout_latest()
+            return
         try:
             await self._inner.create_index(
                 column,
@@ -4926,6 +4969,7 @@ class AsyncTable:
         config: Optional[
             Union[
                 IvfFlat,
+                IvfSq,
                 IvfPq,
                 IvfRq,
                 HnswPq,
@@ -4948,6 +4992,11 @@ class AsyncTable:
         be complete when returned; callers must not assume the index exists
         until :meth:`AsyncJob.wait` resolves.
         """
+        if config is not None and _pylance_accelerated_index_options(config):
+            raise ValueError(
+                "Accelerated index creation does not support create_index_async; "
+                "use create_index instead."
+            )
         job = await self._inner.create_index_async(
             column,
             index=config,

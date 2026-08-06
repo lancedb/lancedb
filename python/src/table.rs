@@ -622,6 +622,10 @@ impl Table {
         self.inner.is_some()
     }
 
+    pub fn _is_native(&self) -> PyResult<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
+    }
+
     /// Closes the table, releasing any resources associated with it.
     pub fn close(&mut self) {
         self.inner.take();
