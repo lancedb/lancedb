@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -2122,6 +2123,27 @@ def test_delete(mem_db: DBConnection):
     assert table.version == 2
     assert len(table) == 1
     assert table.to_arrow()["id"].to_pylist() == [1]
+
+
+def test_concurrent_deletes_are_thread_safe(mem_db: DBConnection):
+    num_workers = 8
+    table = mem_db.create_table(
+        "my_table", data=[{"id": row_id} for row_id in range(num_workers)]
+    )
+    barrier = threading.Barrier(num_workers)
+
+    def delete(row_id: int):
+        barrier.wait()
+        return table.delete(f"id = {row_id}")
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        results = list(pool.map(delete, range(num_workers)))
+
+    assert all(result.num_deleted_rows == 1 for result in results)
+    assert sorted(result.version for result in results) == list(
+        range(2, num_workers + 2)
+    )
+    assert table.count_rows() == 0
 
 
 def test_delete_expr(mem_db: DBConnection):
