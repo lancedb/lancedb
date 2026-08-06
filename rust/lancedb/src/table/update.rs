@@ -68,20 +68,27 @@ impl UpdateBuilder {
                 message: "at least one column must be specified in an update operation".to_string(),
             })
         } else {
-            self.filter = self
-                .filter
-                .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate))
-                .transpose()?;
+            self.canonicalize_filter()?;
             self.parent.clone().update(self).await
         }
+    }
+
+    pub(crate) fn canonicalize_filter(&mut self) -> Result<()> {
+        self.filter = self
+            .filter
+            .take()
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate))
+            .transpose()?;
+        Ok(())
     }
 }
 
 /// Internal implementation of the update logic
 pub(crate) async fn execute_update(
     table: &NativeTable,
-    update: UpdateBuilder,
+    mut update: UpdateBuilder,
 ) -> Result<UpdateResult> {
+    update.canonicalize_filter()?;
     table.dataset.ensure_mutable()?;
 
     // 1. Snapshot the current dataset

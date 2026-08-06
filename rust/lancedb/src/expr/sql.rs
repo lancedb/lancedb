@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::any::TypeId;
+
 use datafusion_common::ScalarValue;
 use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion_expr::Expr;
 use datafusion_sql::sqlparser::{
-    dialect::GenericDialect,
+    dialect::{Dialect as SqlParserDialect, GenericDialect},
     tokenizer::{Token, Tokenizer},
 };
-use datafusion_sql::unparser::{self, dialect::Dialect};
+use datafusion_sql::unparser::{self, dialect::Dialect as UnparserDialect};
 
 /// Unparser dialect that matches the quoting style expected by the Lance SQL
 /// parser.  Lance uses backtick (`` ` ``) as the only delimited-identifier
@@ -23,7 +25,7 @@ use datafusion_sql::unparser::{self, dialect::Dialect};
 ///   lower-case by the SQL parser, which would break case-sensitive schemas).
 struct LanceSqlDialect;
 
-impl Dialect for LanceSqlDialect {
+impl UnparserDialect for LanceSqlDialect {
     fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
         let needs_quote = identifier.chars().any(|c| c.is_ascii_uppercase())
             || !identifier
@@ -34,15 +36,40 @@ impl Dialect for LanceSqlDialect {
     }
 }
 
+/// Lance's tokenizer dialect with SQL-standard double-quoted identifiers added.
+///
+/// Keep this deliberately small: Lance's parser wraps `GenericDialect` and
+/// delegates only identifier recognition, leaving every other dialect option at
+/// its default. In particular, `/*! ... */` remains an ordinary block comment.
+#[derive(Debug, Default)]
+struct PredicateDialect(GenericDialect);
+
+impl SqlParserDialect for PredicateDialect {
+    fn dialect(&self) -> TypeId {
+        self.0.dialect()
+    }
+
+    fn is_identifier_start(&self, ch: char) -> bool {
+        self.0.is_identifier_start(ch)
+    }
+
+    fn is_identifier_part(&self, ch: char) -> bool {
+        self.0.is_identifier_part(ch)
+    }
+
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        ch == '"' || ch == '`'
+    }
+}
+
 /// Canonicalize a raw SQL predicate for Lance's parser.
 ///
-/// Lance delegates SQL lexing to [`GenericDialect`] except that it accepts only
-/// backticks for delimited identifiers and historically interprets double-quoted
-/// tokens as string literals. Tokenizing with the generic dialect lets us rewrite
-/// only SQL-standard double-quoted identifier tokens while preserving string
-/// literals, comments, and every other token according to the same lexical rules.
+/// Lance wraps [`GenericDialect`] for identifier recognition while retaining the
+/// default dialect behavior for every other lexical option. [`PredicateDialect`]
+/// mirrors that contract and additionally recognizes `"` as an identifier
+/// delimiter, allowing this function to rewrite only those identifier tokens.
 pub fn canonicalize_sql_predicate(predicate: &str) -> crate::Result<String> {
-    let dialect = GenericDialect;
+    let dialect = PredicateDialect::default();
     let tokens = Tokenizer::new(&dialect, predicate)
         .with_unescape(false)
         .tokenize()
@@ -175,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_literals_and_comments_using_generic_dialect_rules() {
+    fn preserves_literals_and_comments_using_lance_dialect_rules() {
         let predicate = r#"path = '\' AND "PartyAbbrev" = 'D' -- unmatched " in comment"#;
         assert_eq!(
             canonicalize_sql_predicate(predicate).unwrap(),
@@ -183,6 +210,9 @@ mod tests {
         );
 
         let predicate = r#"id = 1 /* unmatched " in block comment */"#;
+        assert_eq!(canonicalize_sql_predicate(predicate).unwrap(), predicate);
+
+        let predicate = r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#;
         assert_eq!(canonicalize_sql_predicate(predicate).unwrap(), predicate);
     }
 

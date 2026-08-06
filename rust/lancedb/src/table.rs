@@ -2966,7 +2966,10 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Sql(sql)) => {
+                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                Ok(dataset.count_rows(Some(sql)).await?)
+            }
             Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),

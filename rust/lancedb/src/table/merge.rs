@@ -224,11 +224,16 @@ impl MergeInsertBuilder {
         mut self,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
-        self.when_matched_update_all_filt =
-            canonicalize_merge_filter(self.when_matched_update_all_filt)?;
-        self.when_not_matched_by_source_delete_filt =
-            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt)?;
+        self.canonicalize_filters()?;
         self.table.clone().merge_insert(self, new_data).await
+    }
+
+    pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
+        self.when_matched_update_all_filt =
+            canonicalize_merge_filter(self.when_matched_update_all_filt.take())?;
+        self.when_not_matched_by_source_delete_filt =
+            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
+        Ok(())
     }
 }
 
@@ -248,9 +253,10 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
 /// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
 pub(crate) async fn execute_merge_insert(
     table: &NativeTable,
-    params: MergeInsertBuilder,
+    mut params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    params.canonicalize_filters()?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
             let future =

@@ -1942,9 +1942,35 @@ mod tests {
             2
         );
 
+        // Public BaseTable dispatch cannot bypass canonicalization.
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql(r#""PartyAbbrev" = 'D'"#.to_string())),
+            ..Default::default()
+        });
+        let batches = table
+            .base_table()
+            .query(&query, Default::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(
+            table
+                .base_table()
+                .count_rows(Some(crate::table::Filter::Sql(
+                    r#""PartyAbbrev" = 'D'"#.to_string(),
+                )))
+                .await
+                .unwrap(),
+            2
+        );
+
         for predicate in [
             r#"id = 1 -- unmatched " in a valid SQL comment"#,
             r#"id = 1 /* unmatched " in a valid SQL comment */"#,
+            r#"id = 1 /*! OR "PartyAbbrev" = 'D' */"#,
             r#"path = '\' AND "PartyAbbrev" = 'D'"#,
         ] {
             let batches = table
@@ -1971,11 +1997,12 @@ mod tests {
         .unwrap();
         let mut merge = table.merge_insert(&["id"]);
         merge.when_not_matched_by_source_delete(Some(r#""PartyAbbrev" = 'D'"#.to_string()));
-        let result = merge
-            .execute(Box::new(RecordBatchIterator::new(
-                vec![Ok(source)],
-                schema.clone(),
-            )))
+        let result = table
+            .base_table()
+            .merge_insert(
+                merge,
+                Box::new(RecordBatchIterator::new(vec![Ok(source)], schema.clone())),
+            )
             .await
             .unwrap();
         assert_eq!(result.num_deleted_rows, 1);
@@ -2003,13 +2030,11 @@ mod tests {
             1
         );
 
-        table
+        let update = table
             .update()
             .only_if(r#""PartyAbbrev" = 'R'"#)
-            .column("PartyAbbrev", "'X'")
-            .execute()
-            .await
-            .unwrap();
+            .column("PartyAbbrev", "'X'");
+        table.base_table().update(update).await.unwrap();
         assert_eq!(
             table
                 .count_rows(Some(r#""PartyAbbrev" = 'X'"#.to_string()))
@@ -2018,7 +2043,11 @@ mod tests {
             2
         );
 
-        let result = table.delete(r#""PartyAbbrev" = 'X'"#).await.unwrap();
+        let result = table
+            .base_table()
+            .delete(crate::table::Predicate::String(r#""PartyAbbrev" = 'X'"#))
+            .await
+            .unwrap();
         assert_eq!(result.num_deleted_rows, 2);
         assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
