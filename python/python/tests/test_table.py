@@ -2,10 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import ctypes
+import gc
 import os
 import sys
 import threading
 import warnings
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
@@ -433,6 +436,38 @@ def test_add(mem_db: DBConnection):
         ],
     )
     _add(table, schema)
+
+
+def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
+    """Regression test for https://github.com/lancedb/lancedb/issues/2512."""
+    schema = pa.schema([pa.field("x", pa.int64())])
+    table = mem_db.create_table("test_add_releases_arrow_buffers", schema=schema)
+
+    class BufferOwner:
+        def __init__(self, size: int):
+            self.memory = ctypes.create_string_buffer(size)
+
+    owner_refs = []
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(3):
+            size = 8 * 1024
+            owner = BufferOwner(size)
+            arrow_buffer = pa.foreign_buffer(
+                ctypes.addressof(owner.memory), size, owner
+            )
+            array = pa.Array.from_buffers(pa.int64(), 1024, [None, arrow_buffer])
+            batch = pa.RecordBatch.from_arrays([array], schema=schema)
+            owner_refs.append(weakref.ref(owner))
+
+            table.add(batch)
+            del batch, array, arrow_buffer, owner
+
+        assert all(owner_ref() is None for owner_ref in owner_refs)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 def test_add_write_parallelism(mem_db: DBConnection):
