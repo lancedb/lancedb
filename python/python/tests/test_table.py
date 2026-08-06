@@ -14,7 +14,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import (
+    BTree,
+    FTS,
+    HnswFlat,
+    HnswPq,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    IvfSq,
+)
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -1455,6 +1465,51 @@ def test_create_index_dispatches_mps_to_pylance(mem_db: DBConnection):
     checkout_latest.assert_called_once_with()
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        IvfFlat(accelerator="mps"),
+        IvfSq(accelerator="mps"),
+        IvfRq(accelerator="mps"),
+        HnswPq(accelerator="mps"),
+        HnswSq(accelerator="mps"),
+    ],
+)
+def test_create_index_rejects_unsupported_accelerated_format(
+    mem_db: DBConnection, config
+):
+    table = mem_db.create_table(
+        "unsupported_accelerator",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with (
+        patch.object(table, "to_lance") as to_lance,
+        pytest.raises(ValueError, match="only IVF_PQ supports acceleration"),
+    ):
+        table.create_index("vector", config=config)
+
+    to_lance.assert_not_called()
+
+
+def test_legacy_create_index_rejects_unsupported_accelerated_format(
+    mem_db: DBConnection,
+):
+    table = mem_db.create_table(
+        "unsupported_legacy_accelerator",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with (
+        pytest.warns(DeprecationWarning, match="create_index"),
+        patch.object(table, "to_lance") as to_lance,
+        pytest.raises(ValueError, match="only IVF_PQ supports acceleration"),
+    ):
+        table.create_index(index_type="IVF_FLAT", accelerator="mps")
+
+    to_lance.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_async_create_index_dispatches_mps_to_pylance():
     inner = MagicMock()
@@ -1492,6 +1547,22 @@ async def test_async_create_index_dispatches_mps_to_pylance():
     )
     inner.create_index.assert_not_called()
     inner.checkout_latest.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_create_index_rejects_unsupported_accelerated_format():
+    inner = MagicMock()
+    inner._is_native.return_value = True
+    table = AsyncTable(inner)
+
+    with (
+        patch.object(table, "to_lance", AsyncMock()) as to_lance,
+        pytest.raises(ValueError, match="only IVF_PQ supports acceleration"),
+    ):
+        await table.create_index("vector", config=IvfFlat(accelerator="mps"))
+
+    to_lance.assert_not_awaited()
+    inner.create_index.assert_not_called()
 
 
 @pytest.mark.asyncio

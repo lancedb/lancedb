@@ -214,14 +214,7 @@ IndexConfigType = Union[
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
 
-_PYLANCE_ACCELERATED_INDEX_TYPES = {
-    IvfFlat: "IVF_FLAT",
-    IvfSq: "IVF_SQ",
-    IvfPq: "IVF_PQ",
-    IvfRq: "IVF_RQ",
-    HnswPq: "IVF_HNSW_PQ",
-    HnswSq: "IVF_HNSW_SQ",
-}
+_PYLANCE_ACCELERATED_INDEX_TYPE = "IVF_PQ"
 
 
 def _pylance_accelerated_index_options(
@@ -237,10 +230,15 @@ def _pylance_accelerated_index_options(
         return None
 
     if index_type is None:
-        index_type = _PYLANCE_ACCELERATED_INDEX_TYPES.get(type(config))
-    if index_type is None:
+        index_type = (
+            _PYLANCE_ACCELERATED_INDEX_TYPE
+            if isinstance(config, IvfPq)
+            else type(config).__name__
+        )
+    if index_type.upper() != _PYLANCE_ACCELERATED_INDEX_TYPE:
         raise ValueError(
-            f"Index type {type(config).__name__} does not support an accelerator"
+            f"Index type {index_type} does not support an accelerator; "
+            f"only {_PYLANCE_ACCELERATED_INDEX_TYPE} supports acceleration"
         )
 
     return {

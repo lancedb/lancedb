@@ -68,6 +68,14 @@ from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Tabl
 from ..types import BaseTokenizerType
 
 
+def _reject_index_accelerator(
+    config: Optional[IndexConfigType] = None,
+    accelerator: Optional[str] = None,
+) -> None:
+    if accelerator is not None or getattr(config, "accelerator", None) is not None:
+        raise ValueError("Index accelerators are not supported on LanceDB Cloud.")
+
+
 class RemoteTable(Table):
     def __init__(
         self,
@@ -457,6 +465,8 @@ class RemoteTable(Table):
         ...     "l2", vector_column_name="vector"
         ... )
         """
+        _reject_index_accelerator(config, accelerator)
+
         # Detect whether this is a legacy API call
         is_legacy = self._is_legacy_create_index_call(
             metric,
@@ -484,12 +494,6 @@ class RemoteTable(Table):
 
             column = vector_column_name
 
-            if accelerator is not None:
-                logging.warning(
-                    "GPU accelerator is not yet supported on LanceDB cloud."
-                    "If you have 100M+ vectors to index,"
-                    "please contact us at contact@lancedb.com"
-                )
             if replace is not None:
                 logging.warning(
                     "replace is not supported on LanceDB cloud."
@@ -557,6 +561,8 @@ class RemoteTable(Table):
         The job may already be complete when returned; callers must not assume
         the index exists until :meth:`Job.wait` returns.
         """
+        _reject_index_accelerator(config)
+
         return Job(
             LOOP.run(
                 self._table.create_index_async(

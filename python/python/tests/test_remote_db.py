@@ -875,6 +875,25 @@ def test_remote_create_index_async_returns_job():
         job.cancel()
 
 
+def test_remote_create_index_rejects_accelerator():
+    from lancedb.index import IvfPq
+    from lancedb.remote.table import RemoteTable
+
+    inner = MagicMock()
+    inner.name = "test"
+    table = RemoteTable(inner, "dev")
+
+    with pytest.raises(ValueError, match="not supported on LanceDB Cloud"):
+        table.create_index(accelerator="mps")
+    with pytest.raises(ValueError, match="not supported on LanceDB Cloud"):
+        table.create_index("vector", config=IvfPq(accelerator="mps"))
+    with pytest.raises(ValueError, match="not supported on LanceDB Cloud"):
+        table.create_index_async("vector", config=IvfPq(accelerator="mps"))
+
+    inner.create_index.assert_not_called()
+    inner.create_index_async.assert_not_called()
+
+
 def test_remote_job_wait_raises_on_failure():
     from lancedb.exceptions import JobFailedError
     from lancedb.index import BTree

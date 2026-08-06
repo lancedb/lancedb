@@ -314,8 +314,7 @@ class HnswPq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
-    # Name of the accelerator ("cuda" or "mps") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # Reserved for future accelerator support. create_index() currently raises if set.
     accelerator: Optional[str] = None
 
 
@@ -422,8 +421,7 @@ class HnswSq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
-    # Name of the accelerator ("cuda" or "mps") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # Reserved for future accelerator support. create_index() currently raises if set.
     accelerator: Optional[str] = None
 
 
@@ -618,8 +616,7 @@ class IvfFlat:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
-    # Name of the accelerator ("cuda" or "mps") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # Reserved for future accelerator support. create_index() currently raises if set.
     accelerator: Optional[str] = None
 
 
@@ -651,8 +648,7 @@ class IvfSq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
-    # Name of the accelerator ("cuda" or "mps") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # Reserved for future accelerator support. create_index() currently raises if set.
     accelerator: Optional[str] = None
 
 
@@ -840,8 +836,7 @@ class IvfRq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
-    # Name of the accelerator ("cuda" or "mps") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # Reserved for future accelerator support. create_index() currently raises if set.
     accelerator: Optional[str] = None
 
 
