@@ -14,6 +14,8 @@ import {
   Int32,
   Schema,
   Utf8,
+  fromDataToBuffer,
+  tableFromIPC,
 } from "../lancedb/arrow";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
@@ -218,10 +220,22 @@ describe("embedding functions", () => {
       },
     });
 
-    await table.add([
+    const data = [
       { id: 1, text: "Carrot", type: "vegetable" },
       { id: 2, text: "Apple", type: "fruit" },
-    ]);
+    ];
+    const buffer = await fromDataToBuffer(
+      data,
+      undefined,
+      await table.schema(),
+    );
+    const generatedTable = tableFromIPC(buffer);
+    const vectorField = generatedTable.schema.fields.find(
+      (field) => field.name === "vector",
+    );
+    expect(vectorField?.nullable).toBe(false);
+
+    await table.add(data);
 
     const rows = await table.query().toArray();
     expect(rows).toHaveLength(2);
