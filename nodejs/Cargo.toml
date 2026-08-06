@@ -12,6 +12,10 @@ categories.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[[test]]
+name = "x86_64_v2_build_flags"
+path = "build_support/x86_64_v2.rs"
+
 [dependencies]
 async-trait.workspace = true
 arrow-ipc.workspace = true
