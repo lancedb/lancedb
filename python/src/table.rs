@@ -40,6 +40,48 @@ enum PredicateArg {
     Sql(String),
 }
 
+fn validate_positive_u32(value: u64, name: &str) -> PyResult<usize> {
+    if !(1..=u32::MAX as u64).contains(&value) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be between 1 and {}",
+            u32::MAX
+        )));
+    }
+    Ok(value as usize)
+}
+
+fn positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<usize> {
+    validate_positive_u32(value.extract()?, name)
+}
+
+fn optional_positive_u32(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    value
+        .extract::<Option<u64>>()?
+        .map(|value| validate_positive_u32(value, name))
+        .transpose()
+}
+
+fn optional_positive_usize(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<usize>> {
+    let value: Option<usize> = value.extract()?;
+    if value == Some(0) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
+    let value: Option<u64> = value.extract()?;
+    if value.is_some_and(|value| value > i64::MAX as u64) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be at most {}",
+            i64::MAX
+        )));
+    }
+    Ok(value)
+}
+
 fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<CompactionOptions> {
     let mut parsed = CompactionOptions::default();
     let Some(options) = options else {
@@ -49,16 +91,18 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
     for (key, value) in options.iter() {
         let key: String = key.extract()?;
         match key.as_str() {
-            "target_rows_per_fragment" => parsed.target_rows_per_fragment = value.extract()?,
-            "max_rows_per_group" => parsed.max_rows_per_group = value.extract()?,
+            "target_rows_per_fragment" => {
+                parsed.target_rows_per_fragment = positive_u32(&value, &key)?
+            }
+            "max_rows_per_group" => parsed.max_rows_per_group = positive_u32(&value, &key)?,
             "max_bytes_per_file" => parsed.max_bytes_per_file = value.extract()?,
             "materialize_deletions" => parsed.materialize_deletions = value.extract()?,
             "materialize_deletions_threshold" => {
                 parsed.materialize_deletions_threshold = value.extract()?
             }
-            "num_threads" => parsed.num_threads = value.extract()?,
-            "batch_size" => parsed.batch_size = value.extract()?,
-            "io_buffer_size" => parsed.io_buffer_size = value.extract()?,
+            "num_threads" => parsed.num_threads = optional_positive_usize(&value, &key)?,
+            "batch_size" => parsed.batch_size = optional_positive_u32(&value, &key)?,
+            "io_buffer_size" => parsed.io_buffer_size = optional_i64_bounded_u64(&value, &key)?,
             "defer_index_remap" => parsed.defer_index_remap = value.extract()?,
             "index_remap_mode" => {
                 let mode: String = value.extract()?;

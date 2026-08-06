@@ -3404,6 +3404,28 @@ async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
         await table.optimize(compaction_options={"unknown": 1})
 
 
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("target_rows_per_fragment", 0, "must be between 1 and 4294967295"),
+        ("max_rows_per_group", 0, "must be between 1 and 4294967295"),
+        ("batch_size", 0, "must be between 1 and 4294967295"),
+        ("num_threads", 0, "must be greater than 0"),
+        ("target_rows_per_fragment", 2**32, "must be between 1 and 4294967295"),
+        ("max_rows_per_group", 2**32, "must be between 1 and 4294967295"),
+        ("batch_size", 2**32, "must be between 1 and 4294967295"),
+        ("io_buffer_size", 2**63, "must be at most 9223372036854775807"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_optimize_compaction_options_validation(
+    mem_db_async: AsyncConnection, option: str, value: int, message: str
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    with pytest.raises(ValueError, match=message):
+        await table.optimize(compaction_options={option: value})
+
+
 @pytest.mark.asyncio
 async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_path):
     table = await tmp_db_async.create_table(
