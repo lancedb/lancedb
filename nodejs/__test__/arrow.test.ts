@@ -197,6 +197,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(table.getChild("d")?.toJSON()).toEqual([9n, 10n, null]);
       });
 
+      it("will use a provided FixedSizeList schema with typed array values", function () {
+        const schema = new Schema([
+          new Field("text", new Utf8(), false),
+          new Field(
+            "vector",
+            new FixedSizeList(3, new Field("item", new Float32(), false)),
+            false,
+          ),
+        ]);
+
+        const table = makeArrowTable(
+          [
+            {
+              text: "foo",
+              vector: new Float32Array([1, 2, 3]),
+            },
+          ],
+          { schema },
+        );
+
+        expect(table.getChild("text")?.toJSON()).toEqual(["foo"]);
+        expect(
+          table
+            .getChild("vector")
+            ?.toJSON()
+            .map((value) => value.toJSON()),
+        ).toEqual([[1, 2, 3]]);
+      });
+
       it("will assume the column `vector` is FixedSizeList<Float32> by default", async function () {
         const schema = new Schema([
           new Field("a", new Float(Precision.DOUBLE), true),

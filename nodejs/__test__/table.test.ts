@@ -86,6 +86,44 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("should support a foreign Float64 vector schema end to end", async () => {
+      const conn = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field("resource_id", new arrow.Int32(), false),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            3,
+            new arrow.Field("value", new arrow.Float64(), true),
+          ),
+          false,
+        ),
+      ]);
+      const data = [
+        {
+          // biome-ignore lint/style/useNamingConvention: matches the reported schema
+          resource_id: 0,
+          vector: [0.1, 0.1, 0.1],
+        },
+      ];
+
+      const resources = await conn.createTable("resources", data, { schema });
+
+      const existing = await resources
+        .query()
+        .where("resource_id = 0")
+        .limit(1)
+        .toArray();
+      expect(existing).toHaveLength(1);
+
+      const matched = await resources
+        .search(Float64Array.from(data[0].vector))
+        .limit(1)
+        .toArray();
+      expect(matched).toHaveLength(1);
+      expect(matched[0]["resource_id"]).toBe(0);
+    });
+
     it("should support branches", async () => {
       await table.add([{ id: 1 }]);
       expect(await table.countRows()).toBe(1);
