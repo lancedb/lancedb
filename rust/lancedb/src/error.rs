@@ -269,6 +269,35 @@ impl<T> From<PoisonError<T>> for Error {
     }
 }
 
+#[cfg(feature = "polars")]
+impl From<polars::prelude::PolarsError> for Error {
+    fn from(source: polars::prelude::PolarsError) -> Self {
+        Self::Other {
+            message: "Error in Polars DataFrame integration.".to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+#[cfg(feature = "sentence-transformers")]
+impl From<hf_hub::api::sync::ApiError> for Error {
+    fn from(source: hf_hub::api::sync::ApiError) -> Self {
+        Self::Other {
+            message: "Error in Sentence Transformers integration.".to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+#[cfg(feature = "sentence-transformers")]
+impl From<candle_core::Error> for Error {
+    fn from(source: candle_core::Error) -> Self {
+        Self::Other {
+            message: "Error in 'candle_core'.".to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,34 +338,5 @@ mod tests {
         )));
 
         assert!(matches!(Error::from(lance_error), Error::Lance { .. }));
-    }
-}
-
-#[cfg(feature = "polars")]
-impl From<polars::prelude::PolarsError> for Error {
-    fn from(source: polars::prelude::PolarsError) -> Self {
-        Self::Other {
-            message: "Error in Polars DataFrame integration.".to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-}
-
-#[cfg(feature = "sentence-transformers")]
-impl From<hf_hub::api::sync::ApiError> for Error {
-    fn from(source: hf_hub::api::sync::ApiError) -> Self {
-        Self::Other {
-            message: "Error in Sentence Transformers integration.".to_string(),
-            source: Some(Box::new(source)),
-        }
-    }
-}
-#[cfg(feature = "sentence-transformers")]
-impl From<candle_core::Error> for Error {
-    fn from(source: candle_core::Error) -> Self {
-        Self::Other {
-            message: "Error in 'candle_core'.".to_string(),
-            source: Some(Box::new(source)),
-        }
     }
 }
