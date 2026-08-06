@@ -339,6 +339,12 @@ impl<S: HttpSend> RemoteTable<S> {
         // Auto is special-cased since it needs schema inspection.
         let (index_type_str, params) = match &index.index {
             Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
+            Index::IvfPq(p) if p.seed.is_some() => {
+                return Err(Error::NotSupported {
+                    message: "Deterministic IVF PQ training is not supported on remote tables"
+                        .to_string(),
+                });
+            }
             Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
             Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
             Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
@@ -5155,6 +5161,41 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_seeded_ivf_pq_is_rejected_for_remote_tables() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![Field::new(
+                    "vector",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        8,
+                    ),
+                    false,
+                )]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected request for unsupported seeded index: {path}"),
+        });
+
+        let error = table
+            .create_index(
+                &["vector"],
+                Index::IvfPq(IvfPqIndexBuilder::default().seed(42)),
+            )
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::NotSupported { message }
+                if message.contains("not supported on remote tables")
+        ));
     }
 
     #[tokio::test]

@@ -772,7 +772,9 @@ class IvfPq:
     seed: int, optional
         Seed used for deterministic sampling and training. Given identical data in
         the same row order and identical index parameters, the same seed produces
-        the same IVF centroids and PQ codebook. If omitted, training remains random.
+        the same IVF centroids and PQ codebook. This option is supported for local
+        CPU index builds; remote and accelerator builds reject it explicitly. If
+        omitted, training remains random.
 
     target_partition_size: int, default is 8192
 
@@ -793,6 +795,12 @@ class IvfPq:
     # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
     # create_index() dispatches to pylance to build the index on the accelerator.
     accelerator: Optional[str] = None
+
+    def __post_init__(self):
+        if self.seed is not None and self.accelerator is not None:
+            raise ValueError(
+                "IvfPq seed is not supported with accelerator-based index training"
+            )
 
 
 @dataclass

@@ -61,6 +61,7 @@ futures.workspace = true
 num-traits.workspace = true
 url.workspace = true
 rand.workspace = true
+rayon.workspace = true
 regex.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }

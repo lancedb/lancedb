@@ -312,6 +312,9 @@ impl IvfPqIndexBuilder {
     /// useful when independently-built tables need reproducible approximate-search
     /// results.
     ///
+    /// Seeded training is supported by native tables. Remote backends reject this
+    /// option unless they can provide the same deterministic training contract.
+    ///
     /// If no seed is provided, index training uses random sampling and initialization.
     ///
     /// # Examples

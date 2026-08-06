@@ -395,6 +395,11 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
     assert stats.num_indices == 1
 
 
+def test_seeded_ivfpq_rejects_accelerator():
+    with pytest.raises(ValueError, match="seed is not supported with accelerator"):
+        IvfPq(seed=42, accelerator="cuda")
+
+
 @pytest.mark.asyncio
 async def test_create_ivfrq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=IvfRq(num_bits=1))

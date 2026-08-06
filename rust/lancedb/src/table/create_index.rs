@@ -28,20 +28,31 @@ use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::builder::recommended_num_partitions;
 use lance_index::vector::ivf::{IvfBuildParams, new_ivf_transformer};
-use lance_index::vector::kmeans::KMeans;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
-use lance_linalg::distance::DistanceType as LanceDistanceType;
-use lance_linalg::kernels::normalize_fsl_owned;
+use lance_linalg::distance::{
+    DistanceType as LanceDistanceType, Dot, L2, dot_distance_batch, l2_distance_batch,
+};
+use lance_linalg::kernels::{argmin_value_float, normalize_fsl_owned};
 use num_traits::{Float, FromPrimitive, Zero};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::index::sample;
+use rayon::prelude::*;
 
 use crate::error::{Error, Result};
 
-/// Resolved column, index parameters and index type for one build.
-pub(super) type PreparedIndex = (String, Box<dyn lance::index::IndexParams>, IndexType);
+/// Index parameters that are either ready or require data-dependent seeded training.
+pub(super) enum PreparedIndexParams {
+    Ready(Box<dyn lance::index::IndexParams>),
+    SeededIvfPq {
+        dimension: u32,
+        options: crate::index::vector::IvfPqIndexBuilder,
+    },
+}
+
+/// Resolved column, parameter preparation and index type for one build.
+pub(super) type PreparedIndex = (String, PreparedIndexParams, IndexType);
 use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
@@ -50,6 +61,96 @@ use crate::utils::{
 };
 
 use super::NativeTable;
+
+/// A keyed permutation over row offsets with O(1) state.
+///
+/// The Feistel domain is the smallest power of four containing `num_rows`, so
+/// filtering values outside the row range visits at most four candidates per
+/// row on average. This lets sampling continue past invalid vectors without
+/// favoring low physical row offsets or allocating a table-sized permutation.
+struct SeededRowPermutation {
+    cursor: u64,
+    domain_size: u64,
+    half_bits: u32,
+    half_mask: u64,
+    num_rows: u64,
+    seed: u64,
+}
+
+impl SeededRowPermutation {
+    fn new(num_rows: usize, seed: u64) -> Result<Self> {
+        let num_rows = num_rows as u64;
+        if num_rows == 0 {
+            return Err(Error::InvalidInput {
+                message: "Cannot sample rows from an empty table".to_string(),
+            });
+        }
+        if num_rows == 1 {
+            return Ok(Self {
+                cursor: 0,
+                domain_size: 1,
+                half_bits: 0,
+                half_mask: 0,
+                num_rows,
+                seed,
+            });
+        }
+
+        let required_bits = u64::BITS - (num_rows - 1).leading_zeros();
+        let half_bits = required_bits.div_ceil(2);
+        let domain_bits = half_bits * 2;
+        let domain_size = 1u64
+            .checked_shl(domain_bits)
+            .ok_or_else(|| Error::InvalidInput {
+                message: "Table is too large for deterministic row sampling".to_string(),
+            })?;
+        Ok(Self {
+            cursor: 0,
+            domain_size,
+            half_bits,
+            half_mask: (1u64 << half_bits) - 1,
+            num_rows,
+            seed,
+        })
+    }
+
+    fn round(value: u64, seed: u64, round: u64) -> u64 {
+        let mut mixed = value ^ seed.wrapping_add(round.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^ (mixed >> 31)
+    }
+
+    fn permute(&self, value: u64) -> u64 {
+        if self.domain_size == 1 {
+            return 0;
+        }
+        let mut left = value >> self.half_bits;
+        let mut right = value & self.half_mask;
+        for round in 0..4 {
+            let next_left = right;
+            let next_right = left ^ (Self::round(right, self.seed, round) & self.half_mask);
+            left = next_left;
+            right = next_right;
+        }
+        (left << self.half_bits) | right
+    }
+}
+
+impl Iterator for SeededRowPermutation {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.cursor < self.domain_size {
+            let candidate = self.permute(self.cursor);
+            self.cursor += 1;
+            if candidate < self.num_rows {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
 
 impl NativeTable {
     const IVF_SAMPLE_SEED_SALT: u64 = 0x4956_465f_5341_4d50;
@@ -105,11 +206,44 @@ impl NativeTable {
         ivf_params
     }
 
-    /// Select training rows in a stable order using a caller-provided seed.
+    fn flatten_vector_array(array: &ArrayRef) -> Result<FixedSizeListArray> {
+        let array = if array.null_count() > 0 {
+            let valid = arrow::compute::is_not_null(array.as_ref())?;
+            filter(array.as_ref(), &valid)?
+        } else {
+            array.clone()
+        };
+        let vectors = match array.data_type() {
+            DataType::FixedSizeList(_, _) => array,
+            DataType::List(_) => array.as_list::<i32>().values().clone(),
+            data_type => {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Seeded IVF PQ training requires a vector or multivector column, got {data_type}"
+                    ),
+                });
+            }
+        };
+        let vectors = if vectors.null_count() > 0 {
+            let valid = arrow::compute::is_not_null(vectors.as_ref())?;
+            filter(vectors.as_ref(), &valid)?
+        } else {
+            vectors
+        };
+        vectors
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput {
+                message: "Seeded IVF PQ training could not flatten the vector column".to_string(),
+            })
+    }
+
+    /// Select training vectors in a stable pseudo-random order.
     ///
-    /// Sampling grows deterministically when null or non-finite vectors are
-    /// encountered so seeded builds retain the same minimum training-data
-    /// guarantees as ordinary index creation.
+    /// The row permutation is continued when null or non-finite vectors are
+    /// encountered, so retries remain uniform over row position. Multivector
+    /// rows are flattened in their stable subvector order.
     async fn seeded_training_data(
         dataset: &lance::Dataset,
         column: &str,
@@ -124,57 +258,43 @@ impl NativeTable {
         }
 
         let projection = Arc::new(dataset.schema().project(&[column])?);
-        let mut rows_to_read = sample_size.max(1).min(num_rows);
-        loop {
-            let mut row_indices = if rows_to_read == num_rows {
-                (0..num_rows as u64).collect::<Vec<_>>()
-            } else {
-                let mut rng = SmallRng::seed_from_u64(seed);
-                sample(&mut rng, num_rows, rows_to_read)
-                    .into_iter()
-                    .map(|index| index as u64)
-                    .collect::<Vec<_>>()
-            };
-            // Sorted offsets make the resulting training-vector order independent
-            // of take batching and I/O concurrency.
-            row_indices.sort_unstable();
+        let mut permutation = SeededRowPermutation::new(num_rows, seed)?;
+        let mut arrays = Vec::new();
+        let mut sampled_vectors = 0;
+        const TAKE_BATCH_SIZE: usize = 8192;
 
-            const TAKE_BATCH_SIZE: usize = 8192;
-            let mut arrays = Vec::with_capacity(row_indices.len().div_ceil(TAKE_BATCH_SIZE));
-            for indices in row_indices.chunks(TAKE_BATCH_SIZE) {
-                let batch = dataset.take(indices, projection.clone()).await?;
-                let array =
-                    batch
-                        .column_by_qualified_name(column)
-                        .ok_or_else(|| Error::Schema {
-                            message: format!("Vector column `{column}` missing from sampled batch"),
-                        })?;
-                arrays.push(array.clone());
+        while sampled_vectors < sample_size {
+            let rows_to_read = (sample_size - sampled_vectors).min(TAKE_BATCH_SIZE);
+            let indices = permutation.by_ref().take(rows_to_read).collect::<Vec<_>>();
+            if indices.is_empty() {
+                break;
             }
-
-            let array_refs = arrays
-                .iter()
-                .map(|array| array.as_ref())
-                .collect::<Vec<_>>();
-            let sampled = concat(&array_refs)?;
-            let sampled = sampled
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .ok_or_else(|| Error::InvalidInput {
-                    message:
-                        "Seeded IVF PQ training currently requires a fixed-size-list vector column"
-                            .to_string(),
+            let batch = dataset.take(&indices, projection.clone()).await?;
+            let array = batch
+                .column_by_qualified_name(column)
+                .ok_or_else(|| Error::Schema {
+                    message: format!("Vector column `{column}` missing from sampled batch"),
                 })?;
-            let valid = arrow::compute::is_not_null(sampled)?;
-            let sampled = filter(sampled, &valid)?;
-            let sampled = sampled.as_fixed_size_list().clone();
+            let sampled = Self::flatten_vector_array(array)?;
             let sampled = filter_finite_training_data(sampled)?;
-
-            if sampled.len() >= sample_size || rows_to_read == num_rows {
-                return Ok(sampled.slice(0, sampled.len().min(sample_size)));
+            sampled_vectors += sampled.len();
+            if !sampled.is_empty() {
+                arrays.push(sampled);
             }
-            rows_to_read = rows_to_read.saturating_mul(2).min(num_rows);
         }
+
+        if arrays.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "No valid vectors are available for seeded IVF PQ training".to_string(),
+            });
+        }
+        let array_refs = arrays
+            .iter()
+            .map(|array| array as &dyn Array)
+            .collect::<Vec<_>>();
+        let sampled = concat(&array_refs)?;
+        let sampled = sampled.as_fixed_size_list();
+        Ok(sampled.slice(0, sampled.len().min(sample_size)))
     }
 
     fn seeded_initial_centroids(
@@ -209,7 +329,7 @@ impl NativeTable {
     ) -> Result<FixedSizeListArray>
     where
         T: ArrowPrimitiveType,
-        T::Native: Float + FromPrimitive + AddAssign + DivAssign,
+        T::Native: Float + FromPrimitive + AddAssign + DivAssign + Dot + L2 + Send + Sync,
         PrimitiveArray<T>: From<Vec<T::Native>>,
     {
         if max_iterations == 0 {
@@ -225,22 +345,45 @@ impl NativeTable {
         let mut previous_loss = f64::MAX;
 
         for _ in 0..max_iterations {
-            let model = KMeans::with_centroids(
-                Arc::new(PrimitiveArray::<T>::from(centroids.clone())),
-                dimension,
-                distance_type,
-                previous_loss,
-            );
-            let (membership, distances) = model.compute_membership_and_distances(data)?;
+            // Seeded builds use exact assignment. Lance's large-centroid
+            // acceleration builds an approximate HNSW graph whose parallel
+            // insertion order is intentionally not deterministic.
+            let assignments = data_values
+                .par_chunks(dimension)
+                .map(|vector| {
+                    let nearest = match distance_type {
+                        LanceDistanceType::L2 => argmin_value_float(l2_distance_batch(
+                            vector,
+                            &centroids,
+                            dimension,
+                        )),
+                        LanceDistanceType::Dot => argmin_value_float(dot_distance_batch(
+                            vector,
+                            &centroids,
+                            dimension,
+                        )),
+                        distance_type => {
+                            return Err(Error::InvalidInput {
+                                message: format!(
+                                    "Distance type {distance_type} is not supported for seeded kmeans"
+                                ),
+                            });
+                        }
+                    };
+                    nearest
+                        .map(|(cluster, distance)| (cluster as usize, distance))
+                        .ok_or_else(|| Error::InvalidInput {
+                            message: "Could not assign a vector during seeded kmeans".to_string(),
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
             let mut next_centroids = vec![T::Native::zero(); num_centroids * dimension];
             let mut cluster_sizes = vec![0usize; num_centroids];
-            for (row, cluster) in membership.iter().enumerate() {
-                let Some(cluster) = cluster.map(|cluster| cluster as usize) else {
-                    continue;
-                };
-                cluster_sizes[cluster] += 1;
+            for (row, (cluster, _)) in assignments.iter().enumerate() {
+                cluster_sizes[*cluster] += 1;
                 let vector = &data_values[row * dimension..(row + 1) * dimension];
-                let centroid = &mut next_centroids[cluster * dimension..(cluster + 1) * dimension];
+                let centroid =
+                    &mut next_centroids[*cluster * dimension..(*cluster + 1) * dimension];
                 for (centroid_value, vector_value) in centroid.iter_mut().zip(vector) {
                     *centroid_value += *vector_value;
                 }
@@ -257,37 +400,44 @@ impl NativeTable {
                 }
             }
 
-            // Lance's ordinary trainer repairs empty clusters using OS randomness.
-            // Seeded training instead promotes the farthest distinct input rows,
-            // with row position as a stable tie-breaker.
-            let mut replacement_rows = distances
-                .iter()
-                .enumerate()
-                .filter_map(|(row, distance)| distance.map(|distance| (row, distance)))
-                .collect::<Vec<_>>();
-            replacement_rows.sort_by(|left, right| {
-                right
-                    .1
-                    .total_cmp(&left.1)
-                    .then_with(|| left.0.cmp(&right.0))
-            });
-            let mut replacements = replacement_rows.into_iter();
-            for (cluster, cluster_size) in cluster_sizes.iter_mut().enumerate() {
-                if *cluster_size == 0 {
-                    let (row, _) = replacements.next().ok_or_else(|| Error::InvalidInput {
-                        message: "Could not repair an empty seeded kmeans cluster".to_string(),
-                    })?;
-                    let vector = &data_values[row * dimension..(row + 1) * dimension];
-                    next_centroids[cluster * dimension..(cluster + 1) * dimension]
-                        .copy_from_slice(vector);
-                    *cluster_size = 1;
+            let empty_clusters = cluster_sizes.iter().filter(|size| **size == 0).count();
+            if empty_clusters > 0 {
+                // Lance's ordinary trainer repairs empty clusters using OS
+                // randomness. Select only the required farthest rows in linear
+                // expected time, then sort that bounded top-k for stable ties.
+                let mut replacement_rows = assignments
+                    .iter()
+                    .enumerate()
+                    .map(|(row, (_, distance))| (row, *distance))
+                    .collect::<Vec<_>>();
+                let by_priority = |left: &(usize, f32), right: &(usize, f32)| {
+                    right
+                        .1
+                        .total_cmp(&left.1)
+                        .then_with(|| left.0.cmp(&right.0))
+                };
+                if empty_clusters < replacement_rows.len() {
+                    replacement_rows.select_nth_unstable_by(empty_clusters, by_priority);
+                    replacement_rows.truncate(empty_clusters);
+                }
+                replacement_rows.sort_by(by_priority);
+                let mut replacements = replacement_rows.into_iter();
+                for (cluster, cluster_size) in cluster_sizes.iter_mut().enumerate() {
+                    if *cluster_size == 0 {
+                        let (row, _) = replacements.next().ok_or_else(|| Error::InvalidInput {
+                            message: "Could not repair an empty seeded kmeans cluster".to_string(),
+                        })?;
+                        let vector = &data_values[row * dimension..(row + 1) * dimension];
+                        next_centroids[cluster * dimension..(cluster + 1) * dimension]
+                            .copy_from_slice(vector);
+                        *cluster_size = 1;
+                    }
                 }
             }
 
-            let loss = distances
+            let loss = assignments
                 .iter()
-                .flatten()
-                .map(|distance| *distance as f64)
+                .map(|(_, distance)| *distance as f64)
                 .sum::<f64>();
             let converged = (previous_loss - loss).abs() < 1e-4 * loss;
             centroids = next_centroids;
@@ -349,7 +499,7 @@ impl NativeTable {
     ) -> Result<ArrayRef>
     where
         T: ArrowPrimitiveType,
-        T::Native: Float + FromPrimitive + AddAssign + DivAssign,
+        T::Native: Float + FromPrimitive + AddAssign + DivAssign + Dot + L2 + Send + Sync,
         PrimitiveArray<T>: From<Vec<T::Native>>,
     {
         let dimension = data.value_length() as usize;
@@ -424,14 +574,61 @@ impl NativeTable {
         }
     }
 
+    fn validate_seeded_ivf_pq_params(
+        dimension: u32,
+        index: &crate::index::vector::IvfPqIndexBuilder,
+    ) -> Result<()> {
+        if index.target_partition_size == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "target_partition_size must be greater than zero".to_string(),
+            });
+        }
+        if index.num_partitions == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "num_partitions must be greater than zero".to_string(),
+            });
+        }
+        if index.sample_rate == 0 {
+            return Err(Error::InvalidInput {
+                message: "sample_rate must be greater than zero".to_string(),
+            });
+        }
+        if index.max_iterations == 0 {
+            return Err(Error::InvalidInput {
+                message: "max_iterations must be greater than zero for seeded IVF PQ training"
+                    .to_string(),
+            });
+        }
+        let num_bits = index.num_bits.unwrap_or(8);
+        if !matches!(num_bits, 4 | 8) {
+            return Err(Error::InvalidInput {
+                message: format!("IVF PQ only supports 4 or 8 bits, got {num_bits}"),
+            });
+        }
+        let num_sub_vectors =
+            Self::get_num_sub_vectors(index.num_sub_vectors, dimension, index.num_bits);
+        if num_sub_vectors == 0 {
+            return Err(Error::InvalidInput {
+                message: "num_sub_vectors must be greater than zero".to_string(),
+            });
+        }
+        if !dimension.is_multiple_of(num_sub_vectors) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Vector dimension {dimension} must be divisible by num_sub_vectors {num_sub_vectors}"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     async fn build_seeded_ivf_pq_params(
-        &self,
+        dataset: &lance::Dataset,
         column: &str,
         dimension: u32,
         index: &crate::index::vector::IvfPqIndexBuilder,
         seed: u64,
     ) -> Result<(IvfBuildParams, PQBuildParams)> {
-        let dataset = self.dataset.get().await?;
         let num_rows = dataset.count_rows(None).await?;
         let target_partition_size = index
             .target_partition_size
@@ -469,7 +666,7 @@ impl NativeTable {
                 message: "IVF training sample size overflowed usize".to_string(),
             })?;
         let mut ivf_training = Self::seeded_training_data(
-            dataset.as_ref(),
+            dataset,
             column,
             ivf_sample_size,
             seed ^ Self::IVF_SAMPLE_SEED_SALT,
@@ -511,7 +708,7 @@ impl NativeTable {
                 message: "PQ training sample size overflowed usize".to_string(),
             })?;
         let mut pq_training = Self::seeded_training_data(
-            dataset.as_ref(),
+            dataset,
             column,
             pq_sample_size,
             seed ^ Self::PQ_SAMPLE_SEED_SALT,
@@ -581,9 +778,18 @@ impl NativeTable {
         self.dataset.ensure_mutable()?;
         let dataset = self.dataset.get().await?;
         let (column, field) = Self::resolve_index_field(dataset.schema(), &opts.columns[0])?;
-        let params = self
-            .make_index_params(&column, &field, opts.index.clone())
-            .await?;
+        let params = match &opts.index {
+            Index::IvfPq(index) if index.seed.is_some() => {
+                Self::validate_index_type(&field, "IVF PQ", supported_vector_data_type)?;
+                let dimension = Self::get_vector_dimension(&field)?;
+                Self::validate_seeded_ivf_pq_params(dimension, index)?;
+                PreparedIndexParams::SeededIvfPq {
+                    dimension,
+                    options: index.clone(),
+                }
+            }
+            _ => PreparedIndexParams::Ready(Self::make_index_params(&field, opts.index.clone())?),
+        };
         let index_type = self.get_index_type_for_field(&field, &opts.index);
         Ok((column, params, index_type))
     }
@@ -594,8 +800,24 @@ impl NativeTable {
         opts: crate::index::IndexBuilder,
         prepared: PreparedIndex,
     ) -> Result<()> {
-        let (column, lance_idx_params, index_type) = prepared;
+        let (column, prepared_params, index_type) = prepared;
         let mut dataset = (*self.dataset.get().await?).clone();
+        let lance_idx_params = match prepared_params {
+            PreparedIndexParams::Ready(params) => params,
+            PreparedIndexParams::SeededIvfPq { dimension, options } => {
+                let seed = options
+                    .seed
+                    .expect("seeded parameter preparation requires a seed");
+                let (ivf_params, pq_params) =
+                    Self::build_seeded_ivf_pq_params(&dataset, &column, dimension, &options, seed)
+                        .await?;
+                Box::new(VectorIndexParams::with_ivf_pq_params(
+                    options.distance_type.into(),
+                    ivf_params,
+                    pq_params,
+                ))
+            }
+        };
         let columns = [column.as_str()];
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
@@ -638,9 +860,7 @@ impl NativeTable {
     }
 
     // Convert LanceDB Index to Lance IndexParams
-    pub(super) async fn make_index_params(
-        &self,
-        column: &str,
+    pub(super) fn make_index_params(
         field: &Field,
         index_opts: Index,
     ) -> Result<Box<dyn lance::index::IndexParams>> {
@@ -736,17 +956,7 @@ impl NativeTable {
             Index::IvfPq(index) => {
                 Self::validate_index_type(field, "IVF PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
-                if let Some(seed) = index.seed {
-                    let (ivf_params, pq_params) = self
-                        .build_seeded_ivf_pq_params(column, dim, &index, seed)
-                        .await?;
-                    let lance_idx_params = VectorIndexParams::with_ivf_pq_params(
-                        index.distance_type.into(),
-                        ivf_params,
-                        pq_params,
-                    );
-                    return Ok(Box::new(lance_idx_params));
-                }
+                debug_assert!(index.seed.is_none());
                 let ivf_params = Self::build_ivf_params(
                     index.num_partitions,
                     index.target_partition_size,
@@ -885,8 +1095,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use arrow_array::builder::{LargeListBuilder, ListBuilder, StringBuilder};
+    use arrow_array::builder::{
+        FixedSizeListBuilder, Float32Builder, LargeListBuilder, ListBuilder, StringBuilder,
+    };
+    use arrow_array::cast::AsArray;
     use arrow_array::record_batch;
+    use arrow_array::types::Float32Type;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array,
         LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StructArray,
@@ -924,6 +1138,34 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    async fn trained_ivf_pq_models(
+        table: &crate::Table,
+    ) -> (FixedSizeListArray, FixedSizeListArray) {
+        use lance::index::DatasetIndexInternalExt;
+        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
+        use lance_index::metrics::NoOpMetricsCollector;
+        use lance_index::vector::VectorIndex as LanceVectorIndex;
+        use lance_index::vector::quantizer::Quantizer;
+
+        let native_table = table.as_native().unwrap();
+        let indices = native_table.load_indices().await.unwrap();
+        let index_uuid = uuid::Uuid::parse_str(&indices[0].index_uuid).unwrap();
+        let dataset = native_table.dataset.get().await.unwrap();
+        let lance_index = dataset
+            .open_vector_index("embeddings", &index_uuid, &NoOpMetricsCollector)
+            .await
+            .unwrap();
+        let ivf_index = lance_index
+            .as_any()
+            .downcast_ref::<LanceIvfPq>()
+            .expect("expected IvfPq index");
+        let centroids = ivf_index.ivf_model().centroids_array().unwrap().clone();
+        let Quantizer::Product(product_quantizer) = ivf_index.quantizer() else {
+            panic!("expected a product quantizer");
+        };
+        (centroids, product_quantizer.codebook)
     }
 
     #[tokio::test]
@@ -1257,33 +1499,171 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_seeded_ivf_pq_training_is_reproducible_across_tables() {
-        use lance::index::DatasetIndexInternalExt;
-        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
-        use lance_index::metrics::NoOpMetricsCollector;
-        use lance_index::vector::VectorIndex as LanceVectorIndex;
-        use lance_index::vector::quantizer::Quantizer;
+    async fn test_seeded_training_sampling_stays_uniform_after_invalid_vectors() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        const NUM_ROWS: usize = 1_000;
+        const DIMENSION: usize = 2;
+        let values = Float32Array::from_iter_values((0..NUM_ROWS).flat_map(|row| {
+            let value = if row % 10 == 0 { f32::NAN } else { row as f32 };
+            [value, 1.0]
+        }));
+        let vectors = Arc::new(create_fixed_size_list(values, DIMENSION as i32).unwrap());
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embeddings",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let table = conn
+            .create_table(
+                "sampling",
+                RecordBatch::try_new(schema, vec![vectors]).unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
 
-        async fn trained_models(table: &crate::Table) -> (FixedSizeListArray, FixedSizeListArray) {
-            let native_table = table.as_native().unwrap();
-            let indices = native_table.load_indices().await.unwrap();
-            let index_uuid = uuid::Uuid::parse_str(&indices[0].index_uuid).unwrap();
-            let dataset = native_table.dataset.get().await.unwrap();
-            let lance_index = dataset
-                .open_vector_index("embeddings", &index_uuid, &NoOpMetricsCollector)
+        let first =
+            super::NativeTable::seeded_training_data(dataset.as_ref(), "embeddings", 100, 42)
                 .await
                 .unwrap();
-            let ivf_index = lance_index
-                .as_any()
-                .downcast_ref::<LanceIvfPq>()
-                .expect("expected IvfPq index");
-            let centroids = ivf_index.ivf_model().centroids_array().unwrap().clone();
-            let Quantizer::Product(product_quantizer) = ivf_index.quantizer() else {
-                panic!("expected a product quantizer");
-            };
-            (centroids, product_quantizer.codebook)
-        }
+        let second =
+            super::NativeTable::seeded_training_data(dataset.as_ref(), "embeddings", 100, 42)
+                .await
+                .unwrap();
+        assert_eq!(first, second);
 
+        let offsets = first
+            .values()
+            .as_primitive::<Float32Type>()
+            .values()
+            .chunks_exact(DIMENSION)
+            .map(|vector| vector[0])
+            .collect::<Vec<_>>();
+        let mean = offsets.iter().sum::<f32>() / offsets.len() as f32;
+        assert!((400.0..600.0).contains(&mean), "sample mean was {mean}");
+        assert!(offsets.iter().any(|offset| *offset > 800.0));
+    }
+
+    #[tokio::test]
+    async fn test_seeded_ivf_pq_training_supports_multivectors() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        const NUM_ROWS: usize = 64;
+        const VECTORS_PER_ROW: usize = 4;
+        const DIMENSION: i32 = 2;
+        let mut builder =
+            ListBuilder::new(FixedSizeListBuilder::new(Float32Builder::new(), DIMENSION));
+        for row in 0..NUM_ROWS {
+            for subvector in 0..VECTORS_PER_ROW {
+                let ordinal = row * VECTORS_PER_ROW + subvector + 1;
+                builder.values().values().append_value(ordinal as f32);
+                builder.values().values().append_value((ordinal * 7) as f32);
+                builder.values().append(true);
+            }
+            builder.append(true);
+        }
+        let vectors = Arc::new(builder.finish());
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embeddings",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![vectors]).unwrap();
+        let first = conn
+            .create_table("multivector_first", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let second = conn
+            .create_table("multivector_second", batch)
+            .execute()
+            .await
+            .unwrap();
+        let index = IvfPqIndexBuilder::default()
+            .distance_type(crate::DistanceType::Cosine)
+            .num_partitions(4)
+            .num_sub_vectors(2)
+            .num_bits(4)
+            .sample_rate(8)
+            .max_iterations(5)
+            .seed(42);
+        first
+            .create_index(&["embeddings"], Index::IvfPq(index.clone()))
+            .execute()
+            .await
+            .unwrap();
+        second
+            .create_index(&["embeddings"], Index::IvfPq(index))
+            .execute()
+            .await
+            .unwrap();
+
+        let first_models = trained_ivf_pq_models(&first).await;
+        let second_models = trained_ivf_pq_models(&second).await;
+        assert_eq!(first_models, second_models);
+    }
+
+    #[tokio::test]
+    async fn test_seeded_ivf_pq_async_training_starts_inside_job() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        const NUM_ROWS: usize = 32_768;
+        const DIMENSION: usize = 64;
+        let values = Float32Array::from_iter_values(
+            (0..NUM_ROWS * DIMENSION).map(|value| (value % 1009) as f32 / 1009.0),
+        );
+        let vectors = Arc::new(create_fixed_size_list(values, DIMENSION as i32).unwrap());
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embeddings",
+            vectors.data_type().clone(),
+            false,
+        )]));
+        let table = conn
+            .create_table(
+                "async_seeded",
+                RecordBatch::try_new(schema, vec![vectors]).unwrap(),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let index = IvfPqIndexBuilder::default()
+            .num_partitions(64)
+            .num_sub_vectors(4)
+            .num_bits(4)
+            .sample_rate(64)
+            .max_iterations(10)
+            .seed(42);
+
+        let job = tokio::time::timeout(
+            Duration::from_secs(1),
+            table
+                .create_index(&["embeddings"], Index::IvfPq(index))
+                .execute_async(),
+        )
+        .await
+        .expect("execute_async should return before seeded training")
+        .unwrap();
+        job.cancel().await.unwrap();
+        assert!(matches!(
+            job.wait().await,
+            Err(crate::Error::JobCancelled { .. })
+        ));
+        assert!(table.list_indices().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_seeded_ivf_pq_training_is_reproducible_across_tables() {
         let tmp_dir = tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
             .execute()
@@ -1333,8 +1713,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (first_centroids, first_codebook) = trained_models(&first).await;
-        let (second_centroids, second_codebook) = trained_models(&second).await;
+        let (first_centroids, first_codebook) = trained_ivf_pq_models(&first).await;
+        let (second_centroids, second_codebook) = trained_ivf_pq_models(&second).await;
         assert_eq!(first_centroids, second_centroids);
         assert_eq!(first_codebook, second_codebook);
     }
