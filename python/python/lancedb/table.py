@@ -3969,9 +3969,7 @@ class LanceTable(Table):
         [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
         return LOOP.run(self._table.compact_lsm())
 
-    def get_lsm_stats(
-        self, *, include_generation_rows: bool = False
-    ) -> Optional[dict]:
+    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
         [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
         return LOOP.run(
@@ -4695,14 +4693,18 @@ class AsyncTable:
         until every generation that existed at that moment has reached base.
         The loop runs client-side, reading progress from ``get_lsm_stats``.
 
-        Best-effort: nothing is frozen. Generations created *while* it runs
-        are deliberately not waited on, which is what lets it terminate on a
-        table taking writes. Idempotent and safe on a cadence.
+        Best-effort: generations created *while* it runs are deliberately not
+        waited on, which is what lets it terminate on a table taking writes.
+        Idempotent and safe on a cadence.
 
-        There is no deadline. It returns when the target generations are
-        gone, or raises if the table stops making progress with no
-        compaction running. Wrap it in ``asyncio.wait_for`` for a wall-clock
-        bound.
+        There is no deadline, and the caller owns that. It returns when the
+        target generations are gone, raises on a terminal server fault, and
+        otherwise waits however long the server takes. A slow table and a
+        stuck one are the same picture from the client: the compactor pool is
+        shared across every table on the node, so a checkpoint queued behind
+        unrelated work looks exactly like one that is merging. Wrap this in
+        ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
+        costs nothing.
         """
         return await self._inner.checkpoint_lsm()
 
@@ -4734,15 +4736,14 @@ class AsyncTable:
         state, though on a node that has not claimed this table it claims it,
         exactly as a read would.
 
-        Returns ``None`` — and only — when the LSM write path is not enabled
-        for the table.
+        Returns ``None`` only when the LSM write path is not enabled.
 
         Parameters
         ----------
         include_generation_rows
             Report a row count per L0 generation. Off by default: each count
             opens an uncached Lance dataset, and ``checkpoint_lsm`` polls this
-            method needing only generation numbers.
+            needing only generation numbers.
         """
         return await self._inner.get_lsm_stats(include_generation_rows)
 

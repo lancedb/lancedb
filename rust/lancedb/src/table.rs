@@ -1759,25 +1759,25 @@ impl Table {
 
     /// Converge this table's LSM write path into its base table.
     ///
-    /// One `flush` to seal every memtable into L0, then compaction
-    /// triggers until every generation that existed at that moment has
-    /// reached base. The loop runs here, in the client: `compact_lsm`
-    /// dispatches a pass and returns, and progress is read from generation
-    /// numbers via `get_lsm_stats`, so there is no held socket, no
-    /// server-side task, and nothing to reconcile if you drop this future
-    /// partway through.
+    /// One `flush` to seal every memtable into L0, then compaction triggers
+    /// until every generation that existed at that moment has reached base.
+    /// The loop runs client-side, reading progress from `get_lsm_stats`, so
+    /// there is no held socket and nothing to reconcile if you drop this
+    /// future partway through.
     ///
-    /// **Best-effort.** Nothing is frozen. Generations created *after* the
-    /// opening flush are deliberately not waited on — that is what lets
-    /// this terminate on a table taking writes, where "L0 is empty" never
-    /// becomes true. Idempotent and safe to run on a cadence: an
+    /// **Best-effort.** Generations created *after* the opening flush are
+    /// deliberately not waited on — that is what lets this terminate on a
+    /// table taking writes. Idempotent and safe on a cadence: an
     /// already-converged table costs two round trips and triggers nothing.
     ///
-    /// **No deadline.** It returns when the target generations are gone, or
-    /// errors after a bounded number of polls with neither progress nor a
-    /// running pass — a fenced bucket, a saturated compactor pool, a
-    /// failing merge. Wrap it in `tokio::time::timeout` if you need a
-    /// wall-clock bound.
+    /// **No deadline, and the caller owns that.** It returns when the target
+    /// generations are gone, propagates a terminal server fault, and
+    /// otherwise waits however long the server takes. A slow table and a
+    /// stuck one are the same picture from here: the compactor pool is shared
+    /// across every table on the node, so a checkpoint queued behind
+    /// unrelated work is indistinguishable from one that is merging. Wrap
+    /// this in `tokio::time::timeout` for a wall-clock bound; abandoning it
+    /// partway costs nothing.
     ///
     /// # Example
     ///
@@ -1797,11 +1797,10 @@ impl Table {
     /// Seal every bucket's active memtable into L0 without touching the
     /// base table.
     ///
-    /// Independently useful: flushing makes memtable rows readable from L0
-    /// at a lower per-query cost. On a node that has not claimed this table
-    /// (after a restart, say) this claims it and replays its WAL log first —
-    /// reporting "nothing to flush" without replaying would be lying about
-    /// durable data.
+    /// Independently useful: flushing makes memtable rows readable from L0 at
+    /// a lower per-query cost. On a node that has not claimed this table it
+    /// claims it and replays the WAL log first — reporting "nothing to flush"
+    /// without replaying would lie about durable data.
     pub async fn flush_lsm(&self) -> Result<()> {
         self.inner.flush_lsm().await
     }
@@ -1809,28 +1808,27 @@ impl Table {
     /// Run one bounded L0 → base compaction pass per bucket, reporting what
     /// it merged and what is left.
     ///
-    /// One pass, not convergence: that is what makes each request's cost
-    /// bounded and gives a caller driving its own cadence a progress signal
-    /// per round trip.
+    /// One pass, not convergence: that bounds each request's cost and gives a
+    /// caller driving its own cadence a progress signal per round trip.
     pub async fn compact_lsm(&self) -> Result<()> {
         self.inner.compact_lsm().await
     }
 
     /// Read live per-bucket LSM state.
     ///
-    /// Answers "how far behind is my fresh tier", "which bucket is hot",
-    /// and "why is my fresh-tier vector search brute-force". Mutates no
-    /// table state, though on a node that has not claimed this table it
-    /// claims it — exactly as a read would.
+    /// Answers "how far behind is my fresh tier", "which bucket is hot", and
+    /// "why is my fresh-tier vector search brute-force". Mutates no table
+    /// state, though on a node that has not claimed this table it claims it,
+    /// exactly as a read would.
     ///
-    /// `include_generation_rows` reports a row count per L0 generation. Off
-    /// by default: each count opens an uncached Lance dataset, and
-    /// `checkpoint_lsm` polls this method needing only generation numbers.
+    /// `include_generation_rows` reports a row count per L0 generation. Off by
+    /// default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_lsm` polls this needing only generation numbers.
     ///
-    /// `Ok(None)` — and only — when the LSM write path is not enabled for
-    /// the table, matching [`Table::get_lsm_write_spec`]. Stats is
-    /// fresh-tier only, so with the WAL off there is no manifest and no
-    /// watermark; a struct of zeros would read as measurements.
+    /// `Ok(None)` only when the LSM write path is not enabled, matching
+    /// [`Table::get_lsm_write_spec`]. Stats is fresh-tier only, so with the
+    /// WAL off there is no manifest to report and a struct of zeros would
+    /// read as measurements.
     ///
     /// Do not build a checkpoint's termination on this: the completion
     /// predicate lives in the `flush` and `compact` responses.

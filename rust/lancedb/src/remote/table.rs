@@ -994,36 +994,30 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    /// Send an LSM operator request and decode its JSON body, classifying
-    /// a failure into an [`Error::LsmRoute`] the checkpoint loop can act on.
+    /// Send an LSM operator request, classifying a failure into an
+    /// [`Error::LsmRoute`] the checkpoint loop can act on.
     ///
-    /// Deliberately **not** routed through `check_response` /
-    /// `check_table_response`: those fold the body into a string and keep
-    /// only the status, and the body's `code` is the only thing that tells
-    /// a draining node apart from a fenced writer or a transport blip on a
-    /// 503. Classifying here — before any generic helper touches the
-    /// response — is what preserves a distinction threaded through three
-    /// crates and two error enums.
+    /// Deliberately not routed through `check_response` /
+    /// `check_table_response`: those fold the body into a string and keep only
+    /// the status, and on a 503 the body's `code` is the only thing that tells
+    /// a draining node from a fenced writer or a transport blip.
     async fn send_lsm_route(
         &self,
         request: RequestBuilder,
         route: &str,
     ) -> Result<(String, String)> {
-        // `with_retry = false` on purpose. The transport retry layer treats
-        // every 503 alike, so it would burn its whole budget re-asking a
-        // node that already said, terminally, that it is draining — and it
-        // would do so *before* this classifier ever saw the body that says
-        // which 503 it was. Retry policy on these routes belongs to the
-        // checkpoint loop, which can tell the cases apart.
+        // `with_retry = false` on purpose: the transport layer treats every
+        // 503 alike and would burn its budget re-asking a draining node,
+        // before this classifier ever saw the body saying which 503 it was.
+        // Retry policy here belongs to the checkpoint loop.
         let (request_id, response) = self.send(request, false).await?;
         let status = response.status();
         let body = response.text().await.err_to_http(request_id.clone())?;
         if !status.is_success() {
-            // A 404 means the table does not exist — on every route on this
-            // surface, since the server assigns one meaning per status. It must
-            // arrive as the same error every other route reports; these routes
-            // bypass `check_table_response`, so `handle_table_not_found` never
-            // runs for them. A lost claim is 421, classified below.
+            // 404 means the table does not exist, and must arrive as the error
+            // every other route reports. These routes bypass
+            // `check_table_response`, so `handle_table_not_found` never runs
+            // for them. A lost claim is 421, classified below.
             if status == StatusCode::NOT_FOUND {
                 return Err(Error::TableNotFound {
                     name: self.name.clone(),
@@ -6773,10 +6767,9 @@ mod tests {
         http::Response::builder().status(200).body(body).unwrap()
     }
 
-    /// A flush that lands in an empty L0 finishes on the opening stats read
-    /// alone — **zero** `compact` calls issued. Asserting the call count is
-    /// the point: "it returned Ok" is also true of a loop that ran a
-    /// pointless pass.
+    /// A flush landing in an empty L0 finishes on the opening stats read
+    /// alone. Asserting zero compacts is the point: "it returned Ok" is also
+    /// true of a loop that ran a pointless pass.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_short_circuits_on_empty_l0() {
         let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6827,10 +6820,9 @@ mod tests {
         );
     }
 
-    /// Generations created *during* the checkpoint are not waited on. This
-    /// is what makes the loop terminate on a table taking writes, where
-    /// "L0 is empty" never becomes true — so the assertion is that it
-    /// returns at all, with the target set drained and newer L0 present.
+    /// Generations created *during* the checkpoint are not waited on, which
+    /// is what lets the loop terminate on a table taking writes where "L0 is
+    /// empty" never becomes true.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_ignores_generations_created_while_it_runs() {
         let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6862,10 +6854,9 @@ mod tests {
         );
     }
 
-    /// **Contention is not draining.** A 429 must be retried, not read as
-    /// the one terminal condition. This is the regression that would pass
-    /// silently otherwise: every layer says "unavailable" either way, and
-    /// the checkpoint just stops early blaming a healthy node.
+    /// Contention is not draining. Every layer says "unavailable" either way,
+    /// so reading a 429 as terminal stops the checkpoint early and blames a
+    /// healthy node.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_retries_contention_and_does_not_report_draining() {
         let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6907,9 +6898,114 @@ mod tests {
         );
     }
 
-    /// A draining node stops the loop immediately — **without retrying**.
-    /// Asserting the call count matters: a regression to retry-until-the-
-    /// idle-bound passes any test that only checks that it errored.
+    /// A transient fault on the poll must not abort the checkpoint. This route
+    /// meets the most contention — it runs every `POLL_INTERVAL` for the
+    /// checkpoint's whole life, with the transport retry layer disabled — yet
+    /// was the one call reached with a bare `?`.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_retries_a_contended_stats_poll() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+                return accepted();
+            }
+            // The opening read lands; the next two polls are latched out.
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if (1..3).contains(&n) {
+                return http::Response::builder()
+                    .status(429)
+                    .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                    .unwrap();
+            }
+            ok_json(stats_body(if n < 4 { &[1] } else { &[] }, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a contended poll must be retried, not surfaced");
+        assert_eq!(
+            polls.load(std::sync::atomic::Ordering::SeqCst),
+            5,
+            "the two rejected polls must be re-issued, not skipped"
+        );
+    }
+
+    /// Contention and a lost claim draw on separate budgets: five straight
+    /// 429s on `flush`, more than `MAX_REISSUES`, must still converge. On one
+    /// shared counter this spent the re-issue cap and then reported a lost
+    /// claim nothing had ever reported.
+    #[tokio::test(start_paused = true)]
+    async fn test_contention_does_not_exhaust_the_reissue_budget() {
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = flushes.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5 {
+                    return http::Response::builder()
+                        .status(429)
+                        .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                        .unwrap();
+                }
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                return accepted();
+            }
+            ok_json(stats_body(&[], false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("contention must not be reported as a lost claim");
+        assert_eq!(
+            flushes.load(std::sync::atomic::Ordering::SeqCst),
+            6,
+            "five retries against one seal, then it lands"
+        );
+    }
+
+    /// An exhausted retry budget surfaces the fault that consumed it, not a
+    /// message the loop invented: "429, nine times" points an operator at a
+    /// saturated pool, a generic runtime error points them nowhere.
+    #[tokio::test(start_paused = true)]
+    async fn test_exhausted_retries_surface_the_underlying_fault() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(429)
+                .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                .unwrap()
+        });
+
+        let err = table.checkpoint_lsm().await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LsmRoute {
+                    fault: crate::table::LsmFault::Retry,
+                    status: 429,
+                    ..
+                }
+            ),
+            "the fault that spent the budget must be the one reported: {err:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            9,
+            "one call plus MAX_RETRIES — the re-issue budget is not spent on top"
+        );
+    }
+
+    /// A draining node stops the loop immediately, without retrying. The call
+    /// count is the assertion: a regression to retry-until-exhausted passes
+    /// any test that only checks that it errored.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_stops_without_retrying_on_draining() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6940,31 +7036,39 @@ mod tests {
         );
     }
 
-    /// A table that never drains its targets, with no pass running, must
-    /// fail rather than spin — this is the bound that replaced the
-    /// deadline. A saturated compactor pool looks exactly like this.
+    /// A long stall with nothing compacting must keep waiting, not fail. The
+    /// client cannot judge this: a checkpoint queued behind unrelated tables
+    /// on the pod-wide compactor pool reports exactly these numbers — flat
+    /// generations, an idle latch — as one whose merges are failing. The
+    /// deadline is the caller's.
     #[tokio::test(start_paused = true)]
-    async fn test_checkpoint_gives_up_when_no_progress_and_nothing_running() {
+    async fn test_checkpoint_waits_out_a_long_stall_rather_than_failing() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
             if path.contains("flush_lsm") || path.contains("compact_lsm") {
                 return accepted();
             }
-            // Triggers land, nothing ever compacts.
-            ok_json(stats_body(&[1, 2], false))
+            // Flat for far longer than any bound this loop ever had, with
+            // `compacting: false` throughout — then it drains.
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ok_json(stats_body(if n < 40 { &[1, 2] } else { &[] }, false))
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
-        let message = err.to_string();
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a stall is the server being slow, not the client's call to make");
         assert!(
-            message.contains("stopped making progress"),
-            "the error must name the stall, not a generic failure: {message}"
+            polls.load(std::sync::atomic::Ordering::SeqCst) > 40,
+            "the loop must have kept polling well past the old ten-poll bound"
         );
     }
 
-    /// A pass *is* running on every outstanding bucket: that counts as
-    /// progress, so the loop waits instead of tripping the idle bound and
-    /// instead of piling on triggers the latch would only reject.
+    /// A pass already owns the latch on every outstanding bucket, so the loop
+    /// waits rather than piling on triggers it would only refuse. This is the
+    /// sole thing `compacting` is read for.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_waits_while_a_pass_is_running() {
         let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6980,7 +7084,7 @@ mod tests {
                 seen_compacts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
-            // Busy for well past MAX_IDLE_POLLS, then done.
+            // Latched for many polls, then done.
             let n = seen_polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             ok_json(if n > 15 {
                 stats_body(&[], false)
@@ -7055,11 +7159,10 @@ mod tests {
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 
-    /// A 404 must arrive as `TableNotFound`, like every other route — not as
-    /// a lost claim the loop re-issues from flush until its cap, then blames
-    /// on a crash loop. The two are distinguished by *status*: 404 is "no such
-    /// table", 421 is "this node holds no claim". They shared 404 once, and
-    /// the loop chased a name that never existed.
+    /// A 404 arrives as `TableNotFound`, not as a lost claim the loop
+    /// re-issues from flush until its cap. The two are distinguished by
+    /// status: 404 is "no such table", 421 is "this node holds no claim".
+    /// They shared 404 once, and the loop chased a name that never existed.
     #[tokio::test(start_paused = true)]
     async fn test_missing_table_is_not_read_as_a_lost_claim() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -7084,9 +7187,8 @@ mod tests {
         );
     }
 
-    /// A lost claim — 421, not 404. It *does* re-issue from flush, which is
-    /// the call that re-claims and replays. Sharing 404 with "no such table"
-    /// is what previously sent this loop after a name that never existed.
+    /// A lost claim — 421, not 404 — does re-issue from flush, the call that
+    /// re-claims and replays.
     #[tokio::test(start_paused = true)]
     async fn test_registry_miss_reissues_from_flush() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
