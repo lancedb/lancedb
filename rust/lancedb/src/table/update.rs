@@ -62,12 +62,16 @@ impl UpdateBuilder {
     }
 
     /// Executes the update operation.
-    pub async fn execute(self) -> Result<UpdateResult> {
+    pub async fn execute(mut self) -> Result<UpdateResult> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
             })
         } else {
+            self.filter = self
+                .filter
+                .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate))
+                .transpose()?;
             self.parent.clone().update(self).await
         }
     }

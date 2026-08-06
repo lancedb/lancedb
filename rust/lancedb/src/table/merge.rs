@@ -220,9 +220,27 @@ impl MergeInsertBuilder {
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
+    pub async fn execute(
+        mut self,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<MergeResult> {
+        self.when_matched_update_all_filt =
+            canonicalize_merge_filter(self.when_matched_update_all_filt)?;
+        self.when_not_matched_by_source_delete_filt =
+            canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt)?;
         self.table.clone().merge_insert(self, new_data).await
     }
+}
+
+fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
+    filter
+        .map(|filter| match filter {
+            MergeFilter::Sql(predicate) => {
+                crate::expr::canonicalize_sql_predicate(&predicate).map(MergeFilter::Sql)
+            }
+            filter @ MergeFilter::Expr(_) => Ok(filter),
+        })
+        .transpose()
 }
 
 /// Internal implementation of the merge insert logic
