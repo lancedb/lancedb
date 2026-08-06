@@ -184,6 +184,49 @@ describe("embedding functions", () => {
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
   });
+  it("should append using embedding metadata created by Python", async () => {
+    @register("python-mock")
+    // biome-ignore lint/correctness/noUnusedVariables: the decorator registers this class
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+
+    const metadata = new Map([
+      [
+        "embedding_functions",
+        '[{"source_column":"text","vector_column":"vector","name":"python-mock","model":{}}]',
+      ],
+    ]);
+    const schema = new Schema(
+      [
+        new Field("text", new Utf8(), true),
+        new Field(
+          "vector",
+          new FixedSizeList(3, new Field("item", new Float32(), true)),
+          true,
+        ),
+      ],
+      metadata,
+    );
+
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test", schema);
+    await table.add([{ text: "hello world" }]);
+
+    const rows = await table.query().toArray();
+    expect(JSON.parse(JSON.stringify(rows[0].vector))).toEqual([1, 2, 3]);
+  });
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {

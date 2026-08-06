@@ -48,6 +48,7 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
+import { parseEmbeddingFunctionMetadata } from "./embedding/metadata";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import {
   sanitizeField,
@@ -1385,11 +1386,13 @@ function validateSchemaEmbeddings(
 
         // Check schema metadata for embedding functions
         if (schema.metadata.has("embedding_functions")) {
-          const embeddings = JSON.parse(
-            schema.metadata.get("embedding_functions")!,
-          );
-          // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-          if (embeddings.find((f: any) => f["vectorColumn"] === field.name)) {
+          const embeddings = parseEmbeddingFunctionMetadata(schema.metadata);
+          if (
+            embeddings.find(
+              (embedding) =>
+                (embedding.vectorColumn ?? "vector") === field.name,
+            )
+          ) {
             hasEmbeddingFunction = true;
           }
         }

@@ -5,6 +5,7 @@ import {
   type EmbeddingFunction,
   type EmbeddingFunctionConstructor,
 } from "./embedding_function";
+import { parseEmbeddingFunctionMetadata } from "./metadata";
 import "reflect-metadata";
 
 export type CreateReturnType<T> = T extends { init: () => Promise<void> }
@@ -105,20 +106,10 @@ export class EmbeddingFunctionRegistry {
     this: EmbeddingFunctionRegistry,
     metadata: Map<string, string>,
   ): Promise<Map<string, EmbeddingFunctionConfig>> {
-    if (!metadata.has("embedding_functions")) {
+    const functions = parseEmbeddingFunctionMetadata(metadata);
+    if (functions.length === 0) {
       return new Map();
     } else {
-      type FunctionConfig = {
-        name: string;
-        sourceColumn: string;
-        vectorColumn: string;
-        model: EmbeddingFunction["TOptions"];
-      };
-
-      const functions = <FunctionConfig[]>(
-        JSON.parse(metadata.get("embedding_functions")!)
-      );
-
       const items: [string, EmbeddingFunctionConfig][] = await Promise.all(
         functions.map(async (f) => {
           const fn = this.get(f.name);
