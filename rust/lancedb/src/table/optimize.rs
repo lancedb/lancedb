@@ -15,7 +15,7 @@ use lance_index::optimize::OptimizeOptions;
 use log::info;
 
 pub use chrono::Duration;
-pub use lance::dataset::optimize::CompactionOptions;
+pub use lance::dataset::optimize::{CompactionMode, CompactionOptions, IndexRemapMode};
 
 use super::NativeTable;
 use crate::error::Result;

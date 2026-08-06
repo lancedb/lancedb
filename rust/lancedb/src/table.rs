@@ -95,7 +95,9 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
-pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use optimize::{
+    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,

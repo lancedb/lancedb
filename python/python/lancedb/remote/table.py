@@ -64,7 +64,16 @@ from ..query import (
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
 )
-from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
+from ..table import (
+    AsyncTable,
+    BlobMode,
+    Branches,
+    CompactionOptions,
+    IndexStatistics,
+    Query,
+    Table,
+    Tags,
+)
 from ..types import BaseTokenizerType
 
 
@@ -942,6 +951,7 @@ class RemoteTable(Table):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         optimize() is a no-op on LanceDB Cloud.
