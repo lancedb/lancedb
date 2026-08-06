@@ -2580,6 +2580,18 @@ class LanceTable(Table):
         table._checkout_version = version
         return table
 
+    def _resolve_checkout_version(self, version: Union[int, str]) -> int:
+        if isinstance(version, int):
+            return version
+        try:
+            return self.tags.get_version(version)
+        except RuntimeError as err:
+            # Native checkout historically exposes an unknown tag as ValueError.
+            # Preserve that contract while resolving tags before mutating the table.
+            if "Ref not found" in str(err) and "does not exist" in str(err):
+                raise ValueError(str(err)) from err
+            raise
+
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
 
@@ -2616,10 +2628,12 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        LOOP.run(self._table.checkout(version))
-        # Resolve tags to their numeric version so a forked child can reopen
-        # the same pinned view through ``open_table(version=...)``.
-        self._checkout_version = version if isinstance(version, int) else self.version
+        # Resolve tags before mutating the native handle.  This leaves the live
+        # handle and reopen descriptor aligned if tag lookup fails, and avoids a
+        # second fallible version lookup after checkout succeeds.
+        resolved_version = self._resolve_checkout_version(version)
+        LOOP.run(self._table.checkout(resolved_version))
+        self._checkout_version = resolved_version
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -2675,10 +2689,9 @@ class LanceTable(Table):
         4
         """
         if version is not None:
-            LOOP.run(self._table.checkout(version))
-            self._checkout_version = (
-                version if isinstance(version, int) else self.version
-            )
+            resolved_version = self._resolve_checkout_version(version)
+            LOOP.run(self._table.checkout(resolved_version))
+            self._checkout_version = resolved_version
         LOOP.run(self._table.restore())
         self._checkout_version = None
 

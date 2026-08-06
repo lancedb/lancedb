@@ -2167,6 +2167,77 @@ def test_restore_tracks_checkout_when_restore_fails():
     assert table._checkout_version == inner.live_version
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected_descriptor", "expected_restore_calls"),
+    [("checkout", 11, 0), ("restore", None, 1)],
+)
+def test_string_tag_resolves_before_checkout(
+    operation, expected_descriptor, expected_restore_calls
+):
+    class Tags:
+        async def get_version(self, tag):
+            assert tag == "tag-v1"
+            return 11
+
+    class NoPostCheckoutVersionLookup:
+        def __init__(self):
+            self.tags = Tags()
+            self.checkout_versions = []
+            self.restore_calls = 0
+
+        async def checkout(self, version):
+            self.checkout_versions.append(version)
+
+        async def version(self):
+            raise RuntimeError("post-checkout version lookup must not run")
+
+        async def restore(self):
+            self.restore_calls += 1
+
+    inner = NoPostCheckoutVersionLookup()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = 3
+
+    getattr(table, operation)("tag-v1")
+
+    assert inner.checkout_versions == [11]
+    assert table._checkout_version == expected_descriptor
+    assert inner.restore_calls == expected_restore_calls
+
+
+@pytest.mark.parametrize("operation", ["checkout", "restore"])
+def test_string_tag_resolution_failure_does_not_mutate_handle(operation):
+    class FailingTags:
+        async def get_version(self, tag):
+            assert tag == "missing-tag"
+            raise RuntimeError("injected tag lookup failure")
+
+    class UnchangedTable:
+        def __init__(self):
+            self.tags = FailingTags()
+            self.checkout_calls = 0
+            self.restore_calls = 0
+
+        async def checkout(self, version):
+            self.checkout_calls += 1
+
+        async def restore(self):
+            self.restore_calls += 1
+
+    inner = UnchangedTable()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = 3
+
+    with pytest.raises(RuntimeError, match="injected tag lookup failure"):
+        getattr(table, operation)("missing-tag")
+
+    assert table._checkout_version == 3
+    assert inner.checkout_calls == 0
+    assert inner.restore_calls == 0
+
+
 def test_reopen_preserves_explicit_table_location(tmp_path):
     db = lancedb.connect(tmp_path / "db")
     location = str(tmp_path / "physical-table")
