@@ -2387,6 +2387,55 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2366
+    pd = pytest.importorskip("pandas")
+
+    class Document(LanceModel):
+        id: int
+        title: str
+        content: str
+
+    table = mem_db.create_table("documents", schema=Document)
+    table.add(
+        pd.DataFrame(
+            {
+                "title": ["Old title", "Unchanged"],
+                "id": [2, 3],
+                "content": ["Old content", "Keep this"],
+            }
+        )
+    )
+
+    # Pandas produces nullable Arrow fields, in an order that differs from the
+    # non-nullable Pydantic schema. This is valid as long as the data has no nulls.
+    new_data = pd.DataFrame(
+        {
+            "title": ["Inserted", "Updated"],
+            "id": [1, 2],
+            "content": ["New row", "New content"],
+        }
+    )
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+    expected = pa.Table.from_pylist(
+        [
+            {"id": 1, "title": "Inserted", "content": "New row"},
+            {"id": 2, "title": "Updated", "content": "New content"},
+            {"id": 3, "title": "Unchanged", "content": "Keep this"},
+        ],
+        schema=Document.to_arrow_schema(),
+    )
+    assert table.to_arrow().sort_by("id") == expected
+
+
 def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
