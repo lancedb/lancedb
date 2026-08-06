@@ -115,7 +115,7 @@ mod tests {
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
     use arrow_array::{
-        Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
+        Array, ArrayRef, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
         Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
         TimestampMillisecondArray, TimestampNanosecondArray, UInt32Array, record_batch,
     };
@@ -407,6 +407,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_wide_table_across_fragments() {
+        const NUM_PAYLOAD_COLUMNS: usize = 12;
+        const NUM_FRAGMENTS: usize = 16;
+        const ROWS_PER_FRAGMENT: usize = 512;
+
+        fn make_batch(fragment: usize) -> RecordBatch {
+            let mut fields = vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("split", DataType::Utf8, false),
+            ];
+            let mut columns: Vec<ArrayRef> = vec![
+                Arc::new(Int32Array::from_iter_values(
+                    (0..ROWS_PER_FRAGMENT).map(|row| (fragment * ROWS_PER_FRAGMENT + row) as i32),
+                )),
+                Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                    "test",
+                    ROWS_PER_FRAGMENT,
+                ))),
+            ];
+
+            for column in 0..NUM_PAYLOAD_COLUMNS {
+                fields.push(Field::new(
+                    format!("payload_{column}"),
+                    DataType::Utf8,
+                    false,
+                ));
+                columns.push(Arc::new(StringArray::from_iter_values(
+                    (0..ROWS_PER_FRAGMENT)
+                        .map(|row| format!("fragment-{fragment}-column-{column}-row-{row}")),
+                )));
+            }
+
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        }
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("wide_table", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        for fragment in 1..NUM_FRAGMENTS {
+            table.add(make_batch(fragment)).execute().await.unwrap();
+        }
+
+        // Regression test for #1291. Updates used to concatenate all incoming
+        // batches while finding output file boundaries. On wide tables this
+        // could exceed Arrow's i32 string offsets before any data was written.
+        let result = table
+            .update()
+            .only_if("split = 'test'")
+            .column("split", "'TEST'")
+            .execute()
+            .await
+            .unwrap();
+
+        let expected_rows = NUM_FRAGMENTS * ROWS_PER_FRAGMENT;
+        assert_eq!(result.rows_updated, expected_rows as u64);
+        assert_eq!(
+            table
+                .count_rows(Some("split = 'TEST'".to_string()))
+                .await
+                .unwrap(),
+            expected_rows
+        );
+        assert_eq!(
+            table
+                .count_rows(Some("payload_0 LIKE 'fragment-%'".to_string()))
+                .await
+                .unwrap(),
+            expected_rows
+        );
     }
 
     #[tokio::test]
