@@ -408,45 +408,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_legacy_sq_index_with_unknown_fragment_coverage() {
+    async fn test_compact_legacy_index_with_unknown_fragment_coverage() {
         use lance::Dataset;
-        use lance::dataset::transaction::Operation;
         use lance::index::DatasetIndexExt;
+        use lance_table::io::commit::write_manifest_file_to_path;
+        use object_store::ObjectStoreExt;
 
-        const INDEX_NAME: &str = "legacy_sq";
+        const INDEX_NAME: &str = "legacy_btree";
         const ROWS: i32 = 64;
-        const DIMENSION: i32 = 8;
 
         let tmpdir = tempfile::tempdir().unwrap();
         let conn = connect(tmpdir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
-        let vectors = FixedSizeListArray::try_new_from_values(
-            Float32Array::from_iter_values((0..ROWS).flat_map(|row| {
-                (0..DIMENSION).map(move |offset| (row * DIMENSION + offset) as f32)
-            })),
-            DIMENSION,
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(0..ROWS))],
         )
         .unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "vector",
-            vectors.data_type().clone(),
-            false,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors)]).unwrap();
         let table = conn
-            .create_table("test_legacy_sq_compact", batch.clone())
+            .create_table("test_legacy_compact", batch.clone())
             .execute()
             .await
             .unwrap();
         table.add(batch.clone()).execute().await.unwrap();
         table.add(batch).execute().await.unwrap();
         table
-            .create_index(
-                &["vector"],
-                Index::IvfSq(crate::index::vector::IvfSqIndexBuilder::default().num_partitions(1)),
-            )
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
             .name(INDEX_NAME.to_string())
             .execute()
             .await
@@ -458,20 +448,22 @@ mod tests {
         let original = segments.pop().unwrap();
         let mut legacy = original.clone();
         legacy.fragment_bitmap = None;
-        let legacy_dataset = Dataset::commit(
-            dataset.clone(),
-            Operation::CreateIndex {
-                new_indices: vec![legacy],
-                removed_indices: vec![original],
-            },
-            Some(dataset.manifest().version),
+        let object_store = dataset.object_store(None).await.unwrap();
+        let mut manifest = dataset.manifest().clone();
+        manifest.index_section = None;
+        manifest.transaction_section = None;
+        let manifest_path = dataset.manifest_location().path.clone();
+        object_store.inner.delete(&manifest_path).await.unwrap();
+        write_manifest_file_to_path(
+            object_store.as_ref(),
+            &mut manifest,
+            Some(vec![legacy]),
+            &manifest_path,
             None,
-            None,
-            Default::default(),
-            false,
         )
         .await
         .unwrap();
+        let legacy_dataset = Dataset::open(dataset.uri()).await.unwrap();
         table.dataset().unwrap().update(legacy_dataset);
 
         let dataset = table.dataset().unwrap().get().await.unwrap();
