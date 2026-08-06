@@ -3,6 +3,7 @@
 
 //! LanceDB Table APIs
 
+use crate::blob::BlobFile;
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
@@ -12,7 +13,6 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use lance::dataset::BlobFile;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
@@ -65,6 +65,7 @@ use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
+pub mod add_columns;
 mod add_data;
 pub mod branch_merge;
 mod create_index;
@@ -79,6 +80,7 @@ pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
 use crate::index::waiter::wait_for_index;
+pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
@@ -1641,12 +1643,8 @@ impl Table {
     }
 
     /// Add new columns to the table, providing values to fill in.
-    pub async fn add_columns(
-        &self,
-        transforms: NewColumnTransform,
-        read_columns: Option<Vec<String>>,
-    ) -> Result<AddColumnsResult> {
-        self.inner.add_columns(transforms, read_columns).await
+    pub fn add_columns(&self) -> AddColumnsBuilder {
+        AddColumnsBuilder::new(self.inner.clone())
     }
 
     /// Change a column's name or nullability.

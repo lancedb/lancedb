@@ -9,6 +9,7 @@
 //!
 //! Blob tables require Lance file format >= 2.2 and stable row ids at create.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::LargeBinaryArray;
@@ -16,11 +17,203 @@ use arrow_array::builder::LargeBinaryBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
+use lance_io::object_store::ObjectStore;
+use object_store::path::Path;
 
 use crate::error::{Error, Result};
 
-pub use lance::dataset::BlobFile;
+/// Seekable handle for one blob value, backed by local storage or a remote
+/// HTTP byte-range endpoint.
+#[derive(Debug)]
+pub struct BlobFile {
+    inner: BlobFileInner,
+}
+
+#[derive(Debug)]
+enum BlobFileInner {
+    Native(lance::dataset::BlobFile),
+    #[cfg(feature = "remote")]
+    Remote(Box<crate::remote::table::blobs::RemoteBlobFile>),
+}
+
+impl From<lance::dataset::BlobFile> for BlobFile {
+    fn from(value: lance::dataset::BlobFile) -> Self {
+        Self {
+            inner: BlobFileInner::Native(value),
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl From<crate::remote::table::blobs::RemoteBlobFile> for BlobFile {
+    fn from(value: crate::remote::table::blobs::RemoteBlobFile) -> Self {
+        Self {
+            inner: BlobFileInner::Remote(Box::new(value)),
+        }
+    }
+}
+
+impl BlobFile {
+    /// Inline reader over a data-file slice.
+    pub fn new_inline(
+        object_store: Arc<ObjectStore>,
+        path: Path,
+        position: u64,
+        size: u64,
+    ) -> Self {
+        lance::dataset::BlobFile::new_inline(object_store, path, position, size).into()
+    }
+
+    /// Dedicated sidecar-file reader.
+    pub fn new_dedicated(object_store: Arc<ObjectStore>, path: Path, size: u64) -> Self {
+        lance::dataset::BlobFile::new_dedicated(object_store, path, size).into()
+    }
+
+    /// Packed reader for a slice in a shared sidecar.
+    pub fn new_packed(
+        object_store: Arc<ObjectStore>,
+        path: Path,
+        position: u64,
+        size: u64,
+    ) -> Self {
+        lance::dataset::BlobFile::new_packed(object_store, path, position, size).into()
+    }
+
+    /// External reader at a resolved object location.
+    pub fn new_external(
+        object_store: Arc<ObjectStore>,
+        path: Path,
+        uri: String,
+        position: u64,
+        size: u64,
+    ) -> Self {
+        lance::dataset::BlobFile::new_external(object_store, path, uri, position, size).into()
+    }
+
+    /// Close the handle.
+    pub async fn close(&self) -> lance_core::Result<()> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.close().await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.close().await,
+        }
+    }
+
+    /// Whether the handle is closed.
+    pub async fn is_closed(&self) -> bool {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.is_closed().await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.is_closed(),
+        }
+    }
+
+    /// Read a range without moving the cursor.
+    pub async fn read_range(&self, range: Range<u64>) -> lance_core::Result<bytes::Bytes> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.read_range(range).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.read_range(range).await,
+        }
+    }
+
+    /// Read ranges without moving the cursor.
+    pub async fn read_ranges(
+        &self,
+        ranges: &[Range<u64>],
+    ) -> lance_core::Result<Vec<bytes::Bytes>> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.read_ranges(ranges).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.read_ranges(ranges).await,
+        }
+    }
+
+    /// Read from the cursor to the end.
+    pub async fn read(&self) -> lance_core::Result<bytes::Bytes> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.read().await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.read().await,
+        }
+    }
+
+    /// Read up to `len` bytes and advance the cursor.
+    pub async fn read_up_to(&self, len: usize) -> lance_core::Result<bytes::Bytes> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.read_up_to(len).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.read_up_to(len).await,
+        }
+    }
+
+    /// Move the cursor to `new_cursor`.
+    pub async fn seek(&self, new_cursor: u64) -> lance_core::Result<()> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.seek(new_cursor).await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.seek(new_cursor).await,
+        }
+    }
+
+    /// Current cursor position.
+    pub async fn tell(&self) -> lance_core::Result<u64> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.tell().await,
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.tell().await,
+        }
+    }
+
+    /// Blob length in bytes.
+    pub fn size(&self) -> u64 {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.size(),
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(file) => file.size(),
+        }
+    }
+
+    /// Physical byte offset in the data file. `None` on remote handles. The
+    /// Cloud byte-range route does not expose storage layout.
+    pub fn position(&self) -> Option<u64> {
+        match &self.inner {
+            BlobFileInner::Native(file) => Some(file.position()),
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(_) => None,
+        }
+    }
+
+    /// Path of the data file holding the blob. `None` on remote handles. The
+    /// Cloud byte-range route does not expose storage layout.
+    pub fn data_path(&self) -> Option<&Path> {
+        match &self.inner {
+            BlobFileInner::Native(file) => Some(file.data_path()),
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(_) => None,
+        }
+    }
+
+    /// Native storage layout. `None` on remote handles. The Cloud byte-range
+    /// route does not expose layout.
+    pub fn kind(&self) -> Option<lance_core::datatypes::BlobKind> {
+        match &self.inner {
+            BlobFileInner::Native(file) => Some(file.kind()),
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(_) => None,
+        }
+    }
+
+    /// External URI for native handles. Remote handles do not expose storage URIs.
+    pub fn uri(&self) -> Option<&str> {
+        match &self.inner {
+            BlobFileInner::Native(file) => file.uri(),
+            #[cfg(feature = "remote")]
+            BlobFileInner::Remote(_) => None,
+        }
+    }
+}
 
 /// One row-specific blob range read request.
 ///
@@ -264,7 +457,10 @@ pub(crate) async fn take_blob_files_aligned(
 
     let handles = dataset.take_blobs(row_ids, column).await?;
     ensure_all_row_ids_resolved(column, row_ids.len(), handles.len())?;
-    Ok(handles)
+    Ok(handles
+        .into_iter()
+        .map(|handle| handle.map(Into::into))
+        .collect())
 }
 
 #[cfg(test)]

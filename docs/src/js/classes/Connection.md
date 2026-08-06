@@ -25,6 +25,27 @@ the underlying connection has been closed.
 
 ## Methods
 
+### cancelJob()
+
+```ts
+abstract cancelJob(jobId): Promise<boolean>
+```
+
+Request cancellation of a server-side job by id.
+
+Resolves to true if the server accepted the cancellation, false if no
+such job exists. Cancelling an already-terminal job is a no-op success.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`boolean`&gt;
+
+***
+
 ### cloneTable()
 
 ```ts
@@ -365,6 +386,26 @@ Drop an existing table.
 
 ***
 
+### getJob()
+
+```ts
+abstract getJob(jobId): Promise<null | JobDescription>
+```
+
+Describe a single server-side job by id.
+
+Resolves to `null` when the server has no such job.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+`Promise`&lt;`null` \| [`JobDescription`](../interfaces/JobDescription.md)&gt;
+
+***
+
 ### isOpen()
 
 ```ts
@@ -376,6 +417,62 @@ Return true if the connection has not been closed
 #### Returns
 
 `boolean`
+
+***
+
+### job()
+
+```ts
+abstract job(jobId): Job
+```
+
+A [Job](Job.md) handle for a server-side job by id.
+
+The handle is constructed without a server round trip; an unknown id
+surfaces when the handle is used. Dropping the handle has no effect on
+the job itself.
+
+#### Parameters
+
+* **jobId**: `string`
+
+#### Returns
+
+[`Job`](Job.md)
+
+***
+
+### jobHistory()
+
+```ts
+abstract jobHistory(jobId?): Promise<Table<any>>
+```
+
+The lifecycle event history of a server-side job, as an Arrow table.
+
+Lists history across all jobs when `jobId` is omitted.
+
+#### Parameters
+
+* **jobId?**: `string`
+
+#### Returns
+
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### listJobs()
+
+```ts
+abstract listJobs(): Promise<JobInfo[]>
+```
+
+List server-side jobs across the database's tables.
+
+#### Returns
+
+`Promise`&lt;[`JobInfo`](../interfaces/JobInfo.md)[]&gt;
 
 ***
 

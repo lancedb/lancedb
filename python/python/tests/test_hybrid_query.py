@@ -12,7 +12,7 @@ import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
 
-from lancedb.index import FTS
+from lancedb.index import BTree, FTS, IvfPq
 from lancedb.table import AsyncTable, Table
 
 
@@ -100,6 +100,86 @@ async def test_async_hybrid_query_filters(table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_hybrid_query_with_stale_fixed_size_binary_prefilter(
+    tmpdir_factory,
+):
+    tmp_path = str(tmpdir_factory.mktemp("stale_scalar_prefilter"))
+    db = await lancedb.connect_async(tmp_path)
+
+    def fixed_size_binary(value: int) -> bytes:
+        return value.to_bytes(16, byteorder="big")
+
+    num_rows = 1000
+    data = pa.table(
+        {
+            "space_id": pa.array(
+                [fixed_size_binary(i) for i in range(num_rows)],
+                type=pa.binary(16),
+            ),
+            "text": ["book"] * num_rows,
+            "vector": pa.array(
+                [[float(i), float(i)] for i in range(num_rows)],
+                type=pa.list_(pa.float32(), 2),
+            ),
+        }
+    )
+    table = await db.create_table("test", data)
+    await table.create_index(
+        "vector", config=IvfPq(num_partitions=4, num_sub_vectors=2)
+    )
+    await table.create_index("space_id", config=BTree())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    # Advance the search indices without advancing the scalar index. This is the
+    # state that previously let hybrid search use an incomplete scalar prefilter.
+    await table.add(data)
+    lance_dataset = await table.to_lance()
+    lance_dataset.optimize.optimize_indices(index_names=["vector_idx", "text_idx"])
+    await table.checkout_latest()
+
+    scalar_stats = await table.index_stats("space_id_idx")
+    assert scalar_stats is not None
+    assert scalar_stats.num_indexed_rows == num_rows
+    assert scalar_stats.num_unindexed_rows == num_rows
+
+    for index_name in ["vector_idx", "text_idx"]:
+        search_stats = await table.index_stats(index_name)
+        assert search_stats is not None
+        assert search_stats.num_indexed_rows == num_rows * 2
+        assert search_stats.num_unindexed_rows == 0
+
+    matching_ids = [5, 10, 15, 20, 25, 30]
+    literals = [
+        f"arrow_cast(0x{fixed_size_binary(i).hex()}, 'FixedSizeBinary(16)')"
+        for i in matching_ids
+    ]
+    predicate = f"space_id IN ({', '.join(literals)})"
+    expected_ids = sorted(fixed_size_binary(i) for i in matching_ids for _ in range(2))
+
+    vector_query = (
+        table.query().where(predicate).nearest_to([5.0, 5.0]).limit(num_rows * 2)
+    )
+    vector_results = await vector_query.to_arrow()
+    assert sorted(vector_results["space_id"].to_pylist()) == expected_ids
+
+    fts_query = (
+        table.query().where(predicate).nearest_to_text("book").limit(num_rows * 2)
+    )
+    fts_results = await fts_query.to_arrow()
+    assert sorted(fts_results["space_id"].to_pylist()) == expected_ids
+
+    hybrid_results = await (
+        table.query()
+        .where(predicate)
+        .nearest_to([5.0, 5.0])
+        .nearest_to_text("book")
+        .limit(num_rows * 2)
+        .to_arrow()
+    )
+    assert sorted(hybrid_results["space_id"].to_pylist()) == expected_ids
+
+
+@pytest.mark.asyncio
 async def test_async_hybrid_query_default_limit(table: AsyncTable):
     # add 10 new rows
     new_rows = []
@@ -121,6 +201,19 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("close_vec") == 2
     assert texts.count("dog") == 1
     assert texts.count("a") == 1
+
+
+def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
+    # minimum_nprobes(0) must raise the same validation error a plain vector
+    # query raises, not silently no-op because 0 is falsy.
+    with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
+        (
+            sync_table.search(query_type="hybrid")
+            .vector([0.0, 0.4])
+            .text("dog")
+            .minimum_nprobes(0)
+            .to_arrow()
+        )
 
 
 def test_hybrid_query_distance_range(sync_table: Table):

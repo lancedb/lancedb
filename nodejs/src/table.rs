@@ -339,7 +339,9 @@ impl Table {
         let transforms = NewColumnTransform::SqlExpressions(transforms);
         let res = self
             .inner_ref()?
-            .add_columns(transforms, None)
+            .add_columns()
+            .transform(transforms)
+            .execute()
             .await
             .default_error()?;
         Ok(res.into())
@@ -356,7 +358,9 @@ impl Table {
         let transforms = NewColumnTransform::AllNulls(schema);
         let res = self
             .inner_ref()?
-            .add_columns(transforms, None)
+            .add_columns()
+            .transform(transforms)
+            .execute()
             .await
             .default_error()?;
         Ok(res.into())

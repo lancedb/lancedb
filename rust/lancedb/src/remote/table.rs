@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-mod blobs;
+pub mod blobs;
 pub mod insert;
 
 use self::insert::{RemoteWriteExec, WriteOp};
@@ -2791,9 +2791,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let encoded_name = urlencoding::encode(index_name);
         let mut request = self.post_read(&format!(
-            "/v1/table/{}/index/{}/stats/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/stats/",
+            self.identifier
         ));
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version });
@@ -2820,9 +2821,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
+        let encoded_name = urlencoding::encode(index_name);
         let request = self.apply_branch_query(self.client.post(&format!(
-            "/v1/table/{}/index/{}/drop/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/drop/",
+            self.identifier
         )));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -2835,9 +2837,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
+        let encoded_name = urlencoding::encode(index_name);
         let request = self.client.post(&format!(
-            "/v1/table/{}/index/{}/prewarm/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/prewarm/",
+            self.identifier
         ));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -2939,7 +2942,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub(crate) struct MergeInsertRequest {
+pub struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
@@ -3089,10 +3092,12 @@ mod tests {
             Box::pin(table.delete("false").map_ok(|_| ())),
             Box::pin(
                 table
-                    .add_columns(
-                        NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
-                        None,
-                    )
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        "x".into(),
+                        "y".into(),
+                    )]))
+                    .execute()
                     .map_ok(|_| ()),
             ),
             Box::pin(async {
@@ -4300,32 +4305,9 @@ mod tests {
             "fetch_blobs",
         );
 
-        let message = table
-            .fetch_blob_files("image", &[1])
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.contains("fetch_blob_files is not supported on LanceDB Cloud"),
-            "got: {message}"
-        );
-        assert!(
-            !message.contains("Use fetch_blobs"),
-            "old server must not be told to use fetch_blobs, got: {message}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_blob_files_point_at_fetch_blobs_on_a_blob_capable_server() {
-        let table = Table::new_with_handler_version(
-            "my_table",
-            semver::Version::new(0, 5, 0),
-            |_| -> http::Response<String> { panic!("fetch_blob_files must not reach the server") },
-        );
-
         assert_not_supported_error(
             table.fetch_blob_files("image", &[1]).await.unwrap_err(),
-            "Use fetch_blobs for full bytes",
+            "requires LanceDB Cloud server 0.5.0 or newer",
         );
     }
 
@@ -5925,16 +5907,18 @@ mod tests {
             .await
             .unwrap();
 
+        // Positions are relative to the first retained token, so dropping the
+        // leading "hello" stop word does not shift the remaining tokens.
         assert_eq!(
             tokens,
             vec![
                 FtsToken {
                     text: "こんにちは".to_string(),
-                    position: 1,
+                    position: 0,
                 },
                 FtsToken {
                     text: "世界".to_string(),
-                    position: 2,
+                    position: 1,
                 },
             ]
         );
@@ -6411,13 +6395,12 @@ mod tests {
         });
 
         let result = table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![
-                    ("b".into(), "a + 1".into()),
-                    ("x".into(), "cast(NULL as int32)".into()),
-                ]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![
+                ("b".into(), "a + 1".into()),
+                ("x".into(), "cast(NULL as int32)".into()),
+            ]))
+            .execute()
             .await
             .unwrap();
 
@@ -6509,6 +6492,41 @@ mod tests {
         // Assert that the error is IndexNotFound
         let e = table.drop_index("my_index").await.unwrap_err();
         assert!(matches!(e, Error::IndexNotFound { .. }));
+    }
+
+    /// Index names are unvalidated, so reserved characters must be
+    /// percent-encoded or they restructure the request path.
+    #[tokio::test]
+    async fn test_per_index_paths_encode_reserved_characters() {
+        const NAME: &str = "my/index?a#b c";
+        const PREFIX: &str = "/v1/table/my_table/index/my%2Findex%3Fa%23b%20c";
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/stats/"));
+            let body = serde_json::json!({
+              "num_indexed_rows": 1,
+              "num_unindexed_rows": 0,
+              "index_type": "IVF_PQ",
+              "distance_type": "l2"
+            });
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&body).unwrap())
+                .unwrap()
+        });
+        assert!(table.index_stats(NAME).await.unwrap().is_some());
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/drop/"));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.drop_index(NAME).await.unwrap();
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/prewarm/"));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.prewarm_index(NAME).await.unwrap();
     }
 
     #[tokio::test]
@@ -7160,10 +7178,12 @@ mod tests {
             }
             "add_columns" => {
                 let _ = table
-                    .add_columns(
-                        NewColumnTransform::SqlExpressions(vec![("c".into(), "a + 1".into())]),
-                        None,
-                    )
+                    .add_columns()
+                    .transform(NewColumnTransform::SqlExpressions(vec![(
+                        "c".into(),
+                        "a + 1".into(),
+                    )]))
+                    .execute()
                     .await;
             }
             "drop_columns" => {
@@ -9921,10 +9941,12 @@ mod tests {
             .await
             .unwrap();
         branch
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("b".into(), "a + 1".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "b".into(),
+                "a + 1".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
         branch

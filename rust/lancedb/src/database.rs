@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
+
 use lance::dataset::ReadParams;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -200,6 +202,45 @@ pub enum ReadConsistency {
     Strong,
 }
 
+/// A row from [`Database::list_jobs`]: one server-side job (index build,
+/// compaction, column refresh, ...).
+#[derive(Debug, Clone)]
+pub struct JobInfo {
+    /// The job id -- what [`Database::get_job`] and [`Database::cancel_job`]
+    /// accept.
+    pub job_id: String,
+    /// The table the job runs against, without URI or namespace.
+    pub table: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "finished", "failed", or "cancelled".
+    pub state: String,
+    /// When the job was created, in milliseconds since the epoch.
+    pub created_at_millis: i64,
+}
+
+/// A described job from [`Database::get_job`]: lifecycle state plus the
+/// job-type-specific specification.
+#[derive(Debug, Clone)]
+pub struct JobDescription {
+    pub job_id: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "finished", "failed", or "cancelled".
+    pub state: String,
+    /// When the job was created, in milliseconds since the epoch.
+    pub creation_ms: i64,
+    /// The job-type-specific specification. Null when the server omits it.
+    pub spec: serde_json::Value,
+    /// Why the job failed, when the job is failed and the server reports a
+    /// reason.
+    pub failure: Option<crate::error::JobFailure>,
+}
+
+fn job_op_not_supported<T>(what: &str) -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: format!("{} is not supported by this database", what),
+    })
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -245,6 +286,31 @@ pub trait Database:
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// A [`crate::job::Job`] handle for a server-side job by id, suitable for
+    /// waiting on or cancelling the job. The handle is constructed without a
+    /// server round trip; an unknown id surfaces when the handle is used.
+    fn job(&self, _job_id: &str) -> Result<crate::job::Job> {
+        job_op_not_supported("job")
+    }
+    /// List server-side jobs across the database's tables.
+    async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
+        job_op_not_supported("list_jobs")
+    }
+    /// Describe a single job by id. `None` when the server has no such job.
+    async fn get_job(&self, _job_id: &str) -> Result<Option<JobDescription>> {
+        job_op_not_supported("get_job")
+    }
+    /// Request cancellation of a job by id. Returns true if the server
+    /// accepted the cancellation, false if no such job exists. Cancelling an
+    /// already-terminal job is a no-op success.
+    async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
+        job_op_not_supported("cancel_job")
+    }
+    /// The lifecycle event history of a job (all jobs when `job_id` is
+    /// `None`), as recorded Arrow batches.
+    async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
+        job_op_not_supported("job_history")
+    }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
