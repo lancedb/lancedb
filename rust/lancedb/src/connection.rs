@@ -656,6 +656,7 @@ pub struct ConnectRequest {
     /// - `/path/to/database` - local database on file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
     /// - `db://dbname` - LanceDB Cloud
+    /// - `db://` with a host override - remote tables in the storage root
     pub uri: String,
 
     #[cfg(feature = "remote")]
@@ -768,6 +769,8 @@ impl ConnectBuilder {
     ///
     /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
     /// and will be ignored for other URIs.
+    /// Use the URI `db://` together with a host override to connect to remote
+    /// tables stored directly in the storage root.
     ///
     /// # Arguments
     ///
@@ -1352,6 +1355,34 @@ mod tests {
             Err(err) => panic!("expected InvalidInput, got {err:?}"),
             Ok(_) => panic!("expected api_key and oauth_config to be rejected"),
         }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_connect_remote_storage_root() {
+        let conn = ConnectBuilder::new("db://")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .host_override("https://example.com")
+            .execute()
+            .await
+            .unwrap();
+
+        let (impl_name, properties) = conn.namespace_client_config().await.unwrap();
+        assert_eq!(impl_name, "rest");
+        assert_eq!(properties["uri"], "https://example.com");
+        assert_eq!(properties["header.x-lancedb-database"], "");
+
+        let result = ConnectBuilder::new("db://")
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .execute()
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput { message })
+                if message.contains("A host override is required")
+        ));
     }
 
     #[cfg(feature = "remote")]

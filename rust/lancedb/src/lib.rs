@@ -54,6 +54,7 @@
 //! - `/path/to/database` - local database on file system.
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
+//! - `db://` with a host override - remote tables in the storage root
 //!
 //! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
