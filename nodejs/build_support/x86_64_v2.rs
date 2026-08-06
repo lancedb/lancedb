@@ -142,11 +142,15 @@ fn codegen_options(encoded: &str) -> Result<Vec<&str>, String> {
 }
 
 fn reject_builtin_target_feature_cfg(cfg: &str) -> Result<(), String> {
-    if cfg.contains("/*") || cfg.contains("//") {
+    let key = cfg.split_once('=').map_or(cfg, |(key, _)| key);
+    if key.contains("/*") || key.contains("//") {
         return Err("comment-bearing cfgs cannot be validated".to_owned());
     }
+    if !key.is_ascii() {
+        return Err("non-ASCII cfg keys cannot be validated".to_owned());
+    }
 
-    let name = cfg.split_once('=').map_or(cfg, |(name, _)| name).trim();
+    let name = key.trim();
     let name = name.strip_prefix("r#").unwrap_or(name);
     if name == "target_feature" {
         return Err("built-in target_feature cfgs can override runtime CPU detection".to_owned());
@@ -195,6 +199,13 @@ mod tests {
     #[test]
     fn accepts_unrelated_custom_cfg() {
         let flags = encoded(&["--cfg=tokio_unstable"]);
+
+        assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
+    }
+
+    #[test]
+    fn accepts_comment_like_syntax_in_cfg_value() {
+        let flags = encoded(&[r#"--cfg=endpoint="https://example.com/*""#]);
 
         assert_eq!(validate_encoded_rustflags(&flags), Ok(()));
     }
@@ -388,5 +399,32 @@ mod tests {
             validate_encoded_rustflags(&flags),
             Err("comment-bearing cfgs cannot be validated".to_owned())
         );
+    }
+
+    #[test]
+    fn rejects_leading_bom_in_cfg_key() {
+        let flags = encoded(&[
+            "--cfg",
+            "\u{feff}target_feature=\"avx2\"",
+            "-Aexplicit_builtin_cfgs_in_flags",
+        ]);
+
+        assert_eq!(
+            validate_encoded_rustflags(&flags),
+            Err("non-ASCII cfg keys cannot be validated".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_non_ascii_pattern_whitespace_in_cfg_key() {
+        for whitespace in ['\u{200e}', '\u{200f}'] {
+            let cfg = format!("{whitespace}target_feature=\"avx2\"");
+            let flags = encoded(&["--cfg", &cfg, "-Aexplicit_builtin_cfgs_in_flags"]);
+
+            assert_eq!(
+                validate_encoded_rustflags(&flags),
+                Err("non-ASCII cfg keys cannot be validated".to_owned())
+            );
+        }
     }
 }
