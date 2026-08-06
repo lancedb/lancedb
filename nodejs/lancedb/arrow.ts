@@ -42,6 +42,7 @@ import {
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
+  util as arrowUtil,
   vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
@@ -455,17 +456,70 @@ export function makeArrowTable(
   return new ArrowTable(inferredSchema, finalColumns);
 }
 
+const NO_TYPE_EVIDENCE = Symbol("no-type-evidence");
+
+type NoTypeEvidence = {
+  kind: typeof NO_TYPE_EVIDENCE;
+  valueKind: "null" | "empty-list";
+  row: number;
+};
+
+function getNoTypeEvidence(
+  value: unknown,
+  row: number,
+): NoTypeEvidence | undefined {
+  if (value === null) {
+    return { kind: NO_TYPE_EVIDENCE, valueKind: "null", row };
+  }
+  if (Array.isArray(value) && value.length === 0) {
+    return { kind: NO_TYPE_EVIDENCE, valueKind: "empty-list", row };
+  }
+  return undefined;
+}
+
+function isNoTypeEvidence(
+  value: DataType | NoTypeEvidence,
+): value is NoTypeEvidence {
+  return "kind" in value && value.kind === NO_TYPE_EVIDENCE;
+}
+
+function describeInferredType(
+  value: DataType | NoTypeEvidence | undefined,
+): string {
+  if (value === undefined) {
+    return "an unsupported value";
+  }
+  if (isNoTypeEvidence(value)) {
+    return value.valueKind === "null" ? "null" : "List[0]";
+  }
+  return value.toString();
+}
+
+function schemaInferenceError(
+  path: string[],
+  row: number,
+  currentType: string,
+  newType: string,
+): Error {
+  return new Error(
+    `Failed to infer schema for data. Previously inferred type ${currentType} ` +
+      `but found ${newType} for field ${path.join(".")} at row ${row}. ` +
+      "Consider providing an explicit schema.",
+  );
+}
+
 function inferSchema(
   data: Array<Record<string, unknown>>,
   schema: Schema | undefined,
   opts: MakeArrowTableOptions,
 ): Schema {
   // We will collect all fields we see in the data.
-  const pathTree = new PathTree<DataType>();
+  const pathTree = new PathTree<DataType | NoTypeEvidence>();
 
   for (const [rowI, row] of data.entries()) {
     for (const [path, value] of rowPathsAndValues(row)) {
-      if (!pathTree.has(path)) {
+      const currentType = pathTree.get(path);
+      if (currentType === undefined) {
         // First time seeing this field.
         if (schema !== undefined) {
           const field = getFieldForPath(schema, path);
@@ -474,25 +528,111 @@ function inferSchema(
               `Found field not in schema: ${path.join(".")} at row ${rowI}`,
             );
           } else {
-            pathTree.set(path, field.type);
+            const conflict = pathTree.set(path, field.type);
+            if (conflict !== undefined) {
+              throw schemaInferenceError(
+                conflict.path,
+                rowI,
+                conflict.value instanceof PathTree
+                  ? "Struct"
+                  : describeInferredType(conflict.value),
+                "Struct",
+              );
+            }
           }
         } else {
           const inferredType = inferType(value, path, opts);
-          if (inferredType === undefined) {
+          const noTypeEvidence = getNoTypeEvidence(value, rowI);
+          if (inferredType === undefined && noTypeEvidence === undefined) {
             throw new Error(`Failed to infer data type for field ${path.join(
               ".",
             )} at row ${rowI}. \
                              Consider providing an explicit schema.`);
           }
-          pathTree.set(path, inferredType);
+
+          const conflict = pathTree.set(
+            path,
+            inferredType ?? (noTypeEvidence as NoTypeEvidence),
+            (existing) =>
+              isNoTypeEvidence(existing) && existing.valueKind === "null",
+          );
+          if (conflict !== undefined) {
+            throw schemaInferenceError(
+              conflict.path,
+              rowI,
+              conflict.value instanceof PathTree
+                ? "Struct"
+                : describeInferredType(conflict.value),
+              "Struct",
+            );
+          }
         }
       } else if (schema === undefined) {
-        const currentType = pathTree.get(path);
         const newType = inferType(value, path, opts);
-        if (currentType?.toString() !== newType?.toString()) {
-          throw new Error(
-            `Failed to infer schema for data. Previously inferred type ${currentType} ` +
-              `but found ${newType} at row ${rowI}. Consider providing an explicit schema.`,
+        const noTypeEvidence = getNoTypeEvidence(value, rowI);
+
+        if (currentType instanceof PathTree) {
+          if (noTypeEvidence?.valueKind === "null") {
+            continue;
+          }
+          throw schemaInferenceError(
+            path,
+            rowI,
+            "Struct",
+            describeInferredType(newType ?? noTypeEvidence),
+          );
+        }
+
+        if (isNoTypeEvidence(currentType)) {
+          if (newType !== undefined) {
+            if (
+              currentType.valueKind === "empty-list" &&
+              !DataType.isList(newType)
+            ) {
+              throw schemaInferenceError(
+                path,
+                rowI,
+                describeInferredType(currentType),
+                describeInferredType(newType),
+              );
+            }
+            pathTree.set(path, newType);
+          } else if (noTypeEvidence !== undefined) {
+            if (
+              currentType.valueKind === "null" &&
+              noTypeEvidence.valueKind === "empty-list"
+            ) {
+              pathTree.set(path, noTypeEvidence);
+            }
+          } else {
+            throw schemaInferenceError(
+              path,
+              rowI,
+              describeInferredType(currentType),
+              describeInferredType(newType),
+            );
+          }
+        } else if (newType !== undefined) {
+          if (!arrowUtil.compareTypes(currentType, newType)) {
+            throw schemaInferenceError(
+              path,
+              rowI,
+              describeInferredType(currentType),
+              describeInferredType(newType),
+            );
+          }
+        } else if (
+          noTypeEvidence?.valueKind !== "null" &&
+          !(
+            noTypeEvidence?.valueKind === "empty-list" &&
+            DataType.isList(currentType)
+          )
+        ) {
+          throw schemaInferenceError(
+            path,
+            rowI,
+            describeInferredType(currentType),
+            describeInferredType(noTypeEvidence),
           );
         }
       }
@@ -500,12 +640,21 @@ function inferSchema(
   }
 
   if (schema === undefined) {
-    function fieldsFromPathTree(pathTree: PathTree<DataType>): Field[] {
+    function fieldsFromPathTree(
+      pathTree: PathTree<DataType | NoTypeEvidence>,
+      basePath: string[] = [],
+    ): Field[] {
       const fields = [];
       for (const [name, value] of pathTree.map.entries()) {
         if (value instanceof PathTree) {
-          const children = fieldsFromPathTree(value);
+          const children = fieldsFromPathTree(value, [...basePath, name]);
           fields.push(new Field(name, new Struct(children), true));
+        } else if (isNoTypeEvidence(value)) {
+          throw new Error(`Failed to infer data type for field ${[
+            ...basePath,
+            name,
+          ].join(".")} at row ${value.row}. \
+                             Consider providing an explicit schema.`);
         } else {
           fields.push(new Field(name, value, true));
         }
@@ -517,7 +666,7 @@ function inferSchema(
   } else {
     function takeMatchingFields(
       fields: Field[],
-      pathTree: PathTree<DataType>,
+      pathTree: PathTree<DataType | NoTypeEvidence>,
     ): Field[] {
       const outFields = [];
       for (const field of fields) {
@@ -673,6 +822,11 @@ function inferType(
   }
 }
 
+type PathConflict<V> = {
+  path: string[];
+  value: V | PathTree<V>;
+};
+
 class PathTree<V> {
   map: Map<string, V | PathTree<V>>;
 
@@ -684,35 +838,49 @@ class PathTree<V> {
       }
     }
   }
-  has(path: string[]): boolean {
-    let ref: PathTree<V> = this;
+  get(path: string[]): V | PathTree<V> | undefined {
+    let ref: V | PathTree<V> = this;
     for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
-        return false;
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return true;
-  }
-  get(path: string[]): V | undefined {
-    let ref: PathTree<V> = this;
-    for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
+      if (!(ref instanceof PathTree)) {
         return undefined;
       }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return ref as V;
-  }
-  set(path: string[], value: V): void {
-    let ref: PathTree<V> = this;
-    for (const part of path.slice(0, path.length - 1)) {
-      if (!ref.map.has(part)) {
-        ref.map.set(part, new PathTree<V>());
+      const child = ref.map.get(part);
+      if (child === undefined) {
+        return undefined;
       }
-      ref = ref.map.get(part) as PathTree<V>;
+      ref = child;
     }
-    ref.map.set(path[path.length - 1], value);
+    return ref;
+  }
+  set(
+    path: string[],
+    value: V,
+    canReplaceLeaf: (value: V) => boolean = () => false,
+  ): PathConflict<V> | undefined {
+    let ref: PathTree<V> = this;
+    for (const [index, part] of path.slice(0, path.length - 1).entries()) {
+      const child = ref.map.get(part);
+      if (child === undefined) {
+        const branch = new PathTree<V>();
+        ref.map.set(part, branch);
+        ref = branch;
+      } else if (child instanceof PathTree) {
+        ref = child;
+      } else if (canReplaceLeaf(child)) {
+        const branch = new PathTree<V>();
+        ref.map.set(part, branch);
+        ref = branch;
+      } else {
+        return { path: path.slice(0, index + 1), value: child };
+      }
+    }
+    const name = path[path.length - 1];
+    const current = ref.map.get(name);
+    if (current instanceof PathTree) {
+      return { path, value: current };
+    }
+    ref.map.set(name, value);
+    return undefined;
   }
 }
 
