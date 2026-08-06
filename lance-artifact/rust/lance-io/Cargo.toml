@@ -1,0 +1,81 @@
+[package]
+name = "lance-io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "I/O utilities for Lance"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+object_store = { workspace = true }
+opendal = { workspace = true, optional = true }
+object_store_opendal = { workspace = true, optional = true }
+lance-arrow.workspace = true
+lance-core.workspace = true
+lance-namespace.workspace = true
+arrow = { workspace = true, features = ["ffi"] }
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+byteorder.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures.workspace = true
+http.workspace = true
+log.workspace = true
+metrics = { workspace = true, optional = true }
+moka.workspace = true
+pin-project.workspace = true
+prost.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+path_abs.workspace = true
+rand.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
+
+[dev-dependencies]
+criterion.workspace = true
+lance-testing.workspace = true
+test-log.workspace = true
+mockall.workspace = true
+rstest.workspace = true
+mock_instant.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing-mock = { workspace = true }
+metrics-util = { workspace = true }
+
+[[bench]]
+name = "scheduler"
+harness = false
+
+[features]
+default = ["aws", "azure", "gcp"]
+metrics = ["dep:metrics"]
+gcs-test = []
+goosefs-test = []
+gcp = ["object_store/gcp", "dep:opendal", "opendal/services-gcs", "dep:object_store_opendal"]
+aws = ["object_store/aws", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal"]
+azure = ["object_store/azure", "dep:opendal", "opendal/services-azblob", "opendal/services-azdls", "dep:object_store_opendal"]
+oss = ["dep:opendal", "opendal/services-oss", "dep:object_store_opendal"]
+goosefs = ["dep:opendal", "opendal/services-goosefs", "dep:object_store_opendal"]
+tencent = ["dep:opendal", "opendal/services-cos", "dep:object_store_opendal"]
+huggingface = ["dep:opendal", "opendal/services-huggingface", "dep:object_store_opendal"]
+tos = ["dep:opendal", "opendal/services-tos", "dep:object_store_opendal"]
+tos-test = ["tos"]
+test-util = []
+
+[lints]
+workspace = true

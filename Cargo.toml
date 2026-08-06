@@ -1,6 +1,6 @@
 [workspace]
 members = ["rust/lancedb", "nodejs", "python"]
-exclude = ["vendor/lance-io"]
+exclude = ["lance-artifact"]
 resolver = "2"
 
 [workspace.package]
@@ -69,7 +69,20 @@ semver = "1.0.25"
 chrono = "0.4"
 
 [patch."https://github.com/lance-format/lance.git"]
-lance-io = { path = "vendor/lance-io" }
+lance = { path = "lance-artifact/rust/lance" }
+lance-arrow = { path = "lance-artifact/rust/lance-arrow" }
+lance-core = { path = "lance-artifact/rust/lance-core" }
+lance-datafusion = { path = "lance-artifact/rust/lance-datafusion" }
+lance-datagen = { path = "lance-artifact/rust/lance-datagen" }
+lance-encoding = { path = "lance-artifact/rust/lance-encoding" }
+lance-file = { path = "lance-artifact/rust/lance-file" }
+lance-index = { path = "lance-artifact/rust/lance-index" }
+lance-io = { path = "lance-artifact/rust/lance-io" }
+lance-linalg = { path = "lance-artifact/rust/lance-linalg" }
+lance-namespace = { path = "lance-artifact/rust/lance-namespace" }
+lance-namespace-impls = { path = "lance-artifact/rust/lance-namespace-impls" }
+lance-table = { path = "lance-artifact/rust/lance-table" }
+lance-testing = { path = "lance-artifact/rust/lance-testing" }
 
 [profile.ci]
 debug = "line-tables-only"

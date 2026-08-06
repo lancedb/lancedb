@@ -1,0 +1,25 @@
+[package]
+name = "lance-arrow-stats"
+version = "58.0.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Statistics accumulator for Arrow arrays (min, max, null_count, nan_count)"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+lance-arrow-scalar = { workspace = true }
+
+[dev-dependencies]
+arrow-select = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

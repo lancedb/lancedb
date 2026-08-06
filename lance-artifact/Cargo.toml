@@ -1,0 +1,266 @@
+[workspace]
+members = [
+    "rust/examples",
+    "rust/lance",
+    "rust/lance-arrow",
+    "rust/lance-core",
+    "rust/lance-datagen",
+    "rust/lance-encoding",
+    "rust/lance-file",
+    "rust/lance-geo",
+    "rust/lance-index",
+    "rust/lance-index-core",
+    "rust/lance-io",
+    "rust/lance-linalg",
+    "rust/lance-namespace",
+    "rust/lance-namespace-impls",
+    "rust/lance-namespace-datafusion",
+    "rust/lance-select",
+    "rust/lance-tokenizer",
+    "rust/lance-table",
+    "rust/lance-derive",
+    "rust/lance-test-macros",
+    "rust/lance-testing",
+    "rust/lance-tools",
+    "rust/compression/fsst",
+    "rust/compression/bitpacking",
+    "rust/arrow-scalar",
+    "rust/arrow-stats",
+]
+exclude = ["python", "java/lance-jni"]
+# Python package needs to be built by maturin.
+resolver = "3"
+
+
+[workspace.package]
+version = "11.0.0-beta.2"
+edition = "2024"
+authors = ["Lance Devs <dev@lance.org>"]
+license = "Apache-2.0"
+repository = "https://github.com/lance-format/lance"
+readme = "README.md"
+description = "A columnar data format that is 100x faster than Parquet for random access."
+keywords = [
+    "data-format",
+    "data-science",
+    "machine-learning",
+    "apache-arrow",
+    "data-analytics",
+]
+categories = [
+    "database-implementations",
+    "data-structures",
+    "development-tools",
+    "science",
+]
+rust-version = "1.91.0"
+
+[workspace.dependencies]
+arc-swap = "1.7"
+libc = "0.2.176"
+lance = { version = "=11.0.0-beta.2", path = "./rust/lance", default-features = false }
+lance-arrow = { version = "=11.0.0-beta.2", path = "./rust/lance-arrow" }
+lance-core = { version = "=11.0.0-beta.2", path = "./rust/lance-core" }
+lance-datafusion = { version = "=11.0.0-beta.2", path = "./rust/lance-datafusion" }
+lance-datagen = { version = "=11.0.0-beta.2", path = "./rust/lance-datagen" }
+lance-derive = { version = "=11.0.0-beta.2", path = "./rust/lance-derive" }
+lance-encoding = { version = "=11.0.0-beta.2", path = "./rust/lance-encoding" }
+lance-file = { version = "=11.0.0-beta.2", path = "./rust/lance-file" }
+lance-geo = { version = "=11.0.0-beta.2", path = "./rust/lance-geo" }
+lance-index = { version = "=11.0.0-beta.2", path = "./rust/lance-index" }
+lance-index-core = { version = "=11.0.0-beta.2", path = "./rust/lance-index-core" }
+lance-io = { version = "=11.0.0-beta.2", path = "./rust/lance-io", default-features = false }
+lance-linalg = { version = "=11.0.0-beta.2", path = "./rust/lance-linalg" }
+lance-namespace = { version = "=11.0.0-beta.2", path = "./rust/lance-namespace" }
+lance-namespace-impls = { version = "=11.0.0-beta.2", path = "./rust/lance-namespace-impls" }
+lance-namespace-datafusion = { version = "=7.0.0-beta.9", path = "./rust/lance-namespace-datafusion" }
+lance-namespace-reqwest-client = "0.8.6"
+lance-select = { version = "=11.0.0-beta.2", path = "./rust/lance-select" }
+lance-tokenizer = { version = "=11.0.0-beta.2", path = "./rust/lance-tokenizer" }
+lance-table = { version = "=11.0.0-beta.2", path = "./rust/lance-table" }
+lance-test-macros = { version = "=11.0.0-beta.2", path = "./rust/lance-test-macros" }
+lance-testing = { version = "=11.0.0-beta.2", path = "./rust/lance-testing" }
+approx = "0.5.1"
+# Note that this one does not include pyarrow
+arrow = { version = "58.0.0", optional = false, features = ["prettyprint"] }
+lance-arrow-scalar = { version = "=58.0.0", path = "./rust/arrow-scalar" }
+lance-arrow-stats = { version = "=58.0.0", path = "./rust/arrow-stats" }
+arrow-arith = "58.0.0"
+arrow-array = "58.0.0"
+arrow-buffer = "58.0.0"
+arrow-cast = "58.0.0"
+arrow-data = "58.0.0"
+arrow-ipc = { version = "58.0.0", features = ["zstd"] }
+arrow-ord = "58.0.0"
+arrow-row = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+async-recursion = "1.0"
+async-trait = "0.1"
+axum = "0.7"
+aws-config = "1.2.0"
+aws-credential-types = "1.2.0"
+aws-sdk-dynamodb = { version = "1.38.0", default-features = false }
+aws-sdk-s3 = { version = "1.38.0", default-features = false }
+half = { "version" = "2.1", default-features = false, features = [
+    "num-traits",
+    "std",
+    "bytemuck",
+] }
+lance-bitpacking = { version = "=11.0.0-beta.2", path = "./rust/compression/bitpacking" }
+bitpacking = "0.9"
+bitvec = "1"
+blake3 = "1.8.5"
+bytemuck = { version = "1", default-features = false, features = [
+    "extern_crate_alloc",
+] }
+bytes = "1.11.1"
+byteorder = "1.5"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4.41", default-features = false, features = [
+    "std",
+    "now",
+    "serde",
+] }
+criterion = { version = "0.8.2", features = [
+    "async",
+    "async_tokio",
+    "html_reports",
+] }
+crossbeam-queue = "0.3"
+crossbeam-skiplist = "0.1"
+datafusion = { version = "54.0.0", default-features = false, features = [
+    "crypto_expressions",
+    "datetime_expressions",
+    "encoding_expressions",
+    "nested_expressions",
+    "regex_expressions",
+    "sql",
+    "string_expressions",
+    "unicode_expressions",
+] }
+datafusion-common = "54.0.0"
+datafusion-functions = { version = "54.0.0", default-features = false, features = ["regex_expressions"] }
+datafusion-sql = "54.0.0"
+datafusion-expr = "54.0.0"
+datafusion-ffi = "54.0.0"
+datafusion-physical-expr = "54.0.0"
+datafusion-physical-plan = "54.0.0"
+datafusion-substrait = { version = "54.0.0", default-features = false }
+dirs = "6.0.0"
+either = "1.0"
+fst = { version = "0.4.7", features = ["levenshtein"] }
+fsst = { version = "=11.0.0-beta.2", path = "./rust/compression/fsst" }
+futures = "0.3"
+geoarrow-array = "0.8"
+geoarrow-schema = "0.8"
+geodatafusion = "0.5.0"
+geo-traits = "0.3.0"
+geo-types = "0.7.16"
+http = "1.1.0"
+humantime = "2.2.0"
+hyperloglogplus = { version = "0.4.1", features = ["const-loop"] }
+icu_segmenter = { version = "2.2", default-features = false, features = ["compiled_data"] }
+io-uring = "0.7"
+itertools = "0.14"
+jieba-rs = { version = "0.10.0", default-features = false }
+jsonb = { version = "0.5.3", default-features = false, features = ["databend"] }
+libm = "0.2.15"
+log = "0.4"
+metrics = { version = "0.24" }
+metrics-util = { version = "0.19" }
+mockall = { version = "0.14.0" }
+mock_instant = { version = "0.6.0" }
+moka = { version = "0.12", features = ["future", "sync"] }
+ndarray = { version = "0.16.1", features = ["matrixmultiply-threading"] }
+num-traits = "0.2"
+object_store = { version = "0.13.2" }
+opendal = { version = "0.58.1" }
+object_store_opendal = { version = "0.58" }
+pin-project = "1.0"
+path_abs = "0.5"
+pprof = { version = "0.15.0", features = ["flamegraph"] }
+proptest = "1.3.1"
+prost = "0.14.1"
+prost-build = "0.14.1"
+prost-types = "0.14.1"
+rand = { version = "0.9.1", features = ["small_rng"] }
+rand_distr = { version = "0.5.1" }
+rand_xoshiro = "0.7.0"
+rangemap = { version = "1.0" }
+rayon = "1.10"
+regex-syntax = "0.8.10"
+roaring = "0.11.4"
+rstest = "0.26.1"
+serde = { version = "^1" }
+serde_json = { version = "1" }
+semver = "1.0"
+serial_test = "3"
+snafu = "0.9"
+lindera = { version = "3.0.7" }
+tempfile = "3"
+test-log = { version = "0.2.15" }
+tokio = { version = "1.23", features = [
+    "rt-multi-thread",
+    "macros",
+    "fs",
+    "sync",
+] }
+tokio-stream = "0.1.14"
+tokio-util = { version = "0.7.16" }
+tower = "0.5"
+tower-http = "0.5"
+tracing = "0.1"
+tracing-mock = { version = "=0.1.0-beta.3" }
+twox-hash = "2.0"
+url = "2.5.7"
+uuid = { version = "1.2", features = ["v4", "serde"] }
+wiremock = "0.6"
+pretty_assertions = "1.4.0"
+
+[profile.bench]
+opt-level = 3
+debug = true
+strip = false
+
+[profile.ci]
+debug = "line-tables-only"
+inherits = "dev"
+incremental = false
+
+# This rule applies to every package except workspace members (dependencies
+# such as `arrow` and `tokio`). It disables debug info and related features on
+# dependencies so their binaries stay smaller, improving cache reuse.
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+unsafe_op_in_unsafe_fn = "allow"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+fallible_impl_from = "deny"
+manual_let_else = "deny"
+redundant_pub_crate = "deny"
+string_add_assign = "deny"
+string_add = "deny"
+string_lit_as_bytes = "deny"
+use_self = "deny"
+dbg_macro = "deny"
+trait_duplication_in_bounds = "deny"
+redundant_clone = "deny"
+# We should always use log instead of println
+print_stdout = "deny"
+print_stderr = "deny"
+# not too much we can do to avoid multiple crate versions
+multiple-crate-versions = "allow"
+# We use Vec<Range<u64>> in a lot of places and it is very common to use a single range in the vec.
+single_range_in_vec_init = "allow"
+large_futures = "deny"
+disallowed_macros = "deny"

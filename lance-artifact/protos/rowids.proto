@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.table;
+// TODO: what would it take to store this in a LanceV2 file?
+// Or would flatbuffers be better for this?
+
+/// A sequence of row IDs. This is split up into one or more segments,
+/// each of which can be encoded in different ways. The encodings are optimized
+/// for values that are sorted, which will often be the case with row ids.
+/// They also have optimized forms depending on how sparse the values are.
+message RowIdSequence {
+    repeated U64Segment segments = 1;
+}
+
+/// Different ways to encode a sequence of u64 values.
+message U64Segment {
+    /// A range of u64 values.
+    message Range {
+        /// The start of the range, inclusive.
+        uint64 start = 1;
+        /// The end of the range, exclusive.
+        uint64 end = 2;
+    }
+
+    /// A range of u64 values with holes.
+    message RangeWithHoles {
+        /// The start of the range, inclusive.
+        uint64 start = 1;
+        /// The end of the range, exclusive.
+        uint64 end = 2;
+        /// The holes in the range, as a sorted array of values;
+        /// Binary search can be used to check whether a value is a hole and should
+        /// be skipped. This can also be used to count the number of holes before a
+        /// given value, if you need to find the logical offset of a value in the
+        /// segment.
+        EncodedU64Array holes = 3;
+    }
+
+    /// A range of u64 values with a bitmap.
+    message RangeWithBitmap {
+        /// The start of the range, inclusive.
+        uint64 start = 1;
+        /// The end of the range, exclusive.
+        uint64 end = 2;
+        /// A bitmap of the values in the range. The bitmap is a sequence of bytes,
+        /// where each byte represents 8 values. The first byte represents values
+        /// start to start + 7, the second byte represents values start + 8 to
+        /// start + 15, and so on. The most significant bit of each byte represents
+        /// the first value in the range, and the least significant bit represents
+        /// the last value in the range. If the bit is set, the value is in the
+        /// range; if it is not set, the value is not in the range.
+        bytes bitmap = 3;
+    }
+
+    oneof segment {
+        /// When the values are sorted and contiguous.
+        Range range = 1;
+        /// When the values are sorted but have a few gaps.
+        RangeWithHoles range_with_holes = 2;
+        /// When the values are sorted but have many gaps.
+        RangeWithBitmap range_with_bitmap = 3;
+        /// When the values are sorted but are sparse.
+        EncodedU64Array sorted_array = 4;
+        /// A general array of values, which is not sorted.
+        EncodedU64Array array = 5;
+    }
+} // RowIdSegment
+
+/// A basic bitpacked array of u64 values.
+message EncodedU64Array {
+    message U16Array {
+        uint64 base = 1;
+        /// The deltas are stored as 16-bit unsigned integers.
+        /// (protobuf doesn't support 16-bit integers, so we use bytes instead)
+        bytes offsets = 2;
+    }
+
+    message U32Array {
+        uint64 base = 1;
+        /// The deltas are stored as 32-bit unsigned integers.
+        /// (we use bytes instead of uint32 to avoid overhead of varint encoding)
+        bytes offsets = 2;
+    }
+
+    message U64Array {
+        /// (We use bytes instead of uint64 to avoid overhead of varint encoding)
+        bytes values = 2;
+    }
+
+    oneof array {
+        U16Array u16_array = 1;
+        U32Array u32_array = 2;
+        U64Array u64_array = 3;
+    }
+}
+
+/// A sequence of dataset versions. Similar to RowIdSequence but tracks
+/// version runs. It uses RLE (Run-Length Encoding) to efficiently
+// represent consecutive rows with the same version.
+message RowDatasetVersionSequence {
+    repeated RowDatasetVersionRun runs = 1;
+}
+
+/// A run of rows with the same version.
+message RowDatasetVersionRun {
+    /// The number of consecutive rows with the same version.
+    U64Segment span = 1;
+
+    uint64 version = 2;
+}

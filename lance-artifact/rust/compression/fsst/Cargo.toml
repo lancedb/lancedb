@@ -1,0 +1,27 @@
+[package]
+name = "fsst"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "FSST string compression for Lance"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+test-log.workspace = true
+tokio.workspace = true
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark.rs"
+
+[lints]
+workspace = true

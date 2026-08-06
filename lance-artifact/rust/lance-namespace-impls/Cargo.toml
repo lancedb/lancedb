@@ -1,0 +1,115 @@
+[package]
+name = "lance-namespace-impls"
+description = "Lance Namespace Implementations"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["dir-aws", "dir-azure", "dir-gcp", "dir-oss", "dir-huggingface"]
+rest = ["dep:reqwest", "dep:serde"]
+rest-adapter = ["dep:axum", "dep:tower", "dep:tower-http", "dep:serde"]
+# Cloud storage features for directory implementation - align with lance-io
+dir-gcp = ["lance-io/gcp", "lance/gcp"]
+dir-aws = ["lance-io/aws", "lance/aws"]
+dir-azure = ["lance-io/azure", "lance/azure"]
+dir-oss = ["lance-io/oss", "lance/oss"]
+dir-huggingface = ["lance-io/huggingface", "lance/huggingface"]
+dir-goosefs = ["lance-io/goosefs", "lance/goosefs"]
+# Credential vending features
+credential-vendor-aws = ["dep:aws-sdk-sts", "dep:aws-config", "dep:sha2", "dep:base64"]
+credential-vendor-gcp = ["dep:reqwest", "dep:serde", "dep:sha2", "dep:base64", "dep:ring", "dep:rustls-pki-types"]
+credential-vendor-azure = ["dep:reqwest", "dep:serde", "dep:sha2", "dep:base64", "dep:chrono", "dep:hmac", "dep:quick-xml"]
+
+[dependencies]
+lance-namespace.workspace = true
+lance-core.workspace = true
+
+# REST implementation dependencies (optional, enabled by "rest" feature)
+reqwest = { version = "0.12", optional = true, default-features = false, features = [
+    "json",
+    "charset",
+    "gzip",
+    "http2",
+    "stream",
+    "rustls-tls-native-roots",
+] }
+# Directory implementation dependencies (always enabled)
+url = { workspace = true }
+lance = { workspace = true }
+lance-index = { workspace = true }
+lance-linalg = { workspace = true }
+lance-io = { workspace = true }
+lance-table = { workspace = true }
+object_store = { workspace = true }
+arrow = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-schema = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-physical-plan = { workspace = true }
+
+# REST adapter implementation dependencies (optional, enabled by "rest-adapter" feature)
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true, features = ["trace", "cors", "normalize-path"] }
+serde = { workspace = true, optional = true }
+
+# Common dependencies
+async-trait.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["sync", "full"] }
+serde_json = { workspace = true }
+futures.workspace = true
+log.workspace = true
+rand.workspace = true
+roaring.workspace = true
+uuid.workspace = true
+
+# Shared credential vending dependencies
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+
+# AWS credential vending dependencies (optional, enabled by "credential-vendor-aws" feature)
+aws-sdk-sts = { version = "1.38.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { workspace = true, optional = true }
+
+# Pin: time 0.3.48 conflicts with aws-smithy-types (E0119: conflicting `From` impls), which this
+# crate pulls in via the AWS credential vendor. Capping time here forces the workspace resolver to
+# 0.3.47 even for no-lock builds. Not used directly; remove once the upstream conflict is resolved.
+time = "=0.3.47"
+
+# GCP credential vending dependencies (optional, enabled by "credential-vendor-gcp" feature)
+ring = { version = "0.17", optional = true }
+rustls-pki-types = { version = "1", optional = true }
+
+# Azure credential vending dependencies (optional, enabled by "credential-vendor-azure" feature)
+chrono = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+quick-xml = { version = "0.40", optional = true }
+
+[dev-dependencies]
+opendal = { workspace = true, features = ["services-goosefs"] }
+tokio = { workspace = true, features = ["full"] }
+tempfile.workspace = true
+wiremock.workspace = true
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-ipc = { workspace = true }
+rstest.workspace = true
+lance-table.workspace = true
+lance-arrow = { workspace = true }
+lance = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[[example]]
+name = "manifest_bench"
+path = "examples/manifest_bench.rs"
+
+[lints]
+workspace = true

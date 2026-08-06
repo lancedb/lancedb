@@ -1,0 +1,28 @@
+[package]
+name = "lance-namespace-datafusion"
+description = "Lance namespace integration with Apache DataFusion catalogs and schemas"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+dashmap = "6"
+datafusion.workspace = true
+lance.workspace = true
+lance-namespace.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+lance-namespace-impls.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

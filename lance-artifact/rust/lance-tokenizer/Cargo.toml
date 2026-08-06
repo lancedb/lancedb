@@ -1,0 +1,49 @@
+[package]
+name = "lance-tokenizer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Tokenizer abstractions and implementations for Lance"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+icu_segmenter = { workspace = true }
+jieba-rs = { workspace = true, optional = true }
+lindera = { workspace = true, optional = true }
+frostem = { version = "1.20260804.0", default-features = false, features = [
+    "arabic",
+    "danish",
+    "dutch",
+    "english",
+    "finnish",
+    "french",
+    "german",
+    "greek",
+    "hungarian",
+    "italian",
+    "norwegian",
+    "portuguese",
+    "romanian",
+    "russian",
+    "spanish",
+    "swedish",
+    "tamil",
+    "turkish",
+] }
+serde = { workspace = true, features = ["derive"] }
+stop-words = { version = "0.10.0", default-features = false, features = ["iso", "nltk"] }
+unicode-normalization = "0.1.25"
+
+[features]
+jieba-rs = ["dep:jieba-rs"]
+lindera = ["dep:lindera"]
+tokenizer-jieba = ["jieba-rs"]
+tokenizer-lindera = ["lindera"]
+
+[lints]
+workspace = true

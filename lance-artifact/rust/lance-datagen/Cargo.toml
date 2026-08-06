@@ -1,0 +1,37 @@
+[package]
+name = "lance-datagen"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+description = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+
+[dependencies]
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-schema = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+half = { workspace = true }
+hex = "0.4.3"
+rand = { workspace = true }
+rand_distr = { workspace = true }
+rand_xoshiro = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+lance-testing.workspace = true
+
+[lib]
+bench = false
+
+[[bench]]
+name = "array_gen"
+harness = false
+
+[lints]
+workspace = true

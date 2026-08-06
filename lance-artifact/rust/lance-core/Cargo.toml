@@ -1,0 +1,72 @@
+[package]
+name = "lance-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Lance Columnar Format -- Core Library"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-data.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+lance-arrow.workspace = true
+blake3.workspace = true
+byteorder.workspace = true
+bytes.workspace = true
+datafusion-common = { workspace = true, optional = true }
+datafusion-sql = { workspace = true, optional = true }
+lance-derive.workspace = true
+futures.workspace = true
+itertools.workspace = true
+libc.workspace = true
+libm.workspace = true
+moka.workspace = true
+quick_cache = "0.6"
+num_cpus = "1.0"
+object_store = { workspace = true }
+pin-project.workspace = true
+prost.workspace = true
+rand.workspace = true
+roaring.workspace = true
+serde_json.workspace = true
+snafu.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+twox-hash.workspace = true
+url.workspace = true
+log.workspace = true
+
+# This is used to detect CPU features at runtime.
+# See src/utils/cpu.rs
+[target.'cfg(all(any(target_arch = "aarch64", target_arch = "loongarch64"), target_os = "linux"))'.dependencies]
+libc = { version = "0.2" }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+rstest.workspace = true
+
+[features]
+# Capture Rust backtraces in error types. When disabled (the default),
+# the backtrace field is zero-sized with no overhead. At runtime, capture
+# is still gated by RUST_BACKTRACE=1.
+backtrace = []
+datafusion = ["dep:datafusion-common", "dep:datafusion-sql"]
+
+[[bench]]
+name = "cache_keys"
+harness = false
+
+[lints]
+workspace = true

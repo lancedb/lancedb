@@ -1,0 +1,52 @@
+[package]
+categories.workspace = true
+description = "Internal utilities used by other lance modules to simplify working with datafusion"
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "lance-datafusion"
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+arrow = {workspace = true, features = ["ffi"]}
+arrow-array = {workspace = true, features = ["ffi"]}
+arrow-buffer.workspace = true
+arrow-cast.workspace = true
+arrow-ord.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
+async-trait.workspace = true
+datafusion-common.workspace = true
+datafusion-functions.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion-substrait = {workspace = true, optional = true}
+datafusion.workspace = true
+futures.workspace = true
+jsonb = {workspace = true}
+lance-arrow.workspace = true
+lance-core = {workspace = true, features = ["datafusion"]}
+lance-datagen.workspace = true
+lance-geo = {workspace = true, optional = true}
+chrono.workspace = true
+log.workspace = true
+pin-project.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protobuf-src = {version = "2.1", optional = true}
+
+[dev-dependencies]
+lance-datagen.workspace = true
+
+[features]
+geo = ["dep:lance-geo"]
+substrait = ["dep:datafusion-substrait"]
+protoc = ["dep:protobuf-src"]
+
+[lints]
+workspace = true
