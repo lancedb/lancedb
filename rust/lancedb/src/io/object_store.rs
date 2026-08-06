@@ -21,7 +21,6 @@ use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_io::object_store::{
     ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry, StorageOptions,
     providers::aws::build_aws_credential,
-    throttle::{AimdThrottleConfig, AimdThrottledStore},
 };
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use object_store::{
@@ -34,10 +33,6 @@ use object_store::{
     CredentialProvider, RenameOptions, StaticCredentialProvider,
     aws::{AmazonS3ConfigKey, AwsCredential},
 };
-#[cfg(feature = "aws")]
-use object_store_opendal::OpendalStore;
-#[cfg(feature = "aws")]
-use opendal::{Operator, services::S3};
 #[cfg(feature = "aws")]
 use std::str::FromStr;
 #[cfg(feature = "aws")]
@@ -137,6 +132,11 @@ fn insert_aws_credential(options: &mut HashMap<String, String>, credential: AwsC
     );
     if let Some(token) = credential.token {
         options.insert(AmazonS3ConfigKey::Token.as_ref().to_string(), token);
+    } else {
+        // Lance's environment merge treats an empty value as an explicit sentinel, while
+        // OpenDAL ignores an empty session token. This blocks a foreign ambient token without
+        // changing the semantics of long-lived key/secret credentials.
+        options.insert(AmazonS3ConfigKey::Token.as_ref().to_string(), String::new());
     }
 }
 
@@ -217,44 +217,48 @@ impl CredentialProvider for AtomicAccessorAwsCredentialProvider {
 
 #[cfg(feature = "aws")]
 #[derive(Debug, Clone)]
-struct CachedOpenDalStore {
+struct CachedProviderStore {
     config: HashMap<String, String>,
-    store: Arc<OpendalStore>,
+    store: Arc<dyn ObjectStore>,
 }
 
-/// OpenDAL store that refreshes namespace-vended credentials and caches by normalized config.
+/// Store that refreshes credentials by rebuilding through the registered provider.
+///
+/// Re-entering the original provider preserves custom encryption, authorization, wrapping, and
+/// backend behavior while still letting built-in OpenDAL stores consume refreshed credentials.
 #[cfg(feature = "aws")]
 #[derive(Clone)]
-struct AtomicOpenDalStore {
+struct AtomicProviderStore {
+    provider: Arc<dyn ObjectStoreProvider>,
+    base_path: url::Url,
+    base_params: ObjectStoreParams,
     base_options: Arc<HashMap<String, String>>,
     accessor: Option<Arc<StorageOptionsAccessor>>,
     aws_credentials: Option<object_store::aws::AwsCredentialProvider>,
-    bucket: Arc<str>,
-    has_root: bool,
-    cache: Arc<TokioRwLock<Option<CachedOpenDalStore>>>,
+    cache: Arc<TokioRwLock<Option<CachedProviderStore>>>,
 }
 
 #[cfg(feature = "aws")]
-impl std::fmt::Debug for AtomicOpenDalStore {
+impl std::fmt::Debug for AtomicProviderStore {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("AtomicOpenDalStore")
-            .field("bucket", &self.bucket)
+            .debug_struct("AtomicProviderStore")
+            .field("base_path", &self.base_path)
             .field("accessor", &self.accessor)
             .finish()
     }
 }
 
 #[cfg(feature = "aws")]
-impl std::fmt::Display for AtomicOpenDalStore {
+impl std::fmt::Display for AtomicProviderStore {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "AtomicOpenDalStore({})", self.bucket)
+        write!(formatter, "AtomicProviderStore({})", self.base_path)
     }
 }
 
 #[cfg(feature = "aws")]
-impl AtomicOpenDalStore {
-    async fn current_store(&self) -> lance_core::Result<Arc<OpendalStore>> {
+impl AtomicProviderStore {
+    async fn current_config(&self) -> lance_core::Result<HashMap<String, String>> {
         let dynamic_options = match &self.accessor {
             Some(accessor) if accessor.has_provider() => accessor.get_storage_options().await?.0,
             _ => HashMap::new(),
@@ -273,20 +277,40 @@ impl AtomicOpenDalStore {
             }),
             None => None,
         };
-        let mut config = atomic_opendal_options(
+        atomic_opendal_options(
             &self.base_options,
             &dynamic_options,
             credential,
             std::env::vars_os().filter_map(|(key, value)| {
                 Some((key.into_string().ok()?, value.into_string().ok()?))
             }),
-        )?;
-        config.insert("bucket".to_string(), self.bucket.to_string());
-        if self.has_root {
-            config.insert("root".to_string(), "/".to_string());
-        } else {
-            config.remove("root");
-        }
+        )
+    }
+
+    async fn build_store(
+        &self,
+        config: &HashMap<String, String>,
+    ) -> lance_core::Result<LanceObjectStore> {
+        let mut params = self.base_params.clone();
+        params.aws_credentials = None;
+        set_storage_options(&mut params, config.clone(), None);
+        self.provider
+            .new_store(self.base_path.clone(), &params)
+            .await
+    }
+
+    async fn initialize_store(&self) -> lance_core::Result<LanceObjectStore> {
+        let config = self.current_config().await?;
+        let store = self.build_store(&config).await?;
+        *self.cache.write().await = Some(CachedProviderStore {
+            config,
+            store: store.inner.clone(),
+        });
+        Ok(store)
+    }
+
+    async fn current_store(&self) -> lance_core::Result<Arc<dyn ObjectStore>> {
+        let config = self.current_config().await?;
 
         {
             let cache = self.cache.read().await;
@@ -297,17 +321,14 @@ impl AtomicOpenDalStore {
             }
         }
 
-        let operator = Operator::from_iter::<S3>(config.clone()).map_err(|error| {
-            lance_core::Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
-        })?;
-        let store = Arc::new(OpendalStore::new(operator));
+        let store = self.build_store(&config).await?.inner;
         let mut cache = self.cache.write().await;
         if let Some(cached) = cache.as_ref()
             && cached.config == config
         {
             return Ok(cached.store.clone());
         }
-        *cache = Some(CachedOpenDalStore {
+        *cache = Some(CachedProviderStore {
             config,
             store: store.clone(),
         });
@@ -316,7 +337,7 @@ impl AtomicOpenDalStore {
 
     fn map_store_error(error: lance_core::Error) -> Error {
         Error::Generic {
-            store: "AtomicOpenDalStore",
+            store: "AtomicProviderStore",
             source: Box::new(error),
         }
     }
@@ -324,7 +345,7 @@ impl AtomicOpenDalStore {
 
 #[cfg(feature = "aws")]
 #[async_trait]
-impl ObjectStore for AtomicOpenDalStore {
+impl ObjectStore for AtomicProviderStore {
     async fn put_opts(
         &self,
         location: &Path,
@@ -418,7 +439,6 @@ impl ObjectStore for AtomicOpenDalStore {
 #[derive(Debug)]
 struct AtomicAwsStoreProvider {
     inner: Arc<dyn ObjectStoreProvider>,
-    adapt_builtin_opendal: bool,
 }
 
 #[cfg(feature = "aws")]
@@ -446,21 +466,6 @@ impl AtomicAwsStoreProvider {
             .is_some_and(|value| value == "true");
 
         if use_opendal {
-            // A registered custom provider owns its store construction contract. In particular,
-            // its returned store may add encryption, authorization, or wrapping behavior that
-            // cannot be reconstructed from ObjectStoreParams. Only adapt Lance's known built-in
-            // provider, whose OpenDAL path ignores both supported credential-provider fields.
-            if !self.adapt_builtin_opendal {
-                return self.inner.new_store(base_path, params).await;
-            }
-            if storage_options
-                .get("aws_provider_scheme")
-                .is_some_and(|scheme| !scheme.is_empty())
-            {
-                return Err(lance_core::Error::not_supported(
-                    "OpendalStore does not support an explicit aws_provider_scheme".to_string(),
-                ));
-            }
             let has_dynamic_options = params
                 .storage_options_accessor
                 .as_ref()
@@ -472,29 +477,23 @@ impl AtomicAwsStoreProvider {
                 return self.inner.new_store(base_path, params).await;
             }
 
-            let bucket = base_path.host_str().ok_or_else(|| {
-                lance_core::Error::invalid_input("S3 URL must contain bucket name")
-            })?;
-            let dynamic_store = AtomicOpenDalStore {
+            let dynamic_store = AtomicProviderStore {
+                provider: self.inner.clone(),
+                base_path,
+                base_params: params.clone(),
                 base_options: Arc::new(storage_options.clone()),
                 accessor: params.storage_options_accessor.clone(),
                 aws_credentials: params.aws_credentials.clone(),
-                bucket: Arc::from(bucket),
-                has_root: !base_path.path().trim_start_matches('/').is_empty(),
                 cache: Arc::new(TokioRwLock::new(None)),
             };
-            // Preflight the actual current credential family. This rejects incomplete dynamic
-            // credentials before publishing the store and primes the normalized-config cache.
-            dynamic_store.current_store().await?;
+            let mut store = dynamic_store.initialize_store().await?;
 
-            let mut store = self.inner.new_store(base_path, params).await?;
-            let opendal_store: Arc<dyn ObjectStore> = Arc::new(dynamic_store);
-            let throttle_config = AimdThrottleConfig::from_storage_options(Some(&storage_options))?;
-            store.inner = if throttle_config.is_disabled() {
-                opendal_store
-            } else {
-                Arc::new(AimdThrottledStore::new(opendal_store, throttle_config)?)
-            };
+            // Static explicit credentials need no runtime wrapper, so an unknown provider's
+            // returned store remains pointer-identical. Dynamic authorities rebuild through that
+            // same provider whenever their normalized credential configuration changes.
+            if has_dynamic_options || params.aws_credentials.is_some() {
+                store.inner = Arc::new(dynamic_store);
+            }
             return Ok(store);
         }
 
@@ -599,10 +598,7 @@ static ATOMIC_AWS_REGISTRIES: LazyLock<Mutex<Vec<Weak<ObjectStoreRegistry>>>> =
 
 /// Install the credential-safe S3 provider once on a session's shared object-store registry.
 #[cfg(feature = "aws")]
-fn install_atomic_aws_provider_inner(
-    session: &lance::session::Session,
-    adapt_builtin_opendal: bool,
-) {
+fn install_atomic_aws_provider_inner(session: &lance::session::Session) {
     let registry = session.store_registry();
     let mut installed = ATOMIC_AWS_REGISTRIES
         .lock()
@@ -618,32 +614,21 @@ fn install_atomic_aws_provider_inner(
 
     for scheme in ["s3", "s3+ddb"] {
         if let Some(inner) = registry.get_provider(scheme) {
-            registry.insert(
-                scheme,
-                Arc::new(AtomicAwsStoreProvider {
-                    inner,
-                    adapt_builtin_opendal,
-                }),
-            );
+            registry.insert(scheme, Arc::new(AtomicAwsStoreProvider { inner }));
         }
     }
     installed.push(Arc::downgrade(&registry));
 }
 
-/// Protect a caller-supplied session while treating every registered provider as unknown.
-///
-/// Unknown providers retain unconditional control of their OpenDAL store composition. Only a
-/// fresh default session created by [`atomic_aws_session`] has the explicit capability to adapt
-/// Lance's built-in AWS provider.
 #[cfg(feature = "aws")]
 pub(crate) fn install_atomic_aws_provider(session: &lance::session::Session) {
-    install_atomic_aws_provider_inner(session, false);
+    install_atomic_aws_provider_inner(session);
 }
 
 #[cfg(not(feature = "aws"))]
 pub(crate) fn install_atomic_aws_provider(_session: &lance::session::Session) {}
 
-/// Select a supplied session or create a fresh session with a known built-in AWS provider.
+/// Select or create a session and protect its registered AWS providers.
 pub(crate) fn atomic_aws_session(
     session: Option<Arc<lance::session::Session>>,
 ) -> Arc<lance::session::Session> {
@@ -655,7 +640,7 @@ pub(crate) fn atomic_aws_session(
         None => {
             let session = Arc::new(lance::session::Session::default());
             #[cfg(feature = "aws")]
-            install_atomic_aws_provider_inner(&session, true);
+            install_atomic_aws_provider_inner(&session);
             session
         }
     }
@@ -1036,7 +1021,6 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
-            adapt_builtin_opendal: false,
         };
 
         provider
@@ -1084,7 +1068,7 @@ mod credential_tests {
             options.get("aws_secret_access_key").unwrap(),
             "explicit-secret"
         );
-        assert!(!options.contains_key("aws_session_token"));
+        assert_eq!(options.get("aws_session_token").unwrap(), "");
         assert_eq!(options.get("aws_region").unwrap(), "us-east-1");
         assert_eq!(options.get("disable_config_load").unwrap(), "true");
     }
@@ -1141,7 +1125,7 @@ mod credential_tests {
             options.get("aws_secret_access_key").unwrap(),
             "dynamic-secret"
         );
-        assert!(!options.contains_key("aws_session_token"));
+        assert_eq!(options.get("aws_session_token").unwrap(), "");
     }
 
     #[test]
@@ -1256,7 +1240,7 @@ mod credential_tests {
             ..Default::default()
         };
 
-        let session = atomic_aws_session(None);
+        let session = atomic_aws_session(Some(Arc::new(lance::session::Session::default())));
         session
             .store_registry()
             .get_provider("s3")
@@ -1285,7 +1269,6 @@ mod credential_tests {
 
         let error = AtomicAwsStoreProvider {
             inner: Arc::new(AwsStoreProvider),
-            adapt_builtin_opendal: true,
         }
         .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
         .await
@@ -1317,7 +1300,6 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
-            adapt_builtin_opendal: false,
         }
         .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
         .await
@@ -1337,7 +1319,6 @@ mod credential_tests {
     fn wrapper_delegates_custom_path_extraction() {
         let provider = AtomicAwsStoreProvider {
             inner: Arc::new(CustomPathProvider),
-            adapt_builtin_opendal: false,
         };
 
         assert_eq!(
@@ -1455,7 +1436,6 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
-            adapt_builtin_opendal: false,
         };
         let params = ObjectStoreParams {
             storage_options_accessor: Some(Arc::new(
@@ -1498,7 +1478,6 @@ mod credential_tests {
             inner: Arc::new(ResolvingProvider {
                 resolved_credential: resolved_credential.clone(),
             }),
-            adapt_builtin_opendal: false,
         };
         let params = ObjectStoreParams {
             aws_credentials: Some(Arc::new(StaticCredentialProvider::new(AwsCredential {
