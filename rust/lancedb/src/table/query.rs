@@ -17,6 +17,7 @@ use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
+use datafusion_common::{Column, DataFusionError, SchemaError};
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
@@ -140,6 +141,8 @@ pub async fn create_plan(
     query.base.check_filter()?;
 
     let ds_ref = table.dataset.get().await?;
+    let schema = ds_ref.schema();
+    let arrow_schema = Schema::from(schema);
 
     // MemWAL read routing driven by `use_lsm`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -163,14 +166,12 @@ pub async fn create_plan(
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
-    let schema = ds_ref.schema();
     let mut column = query.column.clone();
 
     let mut query_vector = query.query_vector.first().cloned();
     if query.query_vector.len() > 1 {
         if column.is_none() {
             // Infer a vector column with the same dimension of the query vector.
-            let arrow_schema = Schema::from(ds_ref.schema());
             column = Some(default_vector_column(
                 &arrow_schema,
                 Some(query.query_vector[0].len() as i32),
@@ -222,7 +223,6 @@ pub async fn create_plan(
         let column = if let Some(col) = column {
             col
         } else {
-            let arrow_schema = Schema::from(ds_ref.schema());
             default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
         };
 
@@ -324,7 +324,70 @@ pub async fn create_plan(
         scanner.order_by(Some(order_by.clone()))?;
     }
 
-    Ok(scanner.create_plan().await?)
+    scanner
+        .create_plan()
+        .await
+        .map_err(|error| enrich_field_not_found(error, &arrow_schema))
+}
+
+/// Replace DataFusion's top-level field candidates with qualified leaf paths.
+///
+/// DataFusion resolves nested fields but its `FieldNotFound` error only lists the
+/// top-level Arrow fields. This makes a missing leaf look unavailable even when it
+/// exists below a struct. Keep every other Lance/DataFusion error unchanged and
+/// enrich only this one schema error at the LanceDB query boundary.
+fn enrich_field_not_found(error: lance::Error, schema: &Schema) -> Error {
+    let Some(field) = find_missing_field(&error) else {
+        return error.into();
+    };
+
+    let schema_error = SchemaError::FieldNotFound {
+        field: Box::new(field.clone()),
+        valid_fields: leaf_field_columns(schema),
+    };
+    let error = DataFusionError::SchemaError(Box::new(schema_error), Box::new(None));
+    Error::InvalidInput {
+        message: error.to_string(),
+    }
+}
+
+fn find_missing_field<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Column> {
+    if let Some(DataFusionError::SchemaError(schema_error, _)) =
+        error.downcast_ref::<DataFusionError>()
+        && let SchemaError::FieldNotFound { field, .. } = schema_error.as_ref()
+    {
+        return Some(field);
+    }
+
+    error.source().and_then(find_missing_field)
+}
+
+fn leaf_field_columns(schema: &Schema) -> Vec<Column> {
+    fn visit(fields: &arrow_schema::Fields, path: &mut Vec<String>, columns: &mut Vec<Column>) {
+        for field in fields {
+            path.push(field.name().clone());
+            match field.data_type() {
+                DataType::Struct(children) if !children.is_empty() => {
+                    visit(children, path, columns);
+                }
+                _ => {
+                    let qualified_name = path
+                        .iter()
+                        .map(|part| {
+                            datafusion_common::utils::quote_identifier(part.as_str()).into_owned()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    columns.push(Column::from_qualified_name_ignore_case(qualified_name));
+                }
+            }
+            path.pop();
+        }
+    }
+
+    let mut columns = Vec::new();
+    visit(schema.fields(), &mut Vec::new(), &mut columns);
+    columns
 }
 
 //Helper functions below
@@ -684,7 +747,10 @@ async fn parse_arrow_ipc_response(bytes: bytes::Bytes) -> Result<DatasetRecordBa
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array};
+    use arrow_array::{
+        ArrayRef, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+        StructArray,
+    };
     use futures::TryStreamExt;
     use lance_arrow::FixedSizeListArrayExt;
     use std::sync::{
@@ -693,7 +759,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::query::{QueryExecutionOptions, QueryRequest};
+    use crate::query::{ExecutableQuery, QueryBase, QueryExecutionOptions, QueryRequest};
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
@@ -833,7 +899,6 @@ mod tests {
     async fn test_execute_query_local_routing() {
         use crate::connect;
         use crate::table::query::execute_query;
-        use arrow_array::{Int32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
 
         let conn = connect("memory://").execute().await.unwrap();
@@ -871,6 +936,61 @@ mod tests {
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(count, 2); // 4 and 5
+    }
+
+    #[tokio::test]
+    async fn test_missing_filter_field_lists_nested_fields() {
+        use crate::connect;
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let metadata = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("year", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![2024])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("genre", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["fiction"])) as ArrayRef,
+            ),
+        ]));
+        let vector = Arc::new(fixed_size_list_array(vec![0.0, 1.0], 2));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vector.data_type().clone(), false),
+            Field::new("content", DataType::Utf8, false),
+            Field::new("metadata", metadata.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                vector,
+                Arc::new(StringArray::from(vec!["example"])),
+                metadata,
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("nested_error", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let error = table
+            .query()
+            .only_if("year = 2024")
+            .execute()
+            .await
+            .err()
+            .expect("query should reject the unqualified nested field");
+
+        assert!(
+            error.to_string().contains(
+                "No field named year. Valid fields are id, vector, content, metadata.year, metadata.genre."
+            ),
+            "unexpected error: {error}"
+        );
     }
 
     #[derive(Debug, Default)]
