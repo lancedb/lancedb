@@ -77,6 +77,32 @@ def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
 
+def test_connect_preserves_file_uri_authority(monkeypatch):
+    uri = "file://server/share/database"
+    received = []
+
+    async def fake_connect(passed_uri, *_args):
+        received.append(passed_uri)
+        return SimpleNamespace(uri=passed_uri)
+
+    monkeypatch.setattr("lancedb.db.lancedb_connect", fake_connect)
+    db = lancedb.connect(uri)
+
+    assert received == [uri]
+    assert db.uri == uri
+
+
+def test_connect_file_uri_lifecycle(tmp_path):
+    uri = (tmp_path / "sync").as_uri()
+    db = lancedb.connect(uri)
+
+    db.create_table("test", data=[{"id": 1}])
+    assert db.table_names() == ["test"]
+    assert db.open_table("test").count_rows() == 1
+    db.drop_table("test")
+    assert db.table_names() == []
+
+
 def test_ingest_pd(tmp_path):
     db = lancedb.connect(tmp_path)
 
@@ -374,6 +400,35 @@ async def test_connect(tmp_path):
         tmp_path, read_consistency_interval=timedelta(seconds=5)
     )
     assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
+
+
+@pytest.mark.asyncio
+async def test_connect_async_preserves_file_uri_authority(monkeypatch):
+    uri = "file://server/share/database"
+    received = []
+
+    async def fake_connect(passed_uri, *_args):
+        received.append(passed_uri)
+        return SimpleNamespace(uri=passed_uri)
+
+    monkeypatch.setattr(lancedb, "lancedb_connect", fake_connect)
+    db = await lancedb.connect_async(uri)
+
+    assert received == [uri]
+    assert db.uri == uri
+
+
+@pytest.mark.asyncio
+async def test_connect_async_file_uri_lifecycle(tmp_path):
+    uri = (tmp_path / "async").as_uri()
+    db = await lancedb.connect_async(uri)
+
+    await db.create_table("test", data=[{"id": 1}])
+    assert await db.table_names() == ["test"]
+    table = await db.open_table("test")
+    assert await table.count_rows() == 1
+    await db.drop_table("test")
+    assert await db.table_names() == []
 
 
 @pytest.mark.asyncio

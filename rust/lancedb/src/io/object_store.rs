@@ -38,12 +38,16 @@ pub mod io_tracking;
 /// UNC-share root keeps the UNC authority in the filesystem prefix and exposes
 /// only paths relative to that prefix to `object_store`.
 ///
-/// The returned Lance store deliberately uses the `file-object-store` scheme.
+/// The returned Lance store deliberately uses the `lancedb-file` scheme.
 /// The regular `file` scheme enables optimized readers and writers that bypass
 /// the configured object store and would reintroduce the broken UNC conversion.
 #[cfg(any(windows, test))]
 #[derive(Debug, Default)]
-struct PrefixedFileStoreProvider;
+struct PrefixedFileStoreProvider {
+    base_paths: std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, Arc<std::sync::RwLock<Vec<Path>>>>,
+    >,
+}
 
 #[cfg(any(windows, test))]
 impl PrefixedFileStoreProvider {
@@ -52,14 +56,23 @@ impl PrefixedFileStoreProvider {
             LanceError::invalid_input(format!("Unable to convert URL '{url}' to a local path"))
         })?;
 
-        let root = filesystem_path.ancestors().last().ok_or_else(|| {
-            LanceError::invalid_input(format!(
+        let mut root = std::path::PathBuf::new();
+        for component in filesystem_path.components() {
+            match component {
+                std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                    root.push(component.as_os_str());
+                }
+                _ => break,
+            }
+        }
+        if root.as_os_str().is_empty() {
+            return Err(LanceError::invalid_input(format!(
                 "Local path '{}' has no filesystem root",
                 filesystem_path.display()
-            ))
-        })?;
+            )));
+        }
 
-        let relative = filesystem_path.strip_prefix(root).map_err(|_| {
+        let relative = filesystem_path.strip_prefix(&root).map_err(|_| {
             LanceError::invalid_input(format!(
                 "Local path '{}' is not beneath store root '{}'",
                 filesystem_path.display(),
@@ -83,7 +96,190 @@ impl PrefixedFileStoreProvider {
             .collect::<LanceResult<Vec<_>>>()?
             .join("/");
 
-        Ok((root.to_path_buf(), Path::parse(relative)?))
+        Ok((root, Path::parse(relative)?))
+    }
+
+    fn base_paths_for(
+        &self,
+        root: &std::path::Path,
+        base_path: &Path,
+    ) -> Arc<std::sync::RwLock<Vec<Path>>> {
+        let mut roots = self.base_paths.lock().expect("base-path lock poisoned");
+        let base_paths = roots
+            .entry(root.to_path_buf())
+            .or_insert_with(|| Arc::new(std::sync::RwLock::new(Vec::new())))
+            .clone();
+        let mut paths = base_paths.write().expect("base-path lock poisoned");
+        if !paths.iter().any(|path| base_path.prefix_matches(path)) {
+            paths.retain(|path| !path.prefix_matches(base_path));
+            paths.push(base_path.clone());
+        }
+        drop(paths);
+        base_paths
+    }
+}
+
+/// A local store rooted at a Windows drive or UNC share.
+///
+/// Most calls use paths returned by [`PrefixedFileStoreProvider`], which are
+/// relative to `root`. Some Lance operations retain an existing object store
+/// while independently re-extracting a Windows file URI with the default file
+/// provider. Those paths include the drive (`C:/...`) or UNC share
+/// (`share/...`) again. Normalize that absolute alias before delegating so the
+/// filesystem prefix is never applied twice.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone)]
+struct RootedLocalFileSystem {
+    inner: Arc<LocalFileSystem>,
+    root: std::path::PathBuf,
+    base_paths: Arc<std::sync::RwLock<Vec<Path>>>,
+    absolute_alias: Path,
+}
+
+#[cfg(any(windows, test))]
+impl RootedLocalFileSystem {
+    fn new(
+        root: std::path::PathBuf,
+        base_paths: Arc<std::sync::RwLock<Vec<Path>>>,
+    ) -> LanceResult<Self> {
+        let absolute_alias = Path::from_absolute_path(&root)?;
+        Ok(Self {
+            inner: Arc::new(LocalFileSystem::new_with_prefix(&root)?),
+            root,
+            base_paths,
+            absolute_alias,
+        })
+    }
+
+    fn path_from_parts<'a>(parts: impl Iterator<Item = object_store::path::PathPart<'a>>) -> Path {
+        parts.fold(Path::default(), |path, part| path.join(part))
+    }
+
+    fn normalize(&self, path: &Path) -> Path {
+        if self.absolute_alias.as_ref().is_empty() {
+            return path.clone();
+        }
+        let Some(suffix) = path.prefix_match(&self.absolute_alias) else {
+            return path.clone();
+        };
+        let suffix = Self::path_from_parts(suffix);
+
+        // A UNC absolute path loses its server when converted to an object-store
+        // path, leaving `share/<path>`. Only strip that ambiguous share segment
+        // when the remainder is inside a base that requested this shared store.
+        let base_paths = self.base_paths.read().expect("base-path lock poisoned");
+        if base_paths
+            .iter()
+            .any(|base| base.as_ref().is_empty() || suffix.prefix_matches(base))
+        {
+            suffix
+        } else {
+            path.clone()
+        }
+    }
+
+    fn restore_prefix(&self, path: Path, requested: &Path, normalized: &Path) -> Path {
+        if requested == normalized {
+            return path;
+        }
+        path.prefix_match(normalized)
+            .map(|suffix| suffix.fold(requested.clone(), |path, part| path.join(part)))
+            .unwrap_or(path)
+    }
+}
+
+#[cfg(any(windows, test))]
+impl std::fmt::Display for RootedLocalFileSystem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RootedLocalFileSystem({})", self.root.display())
+    }
+}
+
+#[cfg(any(windows, test))]
+#[async_trait]
+impl ObjectStore for RootedLocalFileSystem {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> Result<PutResult> {
+        self.inner
+            .put_opts(&self.normalize(location), payload, options)
+            .await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        options: PutMultipartOptions,
+    ) -> Result<Box<dyn MultipartUpload>> {
+        self.inner
+            .put_multipart_opts(&self.normalize(location), options)
+            .await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+        let normalized = self.normalize(location);
+        let mut result = self.inner.get_opts(&normalized, options).await?;
+        result.meta.location = location.clone();
+        Ok(result)
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
+        let store = self.clone();
+        locations
+            .map(move |location| {
+                let store = store.clone();
+                async move {
+                    let location = location?;
+                    let normalized = store.normalize(&location);
+                    store.inner.delete(&normalized).await?;
+                    Ok(location)
+                }
+            })
+            .buffered(10)
+            .boxed()
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+        let requested = prefix.cloned().unwrap_or_default();
+        let normalized = self.normalize(&requested);
+        let store = self.clone();
+        self.inner
+            .list(prefix.map(|_| &normalized))
+            .map(move |result| {
+                result.map(|mut meta| {
+                    meta.location = store.restore_prefix(meta.location, &requested, &normalized);
+                    meta
+                })
+            })
+            .boxed()
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        let requested = prefix.cloned().unwrap_or_default();
+        let normalized = self.normalize(&requested);
+        let mut result = self
+            .inner
+            .list_with_delimiter(prefix.map(|_| &normalized))
+            .await?;
+        for meta in &mut result.objects {
+            meta.location = self.restore_prefix(meta.location.clone(), &requested, &normalized);
+        }
+        for path in &mut result.common_prefixes {
+            *path = self.restore_prefix(path.clone(), &requested, &normalized);
+        }
+        Ok(result)
+    }
+
+    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+        self.inner
+            .copy_opts(&self.normalize(from), &self.normalize(to), options)
+            .await
     }
 }
 
@@ -95,27 +291,39 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         base_path: Url,
         params: &ObjectStoreParams,
     ) -> LanceResult<lance::io::ObjectStore> {
-        let (root, _) = Self::root_and_relative_path(&base_path)?;
-        let store = Arc::new(LocalFileSystem::new_with_prefix(root)?);
-        let location = Url::parse("file-object-store:///").expect("static URL must be valid");
+        let (root, relative_path) = Self::root_and_relative_path(&base_path)?;
+        let base_paths = self.base_paths_for(&root, &relative_path);
+        let raw_store: Arc<dyn ObjectStore> =
+            Arc::new(RootedLocalFileSystem::new(root, base_paths)?);
+        let location = Url::parse("lancedb-file:///").expect("static URL must be valid");
         let storage_options =
             StorageOptions::new(params.storage_options().cloned().unwrap_or_default());
 
-        Ok(lance::io::ObjectStore::new(
-            store,
+        // ObjectStore::new initializes the private local-store fields. The
+        // registry owns tracing, custom wrapper, and I/O tracker installation,
+        // so restore the raw store before returning to avoid applying them twice.
+        let mut store = lance::io::ObjectStore::new(
+            raw_store.clone(),
             location,
-            params.block_size,
-            params.object_store_wrapper.clone(),
+            Some(params.block_size.unwrap_or(4 * 1024)),
+            None,
             false,
             false,
             DEFAULT_LOCAL_IO_PARALLELISM,
             storage_options.download_retry_count(),
             params.storage_options(),
-        ))
+        );
+        store.inner = raw_store;
+        store.store_prefix =
+            self.calculate_object_store_prefix(&base_path, params.storage_options())?;
+        Ok(store)
     }
 
     fn extract_path(&self, url: &Url) -> LanceResult<Path> {
-        Self::root_and_relative_path(url).map(|(_, path)| path)
+        Self::root_and_relative_path(url).map(|(root, path)| {
+            self.base_paths_for(&root, &path);
+            path
+        })
     }
 
     fn calculate_object_store_prefix(
@@ -123,7 +331,8 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
         url: &Url,
         _storage_options: Option<&std::collections::HashMap<String, String>>,
     ) -> LanceResult<String> {
-        let (root, _) = Self::root_and_relative_path(url)?;
+        let (root, path) = Self::root_and_relative_path(url)?;
+        self.base_paths_for(&root, &path);
         let root = root.canonicalize()?;
         Ok(format!("file${}", root.display()))
     }
@@ -133,12 +342,29 @@ impl ObjectStoreProvider for PrefixedFileStoreProvider {
 /// roots by using `LocalFileSystem::new_with_prefix`.
 #[cfg(any(windows, test))]
 pub(crate) fn register_windows_file_store(registry: &Arc<ObjectStoreRegistry>) {
-    registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+    registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
 }
 
 #[cfg(test)]
 mod prefixed_file_store_test {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, Default)]
+    struct CountingWrapper {
+        calls: AtomicUsize,
+    }
+
+    impl WrappingObjectStore for CountingWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn ObjectStore>,
+        ) -> Arc<dyn ObjectStore> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            original
+        }
+    }
 
     #[tokio::test]
     async fn anchors_new_and_existing_directories_at_a_filesystem_prefix() {
@@ -149,7 +375,7 @@ mod prefixed_file_store_test {
         let table_url = Url::from_directory_path(&table_path).unwrap();
 
         let registry = Arc::new(ObjectStoreRegistry::default());
-        registry.insert("file", Arc::new(PrefixedFileStoreProvider));
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
 
         // A new table is relative to its filesystem root. The non-`file`
         // scheme proves Lance will not bypass this prefixed store.
@@ -160,7 +386,9 @@ mod prefixed_file_store_test {
         )
         .await
         .unwrap();
-        assert_eq!(store.scheme(), "file-object-store");
+        assert_eq!(store.scheme(), "lancedb-file");
+        assert_eq!(store.block_size(), 4 * 1024);
+        assert_eq!(store.io_parallelism(), DEFAULT_LOCAL_IO_PARALLELISM);
         assert_eq!(base_path.filename(), Some("test.lance"));
         let initial_base_path = base_path.clone();
 
@@ -192,6 +420,119 @@ mod prefixed_file_store_test {
             .await
             .unwrap();
         assert_eq!(contents.as_ref(), b"new");
+    }
+
+    #[tokio::test]
+    async fn applies_wrapper_and_io_tracking_once() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let table_url = Url::from_directory_path(tempdir.path().join("test.lance")).unwrap();
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(PrefixedFileStoreProvider::default()));
+        let wrapper = Arc::new(CountingWrapper::default());
+        let params = ObjectStoreParams {
+            object_store_wrapper: Some(wrapper.clone()),
+            ..Default::default()
+        };
+
+        let (store, base_path) =
+            lance::io::ObjectStore::from_uri_and_params(registry, table_url.as_str(), &params)
+                .await
+                .unwrap();
+        assert_eq!(wrapper.calls.load(Ordering::Relaxed), 1);
+
+        store
+            .inner
+            .put(
+                &base_path.join("marker"),
+                bytes::Bytes::from_static(b"tracked").into(),
+            )
+            .await
+            .unwrap();
+        let stats = store.io_tracker().stats();
+        assert_eq!(stats.write_iops, 1);
+        assert_eq!(stats.written_bytes, 7);
+    }
+
+    #[test]
+    fn normalizes_absolute_drive_and_unc_aliases() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let drive_bases = Arc::new(std::sync::RwLock::new(vec![Path::from("Users/db")]));
+        let mut drive_store =
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), drive_bases).unwrap();
+        drive_store.absolute_alias = Path::from("C:");
+        assert_eq!(
+            drive_store.normalize(&Path::from("C:/Users/db/table.lance")),
+            Path::from("Users/db/table.lance")
+        );
+
+        let unc_bases = Arc::new(std::sync::RwLock::new(vec![Path::from("share/db")]));
+        let mut unc_store =
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), unc_bases).unwrap();
+        unc_store.absolute_alias = Path::from("share");
+        assert_eq!(
+            unc_store.normalize(&Path::from("share/share/db/table.lance")),
+            Path::from("share/db/table.lance")
+        );
+        assert_eq!(
+            unc_store.normalize(&Path::from("share/db/table.lance")),
+            Path::from("share/db/table.lance")
+        );
+    }
+
+    #[tokio::test]
+    async fn routes_unc_alias_lifecycle_through_the_prefix() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let base_paths = Arc::new(std::sync::RwLock::new(vec![Path::from("share/db")]));
+        let mut store =
+            RootedLocalFileSystem::new(tempdir.path().to_path_buf(), base_paths).unwrap();
+        store.absolute_alias = Path::from("share");
+        let table = Path::from("share/share/db/test.lance");
+        let marker = table.clone().join("marker");
+
+        store
+            .put(&marker, bytes::Bytes::from_static(b"unc").into())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(tempdir.path().join("share/db/test.lance/marker")).unwrap(),
+            b"unc"
+        );
+
+        let listed = store.list(Some(&table)).collect::<Vec<_>>().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].as_ref().unwrap().location, marker);
+        assert_eq!(
+            store
+                .get(&marker)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .as_ref(),
+            b"unc"
+        );
+
+        store.delete(&marker).await.unwrap();
+        assert!(!tempdir.path().join("share/db/test.lance/marker").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extracts_drive_and_unc_share_roots() {
+        let (root, path) = PrefixedFileStoreProvider::root_and_relative_path(
+            &Url::parse("file:///C:/database").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(root, std::path::PathBuf::from(r"C:\"));
+        assert_eq!(path, Path::from("database"));
+
+        let (root, path) = PrefixedFileStoreProvider::root_and_relative_path(
+            &Url::parse("file://server/share/database").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(root, std::path::PathBuf::from(r"\\server\share\"));
+        assert_eq!(path, Path::from("database"));
     }
 }
 

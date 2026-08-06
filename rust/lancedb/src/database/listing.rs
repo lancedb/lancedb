@@ -704,6 +704,27 @@ impl ListingDatabase {
         Ok(())
     }
 
+    #[cfg(any(windows, test))]
+    fn try_remove_dir_all(path: &str) -> core::result::Result<(), std::io::Error> {
+        let filesystem_path = match url::Url::parse(path) {
+            Ok(mut url) if url.scheme() == "file" => {
+                url.set_query(None);
+                url.to_file_path().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Unable to convert URL '{url}' to a local path"),
+                    )
+                })?
+            }
+            _ => Path::new(path).to_path_buf(),
+        };
+        match std::fs::remove_dir_all(filesystem_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
         validate_table_name(name)?;
@@ -774,6 +795,17 @@ impl ListingDatabase {
                     },
                     _ => Error::from(err),
                 })?;
+
+            // The prefixed Windows store deliberately uses a custom scheme so
+            // Lance never follows object deletion with cwd-relative native
+            // cleanup. Remove the now-empty directory through its full file URI.
+            #[cfg(any(windows, test))]
+            if self.object_store.scheme() == "lancedb-file" {
+                let table_uri = self.table_uri(&name)?;
+                Self::try_remove_dir_all(&table_uri).map_err(|error| Error::Runtime {
+                    message: format!("Failed to remove table directory '{table_uri}': {error}"),
+                })?;
+            }
         }
         Ok(())
     }
@@ -1397,6 +1429,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 3);
+        drop(table);
+
+        db.drop_table("test", &[]).await.unwrap();
+        assert!(!tempdir.path().join("test.lance").exists());
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(table_names.is_empty());
+        let reopened = db
+            .open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await;
+        assert!(matches!(reopened, Err(Error::TableNotFound { .. })));
     }
 
     #[tokio::test]
