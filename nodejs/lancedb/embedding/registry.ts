@@ -118,7 +118,7 @@ export class EmbeddingFunctionRegistry {
           }
           const func = await this.get(f.name)!.create(f.model);
           return [
-            f.name,
+            f.vectorColumn ?? "vector",
             {
               sourceColumn: f.sourceColumn,
               vectorColumn: f.vectorColumn,
