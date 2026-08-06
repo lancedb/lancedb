@@ -155,6 +155,17 @@ impl ObjectStoreProvider for AtomicAwsStoreProvider {
         base_path: url::Url,
         params: &ObjectStoreParams,
     ) -> lance_core::Result<LanceObjectStore> {
+        // Caller-supplied credential providers and refreshable storage options are already
+        // atomic credential authorities. Preserve Lance's precedence and refresh behavior.
+        if params.aws_credentials.is_some()
+            || params
+                .storage_options_accessor
+                .as_ref()
+                .is_some_and(|accessor| accessor.has_provider())
+        {
+            return self.inner.new_store(base_path, params).await;
+        }
+
         let storage_options = params.storage_options().cloned().unwrap_or_default();
         let Some(credential) = explicit_aws_credential(&storage_options)? else {
             return self.inner.new_store(base_path, params).await;
@@ -169,17 +180,10 @@ impl ObjectStoreProvider for AtomicAwsStoreProvider {
         // the correctly initialized Lance ObjectStore shell used below for OpenDAL.
         let mut native_options = storage_options.clone();
         native_options.insert("use_opendal".to_string(), "false".to_string());
-        let provider = params
-            .storage_options_accessor
-            .as_ref()
-            .and_then(|accessor| accessor.provider().cloned());
-        let accessor = if let Some(provider) = provider {
-            StorageOptionsAccessor::with_initial_and_provider(native_options, provider)
-        } else {
-            StorageOptionsAccessor::with_static_options(native_options)
-        };
         let mut native_params = params.clone();
-        native_params.storage_options_accessor = Some(Arc::new(accessor));
+        native_params.storage_options_accessor = Some(Arc::new(
+            StorageOptionsAccessor::with_static_options(native_options),
+        ));
         native_params.aws_credentials = Some(Arc::new(StaticCredentialProvider::new(credential)));
         let mut store = self
             .inner
@@ -267,16 +271,21 @@ pub(crate) fn install_atomic_aws_provider(_session: &lance::session::Session) {}
 
 /// Apply storage options to object store parameters.
 ///
-/// Explicit AWS credentials are also installed as a single credential provider. This keeps
-/// an ambient `AWS_SESSION_TOKEN` from being combined with an explicitly supplied access key
-/// and secret key when Lance adds missing options from the environment.
+/// Static credentials for Lance's native S3 backend are installed directly. OpenDAL options are
+/// left for the session's credential-safe provider because that backend ignores this field.
+/// Caller-supplied and refreshable credential providers retain their existing precedence.
 pub(crate) fn set_storage_options(
     params: &mut ObjectStoreParams,
     storage_options: HashMap<String, String>,
     provider: Option<Arc<dyn StorageOptionsProvider>>,
 ) {
     #[cfg(feature = "aws")]
-    if provider.is_none() && params.aws_credentials.is_none() {
+    if provider.is_none()
+        && params.aws_credentials.is_none()
+        && !storage_options
+            .get("use_opendal")
+            .is_some_and(|value| value == "true")
+    {
         params.aws_credentials = explicit_aws_credentials(&storage_options);
     }
 
@@ -475,7 +484,10 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 mod credential_tests {
     use super::*;
     use lance_io::object_store::providers::aws::build_aws_credential;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     use std::time::Duration;
 
     #[derive(Debug)]
@@ -492,6 +504,78 @@ mod credential_tests {
         ) -> lance_core::Result<LanceObjectStore> {
             self.saw_atomic_credentials
                 .store(params.aws_credentials.is_some(), Ordering::SeqCst);
+            Err(lance_core::Error::invalid_input("recorded test request"))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RotatingOptionsProvider {
+        fetches: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl StorageOptionsProvider for RotatingOptionsProvider {
+        async fn fetch_storage_options(
+            &self,
+        ) -> lance_core::Result<Option<HashMap<String, String>>> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(HashMap::from([
+                ("aws_access_key_id".to_string(), "refreshed-key".to_string()),
+                (
+                    "aws_secret_access_key".to_string(),
+                    "refreshed-secret".to_string(),
+                ),
+            ])))
+        }
+
+        fn provider_id(&self) -> String {
+            "rotating-test-provider".to_string()
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ObservedCredential {
+        key_id: String,
+        token: Option<String>,
+    }
+
+    #[derive(Debug)]
+    struct ResolvingProvider {
+        resolved_credential: Arc<Mutex<Option<ObservedCredential>>>,
+    }
+
+    #[async_trait]
+    impl ObjectStoreProvider for ResolvingProvider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            let storage_options = params
+                .storage_options()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    AmazonS3ConfigKey::from_str(&key)
+                        .ok()
+                        .map(|key| (key, value))
+                })
+                .collect::<HashMap<_, _>>();
+            let (provider, _) = build_aws_credential(
+                Duration::from_secs(60),
+                params.aws_credentials.clone(),
+                Some(&storage_options),
+                Some("us-east-1".to_string()),
+                params.storage_options_accessor.clone(),
+                None,
+            )
+            .await?;
+            let credential = provider.get_credential().await?;
+            *self.resolved_credential.lock().unwrap() = Some(ObservedCredential {
+                key_id: credential.key_id.clone(),
+                token: credential.token.clone(),
+            });
             Err(lance_core::Error::invalid_input("recorded test request"))
         }
     }
@@ -553,11 +637,13 @@ mod credential_tests {
             ),
             ("AWS_REGION".to_string(), "us-east-1".to_string()),
         ];
+        let params = object_store_params_from_storage_options(storage_options.clone());
 
         let options = atomic_opendal_options(&storage_options, environment)
             .unwrap()
             .unwrap();
 
+        assert!(params.aws_credentials.is_none());
         assert_eq!(options.get("aws_access_key_id").unwrap(), "explicit-key");
         assert_eq!(
             options.get("aws_secret_access_key").unwrap(),
@@ -622,7 +708,7 @@ mod credential_tests {
     }
 
     #[tokio::test]
-    async fn namespace_and_opendal_params_reach_the_atomic_provider_boundary() {
+    async fn public_namespace_connection_installs_the_atomic_provider() {
         let saw_atomic_credentials = Arc::new(AtomicBool::new(false));
         let registry = Arc::new(ObjectStoreRegistry::default());
         registry.insert(
@@ -631,8 +717,24 @@ mod credential_tests {
                 saw_atomic_credentials: saw_atomic_credentials.clone(),
             }),
         );
-        let session = lance::session::Session::new(16, 16, registry.clone());
-        install_atomic_aws_provider(&session);
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+        let root = tempfile::tempdir().unwrap();
+
+        crate::connect_namespace(
+            "dir",
+            HashMap::from([(
+                "root".to_string(),
+                root.path().to_string_lossy().into_owned(),
+            )]),
+        )
+        .storage_options([
+            ("aws_access_key_id", "explicit-key"),
+            ("aws_secret_access_key", "explicit-secret"),
+        ])
+        .session(session)
+        .execute()
+        .await
+        .unwrap();
 
         // DirectoryNamespaceBuilder constructs fresh params with only a static accessor. The
         // OpenDAL selector is included to verify that both paths cross the installed boundary.
@@ -659,6 +761,89 @@ mod credential_tests {
 
         assert!(error.to_string().contains("recorded test request"));
         assert!(saw_atomic_credentials.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn dynamic_storage_options_provider_remains_the_credential_authority() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let resolved_credential = Arc::new(Mutex::new(None));
+        let provider = AtomicAwsStoreProvider {
+            inner: Arc::new(ResolvingProvider {
+                resolved_credential: resolved_credential.clone(),
+            }),
+        };
+        let params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(
+                StorageOptionsAccessor::with_initial_and_provider(
+                    HashMap::from([
+                        ("aws_access_key_id".to_string(), "expired-key".to_string()),
+                        (
+                            "aws_secret_access_key".to_string(),
+                            "expired-secret".to_string(),
+                        ),
+                        ("expires_at_millis".to_string(), "0".to_string()),
+                    ]),
+                    Arc::new(RotatingOptionsProvider {
+                        fetches: fetches.clone(),
+                    }),
+                ),
+            )),
+            ..Default::default()
+        };
+
+        provider
+            .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
+            .await
+            .unwrap_err();
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *resolved_credential.lock().unwrap(),
+            Some(ObservedCredential {
+                key_id: "refreshed-key".to_string(),
+                token: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_supplied_aws_provider_remains_the_credential_authority() {
+        let resolved_credential = Arc::new(Mutex::new(None));
+        let provider = AtomicAwsStoreProvider {
+            inner: Arc::new(ResolvingProvider {
+                resolved_credential: resolved_credential.clone(),
+            }),
+        };
+        let params = ObjectStoreParams {
+            aws_credentials: Some(Arc::new(StaticCredentialProvider::new(AwsCredential {
+                key_id: "provider-key".to_string(),
+                secret_key: "provider-secret".to_string(),
+                token: None,
+            }))),
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([
+                    ("aws_access_key_id".to_string(), "option-key".to_string()),
+                    (
+                        "aws_secret_access_key".to_string(),
+                        "option-secret".to_string(),
+                    ),
+                ]),
+            ))),
+            ..Default::default()
+        };
+
+        provider
+            .new_store(url::Url::parse("s3://bucket/table").unwrap(), &params)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            *resolved_credential.lock().unwrap(),
+            Some(ObservedCredential {
+                key_id: "provider-key".to_string(),
+                token: None,
+            })
+        );
     }
 }
 

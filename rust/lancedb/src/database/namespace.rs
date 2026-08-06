@@ -34,6 +34,7 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
+use crate::io::object_store::install_atomic_aws_provider;
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
@@ -101,6 +102,8 @@ impl LanceNamespaceDatabase {
         session: Option<Arc<lance::session::Session>>,
         namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
+        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        install_atomic_aws_provider(&session);
         // Client is pre-built, so we can't install the freshness provider here;
         // baselines are still tracked for a uniform bump path.
         let delimiter = resolve_delimiter(&namespace_client_properties);
@@ -108,7 +111,7 @@ impl LanceNamespaceDatabase {
             namespace: namespace_client,
             storage_options,
             read_consistency_interval,
-            session,
+            session: Some(session),
             uri: format!("namespace://{}", namespace_client_impl),
             pushdown_operations: namespace_client_pushdown_operations,
             ns_impl: namespace_client_impl,
@@ -153,13 +156,13 @@ impl LanceNamespaceDatabase {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         new_table_config: NewTableConfig,
     ) -> Result<Self> {
+        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        install_atomic_aws_provider(&session);
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
             builder = builder.property(key, value);
         }
-        if let Some(ref sess) = session {
-            builder = builder.session(sess.clone());
-        }
+        builder = builder.session(session.clone());
 
         // Install the read-freshness provider before building the client.
         let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
@@ -177,7 +180,7 @@ impl LanceNamespaceDatabase {
             namespace,
             storage_options,
             read_consistency_interval,
-            session,
+            session: Some(session),
             uri: format!("namespace://{}", ns_impl),
             pushdown_operations,
             ns_impl: ns_impl.to_string(),
@@ -654,9 +657,17 @@ mod tests {
         properties.insert("root".to_string(), root_path);
 
         // This should succeed with directory-based namespace
-        let result = connect_namespace("dir", properties).execute().await;
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        let database = connection
+            .database()
+            .as_any()
+            .downcast_ref::<LanceNamespaceDatabase>()
+            .unwrap();
 
-        assert!(result.is_ok());
+        assert!(database.session.is_some());
     }
 
     #[tokio::test]
