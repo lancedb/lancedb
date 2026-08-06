@@ -2113,6 +2113,7 @@ class _LanceTableReopenState:
 
     connection_state: Optional[str]
     can_reopen_after_fork: bool
+    fork_reopen_error: Optional[str]
     name: str
     namespace_path: List[str]
     storage_options: Optional[Dict[str, str]]
@@ -2196,18 +2197,34 @@ class LanceTable(Table):
         # A native table owns object-store clients and connection pools. Those
         # handles must not be used after fork, so retain a process-independent
         # connection description while it is still safe to inspect the parent
-        # connection. Some tables constructed from a bare Rust handle cannot
-        # be serialized; those retain the historical best-effort behavior.
+        # connection. Connections without reconstructible metadata are not
+        # safe to reuse in a forked child, so retain a clear diagnostic rather
+        # than advertising them as reopenable based on JSON encoding alone.
+        try:
+            connection_uri: Optional[str] = self._conn.uri
+        except Exception:
+            connection_uri = None
+
+        fork_reopen_error: Optional[str] = None
         try:
             connection_state: Optional[str] = self._conn.serialize()
-            can_reopen_after_fork = not self._conn.uri.startswith("memory://")
-        except Exception:
+            can_reopen_after_fork = connection_uri is not None and not (
+                connection_uri.startswith("memory://")
+            )
+        except Exception as error:
             connection_state = None
             can_reopen_after_fork = False
+            if connection_uri is not None and not connection_uri.startswith(
+                "memory://"
+            ):
+                fork_reopen_error = (
+                    f"Cannot reopen table {name!r} in a forked process: {error}"
+                )
 
         self._reopen_state = _LanceTableReopenState(
             connection_state=connection_state,
             can_reopen_after_fork=can_reopen_after_fork,
+            fork_reopen_error=fork_reopen_error,
             name=name,
             namespace_path=list(self._namespace_path),
             storage_options=(
@@ -2330,6 +2347,9 @@ class LanceTable(Table):
                 return
 
             state = getattr(self, "_reopen_state", None)
+            fork_reopen_error = getattr(state, "fork_reopen_error", None)
+            if fork_reopen_error is not None:
+                raise RuntimeError(fork_reopen_error)
             if (
                 state is None
                 or not state.can_reopen_after_fork

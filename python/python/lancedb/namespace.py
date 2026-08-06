@@ -482,6 +482,16 @@ class LanceNamespaceDBConnection(DBConnection):
     def serialize(self) -> str:
         import json
 
+        if (
+            self._namespace_client_impl is None
+            or self._namespace_client_properties is None
+        ):
+            raise ValueError(
+                "Cannot serialize a namespace connection constructed from an "
+                "opaque namespace client. Pass namespace_client_impl and "
+                "namespace_client_properties when constructing the connection."
+            )
+
         return json.dumps(
             {
                 "connection_type": "namespace",
