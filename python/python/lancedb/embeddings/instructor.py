@@ -127,12 +127,19 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     @weak_lru(maxsize=1)
     def get_model(self):
         huggingface_hub = attempt_import_or_raise("huggingface_hub", "huggingface-hub")
-        if not hasattr(huggingface_hub, "cached_download"):
+        missing = object()
+        original_cached_download = getattr(huggingface_hub, "cached_download", missing)
+        if original_cached_download is missing:
             huggingface_hub.cached_download = _cached_download(huggingface_hub)
 
-        instructor_embedding = attempt_import_or_raise(
-            "InstructorEmbedding", "InstructorEmbedding"
-        )
+        try:
+            instructor_embedding = attempt_import_or_raise(
+                "InstructorEmbedding", "InstructorEmbedding"
+            )
+        finally:
+            if original_cached_download is missing:
+                del huggingface_hub.cached_download
+
         torch = attempt_import_or_raise("torch", "torch")
 
         model = instructor_embedding.INSTRUCTOR(self.name)
@@ -171,9 +178,9 @@ def _cached_download(huggingface_hub):
         repo_id = unquote(repo_id)
         revision = unquote(revision)
         filename = unquote(filename)
-        if force_filename is not None:
-            filename = force_filename
-
+        # sentence-transformers derives force_filename from this Hub path with
+        # os.path.join. Using the URL path beneath local_dir produces the same
+        # local destination without sending Windows separators to the Hub.
         return huggingface_hub.hf_hub_download(
             repo_id=repo_id,
             filename=filename,

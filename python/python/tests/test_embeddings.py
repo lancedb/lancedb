@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import ntpath
 import os
 import pickle
-from types import SimpleNamespace
+import sys
+from types import ModuleType
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -523,40 +525,41 @@ def test_embedding_function_safe_model_dump(embedding_type):
             )
 
 
-def test_instructor_embedding_supports_huggingface_hub_without_cached_download():
+def test_instructor_embedding_supports_huggingface_hub_without_cached_download(
+    tmp_path, monkeypatch
+):
     from lancedb.embeddings.instructor import InstructorEmbeddingFunction
 
     hub_download = MagicMock(return_value="/cache/1_Pooling/config.json")
-    huggingface_hub = SimpleNamespace(hf_hub_download=hub_download)
-    instructor_model = MagicMock()
-    instructor_embedding = SimpleNamespace(
-        INSTRUCTOR=MagicMock(return_value=instructor_model)
+    huggingface_hub = ModuleType("huggingface_hub")
+    huggingface_hub.hf_hub_download = hub_download
+    torch = ModuleType("torch")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.delitem(sys.modules, "InstructorEmbedding", raising=False)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    (tmp_path / "InstructorEmbedding.py").write_text(
+        "from huggingface_hub import cached_download\n\n"
+        "class INSTRUCTOR:\n"
+        "    def __init__(self, name):\n"
+        "        self.name = name\n"
     )
 
-    def import_dependency(module, _mitigation):
-        if module == "huggingface_hub":
-            return huggingface_hub
-        if module == "InstructorEmbedding":
-            assert hasattr(huggingface_hub, "cached_download")
-            return instructor_embedding
-        if module == "torch":
-            return SimpleNamespace()
-        raise AssertionError(f"Unexpected import: {module}")
+    embedding = InstructorEmbeddingFunction.create(show_progress_bar=False)
+    instructor_model = embedding.get_model()
 
-    with patch(
-        "lancedb.embeddings.instructor.attempt_import_or_raise",
-        side_effect=import_dependency,
-    ):
-        embedding = InstructorEmbeddingFunction.create(show_progress_bar=False)
-        assert embedding.get_model() is instructor_model
+    assert instructor_model.name == "hkunlp/instructor-base"
+    assert not hasattr(huggingface_hub, "cached_download")
 
-    path = huggingface_hub.cached_download(
+    instructor_embedding = sys.modules["InstructorEmbedding"]
+    path = instructor_embedding.cached_download(
         url=(
             "https://huggingface.co/hkunlp/instructor-base/resolve/abc123/"
             "1_Pooling/config.json"
         ),
         cache_dir="/cache",
-        force_filename="1_Pooling/config.json",
+        force_filename=ntpath.join("1_Pooling", "config.json"),
         library_name="sentence-transformers",
         library_version="2.2.2",
         use_auth_token="token",
