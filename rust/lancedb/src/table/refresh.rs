@@ -8,7 +8,7 @@ use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::NativeTable;
-use super::computed_columns::computed_column_from_field;
+use super::computed_columns::{ComputedColumnKind, computed_column_from_field};
 use crate::{Error, Result};
 
 /// The result of refreshing a computed column.
@@ -40,13 +40,24 @@ pub(crate) async fn execute_refresh_column(
         computed_column_from_field(field).ok_or_else(|| Error::NotAComputedColumn {
             name: column.to_string(),
         })?;
+    let expression = match &declaration.kind {
+        ComputedColumnKind::Sql { expression } => expression,
+        ComputedColumnKind::Unrecognized { kind } => {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "computed column '{column}' is defined by '{kind}', which this version of \
+                     lancedb cannot evaluate"
+                ),
+            });
+        }
+    };
 
     // Rows still holding no value are the ones to fill. A row whose expression
     // evaluates to null is indistinguishable from an unfilled one and is
     // recomputed, which costs work but cannot change the result.
     let builder = LanceUpdateBuilder::new(dataset)
         .update_where(&format!("{column} IS NULL"))?
-        .set(column, &declaration.expression)?;
+        .set(column, expression)?;
     let result = builder.build()?.execute().await?;
 
     let version = result.new_dataset.version().version;
@@ -201,5 +212,16 @@ mod tests {
         let table = table_with("refresh_missing", vec![1, 2, 3]).await;
         let err = table.refresh_column("nope").await.unwrap_err();
         assert!(matches!(err, Error::ColumnNotFound { name } if name == "nope"));
+    }
+
+    /// A declaration of a kind this version cannot evaluate is refused by
+    /// name, rather than mistaken for a plain column or fed to the SQL path.
+    #[tokio::test]
+    async fn test_refresh_rejects_a_kind_it_cannot_evaluate() {
+        let table = table_with("refresh_foreign", vec![1, 2, 3]).await;
+        super::super::computed_columns::add_foreign_kind(&table, "embedding", "udf").await;
+
+        let err = table.refresh_column("embedding").await.unwrap_err();
+        assert!(matches!(err, Error::NotSupported { message } if message.contains("udf")));
     }
 }
