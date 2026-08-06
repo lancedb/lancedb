@@ -3,6 +3,7 @@
 
 import os
 import pickle
+from types import SimpleNamespace
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -520,6 +521,58 @@ def test_embedding_function_safe_model_dump(embedding_type):
                 f"{embedding_type}: Private attribute '{key}' "
                 f"is present in dumped model"
             )
+
+
+def test_instructor_embedding_supports_huggingface_hub_without_cached_download():
+    from lancedb.embeddings.instructor import InstructorEmbeddingFunction
+
+    hub_download = MagicMock(return_value="/cache/1_Pooling/config.json")
+    huggingface_hub = SimpleNamespace(hf_hub_download=hub_download)
+    instructor_model = MagicMock()
+    instructor_embedding = SimpleNamespace(
+        INSTRUCTOR=MagicMock(return_value=instructor_model)
+    )
+
+    def import_dependency(module, _mitigation):
+        if module == "huggingface_hub":
+            return huggingface_hub
+        if module == "InstructorEmbedding":
+            assert hasattr(huggingface_hub, "cached_download")
+            return instructor_embedding
+        if module == "torch":
+            return SimpleNamespace()
+        raise AssertionError(f"Unexpected import: {module}")
+
+    with patch(
+        "lancedb.embeddings.instructor.attempt_import_or_raise",
+        side_effect=import_dependency,
+    ):
+        embedding = InstructorEmbeddingFunction.create(show_progress_bar=False)
+        assert embedding.get_model() is instructor_model
+
+    path = huggingface_hub.cached_download(
+        url=(
+            "https://huggingface.co/hkunlp/instructor-base/resolve/abc123/"
+            "1_Pooling/config.json"
+        ),
+        cache_dir="/cache",
+        force_filename="1_Pooling/config.json",
+        library_name="sentence-transformers",
+        library_version="2.2.2",
+        use_auth_token="token",
+    )
+
+    assert path == "/cache/1_Pooling/config.json"
+    hub_download.assert_called_once_with(
+        repo_id="hkunlp/instructor-base",
+        filename="1_Pooling/config.json",
+        revision="abc123",
+        local_dir="/cache",
+        library_name="sentence-transformers",
+        library_version="2.2.2",
+        user_agent=None,
+        token="token",
+    )
 
 
 @patch("time.sleep")
