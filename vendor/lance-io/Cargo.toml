@@ -1,0 +1,74 @@
+[package]
+name = "lance-io"
+version = "11.0.0-beta.2"
+edition = "2024"
+authors = ["Lance Devs <dev@lance.org>"]
+license = "Apache-2.0"
+repository = "https://github.com/lance-format/lance"
+readme = "README.md"
+description = "I/O utilities for Lance"
+keywords = ["data-format", "data-science", "machine-learning", "apache-arrow"]
+categories = ["database-implementations", "data-structures"]
+rust-version = "1.91.0"
+autobenches = false
+autotests = false
+
+[dependencies]
+object_store = "0.13.2"
+opendal = { version = "0.58.1", optional = true }
+object_store_opendal = { version = "0.58", optional = true }
+lance-arrow = { version = "=11.0.0-beta.2", tag = "v11.0.0-beta.2", git = "https://github.com/lance-format/lance.git" }
+lance-core = { version = "=11.0.0-beta.2", tag = "v11.0.0-beta.2", git = "https://github.com/lance-format/lance.git" }
+lance-namespace = { version = "=11.0.0-beta.2", tag = "v11.0.0-beta.2", git = "https://github.com/lance-format/lance.git" }
+arrow = { version = "58.0.0", features = ["ffi"] }
+arrow-array = "58.0.0"
+arrow-schema = "58.0.0"
+async-trait = "0.1"
+aws-config = { version = "1.2.0", optional = true }
+aws-credential-types = { version = "1.2.0", optional = true }
+byteorder = "1.5"
+bytes = "1.11.1"
+chrono = { version = "0.4.41", default-features = false, features = ["std", "now", "serde"] }
+futures = "0.3"
+http = "1.1.0"
+log = "0.4"
+metrics = { version = "0.24", optional = true }
+moka = { version = "0.12", features = ["future"] }
+pin-project = "1.0"
+prost = "0.14.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.23", features = ["rt-multi-thread", "macros", "fs", "sync"] }
+tracing = "0.1"
+url = "2.5.7"
+path_abs = "0.5"
+rand = "0.9.1"
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
+[dev-dependencies]
+lance-testing = { version = "=11.0.0-beta.2", tag = "v11.0.0-beta.2", git = "https://github.com/lance-format/lance.git" }
+test-log = "0.2.15"
+mockall = "0.14.0"
+rstest = "0.26.1"
+mock_instant = "0.6.0"
+tokio = { version = "1.23", features = ["test-util"] }
+tracing-mock = "=0.1.0-beta.3"
+metrics-util = "0.19"
+
+[features]
+default = ["aws", "azure", "gcp"]
+metrics = ["dep:metrics"]
+gcs-test = []
+goosefs-test = []
+gcp = ["object_store/gcp", "dep:opendal", "opendal/services-gcs", "dep:object_store_opendal"]
+aws = ["object_store/aws", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal"]
+azure = ["object_store/azure", "dep:opendal", "opendal/services-azblob", "opendal/services-azdls", "dep:object_store_opendal"]
+oss = ["dep:opendal", "opendal/services-oss", "dep:object_store_opendal"]
+goosefs = ["dep:opendal", "opendal/services-goosefs", "dep:object_store_opendal"]
+tencent = ["dep:opendal", "opendal/services-cos", "dep:object_store_opendal"]
+huggingface = ["dep:opendal", "opendal/services-huggingface", "dep:object_store_opendal"]
+tos = ["dep:opendal", "opendal/services-tos", "dep:object_store_opendal"]
+tos-test = ["tos"]
+test-util = []

@@ -5206,7 +5206,6 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "11.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v11.0.0-beta.2#35da5d920159b49d1b53032652f7615ab699c160"
 dependencies = [
  "arrow",
  "arrow-array",

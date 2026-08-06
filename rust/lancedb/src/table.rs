@@ -3580,6 +3580,7 @@ mod tests {
     #[cfg(feature = "aws")]
     use lance_io::object_store::{
         ObjectStore as LanceObjectStore, ObjectStoreProvider, ObjectStoreRegistry,
+        StorageOptionsAccessor,
     };
     use tempfile::tempdir;
 
@@ -3593,7 +3594,8 @@ mod tests {
     #[cfg(feature = "aws")]
     #[derive(Debug)]
     struct RecordingS3Provider {
-        saw_atomic_credentials: Arc<AtomicBool>,
+        expected_accessor: Arc<StorageOptionsAccessor>,
+        saw_original_params: Arc<AtomicBool>,
     }
 
     #[cfg(feature = "aws")]
@@ -3604,37 +3606,49 @@ mod tests {
             _base_path: url::Url,
             params: &ObjectStoreParams,
         ) -> lance_core::Result<LanceObjectStore> {
-            self.saw_atomic_credentials
-                .store(params.aws_credentials.is_some(), Ordering::SeqCst);
+            self.saw_original_params.store(
+                params.aws_credentials.is_none()
+                    && params
+                        .storage_options_accessor
+                        .as_ref()
+                        .is_some_and(|accessor| Arc::ptr_eq(accessor, &self.expected_accessor)),
+                Ordering::SeqCst,
+            );
             Err(lance_core::Error::invalid_input("recorded test request"))
         }
     }
 
     #[cfg(feature = "aws")]
-    fn recording_s3_session() -> (Arc<lance::session::Session>, Arc<AtomicBool>) {
-        let saw_atomic_credentials = Arc::new(AtomicBool::new(false));
+    fn recording_s3_session(
+        expected_accessor: Arc<StorageOptionsAccessor>,
+    ) -> (Arc<lance::session::Session>, Arc<AtomicBool>) {
+        let saw_original_params = Arc::new(AtomicBool::new(false));
         let registry = Arc::new(ObjectStoreRegistry::default());
         registry.insert(
             "s3",
             Arc::new(RecordingS3Provider {
-                saw_atomic_credentials: saw_atomic_credentials.clone(),
+                expected_accessor,
+                saw_original_params: saw_original_params.clone(),
             }),
         );
         (
             Arc::new(lance::session::Session::new(16, 16, registry)),
-            saw_atomic_credentials,
+            saw_original_params,
         )
     }
 
     #[cfg(feature = "aws")]
-    fn explicit_s3_store_params() -> ObjectStoreParams {
-        crate::io::object_store::object_store_params_from_storage_options(HashMap::from([
-            ("aws_access_key_id".to_string(), "explicit-key".to_string()),
-            (
-                "aws_secret_access_key".to_string(),
-                "explicit-secret".to_string(),
-            ),
-        ]))
+    fn explicit_s3_store_params() -> (ObjectStoreParams, Arc<StorageOptionsAccessor>) {
+        let params =
+            crate::io::object_store::object_store_params_from_storage_options(HashMap::from([
+                ("aws_access_key_id".to_string(), "explicit-key".to_string()),
+                (
+                    "aws_secret_access_key".to_string(),
+                    "explicit-secret".to_string(),
+                ),
+            ]));
+        let accessor = params.storage_options_accessor.as_ref().unwrap().clone();
+        (params, accessor)
     }
 
     #[test]
@@ -3700,11 +3714,12 @@ mod tests {
 
     #[cfg(feature = "aws")]
     #[tokio::test]
-    async fn direct_native_open_installs_the_atomic_provider() {
-        let (session, saw_atomic_credentials) = recording_s3_session();
+    async fn direct_native_open_preserves_custom_provider_params() {
+        let (store_options, accessor) = explicit_s3_store_params();
+        let (session, saw_original_params) = recording_s3_session(accessor);
         let params = ReadParams {
             session: Some(session),
-            store_options: Some(explicit_s3_store_params()),
+            store_options: Some(store_options),
             ..Default::default()
         };
 
@@ -3724,18 +3739,19 @@ mod tests {
 
         assert!(error.to_string().contains("recorded test request"));
         assert!(
-            saw_atomic_credentials.load(Ordering::SeqCst),
-            "the public direct open path must install the wrapper on its session"
+            saw_original_params.load(Ordering::SeqCst),
+            "the public direct open path must preserve custom provider parameters"
         );
     }
 
     #[cfg(feature = "aws")]
     #[tokio::test]
-    async fn direct_native_create_installs_the_atomic_provider() {
-        let (session, saw_atomic_credentials) = recording_s3_session();
+    async fn direct_native_create_preserves_custom_provider_params() {
+        let (store_params, accessor) = explicit_s3_store_params();
+        let (session, saw_original_params) = recording_s3_session(accessor);
         let params = WriteParams {
             session: Some(session),
-            store_params: Some(explicit_s3_store_params()),
+            store_params: Some(store_params),
             ..Default::default()
         };
         let batch = make_test_batches();
@@ -3757,8 +3773,8 @@ mod tests {
 
         assert!(error.to_string().contains("recorded test request"));
         assert!(
-            saw_atomic_credentials.load(Ordering::SeqCst),
-            "the public direct create path must install the wrapper on its session"
+            saw_original_params.load(Ordering::SeqCst),
+            "the public direct create path must preserve custom provider parameters"
         );
     }
 

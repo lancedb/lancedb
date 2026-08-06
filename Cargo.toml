@@ -1,5 +1,6 @@
 [workspace]
 members = ["rust/lancedb", "nodejs", "python"]
+exclude = ["vendor/lance-io"]
 resolver = "2"
 
 [workspace.package]
@@ -66,6 +67,9 @@ num-traits = "0.2"
 regex = "1.10"
 semver = "1.0.25"
 chrono = "0.4"
+
+[patch."https://github.com/lance-format/lance.git"]
+lance-io = { path = "vendor/lance-io" }
 
 [profile.ci]
 debug = "line-tables-only"

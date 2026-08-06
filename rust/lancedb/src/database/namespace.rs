@@ -34,7 +34,7 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
-use crate::io::object_store::{atomic_aws_session, install_atomic_aws_provider};
+use crate::io::object_store::atomic_aws_session;
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
@@ -102,9 +102,6 @@ impl LanceNamespaceDatabase {
         session: Option<Arc<lance::session::Session>>,
         namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Self {
-        if let Some(session) = &session {
-            install_atomic_aws_provider(session);
-        }
         // Client is pre-built, so we can't install the freshness provider here;
         // baselines are still tracked for a uniform bump path.
         let delimiter = resolve_delimiter(&namespace_client_properties);
@@ -157,9 +154,9 @@ impl LanceNamespaceDatabase {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         new_table_config: NewTableConfig,
     ) -> Result<Self> {
-        // Namespace construction needs a protected session even when the connection did not
-        // supply one. Keep the original option separately so per-operation sessions retain
-        // precedence when tables are opened or created later.
+        // Namespace construction needs a shared session even when the connection did not supply
+        // one. Keep the original option separately so per-operation sessions retain precedence
+        // when tables are opened or created later.
         let builder_session = atomic_aws_session(session.clone());
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
