@@ -255,6 +255,18 @@ mod tests {
 
     #[test]
     fn test_cast_uses_arrow_type_name() {
+        let string = expr_cast(col("x"), DataType::Utf8);
+        assert_eq!(
+            expr_to_sql_string(&string).unwrap(),
+            "arrow_cast(x, 'Utf8')"
+        );
+
+        let int32 = expr_cast(col("x"), DataType::Int32);
+        assert_eq!(
+            expr_to_sql_string(&int32).unwrap(),
+            "arrow_cast(x, 'Int32')"
+        );
+
         let expr = expr_cast(col("x"), DataType::Float16).lt(lit(2.0));
         assert_eq!(
             expr_to_sql_string(&expr).unwrap(),
@@ -279,6 +291,20 @@ mod tests {
         assert_eq!(
             expr_to_sql_string(&expr).unwrap(),
             "((payload = X'01') OR (`text` = '__lancedb_binary_placeholder_0__'))"
+        );
+    }
+
+    #[test]
+    fn test_binary_binding_skips_quoted_identifiers() {
+        use datafusion_common::ScalarValue;
+
+        let expr = col("payload")
+            .eq(lit(ScalarValue::Binary(Some(vec![0x01]))))
+            .and(col("odd'name").eq(lit(1i64)))
+            .and(col("odd`'name").eq(lit(2i64)));
+        assert_eq!(
+            expr_to_sql_string(&expr).unwrap(),
+            "(((payload = X'01') AND (`odd'name` = 1)) AND (`odd``'name` = 2))"
         );
     }
 

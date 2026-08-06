@@ -2384,6 +2384,30 @@ def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
     result = float16_table.update(where=predicate, values={"result": "new"})
     assert result.rows_updated == 1
 
+    string_cast_table = mem_db.create_table(
+        "update_expr_string_cast",
+        [{"x": 1, "result": "old"}, {"x": 2, "result": "old"}],
+    )
+    predicate = col("x").cast("string") == "1"
+    assert string_cast_table.search().where(predicate).to_arrow().num_rows == 1
+    result = string_cast_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    quoted_identifier_schema = pa.schema(
+        [("payload", pa.binary()), ("odd'name", pa.int64()), ("result", pa.string())]
+    )
+    quoted_identifier_table = mem_db.create_table(
+        "update_expr_quoted_identifier",
+        pa.table(
+            {"payload": [b"\x01"], "odd'name": [1], "result": ["old"]},
+            schema=quoted_identifier_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) & (col("odd'name") == 1)
+    assert quoted_identifier_table.search().where(predicate).to_arrow().num_rows == 1
+    result = quoted_identifier_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
     decimal256_schema = pa.schema(
         [("val", pa.decimal256(40, 2)), ("result", pa.string())]
     )

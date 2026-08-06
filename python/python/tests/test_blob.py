@@ -430,6 +430,50 @@ async def test_blob_v2_hybrid_fetch_blobs_async():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
 
 
+@pytest.mark.asyncio
+async def test_async_hybrid_typed_blob_projection_preserves_source_column():
+    db = await lancedb.connect_async("memory:///hybrid_typed_blob")
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("text", pa.utf8()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = await db.create_table("hybrid_typed_blob", schema=schema)
+    await table.add(
+        [
+            {
+                "id": 1,
+                "text": "hello alpha",
+                "vector": [1.0, 0.0],
+                "blob": b"alpha",
+            },
+            {
+                "id": 2,
+                "text": "hello beta",
+                "vector": [0.9, 0.1],
+                "blob": b"beta",
+            },
+        ]
+    )
+    await table.create_index("text", config=FTS(with_position=False))
+
+    hits = await (
+        table.query()
+        .nearest_to([1.0, 0.0])
+        .nearest_to_text("hello")
+        .select({"blob_alias": col("blob")})
+        .limit(2)
+        .to_arrow()
+    )
+
+    assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
+    blobs = await table.fetch_blobs("blob", hits)
+    assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
 def test_blob_file_seek_read_and_read_range():
     payload = _identifiable_payload(1024)
     table = _blob_table("seek_read", [{"id": 1, "image": payload}])

@@ -169,6 +169,12 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
     return {"columns": projection}
 
 
+def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
+    if req.select_source_columns is not None:
+        return req.select_source_columns
+    return req.select
+
+
 def _scanner_kwargs_for_query(
     query: Query,
     blob_mode: BlobMode,
@@ -2777,11 +2783,7 @@ class AsyncQueryBase(object):
 
         req = self._inner.to_query_request()
         schema = await self._table.schema()
-        projection = (
-            req.select_source_columns
-            if req.select_source_columns is not None
-            else req.select
-        )
+        projection = _query_request_projection(req)
         self._blob_auto_row_id = blob_auto_row_id_for_scan(
             schema,
             projection,
@@ -3881,14 +3883,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         blob_paths: tuple[str, ...] = ()
         if self._table is not None:
             schema = await self._table.schema()
+            projection = _query_request_projection(req)
             blob_auto_row_id = blob_auto_row_id_for_scan(
                 schema,
-                req.select,
+                projection,
                 with_row_id=self._with_row_id,
             )
             if blob_auto_row_id:
                 blob_paths = tuple(
-                    blob_v2_projection_sources(schema, req.select).keys()
+                    blob_v2_projection_sources(schema, projection).keys()
                 )
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths

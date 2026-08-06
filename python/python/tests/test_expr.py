@@ -251,32 +251,32 @@ class TestExprCast:
     def test_cast_string(self):
         e = col("id").cast("string")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_int32(self):
         e = col("score").cast("int32")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_float64(self):
         e = col("val").cast("float64")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_type(self):
         e = col("score").cast(pa.int32())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_pyarrow_float64(self):
         e = col("val").cast(pa.float64())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_string(self):
         e = col("id").cast(pa.string())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_pyarrow_and_string_equivalent(self):
         # pa.int32() and "int32" should produce equivalent SQL

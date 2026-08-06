@@ -75,33 +75,6 @@ fn typed_string_literal(value: String, data_type: DataType) -> Expr {
     )
 }
 
-fn cast_requires_arrow_type_name(data_type: &DataType) -> bool {
-    !matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Timestamp(_, _)
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Interval(_)
-            | DataType::Utf8
-            | DataType::LargeUtf8
-            | DataType::Utf8View
-            | DataType::Decimal32(_, _)
-            | DataType::Decimal64(_, _)
-            | DataType::Decimal128(_, _)
-    )
-}
-
 fn next_binary_placeholder(user_strings: &HashSet<String>, next_id: &mut usize) -> String {
     loop {
         let placeholder = format!("{BINARY_PLACEHOLDER_PREFIX}{}__", *next_id);
@@ -124,6 +97,33 @@ fn bind_binary_literals(
     // literals, so this remains linear even when user strings are large or
     // deliberately resemble the placeholder prefix.
     while index < bytes.len() {
+        if bytes[index] == b'`' {
+            let identifier_start = index;
+            index += 1;
+            let mut identifier_end = None;
+            while index < bytes.len() {
+                if bytes[index] == b'`' {
+                    if index + 1 < bytes.len() && bytes[index + 1] == b'`' {
+                        index += 2;
+                    } else {
+                        index += 1;
+                        identifier_end = Some(index);
+                        break;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+
+            let Some(identifier_end) = identifier_end else {
+                return Err(crate::Error::InvalidInput {
+                    message: "unterminated identifier while binding binary literal".to_string(),
+                });
+            };
+            output.extend_from_slice(&bytes[identifier_start..identifier_end]);
+            continue;
+        }
+
         if bytes[index] != b'\'' {
             output.push(bytes[index]);
             index += 1;
@@ -189,6 +189,7 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
     // reparsed by Lance without changing the typed expression's semantics:
     //
     // * decimal literals need an explicit cast to preserve precision and scale;
+    // * casts need exact Arrow type names rather than SQL type aliases;
     // * an empty IN list is valid in DataFusion but invalid SQL;
     // * binary literals are unsupported by the unparser and need placeholders.
     // Eliminate empty membership expressions before visiting their children.
@@ -261,24 +262,20 @@ pub fn expr_to_sql_string(expr: &Expr) -> crate::Result<String> {
             Expr::Literal(ScalarValue::Float64(Some(value)), _m) if !value.is_finite() => Ok(
                 Transformed::yes(typed_string_literal(value.to_string(), DataType::Float64)),
             ),
-            Expr::Cast(cast) if cast_requires_arrow_type_name(cast.field.data_type()) => {
-                Ok(Transformed::yes(datafusion_arrow_cast(
-                    *cast.expr,
-                    Expr::Literal(
-                        ScalarValue::Utf8(Some(cast.field.data_type().to_string())),
-                        None,
-                    ),
-                )))
-            }
-            Expr::TryCast(cast) if cast_requires_arrow_type_name(cast.field.data_type()) => {
-                Ok(Transformed::yes(datafusion_arrow_try_cast(
-                    *cast.expr,
-                    Expr::Literal(
-                        ScalarValue::Utf8(Some(cast.field.data_type().to_string())),
-                        None,
-                    ),
-                )))
-            }
+            Expr::Cast(cast) => Ok(Transformed::yes(datafusion_arrow_cast(
+                *cast.expr,
+                Expr::Literal(
+                    ScalarValue::Utf8(Some(cast.field.data_type().to_string())),
+                    None,
+                ),
+            ))),
+            Expr::TryCast(cast) => Ok(Transformed::yes(datafusion_arrow_try_cast(
+                *cast.expr,
+                Expr::Literal(
+                    ScalarValue::Utf8(Some(cast.field.data_type().to_string())),
+                    None,
+                ),
+            ))),
             other => Ok(Transformed::no(other)),
         })
         .map_err(|e| crate::Error::InvalidInput {
