@@ -152,3 +152,54 @@ Please consider the following when reviewing code contributions.
 ### Documentation
 * New features must include updates to the rust documentation comments. Link to
   relevant structs and methods to increase the value of documentation.
+
+## Cursor Cloud specific instructions
+
+The VM snapshot already has the Rust `1.97.0` toolchain (auto-selected by
+`rust-toolchain.toml`), `protoc`, `uv` (on `PATH` via `~/.bashrc`), the Rust
+debug build artifacts, the Python editable extension, and `nodejs/node_modules`.
+The startup update script only refreshes dependencies (`uv sync` for Python and
+`pnpm install` for Node); it deliberately does NOT rebuild the native
+extensions. After changing Rust or PyO3/napi binding code you must rebuild the
+affected binding yourself (see per-binding rebuild commands below).
+
+Non-obvious caveats discovered during setup:
+
+* The documented Python bootstrap `uv run --extra tests --extra dev maturin
+  develop --extras tests,dev` does not work as-is here: `maturin` is not
+  installed as a CLI in the uv environment, and `maturin develop --extras`
+  runs its own dependency resolution that cannot find the prerelease
+  `pylance==9.0.0rc1` (it lacks the extra package index that `uv` uses via
+  `uv.lock`). Because `uv run --extra tests --extra dev` already installs those
+  extras, the working command is:
+  `cd python && uv run --extra tests --extra dev --with maturin maturin develop`
+  (note: `--with maturin`, and no `--extras`). This is the Python binding
+  rebuild command.
+* Rust core, the Python extension (maturin), and the Node addon (napi) all
+  compile into the SHARED `/workspace/target`. Cargo feature unification differs
+  between `maturin develop` and `pnpm build`, so alternating between building
+  the Python and Node bindings forces a full recompile of shared crates
+  (`lancedb`, `datafusion`, `lance-*`) — roughly 6-7 min each way on this
+  4-core VM. Build one binding at a time to avoid the churn.
+* The `_lancedb` release build (triggered when `uv run`/`uv sync` installs the
+  `lancedb` project itself) uses `lto = "fat"` + `opt-level = 3`, needs ~11 GB
+  RAM, and takes ~20 min cold on this VM. To avoid it, the update script uses
+  `uv sync --no-install-project --inexact` (the `--inexact` flag is required so
+  the sync does not uninstall the editable extension). Prefer the debug
+  `maturin develop` (~6 min cold, seconds when warm) for iteration.
+* `cargo check` only produces metadata, so the first `cargo run --example ...`
+  or `cargo test` after a check triggers a large codegen/link compile.
+* Node binding rebuild: `cd nodejs && pnpm build` (napi debug build + `tsc`).
+  The native addon lands at `nodejs/dist/lancedb.linux-x64-gnu.node`.
+
+Verified working (local backend, no cloud credentials needed):
+
+* Rust: `cargo check/clippy --features remote --tests --examples`,
+  `cargo test --features remote -p lancedb --lib`, `cargo run --features remote
+  --example simple`.
+* Python: `cd python && uv run --extra tests pytest python/tests/test_table.py`,
+  `uv run --directory python --extra dev ruff check python`.
+* Node: `cd nodejs && pnpm lint`, `pnpm test __test__/connection.test.ts`.
+
+Java (`java/`) is optional; its integration tests need LanceDB Cloud
+credentials (`LANCEDB_DB`, `LANCEDB_API_KEY`) and were not set up here.
