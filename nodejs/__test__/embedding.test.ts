@@ -11,8 +11,11 @@ import {
   Float16,
   Float32,
   Float64,
+  Int32,
   Schema,
   Utf8,
+  fromDataToBuffer,
+  tableFromIPC,
 } from "../lancedb/arrow";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
@@ -236,6 +239,63 @@ describe("embedding functions", () => {
     expect(JSON.parse(JSON.stringify(rows[0].vector1))).toEqual([1, 2, 3]);
     expect(JSON.parse(JSON.stringify(rows[0].vector2))).toEqual([4, 5, 6]);
   });
+
+  it("should append generated vectors to a non-nullable schema", async () => {
+    @register("non_nullable_schema_test")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float64();
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+
+    const schema = new Schema([
+      new Field("id", new Int32()),
+      new Field("text", new Utf8()),
+      new Field("type", new Utf8()),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float64())),
+      ),
+    ]);
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test_non_nullable", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+      },
+    });
+
+    const data = [
+      { id: 1, text: "Carrot", type: "vegetable" },
+      { id: 2, text: "Apple", type: "fruit" },
+    ];
+    const buffer = await fromDataToBuffer(
+      data,
+      undefined,
+      await table.schema(),
+    );
+    const generatedTable = tableFromIPC(buffer);
+    const vectorField = generatedTable.schema.fields.find(
+      (field) => field.name === "vector",
+    );
+    expect(vectorField?.nullable).toBe(false);
+
+    await table.add(data);
+
+    const rows = await table.query().toArray();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect([...row.vector]).toEqual([1, 2, 3]);
+    }
+  });
+
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
