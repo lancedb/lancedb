@@ -6,6 +6,7 @@ import math
 import pytest
 
 from lancedb import DBConnection, Table, connect
+from lancedb.background_loop import LOOP
 from lancedb.permutation import Permutation, Permutations, permutation_builder
 
 
@@ -29,6 +30,25 @@ def test_split_random_ratios(mem_db):
     split_1_count = split_ids.count(1)
     assert 25 <= split_0_count <= 35  # ~30% ± tolerance
     assert 65 <= split_1_count <= 75  # ~70% ± tolerance
+
+
+def test_execute_does_not_reenter_background_loop(tmp_path, monkeypatch):
+    import threading
+
+    db = connect(tmp_path)
+    tbl = db.create_table("test_table", pa.table({"x": range(10)}))
+    original_run = LOOP.run
+
+    def fail_on_reentry(future):
+        assert threading.current_thread() is not LOOP.thread
+        return original_run(future)
+
+    monkeypatch.setattr(LOOP, "run", fail_on_reentry)
+
+    permutation_tbl = permutation_builder(tbl).execute()
+
+    assert permutation_tbl.count_rows() == 10
+    assert permutation_tbl._conn.read_consistency_interval is None
 
 
 def test_split_random_counts(mem_db):

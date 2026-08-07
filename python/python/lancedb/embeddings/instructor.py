@@ -101,8 +101,7 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     @weak_lru(maxsize=1)
     def ndims(self):
-        model = self.get_model()
-        return model.encode("foo").shape[0]
+        return len(self.generate_embeddings([[self.source_instruction, "foo"]])[0])
 
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.generate_embeddings([[self.query_instruction, query]])

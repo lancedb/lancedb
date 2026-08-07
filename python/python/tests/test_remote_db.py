@@ -35,6 +35,12 @@ def make_mock_http_handler(handler):
     return MockLanceDBHandler
 
 
+@pytest.mark.parametrize("db_name", ["a" * 64, "invalid..database"])
+def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
+    with pytest.raises(ValueError, match="DNS labels must contain 1 to 63 bytes"):
+        lancedb.connect(f"db://{db_name}", api_key="fake")
+
+
 @contextlib.contextmanager
 def mock_lancedb_connection(handler):
     with http.server.HTTPServer(

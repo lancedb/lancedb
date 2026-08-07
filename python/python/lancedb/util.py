@@ -395,6 +395,11 @@ def _(value: dict):
     )
 
 
+@value_to_sql.register(pa.Scalar)
+def _(value: pa.Scalar):
+    return value_to_sql(value.as_py())
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
