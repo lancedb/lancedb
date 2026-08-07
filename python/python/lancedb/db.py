@@ -716,20 +716,9 @@ class LanceDBConnection(DBConnection):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
-        if is_local:
+        is_file_uri = isinstance(uri, str) and uri.lower().startswith("file:")
+        if is_local and not is_file_uri:
             if isinstance(uri, str):
-                # Strip file:// or file:/ scheme if present
-                # file:///path becomes file:/path after URL normalization
-                if uri.startswith("file://"):
-                    uri = uri[7:]  # Remove "file://"
-                elif uri.startswith("file:/"):
-                    uri = uri[5:]  # Remove "file:"
-
-                if sys.platform == "win32":
-                    # On Windows, a path like /C:/path should become C:/path
-                    if len(uri) >= 3 and uri[0] == "/" and uri[2] == ":":
-                        uri = uri[1:]
-
                 uri = Path(uri)
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)

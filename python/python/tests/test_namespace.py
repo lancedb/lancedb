@@ -60,6 +60,11 @@ class _NamespaceClient:
         return _ipc_file()
 
 
+class _UnsupportedNamespaceConfig:
+    async def namespace_client_config(self):
+        raise RuntimeError("UNC namespace client export is not supported")
+
+
 def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     table = LanceTable.__new__(LanceTable)
     table._table = _FailingSyncInner()
@@ -137,6 +142,24 @@ class TestNamespaceConnection:
         assert db.list_tables(namespace_path=["test_ns"]).tables == []
         db.drop_namespace(["test_ns"])
         assert "test_ns" not in db.list_namespaces().namespaces
+
+    def test_sync_namespace_client_propagates_export_guard(self, monkeypatch):
+        from lancedb.db import AsyncConnection
+
+        monkeypatch.setattr(
+            "lancedb.namespace.namespace_connect",
+            lambda *_args, **_kwargs: pytest.fail("guarded config was reconstructed"),
+        )
+        db = lancedb.LanceNamespaceDBConnection.__new__(
+            lancedb.LanceNamespaceDBConnection
+        )
+        db._namespace_client = None
+        db._namespace_client_impl = "dir"
+        db._namespace_client_properties = {"root": "file://server/share/database"}
+        db._inner = AsyncConnection(_UnsupportedNamespaceConfig())
+
+        with pytest.raises(RuntimeError, match="UNC namespace client export"):
+            db.namespace_client()
 
     def test_create_table_through_namespace(self):
         """Test creating a table through namespace."""
@@ -638,6 +661,24 @@ class TestAsyncNamespaceConnection:
         assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
         await db.drop_namespace(["test_ns"])
         assert "test_ns" not in (await db.list_namespaces()).namespaces
+
+    async def test_async_namespace_client_propagates_export_guard(self, monkeypatch):
+        from lancedb.db import AsyncConnection
+
+        monkeypatch.setattr(
+            "lancedb.namespace.namespace_connect",
+            lambda *_args, **_kwargs: pytest.fail("guarded config was reconstructed"),
+        )
+        db = lancedb.AsyncLanceNamespaceDBConnection.__new__(
+            lancedb.AsyncLanceNamespaceDBConnection
+        )
+        db._namespace_client = None
+        db._namespace_client_impl = "dir"
+        db._namespace_client_properties = {"root": "file://server/share/database"}
+        db._inner = AsyncConnection(_UnsupportedNamespaceConfig())
+
+        with pytest.raises(RuntimeError, match="UNC namespace client export"):
+            await db.namespace_client()
 
     async def test_async_namespace_client_is_lazy(self):
         """namespace_client() should still return the backing client on demand."""

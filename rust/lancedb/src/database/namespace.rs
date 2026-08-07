@@ -59,6 +59,46 @@ fn is_table_already_exists_namespace_error(err: &lance::Error) -> bool {
 /// via the `delimiter` property.
 const DEFAULT_NAMESPACE_DELIMITER: &str = "$";
 
+#[cfg(any(windows, test))]
+fn is_unc_root(root: &str) -> bool {
+    let normalized = root.replace('\\', "/");
+    let lowercase = normalized.to_ascii_lowercase();
+
+    if lowercase.starts_with("//?/unc/") {
+        return true;
+    }
+    if lowercase.starts_with("//?/") || lowercase.starts_with("//./") {
+        return false;
+    }
+    if let Some(authority) = normalized.strip_prefix("//") {
+        return !authority.is_empty() && !authority.starts_with('/');
+    }
+
+    normalized.split_once("://").is_some_and(|(scheme, path)| {
+        scheme.eq_ignore_ascii_case("file") && !path.is_empty() && !path.starts_with('/')
+    })
+}
+
+#[cfg(any(windows, test))]
+fn is_directory_unc_root(ns_impl: &str, ns_properties: &HashMap<String, String>) -> bool {
+    ns_impl.eq_ignore_ascii_case("dir")
+        && ns_properties
+            .get("root")
+            .is_some_and(|root| is_unc_root(root))
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct UnavailableUncDirectoryNamespace;
+
+#[cfg(any(windows, test))]
+#[async_trait]
+impl LanceNamespace for UnavailableUncDirectoryNamespace {
+    fn namespace_id(&self) -> String {
+        "unavailable-unc-directory".to_string()
+    }
+}
+
 /// A database implementation that uses lance-namespace for table management
 pub struct LanceNamespaceDatabase {
     namespace: Arc<dyn LanceNamespace>,
@@ -92,6 +132,17 @@ fn resolve_delimiter(ns_properties: &HashMap<String, String>) -> String {
 }
 
 impl LanceNamespaceDatabase {
+    fn ensure_storage_supported(&self) -> Result<()> {
+        #[cfg(any(windows, test))]
+        if is_directory_unc_root(&self.ns_impl, &self.ns_properties) {
+            return Err(Error::NotSupported {
+                message: "Directory namespace operations are not supported for UNC roots because the namespace manifest resolver does not preserve file URI authorities; use flat root tables or a non-UNC namespace root"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn from_namespace_client(
         namespace_client: Arc<dyn LanceNamespace>,
         namespace_client_impl: String,
@@ -153,6 +204,25 @@ impl LanceNamespaceDatabase {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         new_table_config: NewTableConfig,
     ) -> Result<Self> {
+        #[cfg(any(windows, test))]
+        if is_directory_unc_root(ns_impl, &ns_properties) {
+            let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
+            let delimiter = resolve_delimiter(&ns_properties);
+            return Ok(Self {
+                namespace: Arc::new(UnavailableUncDirectoryNamespace),
+                storage_options,
+                read_consistency_interval,
+                session,
+                uri: format!("namespace://{}", ns_impl),
+                pushdown_operations,
+                ns_impl: ns_impl.to_string(),
+                ns_properties,
+                new_table_config,
+                freshness_baselines,
+                delimiter,
+            });
+        }
+
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
             builder = builder.property(key, value);
@@ -310,6 +380,7 @@ impl Database for LanceNamespaceDatabase {
         &self,
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.list_namespaces(request).await?)
     }
 
@@ -317,10 +388,12 @@ impl Database for LanceNamespaceDatabase {
         &self,
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.create_namespace(request).await?)
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.drop_namespace(request).await?)
     }
 
@@ -328,10 +401,12 @@ impl Database for LanceNamespaceDatabase {
         &self,
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.describe_namespace(request).await?)
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
+        self.ensure_storage_supported()?;
         let ns_request = ListTablesRequest {
             id: Some(request.namespace_path),
             page_token: request.start_after,
@@ -345,10 +420,12 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.list_tables(request).await?)
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        self.ensure_storage_supported()?;
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;
@@ -518,6 +595,7 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        self.ensure_storage_supported()?;
         let native_table = NativeTable::open_from_namespace(
             self.namespace.clone(),
             &request.name,
@@ -547,6 +625,7 @@ impl Database for LanceNamespaceDatabase {
         cur_namespace_path: &[String],
         new_namespace_path: &[String],
     ) -> Result<()> {
+        self.ensure_storage_supported()?;
         let mut cur_table_id = cur_namespace_path.to_vec();
         cur_table_id.push(cur_name.to_string());
 
@@ -573,6 +652,7 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.ensure_storage_supported()?;
         let mut table_id = namespace_path.to_vec();
         table_id.push(name.to_string());
 
@@ -612,10 +692,12 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>> {
+        self.ensure_storage_supported()?;
         Ok(self.namespace.clone())
     }
 
     async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        self.ensure_storage_supported()?;
         Ok((self.ns_impl.clone(), self.ns_properties.clone()))
     }
 }
@@ -642,6 +724,56 @@ mod tests {
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
         RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    #[test]
+    fn detects_unc_namespace_roots_without_misclassifying_drives() {
+        for root in [
+            "file://server/share/database",
+            "FILE://server/share/database",
+            r"\\server\share\database",
+            r"\\?\UNC\server\share\database",
+        ] {
+            assert!(is_unc_root(root), "expected an UNC root: {root}");
+        }
+        for root in [
+            "file:///C:/database",
+            r"C:\database",
+            r"\\?\C:\database",
+            "/var/lib/database",
+        ] {
+            assert!(!is_unc_root(root), "expected a non-UNC root: {root}");
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_namespace_fails_closed_before_accessing_an_unc_root() {
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            "file://server/share/database".to_string(),
+        );
+        let db = LanceNamespaceDatabase::connect(
+            "dir",
+            properties,
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        )
+        .await
+        .unwrap();
+
+        let error = db
+            .list_tables(ListTablesRequest::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("UNC roots"));
+
+        let error = db.namespace_client_config().await.unwrap_err();
+        assert!(matches!(error, Error::NotSupported { .. }));
+        assert!(error.to_string().contains("UNC roots"));
     }
 
     #[tokio::test]
