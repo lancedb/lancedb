@@ -1350,6 +1350,91 @@ class Table(ABC):
 
         return LanceMergeInsertBuilder(self, on)
 
+    @overload
+    def search(
+        self,
+        query: None = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto", "vector", "fts"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceEmptyQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: str,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> Union[LanceFtsQueryBuilder, LanceVectorQueryBuilder]: ...
+
+    @overload
+    def search(
+        self,
+        query: FullTextQuery,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceFtsQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Union[VEC, "PIL.Image.Image", Tuple],
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceVectorQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["vector"] = "vector",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceVectorQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[str, FullTextQuery]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["fts"] = "fts",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceFtsQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["hybrid"] = "hybrid",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceHybridQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> Union[
+        LanceEmptyQueryBuilder,
+        LanceFtsQueryBuilder,
+        LanceHybridQueryBuilder,
+        LanceVectorQueryBuilder,
+    ]: ...
+
     @abstractmethod
     def search(
         self,
@@ -3383,7 +3468,47 @@ class LanceTable(Table):
         )
 
     @overload
-    def search(  # type: ignore
+    def search(
+        self,
+        query: None = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto", "vector", "fts"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceEmptyQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: str,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> Union[LanceFtsQueryBuilder, LanceVectorQueryBuilder]: ...
+
+    @overload
+    def search(
+        self,
+        query: FullTextQuery,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceFtsQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Union[VEC, "PIL.Image.Image", Tuple],
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> LanceVectorQueryBuilder: ...
+
+    @overload
+    def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
@@ -3395,7 +3520,7 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[Union[str, FullTextQuery]] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
@@ -3405,9 +3530,7 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -3417,12 +3540,17 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: None = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceEmptyQueryBuilder: ...
+    ) -> Union[
+        LanceEmptyQueryBuilder,
+        LanceFtsQueryBuilder,
+        LanceHybridQueryBuilder,
+        LanceVectorQueryBuilder,
+    ]: ...
 
     def search(
         self,
