@@ -1716,3 +1716,52 @@ def test_doc_example_checkpoint(lance_table):
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
     )
+
+
+# ---------------------------------------------------------------------------
+# Setup time reporting tests (issue #3692)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_timing_without_filter(lance_table):
+    """setup_time should be positive even without a filter."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert isinstance(ds.setup_time, float)
+    assert ds.setup_time > 1e-6
+
+
+def test_setup_timing_with_filter(lance_table):
+    """setup_time should be positive when a filter is set."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        filter="id < 60",
+    )
+    assert isinstance(ds.setup_time, float)
+    assert ds.setup_time > 1e-6
+
+
+def test_setup_timing_empty_filter_result(lance_table):
+    """Construction raises ValueError when filter matches fewer rows than splits."""
+    with pytest.raises(ValueError, match="only 0 rows are available"):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id < 0",
+        )
+
+
+def test_setup_time_survives_pickle(lance_table):
+    """setup_time must be preserved across DataLoader worker serialization."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    original_setup_time = ds.setup_time
+    state = ds.__getstate__()
+    assert "_setup_time" in state
+    assert state["_setup_time"] == original_setup_time
+
+    # Simulate DataLoader worker restore
+    restored = StreamingDataset.__new__(StreamingDataset)
+    restored.__setstate__(state)
+    assert restored.setup_time == original_setup_time

@@ -215,6 +215,10 @@ class StreamingDataset(IterableDataset):
 
         # Build the permutation table once, deterministically.
         builder = permutation_builder(table)
+
+        # Time the full setup: filter configuration + split/shuffle execution.
+        # Set once during __init__; immutable thereafter.
+        t0 = time.perf_counter()
         if filter is not None:
             builder = builder.filter(filter)
         if shuffle:
@@ -224,6 +228,7 @@ class StreamingDataset(IterableDataset):
             ).execute()
         else:
             self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+        self._setup_time = time.perf_counter() - t0
 
         # Contiguous block of global split indices assigned to this rank.
         splits_per_rank = num_splits // world_size
@@ -482,6 +487,17 @@ class StreamingDataset(IterableDataset):
         if self._raw_batches_ref is not None:
             return self._transform_time
         return self._worker_stats[6] / 1_000_000
+
+    @property
+    def setup_time(self) -> float:
+        """Seconds spent building the permutation table during construction.
+
+        Includes applying any configured filter to identify matching row IDs
+        and shuffling/distributing rows across splits.  A high value when a
+        filter is configured suggests that adding an index on the filter
+        column(s) may improve setup time.
+        """
+        return self._setup_time
 
     @property
     def raw_queue_depth(self) -> int:
