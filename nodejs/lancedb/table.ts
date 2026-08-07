@@ -600,9 +600,10 @@ export abstract class Table {
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
    *
-   * Omitting `maintainedIndexes` maintains every supported index, resolved
-   * here. Naming them pins an exact set, and a still-building index is
-   * rejected rather than quietly omitted.
+   * Omitting `maintainedIndexes` maintains every index on the table, resolved
+   * here, failing if one cannot be maintained — name them to install anyway.
+   * Naming them pins an exact set, and a still-building index is rejected
+   * rather than quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example

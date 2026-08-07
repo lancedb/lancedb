@@ -358,7 +358,6 @@ pub trait Tags: Send + Sync {
 }
 
 pub use self::merge::MergeResult;
-pub use self::merge::lsm::resolve_maintained_indexes;
 
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `merge_insert`.
@@ -369,7 +368,7 @@ pub use self::merge::lsm::resolve_maintained_indexes;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// A fresh spec maintains every index the MemWAL supports, resolved on install.
+/// A fresh spec maintains every index on the table, resolved on install.
 ///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
@@ -423,7 +422,7 @@ pub enum LsmWriteSpec {
 }
 
 impl LsmWriteSpec {
-    /// Construct a hash-bucket sharding spec maintaining every supported index.
+    /// Construct a hash-bucket sharding spec maintaining every index on the table.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
@@ -434,7 +433,7 @@ impl LsmWriteSpec {
     }
 
     /// Construct an identity-sharding spec (shard by the raw value of
-    /// `column`) maintaining every supported index.
+    /// `column`) maintaining every index on the table.
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
@@ -451,7 +450,7 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Construct an unsharded spec maintaining every supported index.
+    /// Construct an unsharded spec maintaining every index on the table.
     pub fn unsharded() -> Self {
         Self::Unsharded {
             maintained_indexes: None,
@@ -461,13 +460,14 @@ impl LsmWriteSpec {
 
     /// Set which indexes the MemWAL maintains.
     ///
-    /// `None` (the default) resolves every supported index on install. A list
-    /// is verbatim: each name must already exist and be a maintainable type,
-    /// and an empty list maintains nothing.
+    /// `None` (the default) resolves to every index on the table at install,
+    /// failing if one cannot be maintained — name the set to install anyway. A
+    /// list is verbatim: each name must already exist and be maintainable, and
+    /// an empty list maintains nothing.
     ///
     /// ```
     /// # use lancedb::table::LsmWriteSpec;
-    /// // Whatever the table has when the spec is installed:
+    /// // Every index the table has when the spec is installed:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
     /// // Exactly these:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
@@ -522,7 +522,7 @@ impl LsmWriteSpec {
     }
 
     /// Borrow the list of index names this spec asks MemWAL to maintain, or
-    /// `None` when it asks for every supported index.
+    /// `None` when it asks for every index on the table.
     pub fn maintained_indexes(&self) -> Option<&[String]> {
         match self {
             Self::Bucket {
@@ -4990,7 +4990,7 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
-        // A spec left at its default maintains every supported index, so it
+        // A spec left at its default maintains every index on the table, so it
         // reads back naming the one on the table rather than as "infer".
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
@@ -5009,11 +5009,10 @@ mod tests {
         );
     }
 
-    /// The maintained set defaults to every index the MemWAL supports, resolved
-    /// when the spec is installed. Index types the memtable cannot build are
-    /// excluded — naming one would make every memtable claim fail, taking the
-    /// table offline for writes — and naming one explicitly is rejected up
-    /// front rather than at claim time.
+    /// The maintained set defaults to every index on the table, resolved at
+    /// install. An index the memtable cannot build fails the install rather
+    /// than being dropped: maintaining it would take the table offline for
+    /// writes, dropping it would hide that from the caller.
     #[tokio::test]
     async fn test_set_lsm_write_spec_infers_maintained_indexes() {
         let tmp_dir = tempdir().unwrap();
@@ -5066,9 +5065,23 @@ mod tests {
         );
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
-        // The default skips it and keeps the btree.
-        table
+        // The default covers every index, so the bitmap fails it too.
+        let err = table
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
+            "expected the inferred set to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // Naming the maintainable subset installs.
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
+            )
             .await
             .unwrap();
         assert_eq!(

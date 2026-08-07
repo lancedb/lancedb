@@ -29,7 +29,7 @@ use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
-    is_maintainable_index_type,
+    validate_maintained_indexes,
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
@@ -82,11 +82,17 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         }
     }
 
-    // Before the builder borrows the dataset clone, and against the table the
-    // spec commits to. `list_indices` merges an index's segments into one
-    // entry, so the result needs no dedup.
-    let maintained_indexes =
-        resolve_maintained_indexes(&table.list_indices().await?, spec.maintained_indexes())?;
+    // Before the builder borrows the dataset clone. `list_indices` merges an
+    // index's segments into one entry, so the result needs no dedup.
+    let maintained_indexes = {
+        let dataset = table.dataset.get().await?;
+        resolve_maintained_indexes(
+            &dataset,
+            &table.list_indices().await?,
+            spec.maintained_indexes(),
+        )
+        .await?
+    };
 
     let mut dataset = (*table.dataset.get().await?).clone();
     let mut builder = dataset.initialize_mem_wal();
@@ -128,53 +134,42 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
 /// Resolve a spec's maintained-index selection against `indices`, as reported
 /// by [`Table::list_indices`](crate::Table::list_indices).
 ///
-/// `None` snapshots every maintainable index now; indexes created later are not
-/// picked up. A list is checked for missing names and for types the memtable
-/// cannot build — the latter would commit cleanly, then fail every memtable
-/// claim far from the call that caused it.
+/// `None` means every index on the table, snapshotted now. Lance validates
+/// either selection against its shard-writer rules, so a spec that installs is
+/// one the MemWAL can open.
 ///
-/// Public so a server installing specs on a caller's behalf shares these rules
-/// instead of reimplementing them.
-pub fn resolve_maintained_indexes(
+/// An unmaintainable index fails an inferred set rather than being dropped from
+/// it — dropping would leave the caller believing it is maintained.
+async fn resolve_maintained_indexes(
+    dataset: &Dataset,
     indices: &[IndexConfig],
     requested: Option<&[String]>,
 ) -> Result<Vec<String>> {
-    // `type_url` is absent for remote tables, where the server resolves instead.
-    let maintainable = |index: &IndexConfig| {
-        index
-            .type_url
-            .as_deref()
-            .is_some_and(is_maintainable_index_type)
-    };
-
     let Some(requested) = requested else {
-        return Ok(indices
-            .iter()
-            .filter(|index| maintainable(index))
-            .map(|index| index.name.clone())
-            .collect());
+        let all: Vec<String> = indices.iter().map(|index| index.name.clone()).collect();
+        validate_maintained_indexes(dataset, &all)
+            .await
+            .map_err(|source| Error::InvalidInput {
+                message: format!(
+                    "cannot maintain every index on this table: {source}. Set \
+                     maintained_indexes explicitly to choose from {}",
+                    index_name_list(indices),
+                ),
+            })?;
+        return Ok(all);
     };
     for name in requested {
-        let index = indices
-            .iter()
-            .find(|index| &index.name == name)
-            .ok_or_else(|| Error::InvalidInput {
+        if !indices.iter().any(|index| &index.name == name) {
+            return Err(Error::InvalidInput {
                 message: format!(
                     "maintained index '{}' does not exist on this table; it has {}",
                     name,
                     index_name_list(indices),
                 ),
-            })?;
-        if !maintainable(index) {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "maintained index '{}' has type {}, which the MemWAL cannot maintain; \
-                     supported types are BTREE, FTS, and IVF vector indexes",
-                    name, index.index_type
-                ),
             });
         }
     }
+    validate_maintained_indexes(dataset, requested).await?;
     Ok(requested.to_vec())
 }
 

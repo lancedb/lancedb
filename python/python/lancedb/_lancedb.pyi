@@ -651,7 +651,8 @@ class LsmWriteSpec:
     def unsharded() -> "LsmWriteSpec": ...
     def with_maintained_indexes(self, indexes: Optional[List[str]]) -> "LsmWriteSpec":
         """Set which indexes the MemWAL keeps up to date. None resolves every
-        supported index on install; a list is verbatim, empty means none."""
+        index on the table at install, failing if one cannot be maintained;
+        a list is verbatim, empty means none."""
         ...
     def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "LsmWriteSpec":
         """Return a copy of this spec recording the given default

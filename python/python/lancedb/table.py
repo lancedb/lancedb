@@ -4636,10 +4636,12 @@ class AsyncTable:
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
-        By default the MemWAL maintains every index it supports, resolved
+        By default the MemWAL maintains every index on the table, resolved
         here — a snapshot, so an index created afterwards needs the spec unset
-        and set again. ``with_maintained_indexes`` pins an exact set (a
-        still-building index is rejected, not omitted); ``[]`` maintains none.
+        and set again. This fails if one cannot be maintained; name the set
+        with ``with_maintained_indexes`` to install anyway. That pins an exact
+        set (a still-building index is rejected, not omitted); ``[]`` maintains
+        none.
 
         Parameters
         ----------
