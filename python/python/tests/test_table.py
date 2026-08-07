@@ -929,6 +929,7 @@ def test_polars(mem_db: DBConnection):
 
     # enter table to polars dataframe
     result = table.to_polars()
+    assert isinstance(result, pl.LazyFrame)
     assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
 
     # make sure filtering isn't broken
