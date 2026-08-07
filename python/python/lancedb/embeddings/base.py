@@ -183,7 +183,11 @@ class EmbeddingFunction(BaseModel, ABC):
     def VectorField(self, **kwargs):
         """
         Creates a pydantic Field that can automatically annotate
-        the target vector column for this embedding function
+        the target vector column for this embedding function.
+
+        The field can be annotated as ``list[float]`` for compatibility with
+        static type checkers. LanceDB will infer the fixed vector dimension from
+        this embedding function.
         """
         return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
 

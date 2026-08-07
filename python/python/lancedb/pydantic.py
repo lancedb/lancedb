@@ -99,6 +99,17 @@ def Vector(
     ...     pa.field("url", pa.utf8(), False),
     ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
     ... ])
+
+    Notes
+    -----
+    ``Vector`` creates a type dynamically, so calls such as ``Vector(768)`` are
+    not valid static type annotations. For an embedding field, use the standard
+    ``list[float]`` annotation when running mypy; ``VectorField`` supplies the
+    fixed dimension to LanceDB::
+
+        class MyModel(LanceModel):
+            text: str = embeddings.SourceField()
+            vector: list[float] = embeddings.VectorField()
     """
 
     # TODO: make a public parameterized type.
@@ -379,6 +390,10 @@ def _unwrap_optional_annotation(annotation: Any) -> Any | None:
 
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
+    embedding_vector_type = _embedding_vector_to_arrow_type(field)
+    if embedding_vector_type is not None:
+        return embedding_vector_type
+
     unwrapped = _unwrap_optional_annotation(field.annotation)
     if unwrapped is not None:
         return _pydantic_type_to_arrow_type(unwrapped, field)
@@ -392,8 +407,32 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     return _pydantic_type_to_arrow_type(field.annotation, field)
 
 
+def _embedding_vector_to_arrow_type(field: FieldInfo) -> pa.DataType | None:
+    """Infer a fixed-size vector type from ``VectorField`` metadata."""
+    if not _is_embedding_vector_annotation(field):
+        return None
+
+    function = get_extras(field, "vector_column_for")
+    return pa.list_(pa.float32(), function.ndims())
+
+
+def _is_embedding_vector_annotation(field: FieldInfo) -> bool:
+    if get_extras(field, "vector_column_for") is None:
+        return False
+
+    annotation = _unwrap_optional_annotation(field.annotation)
+    if annotation is None:
+        annotation = field.annotation
+
+    origin = getattr(annotation, "__origin__", None)
+    args = getattr(annotation, "__args__", ())
+    return origin is list and args == (float,)
+
+
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
+    if _is_embedding_vector_annotation(field):
+        return True
     if _unwrap_optional_annotation(field.annotation) is not None:
         return True
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):

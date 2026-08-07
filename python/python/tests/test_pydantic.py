@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 import pyarrow as pa
 import pydantic
 import pytest
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.pydantic import (
     PYDANTIC_VERSION,
     LanceModel,
@@ -424,6 +425,25 @@ def test_bare_vector_raises_clear_error():
 
     with pytest.raises(TypeError, match=r"Vector must be parameterized.*Vector\(128\)"):
         exec("class TestModel(LanceModel):\n    vector: Vector", namespace)
+
+
+def test_embedding_vector_list_annotation():
+    embedding = MockTextEmbeddingFunction.create()
+
+    class StaticTypingModel(LanceModel):
+        text: str = embedding.SourceField()
+        vector: list[float] = embedding.VectorField()
+
+    schema = pydantic_to_schema(StaticTypingModel)
+    assert schema == pa.schema(
+        [
+            pa.field("text", pa.utf8(), False),
+            pa.field("vector", pa.list_(pa.float32(), embedding.ndims()), True),
+        ]
+    )
+
+    model = StaticTypingModel(text="hello", vector=[0.0] * embedding.ndims())
+    assert model.vector == [0.0] * embedding.ndims()
 
 
 def test_fixed_size_list_field():
