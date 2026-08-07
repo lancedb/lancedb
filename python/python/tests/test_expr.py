@@ -650,7 +650,9 @@ class TestExprDatetimeTimezoneIntegration:
         """Table naive + lit naive with the same wall clock must match."""
         db = lancedb.connect(str(tmp_path / "naive"))
         ts = datetime(2024, 7, 1, 10, 0, 0)
-        table = db.create_table("t", [{"id": 1, "ts": ts}, {"id": 2, "ts": datetime(2024, 7, 2, 10, 0, 0)}])
+        table = db.create_table(
+            "t", [{"id": 1, "ts": ts}, {"id": 2, "ts": datetime(2024, 7, 2, 10, 0, 0)}]
+        )
         result = table.search().where(col("ts") == lit(ts)).to_list()
         assert len(result) == 1
         assert result[0]["id"] == 1
