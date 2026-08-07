@@ -16,6 +16,9 @@ rust-version.workspace = true
 object_store = { workspace = true }
 opendal = { workspace = true, optional = true }
 object_store_opendal = { workspace = true, optional = true }
+reqsign-aws-v4 = { workspace = true, optional = true }
+reqsign-core = { workspace = true, optional = true }
+reqsign-file-read-tokio = { workspace = true, optional = true }
 lance-arrow.workspace = true
 lance-core.workspace = true
 lance-namespace.workspace = true
@@ -67,7 +70,7 @@ metrics = ["dep:metrics"]
 gcs-test = []
 goosefs-test = []
 gcp = ["object_store/gcp", "dep:opendal", "opendal/services-gcs", "dep:object_store_opendal"]
-aws = ["object_store/aws", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal"]
+aws = ["object_store/aws", "dep:aws-config", "dep:aws-credential-types", "dep:opendal", "opendal/services-s3", "dep:object_store_opendal", "dep:reqsign-aws-v4", "dep:reqsign-core", "dep:reqsign-file-read-tokio"]
 azure = ["object_store/azure", "dep:opendal", "opendal/services-azblob", "opendal/services-azdls", "dep:object_store_opendal"]
 oss = ["dep:opendal", "opendal/services-oss", "dep:object_store_opendal"]
 goosefs = ["dep:opendal", "opendal/services-goosefs", "dep:object_store_opendal"]

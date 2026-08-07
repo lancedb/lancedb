@@ -177,6 +177,9 @@ num-traits = "0.2"
 object_store = { version = "0.13.2" }
 opendal = { version = "0.58.1" }
 object_store_opendal = { version = "0.58" }
+reqsign-aws-v4 = { version = "3.1.0" }
+reqsign-core = { version = "3.2.1" }
+reqsign-file-read-tokio = { version = "3.0.4" }
 pin-project = "1.0"
 path_abs = "0.5"
 pprof = { version = "0.15.0", features = ["flamegraph"] }

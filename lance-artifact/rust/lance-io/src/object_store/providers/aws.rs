@@ -13,7 +13,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use object_store::ObjectStore as OSObjectStore;
 use object_store_opendal::OpendalStore;
-use opendal::{Operator, services::S3};
+use opendal::{Configurator, HttpTransporter, Operator, services::S3Config};
+use reqsign_aws_v4::{
+    AssumeRoleCredentialProvider, Credential as ReqsignAwsCredential,
+    DefaultCredentialProvider as ReqsignDefaultCredentialProvider,
+    RequestSigner as ReqsignAwsV4Signer,
+    StaticCredentialProvider as ReqsignStaticCredentialProvider,
+};
+use reqsign_core::{
+    Context as ReqsignContext, OsEnv as ReqsignOsEnv, ProvideCredential, ProvideCredentialChain,
+    Signer as ReqsignSigner, time::Timestamp as ReqsignTimestamp,
+};
+use reqsign_file_read_tokio::TokioFileRead as ReqsignTokioFileRead;
 
 use aws_config::Region;
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
@@ -35,9 +46,7 @@ use url::Url;
 use crate::object_store::{
     DEFAULT_CLOUD_BLOCK_SIZE, DEFAULT_CLOUD_IO_PARALLELISM, DEFAULT_MAX_IOP_SIZE, ObjectStore,
     ObjectStoreParams, ObjectStoreProvider, StorageOptions, StorageOptionsAccessor,
-    StorageOptionsProvider,
     dynamic_credentials::{NamespaceCredentialsProvider, build_dynamic_credential_provider},
-    dynamic_opendal::DynamicOpenDalStore,
     throttle::{AimdThrottleConfig, AimdThrottleState, AimdThrottledStore, cloud_http_connector},
 };
 use lance_core::error::{Error, Result};
@@ -109,7 +118,7 @@ fn canonical_opendal_s3_config(options: &HashMap<String, String>) -> HashMap<Str
         .collect()
 }
 
-fn dynamic_aws_credential_options(options: &HashMap<String, String>) -> HashMap<String, String> {
+fn aws_credential_options(options: &HashMap<String, String>) -> HashMap<String, String> {
     options
         .iter()
         .filter_map(|(key, value)| {
@@ -138,47 +147,161 @@ fn normalize_opendal_s3_config(
     Ok(options)
 }
 
-fn build_opendal_s3_store(config: HashMap<String, String>) -> Result<OpendalStore> {
-    let operator = Operator::from_iter::<S3>(config).map_err(|error| {
+#[derive(Clone, Debug)]
+enum RequestTimeAwsCredentialProvider {
+    ObjectStore(AwsCredentialProvider),
+    StorageOptions(Arc<StorageOptionsAccessor>),
+}
+
+fn request_time_expiration(options: &HashMap<String, String>) -> Option<ReqsignTimestamp> {
+    let expires_at_millis = options.get("expires_at_millis")?.parse::<i64>().ok()?;
+    let expires_at = ReqsignTimestamp::from_millisecond(expires_at_millis).ok()?;
+    let now = ReqsignTimestamp::now();
+    // Lance providers use zero or a past expiry to request a fresh value on every access. The
+    // returned value is still the credential for the current request, so keep it usable for this
+    // signing pass while ensuring reqsign will call us again for the next request.
+    Some(if expires_at <= now {
+        now + Duration::from_secs(60)
+    } else {
+        expires_at
+    })
+}
+
+fn request_time_credential_from_options(
+    options: &HashMap<String, String>,
+) -> reqsign_core::Result<Option<ReqsignAwsCredential>> {
+    let credentials = aws_credential_options(options);
+    let key_id = credentials.get(AWS_ACCESS_KEY_ID);
+    let secret_key = credentials.get(AWS_SECRET_ACCESS_KEY);
+    let token = credentials.get(AWS_SESSION_TOKEN);
+    if key_id.is_none() && secret_key.is_none() && token.is_none() {
+        return Ok(None);
+    }
+    let (Some(key_id), Some(secret_key)) = (key_id, secret_key) else {
+        return Err(reqsign_core::Error::credential_invalid(
+            "Explicit AWS credentials require both aws_access_key_id and aws_secret_access_key",
+        ));
+    };
+    Ok(Some(ReqsignAwsCredential {
+        access_key_id: key_id.clone(),
+        secret_access_key: secret_key.clone(),
+        session_token: token.cloned(),
+        expires_in: request_time_expiration(options),
+    }))
+}
+
+impl ProvideCredential for RequestTimeAwsCredentialProvider {
+    type Credential = ReqsignAwsCredential;
+
+    async fn provide_credential(
+        &self,
+        _ctx: &ReqsignContext,
+    ) -> reqsign_core::Result<Option<Self::Credential>> {
+        match self {
+            Self::ObjectStore(provider) => {
+                let credential = provider.get_credential().await.map_err(|error| {
+                    reqsign_core::Error::unexpected(format!(
+                        "failed to load AWS credentials: {error}"
+                    ))
+                })?;
+                Ok(Some(ReqsignAwsCredential {
+                    access_key_id: credential.key_id.clone(),
+                    secret_access_key: credential.secret_key.clone(),
+                    session_token: credential.token.clone(),
+                    // object_store credential providers own their refresh cache but don't expose
+                    // expiry. Re-enter that provider for every signed OpenDAL request.
+                    expires_in: Some(ReqsignTimestamp::now() + Duration::from_secs(60)),
+                }))
+            }
+            Self::StorageOptions(accessor) => {
+                let options = accessor.get_storage_options().await.map_err(|error| {
+                    reqsign_core::Error::unexpected(format!(
+                        "failed to load AWS storage options: {error}"
+                    ))
+                })?;
+                request_time_credential_from_options(&options.0)
+            }
+        }
+    }
+}
+
+fn opendal_s3_region(config: &S3Config) -> Result<String> {
+    config
+        .region
+        .clone()
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+        .ok_or_else(|| Error::invalid_input("OpenDAL S3 signing region is missing"))
+}
+
+fn build_opendal_s3_store(
+    config: HashMap<String, String>,
+    dynamic_credentials: Option<RequestTimeAwsCredentialProvider>,
+) -> Result<OpendalStore> {
+    let mut config = S3Config::from_iter(config).map_err(|error| {
+        Error::invalid_input(format!("Failed to parse S3 configuration: {error:?}"))
+    })?;
+    let Some(dynamic_credentials) = dynamic_credentials else {
+        let operator = Operator::new(config.into_builder()).map_err(|error| {
+            Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
+        })?;
+        return Ok(OpendalStore::new(operator));
+    };
+
+    let mut credential_chain = ProvideCredentialChain::new().push(dynamic_credentials);
+    if let (Some(key_id), Some(secret_key)) = (&config.access_key_id, &config.secret_access_key) {
+        let static_provider = if let Some(token) = config.session_token.as_deref() {
+            ReqsignStaticCredentialProvider::new(key_id, secret_key).with_session_token(token)
+        } else {
+            ReqsignStaticCredentialProvider::new(key_id, secret_key)
+        };
+        credential_chain = credential_chain.push(static_provider);
+    }
+
+    let mut default_provider = ReqsignDefaultCredentialProvider::builder();
+    if config.disable_config_load {
+        default_provider = default_provider.no_env().no_profile();
+    }
+    if config.disable_ec2_metadata {
+        default_provider = default_provider.no_imds();
+    }
+    credential_chain = credential_chain.push(default_provider.build());
+
+    // Supplying a custom chain replaces OpenDAL's entire chain. Recreate assume-role wrapping so
+    // request-time source credentials retain the same authority as ordinary OpenDAL config.
+    if let Some(role_arn) = config.role_arn.take() {
+        let region = opendal_s3_region(&config)?;
+        let context = ReqsignContext::new()
+            .with_file_read(ReqsignTokioFileRead)
+            .with_env(ReqsignOsEnv)
+            .with_http_send(HttpTransporter::default());
+        let request_signer = ReqsignAwsV4Signer::new("sts", &region);
+        let signer = ReqsignSigner::new(context, credential_chain, request_signer);
+        let mut assume_role = AssumeRoleCredentialProvider::new(role_arn, signer)
+            .with_region(region)
+            .with_regional_sts_endpoint();
+        if let Some(external_id) = config.external_id.clone() {
+            assume_role = assume_role.with_external_id(external_id);
+        }
+        if let Some(role_session_name) = config.role_session_name.clone() {
+            assume_role = assume_role.with_role_session_name(role_session_name);
+        }
+        if let Some(duration_seconds) = config.assume_role_duration_seconds {
+            assume_role = assume_role.with_duration_seconds(duration_seconds);
+        }
+        if let Some(tags) = config.assume_role_session_tags.clone() {
+            assume_role = assume_role.with_tags(tags.into_iter().collect());
+        }
+        credential_chain = ProvideCredentialChain::new().push(assume_role);
+    }
+
+    let builder = config
+        .into_builder()
+        .credential_provider_chain(credential_chain);
+    let operator = Operator::new(builder).map_err(|error| {
         Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
     })?;
     Ok(OpendalStore::new(operator))
-}
-
-#[derive(Debug)]
-struct AwsCredentialStorageOptionsProvider {
-    provider: AwsCredentialProvider,
-}
-
-#[async_trait::async_trait]
-impl StorageOptionsProvider for AwsCredentialStorageOptionsProvider {
-    async fn fetch_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
-        let credential = self
-            .provider
-            .get_credential()
-            .await
-            .map_err(|error| Error::io_source(Box::new(error)))?;
-        let mut options = HashMap::from([
-            (AWS_ACCESS_KEY_ID.to_string(), credential.key_id.clone()),
-            (
-                AWS_SECRET_ACCESS_KEY.to_string(),
-                credential.secret_key.clone(),
-            ),
-            // The object_store provider owns its own cache, so ask it on every store access.
-            ("expires_at_millis".to_string(), "0".to_string()),
-        ]);
-        if let Some(token) = &credential.token {
-            options.insert(AWS_SESSION_TOKEN.to_string(), token.clone());
-        }
-        Ok(Some(options))
-    }
-
-    fn provider_id(&self) -> String {
-        format!(
-            "aws-credential-provider[{:p}]",
-            Arc::as_ptr(&self.provider) as *const ()
-        )
-    }
 }
 
 impl AwsStoreProvider {
@@ -274,39 +397,35 @@ impl AwsStoreProvider {
             config_map.insert("root".to_string(), "/".to_string());
         }
 
-        let dynamic_accessor = if let Some(provider) = params.aws_credentials.clone() {
-            Some(Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
-                AwsCredentialStorageOptionsProvider { provider },
-            ))))
+        let dynamic_credentials = if let Some(provider) = params.aws_credentials.clone() {
+            Some(RequestTimeAwsCredentialProvider::ObjectStore(provider))
         } else {
             params
                 .get_accessor()
                 .filter(|accessor| accessor.has_provider())
+                .map(RequestTimeAwsCredentialProvider::StorageOptions)
         };
 
-        if let Some(accessor) = dynamic_accessor {
-            // Dynamic OpenDAL refresh is deliberately credential-only. Noncredential changes can
-            // alter the outer ObjectStore contract and require a new registry entry instead.
-            let store = DynamicOpenDalStore::new(
-                "s3",
-                config_map,
-                accessor,
-                normalize_opendal_s3_config,
-                build_opendal_s3_store,
-            )
-            .with_dynamic_options_filter(dynamic_aws_credential_options)
-            .with_atomic_key_group([
-                AWS_ACCESS_KEY_ID,
-                AWS_SECRET_ACCESS_KEY,
-                AWS_SESSION_TOKEN,
-            ]);
-            // Validate the currently active family and prime the normalized-config cache.
-            store.current_store().await?;
-            Ok(Arc::new(store) as Arc<dyn OSObjectStore>)
-        } else {
-            let config_map = normalize_opendal_s3_config(&config_map)?;
-            Ok(Arc::new(build_opendal_s3_store(config_map)?) as Arc<dyn OSObjectStore>)
+        if let Some(provider) = &dynamic_credentials {
+            // Validate and prime the active authority during construction. The signer still owns
+            // request-time refresh, so a later multipart part re-enters this provider after expiry.
+            provider
+                .provide_credential(&ReqsignContext::new())
+                .await
+                .map_err(|error| {
+                    Error::invalid_input(format!("Failed to load OpenDAL AWS credentials: {error}"))
+                })?;
         }
+
+        // Dynamic OpenDAL refresh is deliberately credential-only. Noncredential changes can
+        // alter the outer ObjectStore contract and require a new registry entry instead. The
+        // credential provider is installed in OpenDAL's signer so multipart parts and completion
+        // re-enter it even though they retain the original writer.
+        let config_map = normalize_opendal_s3_config(&config_map)?;
+        Ok(
+            Arc::new(build_opendal_s3_store(config_map, dynamic_credentials)?)
+                as Arc<dyn OSObjectStore>,
+        )
     }
 }
 
@@ -754,7 +873,7 @@ mod tests {
     use mock_instant::thread_local::MockClock;
     use object_store::path::Path;
     use opendal::{Configurator, services::S3Config};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -775,6 +894,62 @@ mod tests {
                 token: None,
             }))
         }
+    }
+
+    #[derive(Debug)]
+    struct ExpiredRotatingOptionsProvider {
+        fetches: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageOptionsProvider for ExpiredRotatingOptionsProvider {
+        async fn fetch_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+            let generation = self.fetches.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(Some(HashMap::from([
+                (
+                    AWS_ACCESS_KEY_ID.to_string(),
+                    format!("request-key-{generation}"),
+                ),
+                (
+                    AWS_SECRET_ACCESS_KEY.to_string(),
+                    format!("request-secret-{generation}"),
+                ),
+                ("expires_at_millis".to_string(), "0".to_string()),
+            ])))
+        }
+
+        fn provider_id(&self) -> String {
+            "expired-rotating-opendal-test".to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_opendal_signer_refreshes_expired_credentials_for_each_request() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let accessor = Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+            ExpiredRotatingOptionsProvider {
+                fetches: fetches.clone(),
+            },
+        )));
+        let signer = ReqsignSigner::new(
+            ReqsignContext::new(),
+            RequestTimeAwsCredentialProvider::StorageOptions(accessor),
+            ReqsignAwsV4Signer::new("s3", "us-east-1"),
+        );
+
+        for _ in 0..2 {
+            let request = http::Request::get("https://example-bucket.s3.amazonaws.com/object")
+                .body(())
+                .unwrap();
+            let (mut parts, _) = request.into_parts();
+            signer.sign(&mut parts, None).await.unwrap();
+        }
+
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            2,
+            "each multipart request must re-enter an expired credential provider"
+        );
     }
 
     #[tokio::test]

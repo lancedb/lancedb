@@ -33,6 +33,7 @@ struct CachedOpenDalStore {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(in crate::object_store) struct DynamicOpenDalStore {
     name: Arc<str>,
     base_options: Arc<HashMap<String, String>>,
@@ -54,6 +55,7 @@ impl fmt::Debug for DynamicOpenDalStore {
     }
 }
 
+#[allow(dead_code)]
 impl DynamicOpenDalStore {
     pub(in crate::object_store) fn new(
         name: impl Into<Arc<str>>,
