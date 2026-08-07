@@ -8,7 +8,7 @@ use lance_io::object_store::StorageOptionsProvider;
 use crate::{
     Error, Result, Table,
     connection::{merge_storage_options, set_storage_options_provider},
-    data::scannable::{Scannable, WithEmbeddingsScannable},
+    data::scannable::{Scannable, WithEmbeddingsScannable, maybe_infer_vector_schema},
     database::{CreateTableMode, CreateTableRequest, Database},
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
     table::WriteOptions,
@@ -146,6 +146,8 @@ impl CreateTableBuilder {
     pub async fn execute(mut self) -> Result<Table> {
         let embedding_registry = self.embedding_registry.clone();
         let parent = self.parent.clone();
+
+        self.request.data = maybe_infer_vector_schema(self.request.data).await?;
 
         // If embeddings were configured via add_embedding(), wrap the data
         if !self.embeddings.is_empty() {
