@@ -1369,6 +1369,107 @@ def test_transform_parallelism_must_be_positive(lance_table, transform_paralleli
         )
 
 
+# ---------------------------------------------------------------------------
+# Backpressure / transform_queue_depth tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("transform_queue_depth", [0, -1])
+def test_transform_queue_depth_must_be_positive(lance_table, transform_queue_depth):
+    """transform_queue_depth=0 or negative must raise ValueError."""
+    with pytest.raises(
+        ValueError, match="transform_queue_depth must be greater than 0"
+    ):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            transform_queue_depth=transform_queue_depth,
+        )
+
+
+@pytest.mark.parametrize("transform_queue_depth", [1, 2, 4])
+def test_transform_queue_depth_correctness(lance_table, transform_queue_depth):
+    """With backpressure enabled, every row is still yielded exactly once."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=transform_queue_depth,
+        read_batch_size=8,
+    )
+    items = list(ds)
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS))
+
+
+def test_transform_queue_depth_matches_no_backpressure(lance_table):
+    """With backpressure enabled the same samples are produced as without it."""
+    ds_unlimited = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_limited = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=1,
+    )
+    assert [item["id"] for item in ds_unlimited] == [
+        item["id"] for item in ds_limited
+    ], "transform_queue_depth must not affect the sample ordering or set"
+
+
+def test_transform_queue_depth_bounds_cooked_rows(lance_table):
+    """prefetch_queue_depth stays within transform_queue_depth * read_batch_size
+    per split when observed from the main thread during iteration."""
+    n_splits = 4
+    batch_size = 8
+    cooked_depth = 2
+    # max cooked rows across all 4 splits: 4 * 2 * 8 = 64
+    max_allowed = n_splits * cooked_depth * batch_size
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=n_splits,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=cooked_depth,
+        read_batch_size=batch_size,
+        transform_parallelism=1,
+        world_size=1,
+    )
+
+    peak = 0
+    for _ in ds:
+        depth = ds.prefetch_queue_depth
+        if depth > peak:
+            peak = depth
+
+    # The main thread observes depth *after* popping a row, so the peak is at
+    # most max_allowed (one row already popped from the split just served).
+    assert peak <= max_allowed, (
+        f"prefetch_queue_depth peaked at {peak}, expected <= {max_allowed}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deprecated parameter name tests
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_batches_deprecated_warns(lance_table, caplog):
+    """prefetch_batches logs a deprecation warning and behaves like io_queue_depth."""
+    with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            prefetch_batches=2,
+        )
+    messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("deprecated" in m.lower() and "io_queue_depth" in m for m in messages), (
+        f"Expected deprecation warning mentioning io_queue_depth; got: {messages}"
+    )
+    assert sorted(item["id"] for item in ds) == list(range(NUM_ROWS))
+
+
 def test_filter_limits_rows(tmp_path):
     """A filter expression is applied to the permutation so only matching rows
     are yielded.  IDs 0..59 pass ``id < 60``; the other 60 are excluded."""
@@ -1547,7 +1648,7 @@ def test_doc_example_basic(tmp_path):
 
 
 def test_doc_example_prefetch_params(tmp_path):
-    """doc: Prefetching — read_batch_size and prefetch_batches still cover all rows."""
+    """doc: Prefetching — read_batch_size and io_queue_depth still cover all rows."""
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", pa.table({"id": list(range(NUM_ROWS))}))
 
@@ -1556,7 +1657,7 @@ def test_doc_example_prefetch_params(tmp_path):
         num_splits=NUM_SPLITS,
         shuffle_seed=SHUFFLE_SEED,
         read_batch_size=8,
-        prefetch_batches=2,
+        io_queue_depth=2,
     )
     assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
 
