@@ -5480,6 +5480,7 @@ dependencies = [
  "random_word",
  "regex",
  "reqwest 0.12.28",
+ "roaring",
  "rstest",
  "semver",
  "serde",

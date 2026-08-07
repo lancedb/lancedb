@@ -100,6 +100,7 @@ anyhow = "1"
 lance-testing = { workspace = true }
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
+roaring = "0.11.4"
 tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"

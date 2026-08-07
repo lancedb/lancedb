@@ -1043,7 +1043,10 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
 
 #[napi(object)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests.
     pub total_bytes: i64,
 
     /// The number of rows in the table
