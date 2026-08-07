@@ -3384,9 +3384,10 @@ class AsyncQuery(AsyncStandardQuery):
         pass in multiple vectors. When multiple vectors are passed in, if the vector
         column is with multivector type, then the vectors will be treated as a single
         query. Or the vectors will be treated as multiple queries, this can be useful
-        if you want to find the nearest vectors to multiple query vectors.
-        This is not expected to be faster than making multiple queries concurrently;
-        it is just a convenience method. If multiple vectors are passed in then
+        if you want to find the nearest vectors to multiple query vectors. Flat
+        searches share one table scan across the query vectors, avoiding the scan
+        and memory amplification of making multiple queries concurrently. If
+        multiple vectors are passed in then
         an additional column `query_index` will be added to the results. This column
         will contain the index of the query vector that the result is nearest to.
         """
@@ -3515,8 +3516,8 @@ class AsyncFTSQuery(AsyncStandardQuery):
 
         Typically, a single vector is passed in as the query. However, you can also
         pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
+        vectors to multiple query vectors. Flat searches share one table scan across
+        the query vectors instead of issuing concurrent full scans.
         If multiple vectors are passed in then an additional column `query_index`
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.

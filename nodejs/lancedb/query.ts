@@ -708,11 +708,11 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * Add a query vector to the search
    *
    * This method can be called multiple times to add multiple query vectors
-   * to the search. If multiple query vectors are added, then they will be searched
-   * in parallel, and the results will be concatenated. A column called `query_index`
-   * will be added to indicate the index of the query vector that produced the result.
-   *
-   * Performance wise, this is equivalent to running multiple queries concurrently.
+   * to the search. A column called `query_index` will be added to indicate the index
+   * of the query vector that produced the result. Flat searches share one table scan
+   * across the query vectors, avoiding the scan and memory amplification of running
+   * multiple queries concurrently. Indexed searches may still perform per-vector
+   * index work.
    */
   addQueryVector(vector: IntoVector): VectorQuery {
     if (vector instanceof Promise) {
