@@ -10,7 +10,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
 use lance::Dataset;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
 use lancedb::{
     Connection, Error, Result, Table,
     blob::{BlobRangeRequest, blob},

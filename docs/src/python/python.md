@@ -31,7 +31,7 @@ is also an [asynchronous API client](#connections-asynchronous).
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
-[Lance namespace](https://lancedb.github.io/lance-namespace/) service instead of
+[Lance namespace](https://lance-format.github.io/lance-namespace/) service instead of
 listing a storage directory.
 
 ::: lancedb.connect_namespace
