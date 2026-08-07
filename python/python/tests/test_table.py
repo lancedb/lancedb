@@ -3709,27 +3709,38 @@ def test_stats(mem_db: DBConnection):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    assert len(table) == 2
+    table.add([{"text": "baz", "id": 1}])
+    assert len(table) == 3
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
-        "num_rows": 2,
+        "total_bytes": 104,
+        "num_rows": 3,
+        "num_deleted_rows": 0,
         "num_indices": 0,
         "fragment_stats": {
-            "num_fragments": 1,
-            "num_small_fragments": 1,
+            "num_fragments": 2,
+            "num_small_fragments": 2,
             "lengths": {
-                "min": 2,
+                "min": 1,
                 "max": 2,
-                "mean": 2,
-                "p25": 2,
+                "mean": 1,
+                "p25": 1,
                 "p50": 2,
                 "p75": 2,
                 "p99": 2,
             },
         },
     }
+
+    # Both rows with id = 1 are deleted, but that empties the second fragment,
+    # which is dropped outright rather than kept with a deletion file, so only
+    # the row marked in the surviving fragment is counted.
+    table.delete("id = 1")
+    stats = table.stats()
+    assert stats["num_rows"] == 1
+    assert stats["num_deleted_rows"] == 1
+    assert stats["fragment_stats"]["num_fragments"] == 1
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
