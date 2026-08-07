@@ -65,19 +65,40 @@ jobs:
             --max-retries 3
             --timeout 20
             'docs/src/**/*.md'
-          format: markdown
-          output: ./lychee/out.md
-          jobSummary: true
+          format: json
+          output: ./lychee/out.json
+          jobSummary: false
           # The report, not a red build, is the signal for broken links. The
-          # report job below still fails the run if the check itself breaks.
+          # validation step below still fails the run if the check itself
+          # breaks.
           fail: false
+
+      - name: Validate report
+        # lychee does not reserve exit code 2 for broken links: its CLI
+        # parser also exits 2 on an invalid option, before any link was
+        # checked or any report written. Only a parseable report whose
+        # counts agree with the exit code counts as a link verdict; anything
+        # else fails here, and the report job below is skipped entirely, so
+        # the tracking issue is never touched. Requiring total > 0 also
+        # catches a glob that silently stopped matching any file.
+        if: steps.lychee.outputs.exit_code == 0 || steps.lychee.outputs.exit_code == 2
+        env:
+          EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          jq -e --argjson code "$EXIT_CODE" '
+            (.total > 0) and
+            (if $code == 0
+             then .errors == 0 and (.error_map | length == 0)
+             else .errors > 0 and (.error_map | length > 0)
+             end)
+          ' ./lychee/out.json
 
       - name: Upload report
         if: steps.lychee.outputs.exit_code == 2
         uses: actions/upload-artifact@v7
         with:
           name: link-report
-          path: ./lychee/out.md
+          path: ./lychee/out.json
           retention-days: 7
 
   report:
@@ -93,10 +114,11 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Classify checker result
-        # lychee exits 0 when every link resolves and 2 when links fail.
-        # Anything else (1 runtime, 3 bad config) means the check never
-        # produced a link verdict, which must surface as a failed run rather
-        # than be published as "broken documentation links".
+        # lychee exits 0 when every link resolves and 2 when links fail,
+        # both already cross-checked against the report by the scan job's
+        # validation step. Anything else (1 runtime, 3 bad config) means the
+        # check never produced a link verdict, which must surface as a failed
+        # run rather than be published as "broken documentation links".
         run: |
           case "$EXIT_CODE" in
             0|2)
@@ -114,12 +136,17 @@ jobs:
         # the issue action applies labels in a separate call after creating the
         # issue, so a label filter misses a half-created report, and this
         # repository has far more open issues than one listing page holds.
+        # Closed issues are included because a healthy run closes the report:
+        # an open-only lookup would forget that identity and the next failing
+        # run would open a duplicate. The oldest match stays the canonical
+        # report and is reopened below when links break again.
         run: |
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+          match=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
             --search "in:title \"$REPORT_TITLE\" author:app/github-actions" \
-            --limit 50 --json number,title \
-            --jq "[.[] | select(.title == \"$REPORT_TITLE\") | .number] | first // empty")
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+            --limit 50 --json number,title,state \
+            --jq "[.[] | select(.title == \"$REPORT_TITLE\")] | sort_by(.number) | first // empty")
+          echo "number=$(jq -r '.number // empty' <<<"$match")" >> "$GITHUB_OUTPUT"
+          echo "state=$(jq -r '.state // empty' <<<"$match")" >> "$GITHUB_OUTPUT"
 
       - name: Download report
         if: env.EXIT_CODE == 2
@@ -139,8 +166,30 @@ jobs:
             echo
             echo "Entries can be false positives: some sites rate-limit or block automated clients while working fine in a browser. Confirm before editing the docs, and add persistent offenders to \`--exclude\` in \`.github/workflows/docs-link-check.yml\`."
             echo
-            cat ./lychee/out.md
+            jq -r '
+              "\(.errors) of \(.total) links failed.",
+              "",
+              (.error_map | to_entries | sort_by(.key)[] |
+                "### Errors in \(.key)",
+                "",
+                (.value[] | "* [\(.status.code // "ERR")] <\(.url)> — \(.status.text // "unknown error")"),
+                "")
+            ' ./lychee/out.json
           } > ./lychee/issue.md
+
+      - name: Reopen report issue
+        # A healthy run closes the report, and the issue action below only
+        # rewrites the body of whatever number it is given. Without an
+        # explicit reopen, the 2 -> 0 -> 2 sequence would keep rewriting a
+        # closed issue while links are broken. A CLOSED state implies the
+        # lookup found a canonical issue, so no separate emptiness check.
+        if: env.EXIT_CODE == 2 && steps.report.outputs.state == 'CLOSED'
+        env:
+          ISSUE_NUMBER: ${{ steps.report.outputs.number }}
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue reopen "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --comment "Broken documentation links found again in [the latest run]($run_url)."
 
       - name: Report broken links
         if: env.EXIT_CODE == 2
@@ -154,7 +203,9 @@ jobs:
           labels: documentation
 
       - name: Close report issue once links are healthy
-        if: env.EXIT_CODE == 0 && steps.report.outputs.number != ''
+        # An OPEN state implies the lookup found a canonical issue; a report
+        # that is already closed needs nothing.
+        if: env.EXIT_CODE == 0 && steps.report.outputs.state == 'OPEN'
         env:
           ISSUE_NUMBER: ${{ steps.report.outputs.number }}
         run: |
