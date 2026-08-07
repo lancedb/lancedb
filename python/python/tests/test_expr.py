@@ -52,7 +52,7 @@ class TestExprConstruction:
     def test_func(self):
         e = func("lower", col("name"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "lower(name)"
+        assert e.to_sql() == "lower(`name`)"
 
     def test_func_unknown_raises(self):
         with pytest.raises(Exception):
@@ -115,7 +115,7 @@ class TestExprOperators:
     def test_and_operator(self):
         e = (col("age") > lit(18)) & (col("status") == lit("active"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "((age > 18) AND (status = 'active'))"
+        assert e.to_sql() == "((age > 18) AND (`status` = 'active'))"
 
     def test_or_operator(self):
         e = (col("a") == lit(1)) | (col("b") == lit(2))
@@ -166,7 +166,7 @@ class TestExprOperators:
     def test_coerce_plain_str(self):
         e = col("name") == "alice"
         assert isinstance(e, Expr)
-        assert e.to_sql() == "(name = 'alice')"
+        assert e.to_sql() == "(`name` = 'alice')"
 
     def test_reflexive_comparisons(self):
         # 10 < col("age") swaps to col("age") > 10
@@ -198,85 +198,85 @@ class TestExprBytesLiteral:
 
     def test_bytes_equality_expr_sql(self):
         e = col("data") == lit(b"\xca\xfe")
-        assert e.to_sql() == "(data = X'CAFE')"
+        assert e.to_sql() == "(`data` = X'CAFE')"
 
     def test_bytes_ne_expr_sql(self):
         e = col("data") != lit(b"\xff")
-        assert e.to_sql() == "(data <> X'FF')"
+        assert e.to_sql() == "(`data` <> X'FF')"
 
     def test_bytes_compound_expr_sql(self):
         e = (col("data") == lit(b"\x01")) & (col("id") > lit(5))
-        assert e.to_sql() == "((data = X'01') AND (id > 5))"
+        assert e.to_sql() == "((`data` = X'01') AND (id > 5))"
 
     def test_bytes_in_function_call(self):
         # Regression test: binary literals inside scalar function calls
         # used to fail because DataFusion's unparser does not support Binary
         # scalars.  Now handled via a placeholder-substitution rewrite.
         e = func("contains", col("data"), lit(b"\xff"))
-        assert e.to_sql() == "contains(data, X'FF')"
+        assert e.to_sql() == "contains(`data`, X'FF')"
 
     def test_bytes_in_not(self):
         e = ~(col("data") == lit(b"\xff"))
-        assert e.to_sql() == "NOT (data = X'FF')"
+        assert e.to_sql() == "NOT (`data` = X'FF')"
 
 
 class TestExprStringMethods:
     def test_lower(self):
         e = col("name").lower()
         assert isinstance(e, Expr)
-        assert e.to_sql() == "lower(name)"
+        assert e.to_sql() == "lower(`name`)"
 
     def test_upper(self):
         e = col("name").upper()
         assert isinstance(e, Expr)
-        assert e.to_sql() == "upper(name)"
+        assert e.to_sql() == "upper(`name`)"
 
     def test_contains(self):
         e = col("text").contains(lit("hello"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "contains(text, 'hello')"
+        assert e.to_sql() == "contains(`text`, 'hello')"
 
     def test_contains_with_str_coerce(self):
         e = col("text").contains("hello")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "contains(text, 'hello')"
+        assert e.to_sql() == "contains(`text`, 'hello')"
 
     def test_chained_lower_eq(self):
         e = col("name").lower() == lit("alice")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "(lower(name) = 'alice')"
+        assert e.to_sql() == "(lower(`name`) = 'alice')"
 
 
 class TestExprCast:
     def test_cast_string(self):
         e = col("id").cast("string")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_int32(self):
         e = col("score").cast("int32")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_float64(self):
         e = col("val").cast("float64")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_type(self):
         e = col("score").cast(pa.int32())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_pyarrow_float64(self):
         e = col("val").cast(pa.float64())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_string(self):
         e = col("id").cast(pa.string())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_pyarrow_and_string_equivalent(self):
         # pa.int32() and "int32" should produce equivalent SQL
@@ -597,14 +597,14 @@ class TestExprIsin:
     def test_isin_strs(self):
         assert (
             col("status").isin(["active", "pending"]).to_sql()
-            == "status IN ('active', 'pending')"
+            == "`status` IN ('active', 'pending')"
         )
 
     def test_isin_coerces_and_mixes(self):
         assert col("id").isin([lit(1), 2]).to_sql() == "id IN (1, 2)"
 
     def test_isin_empty(self):
-        assert col("id").isin([]).to_sql() == "id IN ()"
+        assert col("id").isin([]).to_sql() == "false"
 
     def test_isin_filter(self, simple_table):
         result = simple_table.search().where(col("id").isin([1, 3, 5])).to_arrow()

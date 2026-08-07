@@ -248,6 +248,10 @@ class Expr:
 
     # ── utilities ────────────────────────────────────────────────────────────
 
+    def _column_name(self) -> str | None:
+        """Return the source name when this is a bare column expression."""
+        return self._inner.column_name()
+
     def to_sql(self) -> str:
         """Render the expression as a SQL string (useful for debugging)."""
         return self._inner.to_sql()
@@ -311,7 +315,7 @@ def func(name: str, *args: ExprLike) -> Expr:
     --------
     >>> from lancedb.expr import col, func
     >>> func("lower", col("name"))
-    Expr(lower(name))
+    Expr(lower(`name`))
     """
     inner_args = [_coerce(a)._inner for a in args]
     return Expr(expr_func(name, inner_args))
