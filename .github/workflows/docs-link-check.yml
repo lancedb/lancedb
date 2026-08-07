@@ -79,8 +79,11 @@ jobs:
         # checked or any report written. Only a parseable report whose
         # counts agree with the exit code counts as a link verdict; anything
         # else fails here, and the report job below is skipped entirely, so
-        # the tracking issue is never touched. Requiring total > 0 also
-        # catches a glob that silently stopped matching any file.
+        # the tracking issue is never touched. Exit 2 covers timeouts as
+        # well as errors, and a timed-out host is exactly the transient
+        # unavailability this report exists to surface, so both count as
+        # findings. Requiring total > 0 also catches a glob that silently
+        # stopped matching any file.
         if: steps.lychee.outputs.exit_code == 0 || steps.lychee.outputs.exit_code == 2
         env:
           EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
@@ -88,8 +91,10 @@ jobs:
           jq -e --argjson code "$EXIT_CODE" '
             (.total > 0) and
             (if $code == 0
-             then .errors == 0 and (.error_map | length == 0)
-             else .errors > 0 and (.error_map | length > 0)
+             then .errors == 0 and .timeouts == 0
+               and (.error_map | length == 0) and (.timeout_map | length == 0)
+             else (.errors + .timeouts) > 0
+               and ((.error_map | length) + (.timeout_map | length)) > 0
              end)
           ' ./lychee/out.json
 
@@ -166,13 +171,16 @@ jobs:
             echo
             echo "Entries can be false positives: some sites rate-limit or block automated clients while working fine in a browser. Confirm before editing the docs, and add persistent offenders to \`--exclude\` in \`.github/workflows/docs-link-check.yml\`."
             echo
+            # Timeouts are reported alongside errors: entries land in
+            # timeout_map with a status text instead of an HTTP code.
             jq -r '
-              "\(.errors) of \(.total) links failed.",
+              "\(.errors) of \(.total) links failed, \(.timeouts) timed out.",
               "",
-              (.error_map | to_entries | sort_by(.key)[] |
-                "### Errors in \(.key)",
+              ([(.error_map | to_entries[]), (.timeout_map | to_entries[])]
+               | group_by(.key)[] |
+                "### Errors in \(.[0].key)",
                 "",
-                (.value[] | "* [\(.status.code // "ERR")] <\(.url)> — \(.status.text // "unknown error")"),
+                (map(.value[])[] | "* [\(.status.code // .status.text // "ERR")] <\(.url)> — \(.status.details // .status.text // "unknown error")"),
                 "")
             ' ./lychee/out.json
           } > ./lychee/issue.md
