@@ -113,7 +113,9 @@ fn manifest_file_rows<'a>(
     };
 
     for fragment in manifest.fragments.iter() {
-        files += fragment.files.len();
+        // Precount with the same accessor as the iterator below, or `exact_size`
+        // drifts.
+        files += fragment.referenced_lance_files().count();
 
         if fragment.deletion_file.is_some() {
             files += 1;
@@ -121,7 +123,7 @@ fn manifest_file_rows<'a>(
     }
 
     let data_files = manifest.fragments.iter().flat_map(move |fragment| {
-        fragment.files.iter().map(move |data_file| {
+        fragment.referenced_lance_files().map(move |data_file| {
             let resolved_base = resolve_file_base(manifest, data_file.base_id, base_uri);
             let path = if resolved_base.is_dataset_root {
                 Cow::Owned(format!("{}/{}", DATA_DIR, data_file.path))
@@ -1028,6 +1030,7 @@ mod tests {
     fn test_manifest_file_rows_per_file_base_id() {
         use lance_core::datatypes::{Field as LanceField, Schema as LanceSchema};
         use lance_io::utils::CachedFileSize;
+        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
         use lance_table::format::{
             BasePath, DataFile, DataStorageFormat, DeletionFile, DeletionFileType, Fragment,
             Manifest,
@@ -1056,7 +1059,13 @@ mod tests {
                 // No base_id -> falls back to the dataset base_uri.
                 mk_file("c.lance", None),
             ],
-            overlays: vec![],
+            // An overlay's data file is reported like any other, and resolves
+            // its own base_id.
+            overlays: vec![DataOverlayFile {
+                data_file: mk_file("d.lance", Some(1)),
+                coverage: OverlayCoverage::Shared(Arc::new(Default::default())),
+                committed_version: 1,
+            }],
             // Deletion files also carry a base_id when they originate from a
             // shallow clone, and must resolve against base_paths too.
             deletion_file: Some(DeletionFile {
@@ -1100,6 +1109,7 @@ mod tests {
         assert_eq!(by_path.get("a.lance"), Some(&"s3://bucket-a/root"));
         assert_eq!(by_path.get("data/b.lance"), Some(&"s3://bucket-b/root"));
         assert_eq!(by_path.get("data/c.lance"), Some(&"memory://main"));
+        assert_eq!(by_path.get("d.lance"), Some(&"s3://bucket-a/root"));
 
         let deletion = rows
             .iter()

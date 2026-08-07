@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
-use lance_index::{IndexParams, IndexType, PrewarmOptions, optimize::OptimizeOptions};
+use lance_index::{
+    FtsPrewarmResult, IndexParams, IndexType, PrewarmOptions, optimize::OptimizeOptions,
+};
 use lance_table::format::IndexMetadata;
 use roaring::RoaringBitmap;
 use uuid::Uuid;
@@ -205,6 +207,17 @@ pub trait DatasetIndexExt {
         ))
     }
 
+    /// Prewarm an index by name with additional options and return the structured outcome.
+    async fn prewarm_index_with_options_result(
+        &self,
+        _name: &str,
+        _options: &PrewarmOptions,
+    ) -> Result<FtsPrewarmResult> {
+        Err(Error::not_supported(
+            "prewarm result reports are not supported by this dataset implementation".to_owned(),
+        ))
+    }
+
     /// Prewarm selected physical segments of an index by name.
     async fn prewarm_index_segments(&self, _name: &str, _segment_ids: &[Uuid]) -> Result<()> {
         Err(Error::not_supported(
@@ -221,6 +234,18 @@ pub trait DatasetIndexExt {
     ) -> Result<()> {
         Err(Error::not_supported(
             "prewarm options are not supported by this dataset implementation".to_owned(),
+        ))
+    }
+
+    /// Prewarm selected physical segments with options and return the structured outcome.
+    async fn prewarm_index_segments_with_options_result(
+        &self,
+        _name: &str,
+        _segment_ids: &[Uuid],
+        _options: &PrewarmOptions,
+    ) -> Result<FtsPrewarmResult> {
+        Err(Error::not_supported(
+            "prewarm result reports are not supported by this dataset implementation".to_owned(),
         ))
     }
 

@@ -101,9 +101,50 @@ impl From<&[u64]> for RowIdSequence {
     }
 }
 
+/// Return some value that appears more than once in `row_ids`, if any.
+///
+/// The already-sorted case is the common one for row id sequences, and is
+/// checked in a single pass without allocating.
+fn find_duplicate(row_ids: &[u64]) -> Option<u64> {
+    if row_ids.windows(2).all(|pair| pair[0] < pair[1]) {
+        return None;
+    }
+    let mut sorted = row_ids.to_vec();
+    sorted.sort_unstable();
+    sorted
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0])
+}
+
 impl RowIdSequence {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a sequence from row ids, rejecting duplicates within the sequence.
+    ///
+    /// The segment encodings represent a sorted run as a range plus its holes,
+    /// so a repeated value would be silently encoded as a shorter sequence with
+    /// a spurious hole. Callers assembling a sequence from untrusted input
+    /// should use this instead of the infallible `From` conversions, which
+    /// assume uniqueness.
+    ///
+    /// Row ids must also be unique across the dataset. That is not checked
+    /// here, and commit does not re-check it either.
+    pub fn try_from_iter(row_ids: impl IntoIterator<Item = u64>) -> Result<Self> {
+        let row_ids: Vec<u64> = row_ids.into_iter().collect();
+        if row_ids.is_empty() {
+            return Ok(Self::new());
+        }
+        if let Some(duplicate) = find_duplicate(&row_ids) {
+            return Err(Error::invalid_input(format!(
+                "Row ids must be unique, but row id {} appears more than once in the sequence of {} row ids",
+                duplicate,
+                row_ids.len()
+            )));
+        }
+        Ok(Self(vec![U64Segment::from_iter(row_ids)]))
     }
 
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = u64> + '_ {
@@ -785,6 +826,50 @@ mod test {
 
         let iter = sequence.iter();
         assert_eq!(iter.collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
+    }
+
+    #[rstest::rstest]
+    #[case::sorted_contiguous(vec![0, 1, 2, 3])]
+    #[case::sorted_with_gaps(vec![0, 2, 4])]
+    #[case::sparse(vec![0, 1_000_000])]
+    #[case::unsorted(vec![12, 11, 10])]
+    fn test_row_id_sequence_try_from_iter(#[case] row_ids: Vec<u64>) {
+        let sequence = RowIdSequence::try_from_iter(row_ids.clone()).unwrap();
+        assert_eq!(sequence.len(), row_ids.len() as u64);
+        assert_eq!(sequence.iter().collect::<Vec<_>>(), row_ids);
+    }
+
+    #[test]
+    fn test_row_id_sequence_try_from_iter_contiguous_is_a_range() {
+        let sequence = RowIdSequence::try_from_iter(0..10).unwrap();
+        assert_eq!(sequence.0, vec![U64Segment::Range(0..10)]);
+    }
+
+    #[test]
+    fn test_row_id_sequence_try_from_iter_empty() {
+        let sequence = RowIdSequence::try_from_iter(std::iter::empty()).unwrap();
+        assert_eq!(sequence.len(), 0);
+        assert!(sequence.is_empty());
+    }
+
+    #[rstest::rstest]
+    #[case::adjacent(vec![1, 1, 2])]
+    #[case::separated(vec![1, 2, 3, 1])]
+    #[case::unsorted(vec![5, 3, 5])]
+    fn test_row_id_sequence_try_from_iter_rejects_duplicates(#[case] row_ids: Vec<u64>) {
+        // Without validation these encode to a shorter sequence with a spurious
+        // hole rather than failing, so assert the error rather than the output.
+        let error = RowIdSequence::try_from_iter(row_ids).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidInput { .. }),
+            "expected InvalidInput, got {:?}",
+            error
+        );
+        assert!(
+            error.to_string().contains("must be unique"),
+            "unexpected message: {}",
+            error
+        );
     }
 
     #[test]

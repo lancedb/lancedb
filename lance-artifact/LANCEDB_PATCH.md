@@ -1,7 +1,7 @@
 # LanceDB patch provenance
 
-This artifact vendors the Lance 11.0.0-beta.2 Rust workspace from Lance commit
-`35da5d920159b49d1b53032652f7615ab699c160`. The complete workspace keeps all mutually coupled
+This artifact vendors the Lance 11.0.0-beta.3 Rust workspace from Lance commit
+`f7d475539cefbd140cc46a828f3d843e68cd10f1`. The complete workspace keeps all mutually coupled
 Lance crates on one Cargo source identity when `lancedb` consumes the pinned artifact commit.
 
 The local patch makes AWS credential-family merging atomic before backend selection and teaches

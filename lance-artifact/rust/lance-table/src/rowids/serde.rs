@@ -72,12 +72,25 @@ impl TryFrom<pb::RowIdSequence> for RowIdSequence {
     type Error = Error;
 
     fn try_from(pb: pb::RowIdSequence) -> Result<Self> {
-        Ok(Self(
-            pb.segments
-                .into_iter()
-                .map(U64Segment::try_from)
-                .collect::<Result<Vec<_>>>()?,
-        ))
+        let segments = pb
+            .segments
+            .into_iter()
+            .map(U64Segment::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        // Each segment length fits a usize on its own, but the total need not fit a u64.
+        // Reject that here so `RowIdSequence::len()` stays total for anything decoded.
+        segments
+            .iter()
+            .try_fold(0_u64, |total, segment| {
+                total.checked_add(segment.len() as u64)
+            })
+            .ok_or_else(|| {
+                corrupt_row_id_metadata(format!(
+                    "row ID sequence of {} segments has a total length exceeding u64::MAX",
+                    segments.len()
+                ))
+            })?;
+        Ok(Self(segments))
     }
 }
 
@@ -337,6 +350,31 @@ mod test {
         assert!(
             error.to_string().contains(expected_message),
             "expected error containing {expected_message:?}, got {error}"
+        );
+    }
+
+    /// Each segment length fits a usize, but the aggregate does not fit a u64. Accepting
+    /// this would leave `RowIdSequence::len()` overflowing for callers such as
+    /// `Dataset::validate()`.
+    #[test]
+    fn test_reject_sequence_length_overflow() {
+        let segment = || pb::U64Segment {
+            segment: Some(pb::u64_segment::Segment::Range(pb::u64_segment::Range {
+                start: 0,
+                end: u64::MAX,
+            })),
+        };
+        let sequence = pb::RowIdSequence {
+            segments: vec![segment(), segment()],
+        };
+
+        let error = read_row_ids(&sequence.encode_to_vec()).unwrap_err();
+        assert!(matches!(&error, Error::CorruptFile { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("total length exceeding u64::MAX"),
+            "got {error}"
         );
     }
 

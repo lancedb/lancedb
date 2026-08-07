@@ -97,7 +97,8 @@ use crate::dataset::rowids::{live_row_addrs_to_row_ids, translate_addr_treemap_t
 use crate::dataset::utils::SchemaAdapter;
 use crate::index::DatasetIndexInternalExt;
 use crate::index::scalar::inverted::{
-    load_segment_details, load_segments, resolve_fts_field, resolve_query_document_granularity,
+    fts_index_fragment_bitmap, load_segment_details, load_segments, resolve_fts_field,
+    resolve_query_document_granularity,
 };
 use crate::index::scalar_logical::{load_named_scalar_segments, scalar_index_fragment_bitmap};
 use crate::index::vector::utils::{
@@ -3494,25 +3495,14 @@ impl Scanner {
         document_granularity: DocumentGranularity,
         accum: &mut RoaringBitmap,
     ) -> Result<bool> {
-        let index = self
-            .dataset
-            .load_scalar_index(
-                IndexCriteria::default()
-                    .for_column(column)
-                    .supports_fts()
-                    .with_fts_document_granularity(document_granularity),
-            )
-            .await?;
-        match index {
-            Some(index) => match &index.fragment_bitmap {
-                Some(fragmap) => {
-                    *accum |= fragmap;
-                    Ok(true)
-                }
-                None => Ok(false),
-            },
-            None => Ok(false),
-        }
+        let Some(fragment_bitmap) =
+            fts_index_fragment_bitmap(&self.dataset, column, document_granularity).await?
+        else {
+            return Ok(false);
+        };
+        *accum |= fragment_bitmap;
+
+        Ok(true)
     }
 
     #[async_recursion]
@@ -6626,18 +6616,41 @@ pub mod test_dataset {
             Ok(())
         }
 
-        pub async fn make_fts_index(&mut self) -> Result<()> {
+        fn fts_index_params() -> InvertedIndexParams {
             // These scanner tests search for the token "s" (from the `s-{N}`
             // column values) to exercise fragment/append coverage, and "s" is
             // in the full English stop-word list. Keep the token searchable;
             // stop-word behavior itself is covered by the tokenizer tests.
-            let params = InvertedIndexParams::default()
+            InvertedIndexParams::default()
                 .with_position(true)
-                .remove_stop_words(false);
+                .remove_stop_words(false)
+        }
+
+        pub async fn make_fts_index(&mut self) -> Result<()> {
+            let params = Self::fts_index_params();
             self.dataset
                 .create_index(&["s"], IndexType::Inverted, None, &params, true)
                 .await?;
             Ok(())
+        }
+
+        pub async fn make_segmented_fts_index(&mut self) -> Result<()> {
+            let params = Self::fts_index_params();
+            let fragments = self.dataset.get_fragments();
+            let mut segments = Vec::with_capacity(fragments.len());
+            for fragment in fragments {
+                let segment = self
+                    .dataset
+                    .create_index_builder(&["s"], IndexType::Inverted, &params)
+                    .name("s_idx".to_string())
+                    .fragments(vec![fragment.id() as u32])
+                    .execute_uncommitted()
+                    .await?;
+                segments.push(segment);
+            }
+            self.dataset
+                .commit_existing_index_segments("s_idx", "s", segments)
+                .await
         }
 
         pub async fn append_new_data(&mut self) -> Result<()> {
@@ -15106,8 +15119,20 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
             .await
             .unwrap();
 
-        // Create FTS index on first 2 fragments
-        test_ds.make_fts_index().await.unwrap();
+        // Create one FTS physical segment per indexed fragment.
+        test_ds.make_segmented_fts_index().await.unwrap();
+        let expected_index_coverage = test_ds
+            .dataset
+            .get_fragments()
+            .iter()
+            .map(|fragment| fragment.id() as u32)
+            .collect::<RoaringBitmap>();
+        let fragment_bitmap =
+            fts_index_fragment_bitmap(&test_ds.dataset, "s", DocumentGranularity::Row)
+                .await
+                .unwrap()
+                .expect("segmented FTS index");
+        assert_eq!(fragment_bitmap, expected_index_coverage);
 
         // Append two more unindexed fragments
         test_ds.append_data_with_range(400, 410).await.unwrap();
@@ -15119,6 +15144,41 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
         assert_eq!(fragments.len(), 4);
 
         // "s-5" matches: s-5, s-50..s-59, s-150..s-159 (frag 0), s-250..s-259, s-350..s-359 (frag 1), s-405 (frag 2), s-415 (frag 3)
+        async fn fts_ids(dataset: &Dataset, fragments: Option<Vec<Fragment>>) -> Vec<i32> {
+            let mut scanner = dataset.scan();
+            scanner
+                .full_text_search(FullTextSearchQuery::new("s-5".into()))
+                .unwrap();
+            if let Some(fragments) = fragments {
+                scanner.with_fragments(fragments);
+            }
+            let batch = scanner.try_into_batch().await.unwrap();
+            let mut ids = batch
+                .column_by_name("i")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values()
+                .to_vec();
+            ids.sort_unstable();
+            ids
+        }
+
+        let global_ids = fts_ids(&test_ds.dataset, None).await;
+        let mut fragmented_ids = Vec::with_capacity(global_ids.len());
+        for (fragment, expected_range) in
+            fragments.iter().zip([0..200, 200..400, 400..410, 410..420])
+        {
+            let ids = fts_ids(&test_ds.dataset, Some(vec![fragment.clone()])).await;
+            assert!(
+                !ids.is_empty() && ids.iter().all(|id| expected_range.contains(id)),
+                "fragment {} should return only matching rows in {expected_range:?}",
+                fragment.id,
+            );
+            fragmented_ids.extend(ids);
+        }
+        fragmented_ids.sort_unstable();
+        assert_eq!(fragmented_ids, global_ids);
+
         test_fragment_list_filtering(&test_ds, fragments, |dataset| {
             let mut scanner = dataset.scan();
             scanner
@@ -15127,5 +15187,24 @@ full_filter=name LIKE Utf8(\"test%2\"), refine_filter=name LIKE Utf8(\"test%2\")
             scanner
         })
         .await;
+        for (fragment, (phrase, expected_i)) in
+            fragments[..2].iter().zip([("s 5", 5), ("s 205", 205)])
+        {
+            let mut scanner = test_ds.dataset.scan();
+            scanner.with_fragments(vec![fragment.clone()]);
+            scanner
+                .full_text_search(FullTextSearchQuery::new_query(
+                    PhraseQuery::new(phrase.to_string())
+                        .with_column(Some("s".to_string()))
+                        .into(),
+                ))
+                .unwrap();
+            let batch = scanner.try_into_batch().await.unwrap();
+            let i_array = batch
+                .column_by_name("i")
+                .unwrap()
+                .as_primitive::<Int32Type>();
+            assert_eq!(i_array.values(), &[expected_i]);
+        }
     }
 }

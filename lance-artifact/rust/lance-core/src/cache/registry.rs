@@ -113,10 +113,18 @@ fn registry_lock_for_test() -> MutexGuard<'static, HashMap<String, BackendBuildF
 ///
 /// Typical usage from a backend crate:
 ///
-/// ```ignore
-/// pub fn register() -> lance_core::Result<()> {
-///     lance_core::cache::register_backend("my_backend", build_my_backend)
+/// ```
+/// # use std::sync::Arc;
+/// # use lance_core::Result;
+/// # use lance_core::cache::{BackendConfig, CacheBackend, MokaCacheBackend, register_backend};
+/// fn build_my_backend(_config: &BackendConfig) -> Result<Arc<dyn CacheBackend>> {
+///     Ok(Arc::new(MokaCacheBackend::with_capacity(1024)))
 /// }
+///
+/// # fn main() -> Result<()> {
+/// register_backend("my-backend", build_my_backend)?;
+/// # Ok(())
+/// # }
 /// ```
 pub fn register_backend(kind: &str, build: BackendBuildFn) -> Result<()> {
     let kind = normalize_backend_kind(kind)?;

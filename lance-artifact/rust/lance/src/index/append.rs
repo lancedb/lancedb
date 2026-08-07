@@ -3471,6 +3471,376 @@ mod tests {
         assert_eq!(query_id_count(&dataset, "song-42").await, 1);
     }
 
+    /// Updating an indexed vector column in place (`update_columns` +
+    /// `Operation::Update`) keeps the fragment id and the row address, so after the
+    /// fragment is pruned from the old segment's bitmap that segment still physically
+    /// holds the pre-update vector. Merging the segment must drop those rows: the merge
+    /// concatenates its physical rows with the freshly scanned ones and commits the
+    /// union of both coverages, so a surviving stale row is authorized by the same
+    /// bitmap as its fresh copy and no read-time filter can separate them.
+    #[rstest]
+    // IVF_FLAT keeps the vector verbatim, so the query distance tells which of the two
+    // copies survived. IVF_PQ re-uses the codebook trained before the update, which
+    // cannot represent the new value, so it only pins the row count and covers the
+    // transposed-code path in `take_partition_batches`.
+    #[case::ivf_flat(VectorIndexParams::ivf_flat(1, MetricType::L2), true)]
+    #[case::ivf_pq(VectorIndexParams::ivf_pq(1, 8, 16, MetricType::L2, 2), false)]
+    #[tokio::test]
+    async fn test_optimize_vector_index_drops_stale_rows_on_merge(
+        #[case] index_params: VectorIndexParams,
+        #[case] distance_is_exact: bool,
+        // The two row-id schemes take different filter branches: an address carries its
+        // fragment, a stable row id needs the fragments' persisted row-id sequences.
+        #[values(false, true)] enable_stable_row_ids: bool,
+    ) {
+        use crate::dataset::transaction::{Operation, UpdateMode, UpdatedFragmentOffsets};
+        use arrow::datatypes::UInt64Type;
+        use arrow_array::{Float32Array, RecordBatchReader, UInt64Array};
+        use lance_core::ROW_ID;
+        use lance_index::vector::DIST_COL;
+        use std::collections::HashMap;
+
+        // Must match the sub-vector count in the IVF_PQ case above.
+        const DIM: usize = 16;
+        const BULK_ROWS: usize = 1000;
+        const UPDATED_ID: u32 = 10_000;
+        const STALE_VALUE: f32 = 2.0;
+        const FRESH_VALUE: f32 = 10.8;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let vector_type = DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            DIM as i32,
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("vector", vector_type.clone(), true),
+        ]));
+        let constant_vector = |value: f32| {
+            FixedSizeListArray::try_new_from_values(
+                Float32Array::from_iter_values(std::iter::repeat_n(value, DIM)),
+                DIM as i32,
+            )
+            .unwrap()
+        };
+
+        // Fragment 0: bulk vectors in [0, 1). None of them is near the query, so a
+        // surviving stale copy of the updated row ranks well inside top-k.
+        let bulk = generate_random_array_with_seed::<Float32Type>(BULK_ROWS * DIM, [42; 32]);
+        let bulk_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(0..BULK_ROWS as u32)),
+                Arc::new(FixedSizeListArray::try_new_from_values(bulk, DIM as i32).unwrap()),
+            ],
+        )
+        .unwrap();
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(bulk_batch)], schema.clone()),
+            test_uri,
+            Some(WriteParams {
+                enable_stable_row_ids,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Fragment 1: the single row that gets updated in place.
+        let stale_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values([UPDATED_ID])),
+                Arc::new(constant_vector(STALE_VALUE)),
+            ],
+        )
+        .unwrap();
+        dataset
+            .append(
+                RecordBatchIterator::new(vec![Ok(stale_batch)], schema.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(dataset.get_fragments().len(), 2);
+
+        // One segment covering both fragments.
+        dataset
+            .create_index(&["vector"], IndexType::Vector, None, &index_params, true)
+            .await
+            .unwrap();
+
+        let mut fragment = dataset.get_fragment(1).unwrap();
+        let mut fragment_scan = fragment.scan();
+        fragment_scan.with_row_id();
+        let updated_row_id = fragment_scan.try_into_batch().await.unwrap()[ROW_ID]
+            .as_primitive::<UInt64Type>()
+            .value(0);
+
+        let update_schema = Arc::new(Schema::new(vec![
+            Field::new(ROW_ID, DataType::UInt64, false),
+            Field::new("vector", vector_type, true),
+        ]));
+        let update_batch = RecordBatch::try_new(
+            update_schema.clone(),
+            vec![
+                Arc::new(UInt64Array::from_iter_values([updated_row_id])),
+                Arc::new(constant_vector(FRESH_VALUE)),
+            ],
+        )
+        .unwrap();
+        let right_stream: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(update_batch)],
+            update_schema,
+        ));
+        let updated = fragment
+            .update_columns_with_offsets(right_stream, ROW_ID, ROW_ID)
+            .await
+            .unwrap();
+        let updated_fragment_id = updated.fragment.id;
+        let dataset = Dataset::commit(
+            test_uri,
+            Operation::Update {
+                removed_fragment_ids: vec![],
+                updated_fragments: vec![updated.fragment],
+                new_fragments: vec![],
+                fields_modified: updated.fields_modified,
+                compacted_sstables: Vec::new(),
+                fields_for_preserving_frag_bitmap: vec![],
+                update_mode: Some(UpdateMode::RewriteColumns),
+                inserted_rows_filter: None,
+                updated_fragment_offsets: Some(UpdatedFragmentOffsets(HashMap::from([(
+                    updated_fragment_id,
+                    updated.matched_offsets,
+                )]))),
+            },
+            Some(dataset.version().version),
+            None,
+            None,
+            Default::default(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let mut dataset = dataset;
+        dataset
+            .optimize_indices(&OptimizeOptions::merge(1))
+            .await
+            .unwrap();
+
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let segments = dataset.load_indices_by_name("vector_idx").await.unwrap();
+        assert_eq!(segments.len(), 1, "merge must leave a single segment");
+
+        let mut scanner = dataset.scan();
+        scanner
+            .nearest("vector", &constant_vector(FRESH_VALUE).value(0), 10)
+            .unwrap()
+            .with_row_id()
+            .project(&["id"])
+            .unwrap();
+        let results = scanner.try_into_batch().await.unwrap();
+        let hits = results["id"]
+            .as_primitive::<UInt32Type>()
+            .values()
+            .iter()
+            .zip(results[DIST_COL].as_primitive::<Float32Type>().values())
+            .filter(|(id, _)| **id == UPDATED_ID)
+            .map(|(_, distance)| *distance)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hits.len(),
+            1,
+            "updated row returned {} times after merge; row ids = {:?}",
+            hits.len(),
+            results[ROW_ID].as_primitive::<UInt64Type>().values()
+        );
+        if distance_is_exact {
+            // The pre-update vector would sit at (FRESH - STALE)^2 * DIM from the query,
+            // so anything but ~0 means the stale copy is the one that survived.
+            assert!(
+                hits[0] < 1.0,
+                "surviving copy is the pre-update one: distance {} to the updated vector",
+                hits[0]
+            );
+        }
+    }
+
+    /// The ordinary update path (`UpdateBuilder`, `UpdateMode::RewriteRows`) commits
+    /// `fields_modified: vec![]`, so the old fragment keeps its place in the segment's
+    /// bitmap while its physical row is only deletion-marked. Under stable row ids the
+    /// rewritten copy reuses the same row id, so a merge that keeps every covered row
+    /// emits that id twice and the read-time filter admits both: the id is live again
+    /// at its new address. Coverage alone is therefore not a sufficient merge filter.
+    #[rstest]
+    // The two optimize modes read existing rows through different code, and both must
+    // filter: an explicit merge through `take_partition_batches`, and the default
+    // options over under-sized partitions through `partition_row_ids`, which feeds the
+    // join that rebuilds them.
+    #[case::merge(1, OptimizeOptions::merge(1))]
+    #[case::join(4, OptimizeOptions::new())]
+    #[tokio::test]
+    async fn test_optimize_vector_index_drops_rewritten_rows_on_merge(
+        #[case] num_partitions: usize,
+        #[case] optimize_options: OptimizeOptions,
+        // Only the stable-row-id scheme can duplicate: an address-domain rewrite lands
+        // at a new address, so the stale posting is masked at query time.
+        #[values(false, true)] enable_stable_row_ids: bool,
+    ) {
+        use crate::dataset::UpdateBuilder;
+        use arrow::datatypes::UInt64Type;
+        use arrow_array::Float32Array;
+        use lance_core::ROW_ID;
+        use lance_index::vector::DIST_COL;
+
+        const DIM: usize = 4;
+        const BULK_ROWS: usize = 1000;
+        const UPDATED_ID: u32 = 10_000;
+        const STALE_VALUE: f32 = 2.0;
+        const FRESH_VALUE: f32 = 10.8;
+
+        let test_dir = TempStrDir::default();
+        let test_uri = test_dir.as_str();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                true,
+            ),
+        ]));
+        let constant_vector = |value: f32| {
+            FixedSizeListArray::try_new_from_values(
+                Float32Array::from_iter_values(std::iter::repeat_n(value, DIM)),
+                DIM as i32,
+            )
+            .unwrap()
+        };
+
+        // The updated row shares its fragment with the bulk rows, so the update leaves
+        // that fragment covered by the segment with one row deletion-marked instead of
+        // retiring it. The bulk vectors sit in [0, 1), far from the query, so a
+        // surviving stale copy of the updated row ranks well inside top-k.
+        let bulk = generate_random_array_with_seed::<Float32Type>(BULK_ROWS * DIM, [42; 32]);
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    (0..BULK_ROWS as u32).chain(std::iter::once(UPDATED_ID)),
+                )),
+                Arc::new(
+                    FixedSizeListArray::try_new_from_values(
+                        Float32Array::from_iter_values(
+                            bulk.values()
+                                .iter()
+                                .copied()
+                                .chain(std::iter::repeat_n(STALE_VALUE, DIM)),
+                        ),
+                        DIM as i32,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let mut dataset = Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
+            test_uri,
+            Some(WriteParams {
+                enable_stable_row_ids,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        dataset
+            .create_index(
+                &["vector"],
+                IndexType::Vector,
+                None,
+                &VectorIndexParams::ivf_flat(num_partitions, MetricType::L2),
+                true,
+            )
+            .await
+            .unwrap();
+
+        let fresh_literal = format!(
+            "array[{}]",
+            std::iter::repeat_n(FRESH_VALUE.to_string(), DIM)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let mut dataset = UpdateBuilder::new(Arc::new(dataset))
+            .update_where(&format!("id = {UPDATED_ID}"))
+            .unwrap()
+            .set("vector", &fresh_literal)
+            .unwrap()
+            .build()
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .new_dataset
+            .as_ref()
+            .clone();
+        dataset.optimize_indices(&optimize_options).await.unwrap();
+
+        let dataset = DatasetBuilder::from_uri(test_uri).load().await.unwrap();
+        let segments = dataset.load_indices_by_name("vector_idx").await.unwrap();
+        assert_eq!(segments.len(), 1, "merge must leave a single segment");
+        let partitions_after = dataset
+            .open_vector_index("vector", &segments[0].uuid, &NoOpMetricsCollector)
+            .await
+            .unwrap()
+            .ivf_model()
+            .num_partitions();
+        // A join is what routes existing rows through `partition_row_ids`; without it
+        // this case would silently degrade into a second copy of the merge case.
+        assert!(
+            num_partitions == 1 || partitions_after < num_partitions,
+            "expected a join, but the index still has {partitions_after} partitions"
+        );
+
+        let mut scanner = dataset.scan();
+        scanner
+            .nearest("vector", &constant_vector(FRESH_VALUE).value(0), 10)
+            .unwrap()
+            .with_row_id()
+            .project(&["id"])
+            .unwrap();
+        let results = scanner.try_into_batch().await.unwrap();
+        let hits = results["id"]
+            .as_primitive::<UInt32Type>()
+            .values()
+            .iter()
+            .zip(results[DIST_COL].as_primitive::<Float32Type>().values())
+            .filter(|(id, _)| **id == UPDATED_ID)
+            .map(|(_, distance)| *distance)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hits.len(),
+            1,
+            "rewritten row returned {} times after optimize; row ids = {:?}",
+            hits.len(),
+            results[ROW_ID].as_primitive::<UInt64Type>().values()
+        );
+        // The pre-update vector would sit at (FRESH - STALE)^2 * DIM from the query, so
+        // anything but ~0 means the stale copy is the one that survived.
+        assert!(
+            hits[0] < 1.0,
+            "surviving copy is the pre-update one: distance {} to the updated vector",
+            hits[0]
+        );
+    }
+
     /// Under stable row ids, updating an indexed column and then calling
     /// `optimize_indices` must not leave stale entries (old value -> updated row)
     /// in the scalar index. An update deletes the old copy of each row and

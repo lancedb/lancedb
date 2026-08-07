@@ -205,6 +205,8 @@ pub(super) trait ComposableScorer: Send {
         Ok(true)
     }
 
+    /// Estimated relative cost of [`Self::matches`], stable for this scorer's
+    /// lifetime. `None` means no ordering hint, not that confirmation may be skipped.
     fn match_cost(&self) -> Option<f32> {
         None
     }
@@ -1192,6 +1194,9 @@ pub(super) struct RequiredConjunctionScorer<'a> {
     /// already cheapest-first. `children` remains in query order so scoring and
     /// score-bound arithmetic stay bit-for-bit stable.
     approximation_order: Option<Vec<usize>>,
+    /// Child indices sorted by two-phase confirmation cost. Children without a
+    /// cost hint remain in query order after costed confirmations.
+    confirmation_order: Option<Vec<usize>>,
     current: Option<u64>,
     confirmed_doc: Option<u64>,
     confirmed: bool,
@@ -1223,6 +1228,30 @@ fn align_conjunction_children(
     }
 }
 
+fn compare_confirmation_cost(
+    left: &dyn ComposableScorer,
+    right: &dyn ComposableScorer,
+) -> Ordering {
+    match (left.match_cost(), right.match_cost()) {
+        (Some(left), Some(right)) => left.total_cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn confirm_conjunction_children(
+    children: &mut [BoxScorer<'_>],
+    child_index: impl Fn(usize) -> usize,
+) -> Result<bool> {
+    for position in 0..children.len() {
+        if !children[child_index(position)].matches()? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 impl<'a> RequiredConjunctionScorer<'a> {
     pub(super) fn try_new(children: Vec<BoxScorer<'a>>) -> Result<Self> {
         if children.is_empty() {
@@ -1240,9 +1269,31 @@ impl<'a> RequiredConjunctionScorer<'a> {
             order.sort_by_key(|&index| (children[index].cost(), index));
             Some(order)
         };
+        for (index, child) in children.iter().enumerate() {
+            if let Some(match_cost) = child.match_cost()
+                && (!match_cost.is_finite() || match_cost < 0.0)
+            {
+                return Err(Error::internal(format!(
+                    "FTS conjunction child {index} reported invalid two-phase match cost: {match_cost}"
+                )));
+            }
+        }
+        let confirmation_order = if children.windows(2).all(|pair| {
+            compare_confirmation_cost(pair[0].as_ref(), pair[1].as_ref()) != Ordering::Greater
+        }) {
+            None
+        } else {
+            let mut order = (0..children.len()).collect::<Vec<_>>();
+            order.sort_by(|&left, &right| {
+                compare_confirmation_cost(children[left].as_ref(), children[right].as_ref())
+                    .then_with(|| left.cmp(&right))
+            });
+            Some(order)
+        };
         Ok(Self {
             children,
             approximation_order,
+            confirmation_order,
             current: None,
             confirmed_doc: None,
             confirmed: false,
@@ -1269,12 +1320,11 @@ impl<'a> RequiredConjunctionScorer<'a> {
         if self.confirmed_doc == Some(current) {
             return Ok(self.confirmed);
         }
-        self.confirmed = true;
-        for child in &mut self.children {
-            if !child.matches()? {
-                self.confirmed = false;
-            }
-        }
+        self.confirmed = if let Some(order) = &self.confirmation_order {
+            confirm_conjunction_children(&mut self.children, |position| order[position])?
+        } else {
+            confirm_conjunction_children(&mut self.children, |position| position)?
+        };
         self.confirmed_doc = Some(current);
         Ok(self.confirmed)
     }
@@ -2443,7 +2493,9 @@ mod tests {
     struct TwoPhaseScorer {
         inner: MaterializedScorer,
         accepted: Vec<u64>,
-        confirmations: usize,
+        match_cost: Option<f32>,
+        approximations: Arc<AtomicUsize>,
+        confirmations: Arc<AtomicUsize>,
     }
 
     impl ComposableScorer for TwoPhaseScorer {
@@ -2452,11 +2504,19 @@ mod tests {
         }
 
         fn next(&mut self) -> Result<Option<u64>> {
-            self.inner.next()
+            let doc = self.inner.next()?;
+            if doc.is_some() {
+                self.approximations.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(doc)
         }
 
         fn advance(&mut self, target: u64) -> Result<Option<u64>> {
-            self.inner.advance(target)
+            let doc = self.inner.advance(target)?;
+            if doc.is_some() {
+                self.approximations.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(doc)
         }
 
         fn cost(&self) -> usize {
@@ -2480,15 +2540,40 @@ mod tests {
         }
 
         fn matches(&mut self) -> Result<bool> {
-            self.confirmations += 1;
+            self.confirmations.fetch_add(1, AtomicOrdering::Relaxed);
             Ok(self
                 .doc()
                 .is_some_and(|doc| self.accepted.binary_search(&doc).is_ok()))
         }
 
+        fn match_cost(&self) -> Option<f32> {
+            self.match_cost
+        }
+
         fn scores_non_negative(&self) -> bool {
             true
         }
+    }
+
+    fn two_phase(
+        values: &[(u64, f32)],
+        accepted: Vec<u64>,
+        match_cost: Option<f32>,
+    ) -> (
+        Box<dyn ComposableScorer>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let approximations = Arc::new(AtomicUsize::new(0));
+        let confirmations = Arc::new(AtomicUsize::new(0));
+        let scorer = TwoPhaseScorer {
+            inner: MaterializedScorer::try_new(rows(values)).unwrap(),
+            accepted,
+            match_cost,
+            approximations: approximations.clone(),
+            confirmations: confirmations.clone(),
+        };
+        (Box::new(scorer), approximations, confirmations)
     }
 
     struct CountingScorer {
@@ -2555,15 +2640,82 @@ mod tests {
 
     #[test]
     fn collector_confirms_two_phase_matches_without_a_cost_hint() {
-        let mut scorer = TwoPhaseScorer {
-            inner: MaterializedScorer::try_new(rows(&[(1, 100.0), (2, 2.0), (3, 1.0)])).unwrap(),
-            accepted: vec![2, 3],
-            confirmations: 0,
-        };
-        let results = TopKCollector::new(2).collect(&mut scorer).unwrap();
+        let (mut scorer, approximations, confirmations) =
+            two_phase(&[(1, 100.0), (2, 2.0), (3, 1.0)], vec![2, 3], None);
+        let results = TopKCollector::new(2).collect(scorer.as_mut()).unwrap();
         assert_eq!(results, rows(&[(2, 2.0), (3, 1.0)]));
-        assert_eq!(scorer.confirmations, 3);
+        assert_eq!(approximations.load(AtomicOrdering::Relaxed), 3);
+        assert_eq!(confirmations.load(AtomicOrdering::Relaxed), 3);
         assert_eq!(scorer.match_cost(), None);
+    }
+
+    #[test]
+    fn required_conjunction_confirms_cheapest_first_and_short_circuits() {
+        let values = (0..100).map(|doc| (doc, 1.0)).collect::<Vec<_>>();
+        let accepted_by_cheap = (0..100).step_by(5).collect::<Vec<_>>();
+
+        let (expensive, expensive_approximations, expensive_confirmations) =
+            two_phase(&values, (0..100).collect(), Some(10.0));
+        let (cheap, cheap_approximations, cheap_confirmations) =
+            two_phase(&values, accepted_by_cheap.clone(), Some(1.0));
+        let mut scorer = RequiredConjunctionScorer::try_new(vec![expensive, cheap]).unwrap();
+        assert_eq!(scorer.confirmation_order.as_deref(), Some(&[1, 0][..]));
+
+        let results = TopKCollector::new(100).collect(&mut scorer).unwrap();
+        let expected = accepted_by_cheap
+            .iter()
+            .map(|doc| (*doc, 2.0))
+            .collect::<Vec<_>>();
+        assert_eq!(results, rows(&expected));
+        assert_eq!(cheap_confirmations.load(AtomicOrdering::Relaxed), 100);
+        assert_eq!(expensive_confirmations.load(AtomicOrdering::Relaxed), 20);
+        let approximations = cheap_approximations.load(AtomicOrdering::Relaxed)
+            + expensive_approximations.load(AtomicOrdering::Relaxed);
+        let confirmations = cheap_confirmations.load(AtomicOrdering::Relaxed)
+            + expensive_confirmations.load(AtomicOrdering::Relaxed);
+        assert_eq!(approximations, 200);
+        assert_eq!(confirmations, 120);
+        assert!(
+            confirmations * 5 <= approximations * 4,
+            "confirmation ordering should reduce work by at least 20%: {confirmations}/{approximations}"
+        );
+
+        let (cheap, _, _) = two_phase(&values, accepted_by_cheap, Some(1.0));
+        let (expensive, _, _) = two_phase(&values, (0..100).collect(), Some(10.0));
+        let scorer = RequiredConjunctionScorer::try_new(vec![cheap, expensive]).unwrap();
+        assert!(scorer.confirmation_order.is_none());
+    }
+
+    #[test]
+    fn required_conjunction_confirms_children_without_cost_hints() {
+        let (unknown, _, unknown_confirmations) = two_phase(&[(0, 1.0)], Vec::new(), None);
+        let (costed, _, costed_confirmations) = two_phase(&[(0, 1.0)], vec![0], Some(1.0));
+        let mut scorer = RequiredConjunctionScorer::try_new(vec![unknown, costed]).unwrap();
+
+        assert_eq!(scorer.confirmation_order.as_deref(), Some(&[1, 0][..]));
+        assert!(
+            TopKCollector::new(1)
+                .collect(&mut scorer)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(costed_confirmations.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(unknown_confirmations.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn required_conjunction_rejects_invalid_match_cost() {
+        let (invalid, _, _) = two_phase(&[(0, 1.0)], vec![0], Some(f32::NAN));
+
+        let error = RequiredConjunctionScorer::try_new(vec![invalid])
+            .err()
+            .unwrap();
+        assert!(matches!(error, Error::Internal { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("child 0 reported invalid two-phase match cost: NaN")
+        );
     }
 
     #[test]

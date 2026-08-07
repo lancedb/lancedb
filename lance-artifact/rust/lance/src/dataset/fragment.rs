@@ -3260,9 +3260,6 @@ mod tests {
         /// Two-fragment Int32 dataset: `id` (field 0) = 0..12 and `val` (field 1)
         /// = id * 10, written 6 rows per file (fragments 0 and 1).
         ///
-        /// Uses an in-memory store so the test can write overlay files with a
-        /// store-relative `data/<name>.lance` path and commit against the returned
-        /// dataset directly.
         async fn create_base_dataset(version: LanceFileVersion) -> Dataset {
             let schema = Arc::new(ArrowSchema::new(vec![
                 ArrowField::new("id", DataType::Int32, true),
@@ -3305,7 +3302,9 @@ mod tests {
             let overlay_schema = dataset.schema().project_by_ids(fields, true);
 
             let filename = format!("{name}.lance");
-            let path = Path::from(format!("data/{filename}"));
+            // The manifest records the bare filename; only the physical write is
+            // data-dir qualified.
+            let path = dataset.data_dir().join(filename.as_str());
             let obj_writer = dataset.object_store.create(&path).await.unwrap();
             let file_version = ConcreteFileVersion::from(version);
             let mut writer = lance_file::versions::create_writer(
@@ -3356,6 +3355,161 @@ mod tests {
             )
             .await
             .unwrap()
+        }
+
+        /// `collect_paths` feeds `deep_clone`'s copy loop, so an overlay data file
+        /// it omits is referenced by the clone's manifest but never copied. The
+        /// clone then fails to read the overlaid values.
+        #[tokio::test]
+        async fn deep_clone_copies_overlay_files() {
+            use lance_core::utils::tempfile::TempStdDir;
+
+            let version = LanceFileVersion::Stable;
+            let test_dir = TempStdDir::default();
+            let source_uri = test_dir.join("source").to_str().unwrap().to_string();
+            let clone_uri = test_dir.join("clone").to_str().unwrap().to_string();
+
+            let schema = Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id", DataType::Int32, true),
+                ArrowField::new("val", DataType::Int32, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..6)),
+                    Arc::new(Int32Array::from_iter_values((0..6).map(|v| v * 10))),
+                ],
+            )
+            .unwrap();
+            let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let dataset = Dataset::write(
+                reader,
+                &source_uri,
+                Some(WriteParams {
+                    max_rows_per_file: 6,
+                    max_rows_per_group: 6,
+                    data_storage_version: Some(version),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+            // Overlay `val` on offsets 0 and 1 of fragment 0.
+            let mut dataset = commit_overlay(
+                dataset,
+                "overlay0",
+                0,
+                &[1],
+                OverlayCoverage::Shared(Arc::new(bitmap([0, 1]))),
+                vec![i32_array([Some(700), Some(701)])],
+                version,
+            )
+            .await;
+
+            let source_version = dataset.version().version;
+            dataset
+                .tags()
+                .create("clone-me", source_version)
+                .await
+                .unwrap();
+            let cloned = dataset
+                .deep_clone(&clone_uri, "clone-me", None)
+                .await
+                .unwrap();
+
+            let batch = cloned
+                .scan()
+                .try_into_batch()
+                .await
+                .expect("the clone must be readable, including its overlay files");
+            let val = col(&batch, "val");
+            assert_eq!(
+                val.values()[..2],
+                [700, 701],
+                "the clone must return the overlaid values, not the base ones"
+            );
+        }
+
+        /// Deep-cloning a shallow clone has to drop every `base_id`, since the
+        /// result owns its files. An overlay whose `base_id` survives points at a
+        /// base the new manifest no longer lists.
+        #[tokio::test]
+        async fn deep_clone_of_shallow_clone_clears_overlay_base_id() {
+            use lance_core::utils::tempfile::TempStdDir;
+
+            let version = LanceFileVersion::Stable;
+            let test_dir = TempStdDir::default();
+            let source_uri = test_dir.join("source").to_str().unwrap().to_string();
+            let shallow_uri = test_dir.join("shallow").to_str().unwrap().to_string();
+            let deep_uri = test_dir.join("deep").to_str().unwrap().to_string();
+
+            let schema = Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id", DataType::Int32, true),
+                ArrowField::new("val", DataType::Int32, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..6)),
+                    Arc::new(Int32Array::from_iter_values((0..6).map(|v| v * 10))),
+                ],
+            )
+            .unwrap();
+            let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let dataset = Dataset::write(
+                reader,
+                &source_uri,
+                Some(WriteParams {
+                    max_rows_per_file: 6,
+                    data_storage_version: Some(version),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+            let mut dataset = commit_overlay(
+                dataset,
+                "overlay0",
+                0,
+                &[1],
+                OverlayCoverage::Shared(Arc::new(bitmap([0, 1]))),
+                vec![i32_array([Some(700), Some(701)])],
+                version,
+            )
+            .await;
+
+            let source_version = dataset.version().version;
+            dataset.tags().create("v", source_version).await.unwrap();
+            let mut shallow = dataset
+                .shallow_clone(&shallow_uri, "v", None)
+                .await
+                .unwrap();
+            // The shallow clone reaches the overlay through the parent.
+            assert!(
+                shallow.get_fragments()[0].metadata().overlays[0]
+                    .data_file
+                    .base_id
+                    .is_some(),
+                "the shallow clone must reference the parent's overlay by base_id"
+            );
+
+            let shallow_version = shallow.version().version;
+            shallow.tags().create("v", shallow_version).await.unwrap();
+            let deep = shallow.deep_clone(&deep_uri, "v", None).await.unwrap();
+
+            assert_eq!(
+                deep.get_fragments()[0].metadata().overlays[0]
+                    .data_file
+                    .base_id,
+                None,
+                "a deep clone owns its files, so the overlay must carry no base_id"
+            );
+            assert!(
+                deep.manifest.base_paths.is_empty(),
+                "a deep clone lists no external bases"
+            );
         }
 
         fn full_schema(dataset: &Dataset) -> Schema {

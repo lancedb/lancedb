@@ -911,6 +911,32 @@ pub async fn load_segments(
     Ok(Some(indices))
 }
 
+/// Return the fragment coverage for the logical FTS index selected by `column`
+/// and `document_granularity`.
+///
+/// Returns `None` when no FTS index is available or when any physical segment
+/// has unknown coverage. In either case, callers must not use the result for
+/// pruning.
+pub(crate) async fn fts_index_fragment_bitmap(
+    dataset: &Dataset,
+    column: &str,
+    document_granularity: DocumentGranularity,
+) -> Result<Option<RoaringBitmap>> {
+    let Some(segments) = load_segments(dataset, column, document_granularity).await? else {
+        return Ok(None);
+    };
+
+    let fragment_bitmap =
+        segments
+            .iter()
+            .try_fold(RoaringBitmap::new(), |mut coverage, segment| {
+                coverage |= segment.fragment_bitmap.as_ref()?.clone();
+                Some(coverage)
+            });
+
+    Ok(fragment_bitmap)
+}
+
 /// Load and validate the shared [`InvertedIndexDetails`] across committed
 /// segments returned by [`load_segments`].
 ///

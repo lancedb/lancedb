@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
+use std::fmt::Display;
+
 use lance_core::Result;
 
 use lance_table::format::IndexMetadata;
@@ -74,6 +76,9 @@ pub type ScalarIndexCriteria<'a> = IndexCriteria<'a>;
 pub struct FtsPrewarmOptions {
     /// If true, prewarm positions along with posting lists.
     pub with_position: bool,
+    /// Controls whether prewarm requires the full requested FTS working set to
+    /// remain resident when the operation completes.
+    pub mode: FtsPrewarmMode,
 }
 
 impl FtsPrewarmOptions {
@@ -84,6 +89,207 @@ impl FtsPrewarmOptions {
     pub fn with_position(mut self, with_position: bool) -> Self {
         self.with_position = with_position;
         self
+    }
+
+    pub fn with_mode(mut self, mode: FtsPrewarmMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn best_effort(mut self) -> Self {
+        self.mode = FtsPrewarmMode::BestEffort;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FtsPrewarmMode {
+    #[default]
+    Strict,
+    BestEffort,
+}
+
+impl FtsPrewarmMode {
+    pub fn is_best_effort(self) -> bool {
+        matches!(self, Self::BestEffort)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsPrewarmResult {
+    pub fully_resident: bool,
+    pub diagnostics: Option<FtsPrewarmDiagnostics>,
+}
+
+impl FtsPrewarmResult {
+    pub fn fully_resident() -> Self {
+        Self {
+            fully_resident: true,
+            diagnostics: None,
+        }
+    }
+
+    pub fn partial(diagnostics: FtsPrewarmDiagnostics) -> Self {
+        Self {
+            fully_resident: false,
+            diagnostics: Some(diagnostics),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsPrewarmDiagnostics {
+    pub partition_count: usize,
+    pub failing_segments: Vec<FtsPrewarmSegmentStatus>,
+    pub failing_partitions: Vec<FtsPrewarmPartitionStatus>,
+}
+
+impl FtsPrewarmDiagnostics {
+    pub fn fully_resident(&self) -> bool {
+        self.failing_segments.is_empty() && self.failing_partitions.is_empty()
+    }
+}
+
+impl Display for FtsPrewarmDiagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FTS prewarm completed without publishing query-ready scalar container, document, and posting state; \
+             {} segment(s) and {} of {} partition(s) are not fully resident",
+            self.failing_segments.len(),
+            self.failing_partitions.len(),
+            self.partition_count
+        )?;
+        if !self.failing_segments.is_empty() || !self.failing_partitions.is_empty() {
+            write!(f, ": ")?;
+            let mut first = true;
+            for segment in &self.failing_segments {
+                if !first {
+                    write!(f, "; ")?;
+                }
+                first = false;
+                write!(f, "{segment}")?;
+            }
+            for partition in &self.failing_partitions {
+                if !first {
+                    write!(f, "; ")?;
+                }
+                first = false;
+                write!(f, "{partition}")?;
+            }
+        }
+        write!(
+            f,
+            ". Likely cause: index cache pressure or insufficient capacity. \
+             Suggested remediation: increase index-cache capacity, reduce the number of FTS \
+             segments assigned to each executor, or adjust placement/segment sizing."
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsPrewarmSegmentStatus {
+    pub segment_id: String,
+    pub scalar_index_container_resident: bool,
+    pub scalar_index_container_matches_prewarmed: bool,
+}
+
+impl FtsPrewarmSegmentStatus {
+    pub fn query_ready(&self) -> bool {
+        self.scalar_index_container_resident && self.scalar_index_container_matches_prewarmed
+    }
+}
+
+impl Display for FtsPrewarmSegmentStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut missing = Vec::new();
+        if !self.scalar_index_container_resident {
+            missing.push("resident scalar index container");
+        }
+        if !self.scalar_index_container_matches_prewarmed {
+            missing.push("stable scalar index container identity");
+        }
+        write!(
+            f,
+            "segment {} missing {}",
+            self.segment_id,
+            missing.join(", ")
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FtsPrewarmPartitionStatus {
+    pub segment_id: Option<String>,
+    pub partition_id: u64,
+    pub documents: FtsPrewarmDocumentStatus,
+    pub posting_validation_ready: bool,
+    pub posting_resident: bool,
+    pub position_resident: Option<bool>,
+}
+
+impl FtsPrewarmPartitionStatus {
+    pub fn query_ready(&self) -> bool {
+        self.documents.query_ready()
+            && self.posting_validation_ready
+            && self.posting_resident
+            && self.position_resident.unwrap_or(true)
+    }
+}
+
+impl Display for FtsPrewarmPartitionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut missing = Vec::new();
+        if !self.documents.prewarm_complete {
+            missing.push("document prewarm completion");
+        }
+        if !self.documents.scoring_ready {
+            missing.push("scoring lengths/norms");
+        }
+        if !self.documents.reverse_lookup_ready {
+            missing.push("reverse document lookup");
+        }
+        if !self.documents.projection_resident {
+            missing.push("resident row-address projection");
+        }
+        if !self.posting_validation_ready {
+            missing.push("posting validation");
+        }
+        if !self.posting_resident {
+            missing.push("resident posting lists");
+        }
+        if self.position_resident == Some(false) {
+            missing.push("resident positions");
+        }
+        let segment = self
+            .segment_id
+            .as_deref()
+            .map(|segment_id| format!("segment {segment_id} "))
+            .unwrap_or_default();
+        write!(
+            f,
+            "{}partition {} missing {}",
+            segment,
+            self.partition_id,
+            missing.join(", ")
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FtsPrewarmDocumentStatus {
+    pub prewarm_complete: bool,
+    pub scoring_ready: bool,
+    pub reverse_lookup_ready: bool,
+    pub projection_resident: bool,
+}
+
+impl FtsPrewarmDocumentStatus {
+    pub fn query_ready(&self) -> bool {
+        self.prewarm_complete
+            && self.scoring_ready
+            && self.reverse_lookup_ready
+            && self.projection_resident
     }
 }
 

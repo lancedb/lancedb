@@ -1937,7 +1937,7 @@ async fn rechunk_stable_row_ids(
     for (fragment, sequence) in new_fragments.iter_mut().zip(new_sequences) {
         // TODO: if large enough, serialize to separate file
         let serialized = lance_table::rowids::write_row_ids(&sequence);
-        fragment.row_id_meta = Some(RowIdMeta::Inline(serialized));
+        fragment.row_id_meta = Some(RowIdMeta::Inline(serialized.into()));
     }
 
     Ok(())

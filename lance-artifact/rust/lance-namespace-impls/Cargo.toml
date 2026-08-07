@@ -79,11 +79,6 @@ base64 = { version = "0.22", optional = true }
 aws-sdk-sts = { version = "1.38.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { workspace = true, optional = true }
 
-# Pin: time 0.3.48 conflicts with aws-smithy-types (E0119: conflicting `From` impls), which this
-# crate pulls in via the AWS credential vendor. Capping time here forces the workspace resolver to
-# 0.3.47 even for no-lock builds. Not used directly; remove once the upstream conflict is resolved.
-time = "=0.3.47"
-
 # GCP credential vending dependencies (optional, enabled by "credential-vendor-gcp" feature)
 ring = { version = "0.17", optional = true }
 rustls-pki-types = { version = "1", optional = true }

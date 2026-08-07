@@ -285,23 +285,19 @@ impl U64Segment {
     }
 
     /// Get the min and max value of the segment, excluding tombstones.
+    ///
+    /// Returns `None` for an empty segment, which has no extrema. Decoding accepts an
+    /// empty encoding of every variant, so no arm here may assume it holds a value.
     pub fn range(&self) -> Option<RangeInclusive<u64>> {
         match self {
-            Self::Range(range) if range.is_empty() => None,
             Self::Range(range)
             | Self::RangeWithBitmap { range, .. }
-            | Self::RangeWithHoles { range, .. } => Some(range.start..=(range.end - 1)),
-            Self::SortedArray(array) => {
-                // We can assume that the array is sorted.
-                let min_value = array.first().unwrap();
-                let max_value = array.last().unwrap();
-                Some(min_value..=max_value)
+            | Self::RangeWithHoles { range, .. } => {
+                (!range.is_empty()).then(|| range.start..=(range.end - 1))
             }
-            Self::Array(array) => {
-                let min_value = array.min().unwrap();
-                let max_value = array.max().unwrap();
-                Some(min_value..=max_value)
-            }
+            // We can assume that the array is sorted.
+            Self::SortedArray(array) => Some(array.first()?..=array.last()?),
+            Self::Array(array) => Some(array.min()?..=array.max()?),
         }
     }
 
@@ -766,6 +762,30 @@ mod test {
             &[7000, 1, 24000],
             &U64Segment::Array(vec![7000, 1, 24000].into()),
         );
+    }
+
+    /// Decoding accepts an empty encoding of every variant, so `range()` must report the
+    /// absence of extrema for all of them rather than unwrapping a value or computing
+    /// `end - 1` on a zero-length range.
+    #[test]
+    fn test_empty_segments_have_no_range() {
+        let empty: Vec<u64> = Vec::new();
+        let segments = [
+            U64Segment::Range(5..5),
+            U64Segment::RangeWithHoles {
+                range: 0..0,
+                holes: empty.clone().into(),
+            },
+            U64Segment::RangeWithBitmap {
+                range: 0..0,
+                bitmap: Bitmap::new_empty(0),
+            },
+            U64Segment::SortedArray(empty.clone().into()),
+            U64Segment::Array(empty.into()),
+        ];
+        for segment in segments {
+            assert_eq!(segment.range(), None, "{segment:?} should have no range");
+        }
     }
 
     #[test]

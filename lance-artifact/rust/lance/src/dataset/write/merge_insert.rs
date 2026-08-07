@@ -715,6 +715,13 @@ impl MergeInsertBuilder {
     ///
     /// This updates `compacted_sstables` in the MemWAL index atomically with
     /// the data commit.
+    ///
+    /// **For multi-pass compaction, call this only on the final successful
+    /// data-changing pass.** Intermediate passes must not carry compaction
+    /// progress. Lance cannot tell whether a caller has another pass planned,
+    /// so it cannot enforce this: if a delete pass carried the marker and the
+    /// process then died before the matching upsert, the recorded generation
+    /// would claim rows were copied in that never were.
     pub fn mark_sstables_as_compacted(&mut self, sstables: Vec<CompactedSsTable>) -> &mut Self {
         self.params.compacted_sstables.extend(sstables);
         self
@@ -2520,7 +2527,7 @@ impl MergeInsertJob {
 
                     for (fragment, sequence) in new_fragments.iter_mut().zip(sequences) {
                         let serialized = lance_table::rowids::write_row_ids(&sequence);
-                        fragment.row_id_meta = Some(RowIdMeta::Inline(serialized));
+                        fragment.row_id_meta = Some(RowIdMeta::Inline(serialized.into()));
                     }
                 }
 

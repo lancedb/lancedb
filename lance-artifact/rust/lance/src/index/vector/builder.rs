@@ -68,7 +68,7 @@ use lance_index::{
 };
 use lance_index::{
     INDEX_METADATA_SCHEMA_KEY, IndexMetadata, IndexType, MAX_PARTITION_SIZE_FACTOR,
-    MIN_PARTITION_SIZE_PERCENT,
+    MIN_PARTITION_SIZE_PERCENT, scalar::OldIndexDataFilter,
 };
 use lance_io::local::to_local_path;
 use lance_io::stream::RecordBatchStream;
@@ -79,11 +79,14 @@ use lance_table::format::IndexFile;
 use log::info;
 use object_store::path::Path;
 use prost::Message;
+use roaring::RoaringBitmap;
+use tokio::sync::OnceCell;
 use tracing::{Level, instrument, span};
 
 use crate::Dataset;
 use crate::dataset::ProjectionRequest;
 use crate::dataset::index::dataset_format_version;
+use crate::index::append::build_old_data_filter;
 use crate::index::vector::ivf::v2::PartitionEntry;
 use crate::index::vector::utils::infer_vector_dim;
 
@@ -123,6 +126,89 @@ fn apply_centroid_splits(
     )?)
 }
 
+/// An index segment an optimize pass reads existing rows from, paired with the rows
+/// that segment is still allowed to contribute.
+///
+/// A segment's index file keeps every row it was built with, but the rows it may still
+/// contribute shrink afterwards: an update rewrites a row and either prunes its
+/// fragment from the segment's bitmap (in-place column rewrite) or deletion-marks the
+/// old physical row while the rewritten copy reuses its stable row id. Copying such a
+/// row into a merged segment would duplicate it, because the merged coverage also spans
+/// the fresh copy and nothing downstream can tell the two apart.
+///
+/// The filter is resolved on first use rather than up front: under stable row ids
+/// building it loads every covered fragment's row-id sequence, and the common optimize
+/// pass appends a delta without reading a single existing row.
+#[derive(Clone)]
+pub struct ExistingIndex {
+    pub index: Arc<dyn VectorIndex>,
+    coverage: Option<Arc<SegmentCoverage>>,
+}
+
+/// The inputs [`ExistingIndex::old_data_filter`] needs, plus the filter once built.
+struct SegmentCoverage {
+    dataset: Dataset,
+    effective_frags: RoaringBitmap,
+    deleted_frags: RoaringBitmap,
+    filter: OnceCell<Option<OldIndexDataFilter>>,
+}
+
+impl ExistingIndex {
+    /// An existing index whose rows are all still valid.
+    pub fn unfiltered(index: Arc<dyn VectorIndex>) -> Self {
+        Self {
+            index,
+            coverage: None,
+        }
+    }
+
+    /// An existing index that may only contribute rows still live in `effective_frags`.
+    pub fn with_coverage(
+        index: Arc<dyn VectorIndex>,
+        dataset: Dataset,
+        effective_frags: RoaringBitmap,
+        deleted_frags: RoaringBitmap,
+    ) -> Self {
+        Self {
+            index,
+            coverage: Some(Arc::new(SegmentCoverage {
+                dataset,
+                effective_frags,
+                deleted_frags,
+                filter: OnceCell::new(),
+            })),
+        }
+    }
+
+    /// Whether the filter has already been built. A pass that reads no existing rows
+    /// must never pay for one.
+    #[cfg(test)]
+    pub(crate) fn filter_is_built(&self) -> bool {
+        self.coverage
+            .as_deref()
+            .is_some_and(|coverage| coverage.filter.initialized())
+    }
+
+    /// The filter to apply to this segment's stored rows, or `None` when every row it
+    /// holds is still valid. Built once and shared by all partitions.
+    pub(crate) async fn old_data_filter(&self) -> Result<Option<&OldIndexDataFilter>> {
+        let Some(coverage) = self.coverage.as_deref() else {
+            return Ok(None);
+        };
+        let filter = coverage
+            .filter
+            .get_or_try_init(|| {
+                build_old_data_filter(
+                    &coverage.dataset,
+                    &coverage.effective_frags,
+                    &coverage.deleted_frags,
+                )
+            })
+            .await?;
+        Ok(filter.as_ref())
+    }
+}
+
 // Builder for IVF index
 // The builder will train the IVF model and quantizer, shuffle the dataset, and build the sub index
 // for each partition.
@@ -153,7 +239,7 @@ pub struct IvfIndexBuilder<S: IvfSubIndex, Q: Quantization> {
     shuffle_data_input: Mutex<Option<UnindexedStream>>,
 
     // fields for merging indices / remapping
-    existing_indices: Vec<Arc<dyn VectorIndex>>,
+    existing_indices: Vec<ExistingIndex>,
 
     frag_reuse_index: Option<Arc<FragReuseIndex>>,
 
@@ -283,7 +369,7 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
             quantizer: Some(ivf_index.quantizer().try_into()?),
             shuffle_reader: None,
             shuffle_data_input: Mutex::new(None),
-            existing_indices: vec![index],
+            existing_indices: vec![ExistingIndex::unfiltered(index)],
             frag_reuse_index: None,
             fragment_filter: None,
             optimize_options: None,
@@ -349,7 +435,7 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
         };
 
         log::info!("remap {} partitions", ivf.num_partitions());
-        let existing_index = self.existing_indices[0].clone();
+        let existing_index = self.existing_indices[0].index.clone();
         let mapping = Arc::new(mapping.clone());
         let build_iter =
             (0..ivf.num_partitions()).map(move |part_id| {
@@ -393,8 +479,16 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
         self
     }
 
+    /// Read existing rows from `indices`, keeping every row they hold.
     pub fn with_existing_indices(&mut self, indices: Vec<Arc<dyn VectorIndex>>) -> &mut Self {
-        self.existing_indices = indices;
+        self.existing_indices = indices.into_iter().map(ExistingIndex::unfiltered).collect();
+        self
+    }
+
+    /// Read existing rows from `sources`, keeping only the rows each segment is still
+    /// allowed to contribute. See [`ExistingIndex`].
+    pub fn with_existing_index_sources(&mut self, sources: Vec<ExistingIndex>) -> &mut Self {
+        self.existing_indices = sources;
         self
     }
 
@@ -1029,12 +1123,13 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
     #[instrument(name = "take_partition_batches", level = "debug", skip_all)]
     async fn take_partition_batches(
         part_id: usize,
-        existing_indices: &[Arc<dyn VectorIndex>],
+        existing_indices: &[ExistingIndex],
         reader: Option<&dyn ShuffleReader>,
     ) -> Result<(Vec<RecordBatch>, f64)> {
         let mut batches = Vec::new();
-        for existing_index in existing_indices.iter() {
-            let existing_index = existing_index
+        for source in existing_indices.iter() {
+            let existing_index = source
+                .index
                 .as_any()
                 .downcast_ref::<IVFIndex<S, Q>>()
                 .ok_or(Error::invalid_input("existing index is not IVF index"))?;
@@ -1044,6 +1139,11 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
             if part_id >= existing_index.ivf_model().num_partitions() {
                 continue;
             }
+
+            // Resolved before the partition is decoded: partitions are built
+            // concurrently, so whichever one builds the filter would otherwise hold a
+            // decoded partition per in-flight task while the rest wait on it.
+            let old_data_filter = source.old_data_filter().await?;
 
             let part_storage = existing_index.load_partition_storage(part_id, None).await?;
             let mut part_batches = part_storage.to_batches()?.collect::<Vec<_>>();
@@ -1084,6 +1184,18 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
                     }
                 }
                 _ => {}
+            }
+
+            // Drop rows this segment may no longer contribute. They are physically
+            // still in its index file, and the merged segment covers their live copies
+            // again, so keeping them would emit the same row twice.
+            if let Some(filter) = old_data_filter {
+                for batch in part_batches.iter_mut() {
+                    let keep = filter.filter_row_ids(batch[ROW_ID].as_primitive::<UInt64Type>());
+                    if keep.true_count() < batch.num_rows() {
+                        *batch = arrow::compute::filter_record_batch(batch, &keep)?;
+                    }
+                }
             }
 
             batches.extend(part_batches);
@@ -1454,7 +1566,7 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
     fn check_partition_adjustment(
         ivf: &IvfModel,
         reader: &dyn ShuffleReader,
-        existing_indices: &[Arc<dyn VectorIndex>],
+        existing_indices: &[ExistingIndex],
     ) -> Result<(Vec<usize>, Option<usize>)> {
         let index_type = IndexType::try_from(
             index_type_string(S::name().try_into()?, Q::quantization_type()).as_str(),
@@ -1465,8 +1577,8 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
         let mut min_partition_size = usize::MAX;
         for partition in 0..ivf.num_partitions() {
             let mut num_rows = reader.partition_size(partition)?;
-            for index in existing_indices.iter() {
-                num_rows += index.partition_size(partition);
+            for source in existing_indices.iter() {
+                num_rows += source.index.partition_size(partition);
             }
             if num_rows > MAX_PARTITION_SIZE_FACTOR * index_type.target_partition_size() {
                 split_partitions.push(partition);
@@ -2033,7 +2145,8 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
     async fn partition_row_ids(&self, part_idx: usize) -> Result<Vec<u64>> {
         // existing part: read from the existing indices
         let mut row_ids = Vec::new();
-        for index in self.existing_indices.iter() {
+        for source in self.existing_indices.iter() {
+            let index = &source.index;
             if part_idx >= index.ivf_model().num_partitions() {
                 // there was a bug that may cause delta indices have different number of partitions,
                 // it's safe to skip loading the extra partition, and split/join the existing partitions,
@@ -2049,8 +2162,21 @@ impl<S: IvfSubIndex + 'static, Q: Quantization + 'static> IvfIndexBuilder<S, Q> 
             let mut reader = index
                 .partition_reader(part_idx, false, &NoOpMetricsCollector)
                 .await?;
+            let old_data_filter = source.old_data_filter().await?;
             while let Some(batch) = reader.try_next().await? {
-                row_ids.extend(batch[ROW_ID].as_primitive::<UInt64Type>().values());
+                let batch_row_ids = batch[ROW_ID].as_primitive::<UInt64Type>();
+                match old_data_filter {
+                    // Rows the segment may no longer contribute must not be reassigned
+                    // to a partition; their live copy comes from another source.
+                    Some(filter) => row_ids.extend(
+                        batch_row_ids
+                            .values()
+                            .iter()
+                            .zip(filter.filter_row_ids(batch_row_ids).values().iter())
+                            .filter_map(|(row_id, keep)| keep.then_some(row_id)),
+                    ),
+                    None => row_ids.extend(batch_row_ids.values()),
+                }
             }
         }
 

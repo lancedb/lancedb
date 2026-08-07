@@ -806,6 +806,11 @@ pub(crate) async fn cleanup_data_fragments(
     let data_dir = base_dir.clone().join(DATA_DIR);
     let mut skipped_external = 0usize;
     for fragment in fragments {
+        // Deliberately not `referenced_lance_files()`: callers decide which
+        // files belong to the failed write. `schema_evolution` passes a live
+        // fragment whose `files` it narrowed to the newly written ones while
+        // leaving `overlays` untouched, so including overlays here would delete
+        // live data.
         for file in &fragment.files {
             let (store, file_dir) = if let Some(base_id) = file.base_id {
                 match target_bases.and_then(|bases| bases.iter().find(|b| b.base_id == base_id)) {

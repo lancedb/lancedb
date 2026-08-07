@@ -253,7 +253,7 @@ impl Manifest {
             .iter()
             .map(|fragment| {
                 let mut cloned_fragment = fragment.clone();
-                for file in &mut cloned_fragment.files {
+                for file in cloned_fragment.referenced_lance_files_mut() {
                     if file.base_id.is_none() {
                         file.base_id = Some(ref_base_id);
                     }
@@ -1117,6 +1117,51 @@ mod tests {
 
     use arrow_schema::{Field as ArrowField, Schema as ArrowSchema};
     use lance_core::datatypes::Field;
+
+    /// A shallow clone points every local file at the parent through `base_id`.
+    /// An overlay's data file lives in the parent too, so it needs the same
+    /// stamp; without it the clone looks for the overlay under its own root.
+    #[test]
+    fn shallow_clone_stamps_base_id_on_overlay_files() {
+        use crate::format::overlay::{DataOverlayFile, OverlayCoverage};
+        use roaring::RoaringBitmap;
+
+        let arrow_schema = ArrowSchema::new(vec![ArrowField::new(
+            "a",
+            arrow_schema::DataType::Int64,
+            false,
+        )]);
+        let schema = Schema::try_from(&arrow_schema).unwrap();
+
+        let mut fragment = Fragment::with_file_legacy(0, "base.lance", &schema, Some(10));
+        fragment.overlays = vec![DataOverlayFile {
+            data_file: DataFile::new_legacy_from_fields("overlay.lance", vec![0], None),
+            coverage: OverlayCoverage::Shared(Arc::new(RoaringBitmap::from_iter([0_u32]))),
+            committed_version: 1,
+        }];
+        let manifest = Manifest::new(
+            schema,
+            Arc::new(vec![fragment]),
+            DataStorageFormat::default(),
+            HashMap::new(),
+        );
+
+        let cloned = manifest.shallow_clone(
+            Some("parent".to_string()),
+            "memory://parent".to_string(),
+            7,
+            None,
+            String::new(),
+        );
+
+        let fragment = &cloned.fragments[0];
+        assert_eq!(fragment.files[0].base_id, Some(7));
+        assert_eq!(
+            fragment.overlays[0].data_file.base_id,
+            Some(7),
+            "the overlay's data file resolves against the parent as well"
+        );
+    }
 
     #[test]
     fn old_empty_manifest_recovers_v1_or_current_stable() {

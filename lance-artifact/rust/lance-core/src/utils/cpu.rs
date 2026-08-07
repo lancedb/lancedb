@@ -213,6 +213,14 @@ pub static SIMD_SUPPORT: LazyLock<SimdSupport> = LazyLock::new(|| {
             SimdSupport::None
         }
     }
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )))]
+    {
+        SimdSupport::None
+    }
 });
 
 #[cfg(target_arch = "x86_64")]

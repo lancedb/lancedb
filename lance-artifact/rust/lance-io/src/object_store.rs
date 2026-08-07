@@ -6,7 +6,7 @@
 //! Extend [object_store::ObjectStore] functionalities
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -960,6 +960,53 @@ impl ObjectStore {
         Ok(())
     }
 
+    /// Remove eligible materialized empty directories below a local root.
+    ///
+    /// This is a no-op for object stores, which do not materialize directories.
+    /// Traversal does not follow symbolic links. Directories in `retained_dirs` and their
+    /// descendants are preserved. Other directories are removed only if they are empty and
+    /// either appear in `verified_dirs` or predate `unmodified_since`. Passing `None` for
+    /// `unmodified_since` disables the age check.
+    ///
+    /// ```
+    /// # use std::collections::HashSet;
+    /// # use chrono::Utc;
+    /// # use lance_core::Result;
+    /// # use lance_io::object_store::ObjectStore;
+    /// # async fn remove_stale_index_dirs(store: &ObjectStore) -> Result<()> {
+    /// store
+    ///     .remove_empty_dirs(
+    ///         "dataset/_indices",
+    ///         HashSet::new(),
+    ///         HashSet::new(),
+    ///         Some(Utc::now()),
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn remove_empty_dirs(
+        &self,
+        root_path: impl Into<Path>,
+        retained_dirs: HashSet<Path>,
+        verified_dirs: HashSet<Path>,
+        unmodified_since: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        if !self.is_local() && self.scheme != "file-object-store" {
+            return Ok(());
+        }
+
+        let path = Path::parse(root_path.into())?;
+        let metrics = self.io_tracker.begin_io("delete");
+        let result = tokio::task::spawn_blocking(move || {
+            super::local::remove_empty_dirs(&path, &retained_dirs, &verified_dirs, unmodified_since)
+        })
+        .await
+        .map_err(|error| Error::io(format!("empty-directory cleanup task failed: {error}")))?;
+        metrics.record(&result, 0);
+        result
+    }
+
     pub fn remove_stream<'a>(
         &'a self,
         locations: BoxStream<'a, Result<Path>>,
@@ -1488,6 +1535,84 @@ mod tests {
             .unwrap();
 
         assert!(!path.join("foo").exists());
+    }
+
+    #[rstest]
+    #[case("file")]
+    #[case("file-object-store")]
+    #[tokio::test]
+    async fn test_remove_empty_directories(#[case] scheme: &str) {
+        let path = TempStdDir::default();
+        let stale_dir = path.join("stale");
+        let nested_stale_dir = path.join("nested_stale");
+        let nested_stale_child = nested_stale_dir.join("child");
+        create_dir_all(&stale_dir).unwrap();
+        create_dir_all(&nested_stale_child).unwrap();
+        create_dir_all(path.join("retained").join("child")).unwrap();
+        write_to_file(
+            path.join("file_bearing")
+                .join("test_file")
+                .to_str()
+                .unwrap(),
+            "keep",
+        )
+        .unwrap();
+        create_dir_all(path.join("file_bearing").join("empty_child")).unwrap();
+
+        let file_url = Url::from_directory_path(&path).unwrap();
+        let mut url = Url::parse(&format!("{scheme}:///")).unwrap();
+        url.set_path(file_url.path());
+        let (store, base) = ObjectStore::from_uri(url.as_ref()).await.unwrap();
+
+        #[cfg(unix)]
+        let unmodified_since = {
+            let old_modified_time =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 60 * 60);
+            for directory in [&stale_dir, &nested_stale_dir, &nested_stale_child] {
+                std::fs::File::open(directory)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(old_modified_time))
+                    .unwrap();
+            }
+            DateTime::<Utc>::from(std::time::SystemTime::now())
+                - chrono::TimeDelta::try_days(7).unwrap()
+        };
+        #[cfg(not(unix))]
+        let unmodified_since = DateTime::<Utc>::from(std::time::SystemTime::now())
+            + chrono::TimeDelta::try_days(1).unwrap();
+
+        store
+            .remove_empty_dirs(
+                base.clone(),
+                HashSet::from([base.clone().join("retained")]),
+                HashSet::new(),
+                Some(unmodified_since),
+            )
+            .await
+            .unwrap();
+
+        assert!(!path.join("stale").exists());
+        assert!(!path.join("nested_stale").exists());
+        assert!(path.join("retained").join("child").exists());
+        assert!(path.join("file_bearing").join("empty_child").exists());
+
+        create_dir_all(path.join("fresh")).unwrap();
+        create_dir_all(path.join("verified")).unwrap();
+        store
+            .remove_empty_dirs(
+                base.clone(),
+                HashSet::from([base.clone().join("retained")]),
+                HashSet::from([base.clone().join("verified")]),
+                Some(
+                    DateTime::<Utc>::from(std::time::SystemTime::now())
+                        - chrono::TimeDelta::try_days(7).unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(path.join("fresh").exists());
+        assert!(!path.join("verified").exists());
     }
 
     #[derive(Debug)]

@@ -1947,10 +1947,12 @@ impl<'a> TransactionRebase<'a> {
                     .position(|idx| idx.name == MEM_WAL_INDEX_NAME)
                     .unwrap();
 
-                let current_meta = new_indices.remove(pos);
-                let mut details = load_mem_wal_index_details(current_meta)?;
+                let mut details = load_mem_wal_index_details(new_indices[pos].clone())?;
 
-                // Reconcile conflicting compacted_sstables by keeping each shard's higher generation.
+                // Reconcile conflicting compacted_sstables by keeping each shard's higher
+                // generation. Both sides are already-committed facts here, so the higher one
+                // is correct; rejecting a stale proposal is the job of apply-time validation
+                // against the latest state, which runs after this rebase.
                 // We own self so we can consume conflicting_mem_wal_compacted_sstables directly
                 for new_sstable in self.conflicting_mem_wal_compacted_sstables {
                     if let Some(existing) = details
@@ -1966,8 +1968,8 @@ impl<'a> TransactionRebase<'a> {
                     }
                 }
 
-                let new_meta = new_mem_wal_index_meta(dataset.manifest.version, details)?;
-                new_indices.push(new_meta);
+                // Replaced in place so the index list keeps its order.
+                new_indices[pos] = new_mem_wal_index_meta(dataset.manifest.version, details)?;
             }
 
             for singleton_name in [FRAG_REUSE_INDEX_NAME, MEM_WAL_INDEX_NAME] {

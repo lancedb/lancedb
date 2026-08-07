@@ -26,6 +26,7 @@ use object_store::path::Path;
 use roaring::RoaringBitmap;
 use tokio::sync::OnceCell;
 
+use crate::FtsPrewarmDocumentStatus;
 use crate::scalar::{IndexReader, IndexStore, RowIdRemapper};
 
 use super::index::{
@@ -658,10 +659,23 @@ impl PartitionDocumentStore {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn query_ready(&self) -> bool {
         match self {
             Self::Legacy(_) => true,
             Self::Modern(docs) => docs.query_ready(),
+        }
+    }
+
+    pub(crate) fn prewarm_status(&self) -> FtsPrewarmDocumentStatus {
+        match self {
+            Self::Legacy(_) => FtsPrewarmDocumentStatus {
+                prewarm_complete: true,
+                scoring_ready: true,
+                reverse_lookup_ready: true,
+                projection_resident: true,
+            },
+            Self::Modern(docs) => docs.prewarm_status(),
         }
     }
 
@@ -776,17 +790,24 @@ impl PartitionDocuments {
         self.resident_address_projection().is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn query_ready(&self) -> bool {
-        self.prewarm_complete.initialized()
-            && self
+        self.prewarm_status().query_ready()
+    }
+
+    pub(crate) fn prewarm_status(&self) -> FtsPrewarmDocumentStatus {
+        FtsPrewarmDocumentStatus {
+            prewarm_complete: self.prewarm_complete.initialized(),
+            scoring_ready: self
                 .lengths
                 .get()
-                .is_some_and(|lengths| lengths.scoring_ready())
-            && self
+                .is_some_and(|lengths| lengths.scoring_ready()),
+            reverse_lookup_ready: self
                 .projection
                 .get()
-                .is_some_and(|projection| projection.doc_ids_by_address.initialized())
-            && self.projection_resident()
+                .is_some_and(|projection| projection.doc_ids_by_address.initialized()),
+            projection_resident: self.projection_resident(),
+        }
     }
 
     async fn reader(&self) -> Result<Arc<dyn IndexReader>> {

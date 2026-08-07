@@ -392,7 +392,7 @@ impl Default for DataLocation {
     }
 }
 
-/// A DataFusion error that be be emitted multiple times. We provide the
+/// A DataFusion error that can be emitted multiple times. We provide the
 /// Original error first, and subsequent conversions provide a copy with a
 /// string representation of the original error.
 #[derive(Debug)]

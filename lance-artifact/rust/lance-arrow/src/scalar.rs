@@ -4,10 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
-use arrow_array::{ArrayRef, make_array};
+use arrow_array::{ArrayRef, UInt64Array, make_array};
 use arrow_buffer::Buffer;
-use arrow_data::{ArrayDataBuilder, transform::MutableArrayData};
+use arrow_data::ArrayDataBuilder;
 use arrow_schema::{ArrowError, DataType};
+use arrow_select::take::take;
 
 use crate::DataTypeExt;
 
@@ -22,10 +23,7 @@ pub fn extract_scalar_value(array: &ArrayRef, idx: usize) -> Result<ArrayRef> {
         ));
     }
 
-    let data = array.to_data();
-    let mut mutable = MutableArrayData::new(vec![&data], /*use_nulls=*/ true, 1);
-    mutable.extend(0, idx, idx + 1);
-    Ok(make_array(mutable.freeze()))
+    take(array.as_ref(), &UInt64Array::from(vec![idx as u64]), None)
 }
 
 fn read_u32(buf: &[u8], offset: &mut usize) -> Result<u32> {
@@ -198,7 +196,10 @@ pub fn try_inline_value(scalar: &ArrayRef) -> Option<Vec<u8>> {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{BooleanArray, FixedSizeBinaryArray, Int32Array, StringArray, cast::AsArray};
+    use arrow_array::{
+        BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int8Array, Int32Array, StringArray,
+        cast::AsArray, types::Int8Type,
+    };
 
     use super::*;
 
@@ -213,6 +214,24 @@ mod tests {
                 .value(0),
             3
         );
+    }
+
+    #[test]
+    fn test_extract_scalar_value_from_full_dictionary() {
+        let values = Arc::new(StringArray::from(
+            (0..=i8::MAX)
+                .map(|value| format!("value-{value}"))
+                .collect::<Vec<_>>(),
+        ));
+        let keys = Int8Array::from((0..=i8::MAX).collect::<Vec<_>>());
+        let array: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::new(keys, values));
+
+        let scalar = extract_scalar_value(&array, i8::MAX as usize).unwrap();
+
+        let scalar = scalar.as_dictionary::<Int8Type>();
+        assert_eq!(scalar.len(), 1);
+        assert_eq!(scalar.key(0), Some(i8::MAX as usize));
+        assert_eq!(scalar.values().len(), i8::MAX as usize + 1);
     }
 
     #[test]

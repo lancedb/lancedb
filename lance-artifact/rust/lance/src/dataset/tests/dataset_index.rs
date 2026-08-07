@@ -5,6 +5,9 @@
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::vec;
 
@@ -32,7 +35,9 @@ use arrow_schema::{
     DataType, Field as ArrowField, Field, Fields as ArrowFields, Schema as ArrowSchema,
 };
 use lance_arrow::ARROW_EXT_NAME_KEY;
-use lance_core::cache::LanceCache;
+use lance_core::cache::{
+    CacheBackend, CacheCodec, CacheEntry, InternalCacheKey, LanceCache, QuickCacheBackend,
+};
 use lance_core::utils::tempfile::TempStrDir;
 use lance_datafusion::exec::ExecutionSummaryCounts;
 use lance_datagen::{BatchCount, Dimension, RowCount, array, gen_batch};
@@ -44,12 +49,12 @@ use lance_index::metrics::{
     COMPOUND_SCORE_FLOOR_OVERFLOWS_METRIC,
 };
 use lance_index::optimize::OptimizeOptions;
-use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::{
     DocumentGranularity, InvertedListFormatVersion, SCORE_COL,
     query::{BooleanQuery, BoostQuery, MatchQuery, Occur, Operator, PhraseQuery},
     tokenizer::InvertedIndexParams,
 };
+use lance_index::scalar::{FullTextSearchQuery, ScalarIndex};
 use lance_index::{FtsPrewarmOptions, PrewarmOptions};
 use lance_index::{IndexType, scalar::ScalarIndexParams, vector::DIST_COL};
 use lance_io::scheduler::{ScanScheduler, SchedulerConfig};
@@ -1317,6 +1322,54 @@ async fn test_same_column_compound_scorer_is_exact_and_bounded() {
         plan.contains("CompoundFtsScorer"),
         "bounded same-column MultiMatch should use posting-backed scorers:\n{plan}"
     );
+}
+
+#[tokio::test]
+async fn test_compound_phrase_confirmation_short_circuit_is_exact() {
+    let texts = (0..100)
+        .map(|row| {
+            if row % 10 == 0 {
+                "high cost phrase check cheap reject bonus"
+            } else if row % 5 == 0 {
+                "high cost phrase check cheap reject"
+            } else {
+                "high cost phrase check cheap filler reject"
+            }
+        })
+        .collect::<Vec<_>>();
+    let batch = arrow_array::record_batch!(("text", Utf8, texts)).unwrap();
+    let schema = batch.schema();
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema),
+        "memory://",
+        Some(WriteParams {
+            max_rows_per_file: 25,
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(dataset.get_fragments().len(), 4);
+    create_fragmented_fts_index(&mut dataset, "text", true).await;
+
+    let phrase_query = |terms: &str| -> FtsQuery {
+        PhraseQuery::new(terms.to_owned())
+            .with_column(Some("text".to_owned()))
+            .into()
+    };
+    let query: FtsQuery = BooleanQuery::new([
+        (Occur::Must, phrase_query("high cost phrase check")),
+        (Occur::Must, phrase_query("cheap reject")),
+    ])
+    .into();
+    assert_compound_fts_top_k(&dataset, query.clone(), 10).await;
+
+    let nested: FtsQuery = BooleanQuery::new([
+        (Occur::Must, query.clone()),
+        (Occur::Should, compound_match_query("bonus", "text", 1.0)),
+    ])
+    .into();
+    assert_compound_fts_top_k(&dataset, nested, 10).await;
 }
 
 #[tokio::test]
@@ -3017,6 +3070,290 @@ async fn test_prewarm_index_with_position_validation() {
     assert_contains!(
         err,
         "FTS prewarm options are only supported for inverted indices"
+    );
+}
+
+#[tokio::test]
+async fn test_fts_best_effort_prewarm_result_reports_dataset_partial_residency() {
+    let tmpdir = TempStrDir::default();
+    let uri = tmpdir.to_owned();
+    drop(tmpdir);
+
+    let doc_col: Arc<dyn Array> = Arc::new(GenericStringArray::<i32>::from_iter_values(
+        (0..4096).map(|row| format!("cache pressure token {row}")),
+    ));
+    let ids = UInt64Array::from_iter_values(0..doc_col.len() as u64);
+    let batch = RecordBatch::try_new(
+        arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("doc", doc_col.data_type().to_owned(), true),
+            arrow_schema::Field::new("id", DataType::UInt64, false),
+        ])
+        .into(),
+        vec![Arc::new(doc_col) as ArrayRef, Arc::new(ids) as ArrayRef],
+    )
+    .unwrap();
+    let schema = batch.schema();
+    let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+    let mut dataset = Dataset::write(batches, &uri, None).await.unwrap();
+    dataset
+        .create_index(
+            &["doc"],
+            IndexType::Inverted,
+            Some("fts_idx".to_owned()),
+            &InvertedIndexParams::default(),
+            true,
+        )
+        .await
+        .unwrap();
+
+    let session = Arc::new(Session::with_index_cache_backend(
+        Arc::new(QuickCacheBackend::with_capacity(8 * 1024)),
+        8 * 1024,
+        Arc::new(lance_io::object_store::ObjectStoreRegistry::default()),
+    ));
+    let dataset = DatasetBuilder::from_uri(&uri)
+        .with_session(session)
+        .load()
+        .await
+        .unwrap();
+    let options = PrewarmOptions::Fts(FtsPrewarmOptions::default().best_effort());
+
+    dataset
+        .prewarm_index_with_options("fts_idx", &options)
+        .await
+        .unwrap();
+    let result = dataset
+        .prewarm_index_with_options_result("fts_idx", &options)
+        .await
+        .unwrap();
+
+    assert!(
+        !result.fully_resident,
+        "tiny cache should make best-effort dataset prewarm report partial residency"
+    );
+    let diagnostics = result
+        .diagnostics
+        .expect("partial dataset prewarm should return aggregate diagnostics");
+    assert!(diagnostics.partition_count > 0);
+    assert!(!diagnostics.failing_segments.is_empty() || !diagnostics.failing_partitions.is_empty());
+    assert!(
+        diagnostics
+            .failing_partitions
+            .iter()
+            .all(|partition| partition.segment_id.is_some()),
+        "dataset aggregation should attach segment ids to partition diagnostics"
+    );
+}
+
+#[derive(Debug)]
+struct SingleScalarContainerCacheBackend {
+    inner: QuickCacheBackend,
+    scalar_container_inserts: AtomicUsize,
+}
+
+impl SingleScalarContainerCacheBackend {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: QuickCacheBackend::with_capacity(capacity),
+            scalar_container_inserts: AtomicUsize::new(0),
+        }
+    }
+
+    fn rejects_scalar_container(entry: &CacheEntry, codec: Option<&CacheCodec>) -> bool {
+        codec.is_none() && entry.as_ref().is::<Arc<dyn ScalarIndex>>()
+    }
+}
+
+#[async_trait::async_trait]
+impl CacheBackend for SingleScalarContainerCacheBackend {
+    async fn get(&self, key: &InternalCacheKey, codec: Option<CacheCodec>) -> Option<CacheEntry> {
+        self.inner.get(key, codec).await
+    }
+
+    async fn insert(
+        &self,
+        key: &InternalCacheKey,
+        entry: CacheEntry,
+        size_bytes: usize,
+        codec: Option<CacheCodec>,
+    ) {
+        if Self::rejects_scalar_container(&entry, codec.as_ref())
+            && self
+                .scalar_container_inserts
+                .fetch_add(1, Ordering::Relaxed)
+                > 0
+        {
+            return;
+        }
+        self.inner.insert(key, entry, size_bytes, codec).await;
+    }
+
+    async fn get_or_insert<'a>(
+        &self,
+        key: &InternalCacheKey,
+        loader: Pin<Box<dyn Future<Output = Result<(CacheEntry, usize)>> + Send + 'a>>,
+        codec: Option<CacheCodec>,
+    ) -> Result<(CacheEntry, bool)> {
+        if codec.is_none() {
+            if let Some(entry) = self.inner.get(key, None).await {
+                return Ok((entry, true));
+            }
+            let (entry, size_bytes) = loader.await?;
+            if Self::rejects_scalar_container(&entry, None)
+                && self
+                    .scalar_container_inserts
+                    .fetch_add(1, Ordering::Relaxed)
+                    > 0
+            {
+                return Ok((entry, false));
+            }
+            self.inner
+                .insert(key, entry.clone(), size_bytes, codec)
+                .await;
+            return Ok((entry, false));
+        }
+        self.inner.get_or_insert(key, loader, codec).await
+    }
+
+    async fn clear(&self) {
+        self.inner.clear().await;
+    }
+
+    async fn num_entries(&self) -> usize {
+        self.inner.num_entries().await
+    }
+
+    async fn size_bytes(&self) -> usize {
+        self.inner.size_bytes().await
+    }
+
+    fn approx_num_entries(&self) -> usize {
+        self.inner.approx_num_entries()
+    }
+
+    fn approx_size_bytes(&self) -> usize {
+        self.inner.approx_size_bytes()
+    }
+}
+
+async fn two_segment_fts_dataset(uri: &str) -> Dataset {
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("doc", DataType::Utf8, true),
+        arrow_schema::Field::new("id", DataType::UInt64, false),
+    ]));
+    let make_batch = |fragment: u64| {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(GenericStringArray::<i32>::from_iter_values(
+                    (0..32u64).map(|row| format!("segment {fragment} token {row}")),
+                )) as ArrayRef,
+                Arc::new(UInt64Array::from_iter_values(
+                    (0..32u64).map(|row| fragment * 32 + row),
+                )) as ArrayRef,
+            ],
+        )
+        .unwrap()
+    };
+
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![make_batch(0)].into_iter().map(Ok), schema.clone()),
+        uri,
+        None,
+    )
+    .await
+    .unwrap();
+    dataset
+        .create_index(
+            &["doc"],
+            IndexType::Inverted,
+            Some("fts_idx".to_owned()),
+            &InvertedIndexParams::default(),
+            true,
+        )
+        .await
+        .unwrap();
+    dataset
+        .append(
+            RecordBatchIterator::new(vec![make_batch(1)].into_iter().map(Ok), schema),
+            None,
+        )
+        .await
+        .unwrap();
+    dataset
+        .optimize_indices(&OptimizeOptions::append())
+        .await
+        .unwrap();
+    assert_eq!(
+        dataset.load_indices_by_name("fts_idx").await.unwrap().len(),
+        2
+    );
+    dataset
+}
+
+async fn open_with_single_scalar_container_cache(uri: &str) -> Dataset {
+    let session = Arc::new(Session::with_index_cache_backend(
+        Arc::new(SingleScalarContainerCacheBackend::new(128 * 1024 * 1024)),
+        128 * 1024 * 1024,
+        Arc::new(lance_io::object_store::ObjectStoreRegistry::default()),
+    ));
+    DatasetBuilder::from_uri(uri)
+        .with_session(session)
+        .load()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_fts_best_effort_prewarm_reports_missing_scalar_container() {
+    let tmpdir = TempStrDir::default();
+    let uri = tmpdir.to_owned();
+    two_segment_fts_dataset(&uri).await;
+    let dataset = open_with_single_scalar_container_cache(&uri).await;
+    let options = PrewarmOptions::Fts(FtsPrewarmOptions::default().best_effort());
+
+    let result = dataset
+        .prewarm_index_with_options_result("fts_idx", &options)
+        .await
+        .unwrap();
+
+    assert!(
+        !result.fully_resident,
+        "dataset prewarm must be partial when a selected segment's scalar index \
+         container is not cache-resident"
+    );
+    let diagnostics = result
+        .diagnostics
+        .expect("missing scalar container should produce aggregate diagnostics");
+    assert_eq!(
+        diagnostics.failing_segments.len(),
+        1,
+        "only the rejected scalar container should be reported as missing"
+    );
+    assert!(
+        diagnostics.failing_partitions.is_empty(),
+        "a missing scalar container should not be represented as a partition failure"
+    );
+    let failure = &diagnostics.failing_segments[0];
+    assert!(!failure.scalar_index_container_resident);
+    assert!(!failure.scalar_index_container_matches_prewarmed);
+}
+
+#[tokio::test]
+async fn test_fts_strict_prewarm_fails_missing_scalar_container() {
+    let tmpdir = TempStrDir::default();
+    let uri = tmpdir.to_owned();
+    two_segment_fts_dataset(&uri).await;
+    let dataset = open_with_single_scalar_container_cache(&uri).await;
+    let options = PrewarmOptions::Fts(FtsPrewarmOptions::default());
+
+    let err = dataset
+        .prewarm_index_with_options_result("fts_idx", &options)
+        .await
+        .expect_err("strict prewarm should fail after final scalar-container audit");
+    assert!(
+        err.to_string().contains("resident scalar index container"),
+        "strict error should describe the missing scalar container: {err}"
     );
 }
 

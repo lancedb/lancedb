@@ -95,7 +95,8 @@ impl<T: Clone + std::fmt::Debug> WatchableOnceCellReader<T> {
 /// optimizing S3 throughput by spreading sequential writes across internal partitions.
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// # use lance::dataset::mem_wal::util::bit_reverse_u64;
 /// // 5 in binary: 000...101
 /// // Reversed:    101...000
 /// assert_eq!(bit_reverse_u64(5), 0xa000000000000000);

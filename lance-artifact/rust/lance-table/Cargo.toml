@@ -24,6 +24,7 @@ arrow-ipc.workspace = true
 arrow-schema.workspace = true
 async-trait.workspace = true
 aws-credential-types = { workspace = true, optional = true }
+blake3.workspace = true
 aws-sdk-dynamodb = { workspace = true, optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
 byteorder.workspace = true
 bytes.workspace = true

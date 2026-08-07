@@ -232,6 +232,7 @@ mod tests {
     use super::*;
 
     use approx::assert_relative_eq;
+    use arrow::buffer::NullBuffer;
     use arrow_array::{FixedSizeListArray, Float16Array, Float32Array, Int32Array};
     use arrow_schema::Schema;
     use half::f16;
@@ -346,6 +347,91 @@ mod tests {
 
         let dup_drop_result = transformer.transform(&output);
         assert!(dup_drop_result.is_ok());
+    }
+
+    /// Builds a 2-dim FSL column with one row per `rows` entry. `None` means a
+    /// null vector; otherwise the two f32 values are used as-is.
+    fn fsl_batch(rows: &[Option<[f32; 2]>]) -> RecordBatch {
+        let values = Float32Array::from(
+            rows.iter()
+                .flat_map(|row| row.unwrap_or([0.0, 0.0]))
+                .collect::<Vec<f32>>(),
+        );
+        let nulls = NullBuffer::from(rows.iter().map(Option::is_some).collect::<Vec<bool>>());
+        let item = Arc::new(Field::new("item", DataType::Float32, true));
+        let fsl =
+            FixedSizeListArray::try_new(item.clone(), 2, Arc::new(values), Some(nulls)).unwrap();
+        let schema = Schema::new(vec![Field::new(
+            "v",
+            DataType::FixedSizeList(item, 2),
+            true,
+        )]);
+        RecordBatch::try_new(schema.into(), vec![Arc::new(fsl)]).unwrap()
+    }
+
+    #[test]
+    fn test_keep_finite_vectors_drops_null_and_non_finite_rows() {
+        let batch = fsl_batch(&[
+            Some([1.0, 2.0]),
+            None,
+            Some([f32::NAN, 1.0]),
+            Some([f32::INFINITY, 1.0]),
+            Some([f32::NEG_INFINITY, 1.0]),
+            Some([3.0, 4.0]),
+        ]);
+        let output = KeepFiniteVectors::new("v").transform(&batch).unwrap();
+
+        let kept = output.column_by_name("v").unwrap().as_fixed_size_list();
+        assert_eq!(kept.len(), 2, "only the two finite rows survive");
+        assert_eq!(kept.null_count(), 0);
+        assert_eq!(
+            kept.values().as_primitive::<Float32Type>().values(),
+            &[1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn test_keep_finite_vectors_on_all_null_and_empty_batches() {
+        let all_null = fsl_batch(&[None, None]);
+        assert_eq!(
+            KeepFiniteVectors::new("v")
+                .transform(&all_null)
+                .unwrap()
+                .num_rows(),
+            0
+        );
+
+        let empty = fsl_batch(&[]);
+        assert_eq!(
+            KeepFiniteVectors::new("v")
+                .transform(&empty)
+                .unwrap()
+                .num_rows(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_keep_finite_vectors_passes_through_missing_column() {
+        // A batch without the configured column is returned untouched rather
+        // than erroring, so the transform is a no-op on unrelated batches.
+        let batch = fsl_batch(&[Some([1.0, 2.0])]);
+        let output = KeepFiniteVectors::new("other").transform(&batch).unwrap();
+        assert_eq!(output.num_rows(), 1);
+    }
+
+    #[test]
+    fn test_keep_finite_vectors_rejects_non_list_column() {
+        let batch = RecordBatch::try_new(
+            Schema::new(vec![Field::new("v", DataType::Int32, false)]).into(),
+            vec![Arc::new(Int32Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let error = KeepFiniteVectors::new("v").transform(&batch).unwrap_err();
+        assert!(matches!(error, Error::Index { .. }), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("column v"), "{message}");
+        assert!(message.contains("Int32"), "{message}");
     }
 
     #[test]
