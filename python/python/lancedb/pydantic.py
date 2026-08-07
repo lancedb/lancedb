@@ -164,6 +164,16 @@ def Vector(
     return FixedSizeList
 
 
+def _raise_bare_vector_error(*_args):
+    raise TypeError("Vector must be parameterized with a dimension, e.g. Vector(128).")
+
+
+# Pydantic v1 and v2 otherwise treat the bare Vector factory as a field validator
+# and inspect its signature, which produces misleading errors about internal types.
+setattr(Vector, "__get_validators__", _raise_bare_vector_error)
+setattr(Vector, "__get_pydantic_core_schema__", _raise_bare_vector_error)
+
+
 def MultiVector(
     dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
 ) -> Type:

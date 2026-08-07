@@ -108,6 +108,11 @@ def _should_push_down_query_table(
     return namespace_client is not None and "QueryTable" in pushdown_operations
 
 
+def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
+    """Return a Polars frame unchanged while blocking predicate pushdown."""
+    return frame
+
+
 _MODEL_BACKED_TOKENIZER_PREFIXES = ("jieba", "lindera")
 _MODEL_BACKED_TOKENIZER_ERRORS = (
     "unknown base tokenizer",
@@ -864,12 +869,18 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_polars(self, **kwargs) -> "pl.DataFrame":
-        """Return the table as a polars.DataFrame.
+    def to_polars(self, **kwargs) -> "pl.LazyFrame":
+        """Return the table as a Polars LazyFrame.
+
+        Note
+        ----
+        The Polars streaming engine is not supported because it does not currently
+        implement Python PyArrow dataset scans. Use the default engine when collecting
+        this LazyFrame.
 
         Returns
         -------
-        polars.DataFrame
+        polars.LazyFrame
         """
         raise NotImplementedError
 
@@ -2569,6 +2580,9 @@ class LanceTable(Table):
         2. Currently we've disabled push-down of the filters from polars
            because polars pushdown into pyarrow uses pyarrow compute
            expressions rather than SQl strings (which LanceDB supports)
+        3. The Polars streaming engine is not supported because it does not
+           currently implement Python PyArrow dataset scans. Use the default
+           engine when collecting this LazyFrame.
 
         Returns
         -------
@@ -2577,8 +2591,12 @@ class LanceTable(Table):
         from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
 
         dataset = PyarrowDatasetAdapter(self)
-        return pl.scan_pyarrow_dataset(
-            dataset, allow_pyarrow_filter=False, batch_size=batch_size
+        # Polars 1.32's non-PyArrow callback path passes batch_size twice.  Keep
+        # the compatible PyArrow path, but block predicates because this adapter
+        # cannot translate PyArrow expressions into LanceDB filters.
+        return pl.scan_pyarrow_dataset(dataset, batch_size=batch_size).map_batches(
+            _polars_predicate_pushdown_barrier,
+            predicate_pushdown=False,
         )
 
     # New unified API overload

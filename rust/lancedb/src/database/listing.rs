@@ -12,7 +12,7 @@ use lance::dataset::refs::Ref;
 use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
@@ -1376,6 +1376,68 @@ mod tests {
         assert!(!tempdir.path().join("__manifest").exists());
     }
 
+    /// Regression test for https://github.com/lancedb/lancedb/issues/1600.
+    ///
+    /// Opening a table used to create a separate object-store client instead of
+    /// reusing the one that successfully connected to the database.  Repeating
+    /// credential discovery made S3 table opens intermittent, especially in AWS
+    /// Lambda, and the failed open was reported as `TableNotFound`.
+    #[tokio::test]
+    async fn test_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before_open = registry.stats();
+        for _ in 0..3 {
+            let table = db
+                .open_table(OpenTableRequest {
+                    name: "test".to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(table.count_rows(None).await.unwrap(), 0);
+        }
+
+        let after_open = registry.stats();
+        assert_eq!(after_open.misses, before_open.misses);
+        assert!(after_open.hits >= before_open.hits + 3);
+    }
+
     #[tokio::test]
     async fn test_clone_table_basic() {
         let (_tempdir, db) = setup_database().await;
@@ -2280,7 +2342,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_table_uri() {
-        let (_tempdir, db) = setup_database().await;
+        let (_tempdir, mut db) = setup_database().await;
 
         let mut pb = PathBuf::new();
         pb.push(db.uri.clone());
@@ -2289,6 +2351,18 @@ mod tests {
         let expected = pb.to_str().unwrap();
         let uri = db.table_uri("test").ok().unwrap();
         assert_eq!(uri, expected);
+
+        // URI paths always use forward slashes, even on Windows. Using
+        // `Path::join` here used to produce `az://container/prefix\\test.lance`,
+        // which Azure treated as a different object from the table returned by
+        // `table_names` (https://github.com/lancedb/lancedb/issues/1072).
+        for base_uri in ["az://container/prefix", "az://container/prefix/"] {
+            db.uri = base_uri.to_string();
+            assert_eq!(
+                db.table_uri("test").unwrap(),
+                "az://container/prefix/test.lance"
+            );
+        }
     }
 
     /// Regression: connecting via a URL-style URI (which goes through

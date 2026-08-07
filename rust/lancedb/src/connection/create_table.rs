@@ -202,6 +202,17 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 0);
     }
 
+    #[tokio::test]
+    async fn create_table_in_named_memory_database() {
+        let db = connect("memory://foo").execute().await.unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+
+        let table = db.create_table("my_table", batch).execute().await.unwrap();
+
+        assert_eq!(table.uri().await.unwrap(), "memory://foo/my_table.lance");
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
     async fn test_create_table_with_data<T>(data: T)
     where
         T: Scannable + 'static,
