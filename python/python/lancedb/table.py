@@ -22,6 +22,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypedDict,
     Union,
     overload,
 )
@@ -215,6 +216,69 @@ IndexConfigType = Union[
     Fm,
     FTS,
 ]
+
+
+class CompactionOptions(TypedDict, total=False):
+    """Options that control file compaction during table optimization.
+
+    Unspecified options use Lance's defaults.
+
+    Examples
+    --------
+    Limit fragment size and compaction concurrency for tables with large rows:
+
+    >>> options: CompactionOptions = {
+    ...     "target_rows_per_fragment": 500,
+    ...     "batch_size": 1024,
+    ...     "num_threads": 1,
+    ... }
+    >>> await table.optimize(compaction_options=options)  # doctest: +SKIP
+    """
+
+    target_rows_per_fragment: int
+    """Target number of rows per fragment (default: 1,048,576)."""
+
+    max_rows_per_group: int
+    """Maximum number of rows per row group (default: 1,024)."""
+
+    max_bytes_per_file: Optional[int]
+    """Maximum number of bytes per data file."""
+
+    materialize_deletions: bool
+    """Whether to rewrite fragments containing deleted rows (default: True)."""
+
+    materialize_deletions_threshold: float
+    """Minimum deleted-row fraction that makes a fragment eligible (default: 0.1)."""
+
+    num_threads: Optional[int]
+    """Number of compaction tasks to run in parallel."""
+
+    batch_size: Optional[int]
+    """Number of rows per input scan batch."""
+
+    io_buffer_size: Optional[int]
+    """Maximum number of bytes queued in the input scan I/O buffer."""
+
+    defer_index_remap: bool
+    """Whether to defer index remapping during compaction (default: False)."""
+
+    index_remap_mode: Literal["direct", "compact"]
+    """How to construct the old-to-new row-address mapping."""
+
+    compaction_mode: Optional[
+        Literal["reencode", "try_binary_copy", "force_binary_copy"]
+    ]
+    """Whether compaction re-encodes data or uses binary copying."""
+
+    binary_copy_read_batch_bytes: Optional[int]
+    """Number of bytes read per batch during binary-copy compaction."""
+
+    max_source_fragments: Optional[int]
+    """Maximum number of source fragments compacted in one run."""
+
+    max_overlays_per_fragment: Optional[int]
+    """Maximum overlays before a fragment is fully compacted."""
+
 
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
@@ -1831,6 +1895,7 @@ class Table(ABC):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -1863,6 +1928,10 @@ class Table(ABC):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. This can be used to bound
+            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
+            or ``num_threads``.
 
         Notes
         -----
@@ -3847,6 +3916,7 @@ class LanceTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -3879,6 +3949,10 @@ class LanceTable(Table):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. This can be used to bound
+            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
+            or ``num_threads``.
 
         Notes
         -----
@@ -3893,6 +3967,7 @@ class LanceTable(Table):
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 
@@ -6124,6 +6199,7 @@ class AsyncTable:
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain=False,
+        compaction_options: Optional[CompactionOptions] = None,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -6156,6 +6232,10 @@ class AsyncTable:
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. This can be used to bound
+            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
+            or ``num_threads``.
 
         Notes
         -----
@@ -6182,6 +6262,7 @@ class AsyncTable:
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
+            compaction_options=compaction_options,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:

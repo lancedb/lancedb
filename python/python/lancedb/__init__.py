@@ -21,7 +21,7 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector, BlobType
 from .job import AsyncJob, Job
-from .table import AsyncTable, Table
+from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -504,6 +504,7 @@ __all__ = [
     "AsyncJob",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "CompactionOptions",
     "FtsToken",
     "col",
     "Expr",
