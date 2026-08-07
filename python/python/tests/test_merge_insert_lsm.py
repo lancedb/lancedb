@@ -544,7 +544,7 @@ def test_lsm_read_fts_unmaintained_index_errors(tmp_path):
     table.create_index("text", config=FTS())
     # No maintained indexes: the active memtable FTS arm cannot serve un-compacted
     # docs, so the search would silently omit them — reject instead.
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
     with pytest.raises(Exception, match="maintained"):
         table.search("fox", query_type="fts", fts_columns="text").to_arrow()
 
@@ -631,7 +631,7 @@ def test_lsm_read_vector_unmaintained_index_errors(tmp_path):
     )
     # Spec with NO maintained indexes: the base vector index's catch-up is untracked,
     # so the scanner rejects rather than risk dropping compacted-but-unindexed rows.
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
     with pytest.raises(Exception, match="maintained"):
         table.search([1.0] * VECTOR_DIM).to_arrow()
 

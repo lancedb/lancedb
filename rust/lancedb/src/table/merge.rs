@@ -1161,7 +1161,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([fts_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1254,7 +1254,7 @@ mod lsm_tests {
             .unwrap();
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([vec_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 
