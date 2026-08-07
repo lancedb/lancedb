@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::error::NapiErrorExt;
 use crate::error::convert_error;
 use crate::iterator::RecordBatchIterator;
-use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
+use crate::rerankers::{RerankHybridCallbackArgs, RerankOutputSchemaCallbackArgs};
 use crate::util::{parse_distance_type, schema_to_buffer};
 use arrow_array::{
     Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
@@ -388,8 +388,9 @@ impl VectorQuery {
     pub fn rerank(
         &mut self,
         rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+        output_schema: Option<Function<RerankOutputSchemaCallbackArgs, Promise<Buffer>>>,
     ) -> napi::Result<()> {
-        let reranker = Reranker::new(rerank_hybrid)?;
+        let reranker = Reranker::new(rerank_hybrid, output_schema)?;
         self.inner = self.inner.clone().rerank(Arc::new(reranker));
         Ok(())
     }
