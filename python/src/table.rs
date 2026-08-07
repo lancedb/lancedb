@@ -28,10 +28,71 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods},
+    types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
 mod scannable;
+
+/// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
+///
+/// Deliberately not flattened to a table-level summary: a table is N
+/// buckets on one node, and the per-bucket detail is the reason the
+/// endpoint exists — flattening hides the single hot bucket someone opened
+/// it to find.
+fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
+    let out = PyDict::new(py);
+    let buckets = PyList::empty(py);
+    for b in &stats.buckets {
+        let e = PyDict::new(py);
+        e.set_item("shard_id", &b.shard_id)?;
+        e.set_item("status", &b.status)?;
+        e.set_item("writer_epoch", b.writer_epoch)?;
+        e.set_item("manifest_version", b.manifest_version)?;
+        e.set_item("current_generation", b.current_generation)?;
+        e.set_item(
+            "replay_after_wal_entry_position",
+            b.replay_after_wal_entry_position,
+        )?;
+        e.set_item(
+            "wal_entry_position_last_seen",
+            b.wal_entry_position_last_seen,
+        )?;
+
+        let generations = PyList::empty(py);
+        for g in &b.generations {
+            let ge = PyDict::new(py);
+            ge.set_item("generation", g.generation)?;
+            ge.set_item("bytes", g.bytes)?;
+            ge.set_item("rows", g.rows)?;
+            generations.append(ge)?;
+        }
+        e.set_item("generations", generations)?;
+        e.set_item("compacting", b.compacting)?;
+
+        e.set_item(
+            "memtables",
+            b.memtables
+                .as_ref()
+                .map(|ms| {
+                    let l = PyList::empty(py);
+                    for m in ms {
+                        let d = PyDict::new(py);
+                        d.set_item("generation", m.generation)?;
+                        d.set_item("rows", m.rows)?;
+                        d.set_item("bytes", m.bytes)?;
+                        d.set_item("batches", m.batches)?;
+                        d.set_item("indexes", m.indexes.clone())?;
+                        l.append(d)?;
+                    }
+                    PyResult::Ok(l.unbind())
+                })
+                .transpose()?,
+        )?;
+        buckets.append(e)?;
+    }
+    out.set_item("buckets", buckets)?;
+    Ok(out.unbind())
+}
 
 #[derive(FromPyObject)]
 enum PredicateArg {
@@ -1352,6 +1413,51 @@ impl Table {
         future_into_py(self_.py(), async move {
             let spec = inner.get_lsm_write_spec().await.infer_error()?;
             Ok(spec.map(LsmWriteSpec::from))
+        })
+    }
+
+    /// Converge the table's LSM write path into its base table.
+    ///
+    /// Best-effort: with writes flowing, new rows may land after the last
+    /// pass. Errors if the table stops making progress.
+    pub fn checkpoint_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.checkpoint_lsm().await.infer_error()
+        })
+    }
+
+    /// Seal every bucket's active memtable into L0.
+    pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.flush_lsm().await.infer_error() },
+        )
+    }
+
+    /// Trigger a background L0 → base pass per bucket. Returns once the
+    /// passes are dispatched, not once they finish — watch `get_lsm_stats`.
+    pub fn compact_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.compact_lsm().await.infer_error()
+        })
+    }
+
+    /// Live LSM state, or `None` when the LSM write path is not enabled.
+    #[pyo3(signature = (include_generation_rows=false))]
+    pub fn get_lsm_stats(
+        self_: PyRef<'_, Self>,
+        include_generation_rows: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let stats = inner
+                .get_lsm_stats(include_generation_rows)
+                .await
+                .infer_error()?;
+            Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
         })
     }
 

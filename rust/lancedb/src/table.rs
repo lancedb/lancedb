@@ -68,10 +68,12 @@ use self::merge::MergeInsertBuilder;
 pub mod add_columns;
 mod add_data;
 pub mod branch_merge;
+pub mod checkpoint;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
 mod primary_key;
@@ -95,6 +97,7 @@ pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTa
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
+pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -704,6 +707,31 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         Err(Error::NotSupported {
             message: "get_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Seal every bucket's active memtable into L0.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn flush_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "flush_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Trigger a background L0 → base compaction pass per bucket.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn compact_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "compact_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Read live LSM state, or `None` when the LSM write path is not
+    /// enabled for this table.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn get_lsm_stats(&self, _include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        Err(Error::NotSupported {
+            message: "get_lsm_stats is not supported on this table type".into(),
         })
     }
     /// Drain and close any cached MemWAL shard writers for this table.
@@ -1746,6 +1774,85 @@ impl Table {
     /// ```
     pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         self.inner.get_lsm_write_spec().await
+    }
+
+    /// Converge this table's LSM write path into its base table.
+    ///
+    /// One `flush` to seal every memtable into L0, then compaction triggers
+    /// until every generation that existed at that moment has reached base.
+    /// The loop runs client-side, reading progress from `get_lsm_stats`, so
+    /// there is no held socket and nothing to reconcile if you drop this
+    /// future partway through.
+    ///
+    /// **Best-effort.** Generations created *after* the opening flush are
+    /// deliberately not waited on — that is what lets this terminate on a
+    /// table taking writes. Idempotent and safe on a cadence: an
+    /// already-converged table costs two round trips and triggers nothing.
+    ///
+    /// **No deadline, and the caller owns that.** It returns when the target
+    /// generations are gone, propagates a terminal server fault, and
+    /// otherwise waits however long the server takes. A slow table and a
+    /// stuck one are the same picture from here: the compactor pool is shared
+    /// across every table on the node, so a checkpoint queued behind
+    /// unrelated work is indistinguishable from one that is merging. Wrap
+    /// this in `tokio::time::timeout` for a wall-clock bound; abandoning it
+    /// partway costs nothing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let before = table.get_lsm_stats(false).await?;
+    /// table.checkpoint_lsm().await?;
+    /// let after = table.get_lsm_stats(false).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkpoint_lsm(&self) -> Result<()> {
+        checkpoint::checkpoint_lsm(self).await
+    }
+
+    /// Seal every bucket's active memtable into L0 without touching the
+    /// base table.
+    ///
+    /// Independently useful: flushing makes memtable rows readable from L0 at
+    /// a lower per-query cost. On a node that has not claimed this table it
+    /// claims it and replays the WAL log first — reporting "nothing to flush"
+    /// without replaying would lie about durable data.
+    pub async fn flush_lsm(&self) -> Result<()> {
+        self.inner.flush_lsm().await
+    }
+
+    /// Run one bounded L0 → base compaction pass per bucket, reporting what
+    /// it merged and what is left.
+    ///
+    /// One pass, not convergence: that bounds each request's cost and gives a
+    /// caller driving its own cadence a progress signal per round trip.
+    pub async fn compact_lsm(&self) -> Result<()> {
+        self.inner.compact_lsm().await
+    }
+
+    /// Read live per-bucket LSM state.
+    ///
+    /// Answers "how far behind is my fresh tier", "which bucket is hot", and
+    /// "why is my fresh-tier vector search brute-force". Mutates no table
+    /// state, though on a node that has not claimed this table it claims it,
+    /// exactly as a read would.
+    ///
+    /// `include_generation_rows` reports a row count per L0 generation. Off by
+    /// default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_lsm` polls this needing only generation numbers.
+    ///
+    /// `Ok(None)` only when the LSM write path is not enabled, matching
+    /// [`Table::get_lsm_write_spec`]. Stats is fresh-tier only, so with the
+    /// WAL off there is no manifest to report and a struct of zeros would
+    /// read as measurements.
+    ///
+    /// Do not build a checkpoint's termination on this: the completion
+    /// predicate lives in the `flush` and `compact` responses.
+    pub async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        self.inner.get_lsm_stats(include_generation_rows).await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.

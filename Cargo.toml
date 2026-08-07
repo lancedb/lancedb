@@ -13,24 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-# TEMPORARY: pinned to the head of lance-format/lance#8360, which adds
-# `validate_maintained_indexes`. The rev is reachable as refs/pull/8360/head on
-# the public upstream repo, so this resolves in CI without a fork.
-# Revert to a release tag once #8360 lands. Do not merge with this pin.
-lance = { "version" = "=11.0.0-beta.2", default-features = false, "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=11.0.0-beta.2", default-features = false, "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=11.0.0-beta.2", default-features = false, "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=11.0.0-beta.2", "rev" = "f0652582625d4e8874e8d381047f57f2746c5a6e", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
@@ -56,7 +52,7 @@ env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
 ] }
-futures = "0"
+futures = "0.3"
 log = "0.4"
 metrics = "0.24"
 metrics-util = "0.19"
