@@ -17,7 +17,7 @@ use arrow_array::builder::LargeBinaryBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
 use lance_io::object_store::ObjectStore;
 use object_store::path::Path;
 

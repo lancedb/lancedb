@@ -170,6 +170,38 @@ describe("remote connection", () => {
     );
   });
 
+  it("surfaces JSON server errors from remote table operations", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "broken_table",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/count_rows/")) {
+          res
+            .writeHead(400, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ error: "count rows failed" }));
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("broken_table");
+
+        await expect(table.countRows()).rejects.toThrow("count rows failed");
+      },
+    );
+  });
+
   it("should pass on requested extra headers", async () => {
     await withMockDatabase(
       (req, res) => {
