@@ -2759,15 +2759,40 @@ def test_create_with_embedding_function(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
+    dimension = 32
+    num_rows = 512
+    values = pa.array(
+        np.random.default_rng(42)
+        .standard_normal(num_rows * dimension)
+        .astype(np.float16)
+    )
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(num_rows)],
+            "vector": pa.FixedSizeListArray.from_arrays(values, dimension),
+        }
+    )
+    table = mem_db.create_table("f16_tbl", data=df)
+    assert table.schema.field("vector").type == pa.list_(pa.float16(), dimension)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_create_f16_table(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
+    rng = np.random.default_rng(42)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [np.random.randn(32).astype(np.float16) for _ in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
         }
     )
     table = mem_db.create_table(
