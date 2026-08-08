@@ -19,6 +19,8 @@
 description = "Apache OpenDAL S3 service implementation"
 name = "opendal-service-s3"
 readme = "README.md"
+keywords = ["storage", "s3", "object-storage"]
+categories = ["filesystem"]
 
 authors = { workspace = true }
 edition = { workspace = true }

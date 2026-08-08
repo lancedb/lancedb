@@ -24,6 +24,8 @@ autobenches = false
 description = "Apache OpenDAL S3 service implementation"
 homepage = "https://opendal.apache.org/"
 readme = "README.md"
+keywords = ["storage", "s3", "object-storage"]
+categories = ["filesystem"]
 license = "Apache-2.0"
 repository = "https://github.com/apache/opendal"
 
