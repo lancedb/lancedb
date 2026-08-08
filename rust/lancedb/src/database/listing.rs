@@ -25,7 +25,7 @@ use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
-use crate::utils::validate_table_name;
+use crate::utils::{PatchStoreParam, validate_table_name};
 
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
@@ -355,6 +355,13 @@ impl ListingDatabase {
         url.to_string()
     }
 
+    fn uses_local_file_provider(object_store: &ObjectStore) -> bool {
+        matches!(
+            object_store.scheme(),
+            "file" | "file-object-store" | "file+uring"
+        )
+    }
+
     async fn prepare_namespace_root(
         uri: &str,
         storage_options: &HashMap<String, String>,
@@ -582,7 +589,7 @@ impl ListingDatabase {
                     None => None,
                 };
                 #[cfg(windows)]
-                let write_store_wrapper = if object_store.is_local() {
+                let write_store_wrapper = if Self::uses_local_file_provider(&object_store) {
                     // Local manifest commits need create-only rename semantics,
                     // including on filesystems that do not support hard links.
                     Some(
@@ -657,7 +664,7 @@ impl ListingDatabase {
         .await?;
 
         #[cfg(windows)]
-        let write_store_wrapper = object_store.is_local().then(|| {
+        let write_store_wrapper = Self::uses_local_file_provider(&object_store).then(|| {
             // Local manifest commits need create-only rename semantics,
             // including on filesystems that do not support hard links.
             Arc::new(crate::io::object_store::windows::WindowsLocalFileSystemWrapper)
@@ -1133,6 +1140,12 @@ impl Database for ListingDatabase {
             },
             ..Default::default()
         };
+        let storage_params = match self.store_wrapper.clone() {
+            Some(wrapper) => Some(storage_params)
+                .patch_with_store_wrapper(wrapper)?
+                .expect("patching store params always returns parameters"),
+            None => storage_params,
+        };
         let read_params = ReadParams {
             store_options: Some(storage_params.clone()),
             session: Some(self.session.clone()),
@@ -1315,6 +1328,7 @@ mod tests {
     use crate::connection::ConnectRequest;
     use crate::data::scannable::Scannable;
     use crate::database::{CreateTableMode, CreateTableRequest};
+    use crate::io::object_store::io_tracking::IoStatsHolder;
     use crate::query::QueryRequest;
     use crate::table::{AnyQuery, WriteOptions};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
@@ -1412,6 +1426,25 @@ mod tests {
 
         assert_eq!(table_names, vec!["root_table".to_string()]);
         assert!(!tempdir.path().join("__manifest").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_object_store_uses_local_file_provider() {
+        let tempdir = tempdir().unwrap();
+        let path = tempdir.path().to_string_lossy().replace('\\', "/");
+        let uri = if path.starts_with('/') {
+            format!("file-object-store://{path}")
+        } else {
+            format!("file-object-store:///{path}")
+        };
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let (store, _) =
+            ObjectStore::from_uri_and_params(registry, &uri, &ObjectStoreParams::default())
+                .await
+                .unwrap();
+
+        assert_eq!(store.scheme(), "file-object-store");
+        assert!(ListingDatabase::uses_local_file_provider(&store));
     }
 
     /// Regression test for https://github.com/lancedb/lancedb/issues/1600.
@@ -1620,6 +1653,46 @@ mod tests {
         assert_eq!(
             source_table.schema().await.unwrap(),
             cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_uses_connection_store_wrapper() {
+        let (_tempdir, mut db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "source_table".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source_table").unwrap();
+        let tracker = IoStatsHolder::default();
+        db.store_wrapper = Some(Arc::new(tracker.clone()));
+        let _ = tracker.incremental_stats();
+
+        db.clone_table(CloneTableRequest {
+            target_table_name: "cloned_table".to_string(),
+            target_namespace_path: vec![],
+            source_uri,
+            source_version: None,
+            source_tag: None,
+            is_shallow: true,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let stats = tracker.incremental_stats();
+        assert!(
+            stats.write_iops > 0,
+            "clone bypassed the wrapper: {stats:?}"
         );
     }
 

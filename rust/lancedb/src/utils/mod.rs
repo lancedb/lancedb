@@ -39,7 +39,10 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
     ) -> Result<Option<ObjectStoreParams>> {
         let mut params = self.unwrap_or_default();
         params.object_store_wrapper = Some(match params.object_store_wrapper.take() {
-            Some(existing) => Arc::new(ChainedWrappingObjectStore::new(vec![existing, wrapper])),
+            // The wrapper being patched in is connection-level compatibility
+            // behavior. Keep it closest to the target store so an existing
+            // caller wrapper remains outermost and can observe every operation.
+            Some(existing) => Arc::new(ChainedWrappingObjectStore::new(vec![wrapper, existing])),
             None => wrapper,
         });
 
@@ -470,7 +473,7 @@ impl Stream for MaxBatchLengthStream {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use arrow_array::Int32Array;
     use arrow_schema::Field;
@@ -482,30 +485,38 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct CountingStoreWrapper(Arc<AtomicUsize>);
+    struct OrderedStoreWrapper {
+        name: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
 
-    impl WrappingObjectStore for CountingStoreWrapper {
+    impl WrappingObjectStore for OrderedStoreWrapper {
         fn wrap(
             &self,
             _store_prefix: &str,
             original: Arc<dyn ObjectStore>,
         ) -> Arc<dyn ObjectStore> {
-            self.0.fetch_add(1, Ordering::Relaxed);
+            self.order.lock().unwrap().push(self.name);
             original
         }
     }
 
     #[test]
-    fn test_patch_store_param_chains_wrappers() {
-        let existing_count = Arc::new(AtomicUsize::new(0));
-        let added_count = Arc::new(AtomicUsize::new(0));
+    fn test_patch_store_param_keeps_caller_wrapper_outermost() {
+        let order = Arc::new(Mutex::new(Vec::new()));
         let params = Some(ObjectStoreParams {
-            object_store_wrapper: Some(Arc::new(CountingStoreWrapper(existing_count.clone()))),
+            object_store_wrapper: Some(Arc::new(OrderedStoreWrapper {
+                name: "caller",
+                order: order.clone(),
+            })),
             ..Default::default()
         });
 
         let params = params
-            .patch_with_store_wrapper(Arc::new(CountingStoreWrapper(added_count.clone())))
+            .patch_with_store_wrapper(Arc::new(OrderedStoreWrapper {
+                name: "compatibility",
+                order: order.clone(),
+            }))
             .unwrap()
             .unwrap();
         params
@@ -513,8 +524,7 @@ mod tests {
             .unwrap()
             .wrap("memory", Arc::new(InMemory::new()) as Arc<dyn ObjectStore>);
 
-        assert_eq!(existing_count.load(Ordering::Relaxed), 1);
-        assert_eq!(added_count.load(Ordering::Relaxed), 1);
+        assert_eq!(*order.lock().unwrap(), vec!["compatibility", "caller"]);
     }
 
     #[test]
