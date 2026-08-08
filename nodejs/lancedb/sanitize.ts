@@ -72,6 +72,7 @@ import {
   Uint64,
   Union,
   Utf8,
+  Vector,
 } from "./arrow";
 
 export function sanitizeMetadata(
@@ -568,18 +569,18 @@ function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
     );
   }
   const schema = sanitizeSchema(batchLike.schema);
-  const data = sanitizeData(batchLike.data);
+  const data = sanitizeData(batchLike.data) as Data<Struct>;
   return new RecordBatch(schema, data);
 }
-function sanitizeData(
-  dataLike: DataLike,
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-): import("apache-arrow").Data<Struct<any>> {
+function sanitizeData(dataLike: DataLike): Data {
   if (dataLike instanceof Data) {
     return dataLike;
   }
+  const dictionary = dataLike.dictionary
+    ? new Vector(dataLike.dictionary.data.map(sanitizeData))
+    : undefined;
   return new Data(
-    dataLike.type,
+    sanitizeType(dataLike.type),
     dataLike.offset,
     dataLike.length,
     dataLike.nullCount,
@@ -589,6 +590,8 @@ function sanitizeData(
       [BufferType.VALIDITY]: dataLike.nullBitmap,
       [BufferType.TYPE]: dataLike.typeIds,
     },
+    dataLike.children.map(sanitizeData),
+    dictionary,
   );
 }
 
