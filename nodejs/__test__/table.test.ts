@@ -11,10 +11,13 @@ import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
 import {
+  AutoQuery,
   Connection,
   MatchQuery,
   PhraseQuery,
+  Query,
   Table,
+  VectorQuery,
   connect,
   tokenize,
 } from "../lancedb";
@@ -1786,7 +1789,13 @@ describe("automatic search schema consistency", () => {
       );
       await replacement.createIndex("text", { config: Index.fts() });
 
-      const rows = await stale.search("hello").toArray();
+      const search = stale.search("hello");
+      expect(search).toBeInstanceOf(AutoQuery);
+      expect(search).not.toBeInstanceOf(Query);
+      expect(search).not.toBeInstanceOf(VectorQuery);
+      expect("nprobes" in search).toBe(false);
+
+      const rows = await search.toArray();
       expect(rows[0].text).toBe("after hello");
       expect((await stale.schema()).metadata.has("embedding_functions")).toBe(
         false,
@@ -1824,6 +1833,58 @@ describe("automatic search schema consistency", () => {
       await table.restore();
       expect((await table.search("before").toArray())[0].text).toBe("before");
     } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it("pins automatic search while computing an embedding", async () => {
+    let markStarted!: () => void;
+    let releaseEmbedding!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseEmbedding = resolve;
+    });
+
+    class BlockingEmbedding extends SchemaRefreshEmbedding {
+      async computeQueryEmbeddings(value: string) {
+        markStarted();
+        await released;
+        return [value.length, 1];
+      }
+    }
+
+    register("schema-refresh-blocking")(BlockingEmbedding);
+    const func = new BlockingEmbedding();
+    const schema = LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const table = await first.createTable(
+        "docs",
+        [{ text: "hello before" }],
+        { schema },
+      );
+      const pending = table.search("hello").toArray();
+      await started;
+
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "hello after" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+      releaseEmbedding();
+
+      expect((await pending)[0].text).toBe("hello before");
+    } finally {
+      releaseEmbedding();
       first.close();
       second.close();
     }

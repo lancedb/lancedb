@@ -788,6 +788,24 @@ export class TakeQuery extends QueryBase<NativeTakeQuery> {
   }
 }
 
+/**
+ * A builder for automatic string searches.
+ *
+ * Automatic search determines whether to use full-text or vector search from
+ * the table revision selected for execution. This builder exposes the common
+ * operations supported by both query families.
+ *
+ * @hideconstructor
+ */
+export class AutoQuery extends StandardQueryBase<
+  NativeQuery | NativeVectorQuery
+> {
+  /** @hidden */
+  constructor(inner: Promise<NativeQuery | NativeVectorQuery>) {
+    super(inner);
+  }
+}
+
 /** A builder for LanceDB queries.
  *
  * @see {@link Table#query}, {@link Table#search}
@@ -804,24 +822,20 @@ export class Query extends StandardQueryBase<NativeQuery> {
 
   /** @hidden */
   static autoSearch(
-    tbl: NativeTable,
+    tbl: Promise<NativeTable>,
     query: string,
-    vector: Promise<Awaited<IntoVector> | undefined>,
+    vector: (tbl: NativeTable) => Promise<Awaited<IntoVector> | undefined>,
     columns?: string[],
-  ): VectorQuery {
-    const nativeQuery = vector.then((resolved) => {
+  ): AutoQuery {
+    const nativeQuery = Promise.resolve(tbl).then(async (tbl) => {
+      const resolved = await vector(tbl);
       const inner = tbl.query();
       if (resolved === undefined) {
         inner.fullTextSearch({
           query,
           columns: columns ?? null,
         });
-
-        // Native Query and NativeVectorQuery share all operations exposed by
-        // Table.search's union return type. Keeping the wrapper as VectorQuery
-        // also preserves the existing runtime type when auto search selects a
-        // vector query after the asynchronous schema check.
-        return inner as unknown as NativeVectorQuery;
+        return inner;
       }
 
       const raw = Array.isArray(resolved)
@@ -833,7 +847,7 @@ export class Query extends StandardQueryBase<NativeQuery> {
       return inner.nearestTo(Float32Array.from(resolved as number[]));
     });
 
-    return new VectorQuery(nativeQuery);
+    return new AutoQuery(nativeQuery);
   }
 
   /**

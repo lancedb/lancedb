@@ -1681,6 +1681,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
     }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let version = self.version().await?;
+        let snapshot = self.with_branch(self.branch.clone());
+        snapshot.checkout(version).await?;
+        Ok(Arc::new(snapshot))
+    }
+
     async fn checkout(&self, version: u64) -> Result<()> {
         // Validate the version exists. The describe is sent without freshness
         // headers so a stale `min_version` from a previous write doesn't ride
