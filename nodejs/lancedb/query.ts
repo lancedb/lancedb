@@ -802,6 +802,40 @@ export class Query extends StandardQueryBase<NativeQuery> {
     super(tbl.query());
   }
 
+  /** @hidden */
+  static autoSearch(
+    tbl: NativeTable,
+    query: string,
+    vector: Promise<Awaited<IntoVector> | undefined>,
+    columns?: string[],
+  ): VectorQuery {
+    const nativeQuery = vector.then((resolved) => {
+      const inner = tbl.query();
+      if (resolved === undefined) {
+        inner.fullTextSearch({
+          query,
+          columns: columns ?? null,
+        });
+
+        // Native Query and NativeVectorQuery share all operations exposed by
+        // Table.search's union return type. Keeping the wrapper as VectorQuery
+        // also preserves the existing runtime type when auto search selects a
+        // vector query after the asynchronous schema check.
+        return inner as unknown as NativeVectorQuery;
+      }
+
+      const raw = Array.isArray(resolved)
+        ? null
+        : extractVectorBuffer(resolved);
+      if (raw) {
+        return inner.nearestToRaw(raw.data, raw.dtype);
+      }
+      return inner.nearestTo(Float32Array.from(resolved as number[]));
+    });
+
+    return new VectorQuery(nativeQuery);
+  }
+
   /**
    * Find the nearest vectors to the given query vector.
    *

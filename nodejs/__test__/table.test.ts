@@ -1731,6 +1731,105 @@ describe("Read consistency interval", () => {
   });
 });
 
+describe("automatic search schema consistency", () => {
+  let tmpDir: tmp.DirResult;
+
+  class SchemaRefreshEmbedding extends EmbeddingFunction<string> {
+    ndims() {
+      return 2;
+    }
+
+    embeddingDataType() {
+      return new Float32();
+    }
+
+    async computeSourceEmbeddings(data: string[]) {
+      return data.map((value) => [value.length, 1]);
+    }
+
+    async computeQueryEmbeddings(value: string) {
+      return [value.length, 1];
+    }
+  }
+
+  function embeddingSchema() {
+    const func = new SchemaRefreshEmbedding();
+    return LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+  }
+
+  beforeEach(() => {
+    getRegistry().reset();
+    register("schema-refresh")(SchemaRefreshEmbedding);
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+
+  afterEach(() => {
+    getRegistry().reset();
+    tmpDir.removeCallback();
+  });
+
+  it("uses the schema refreshed from another connection", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const stale = await first.createTable("docs", [{ text: "before" }], {
+        schema: embeddingSchema(),
+      });
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "after hello" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+
+      const rows = await stale.search("hello").toArray();
+      expect(rows[0].text).toBe("after hello");
+      expect((await stale.schema()).metadata.has("embedding_functions")).toBe(
+        false,
+      );
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it("tracks embedding metadata across checkout and restore", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      await first.createTable("docs", [{ text: "before" }], {
+        schema: embeddingSchema(),
+      });
+      const table = await second.createTable(
+        "docs",
+        [{ text: "after hello" }],
+        { mode: "overwrite" },
+      );
+      await table.createIndex("text", { config: Index.fts() });
+
+      await table.checkout(1);
+      expect((await table.search("before").toArray())[0].text).toBe("before");
+
+      await table.checkoutLatest();
+      expect((await table.search("hello").toArray())[0].text).toBe(
+        "after hello",
+      );
+
+      await table.checkout(1);
+      await table.restore();
+      expect((await table.search("before").toArray())[0].text).toBe("before");
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+});
+
 describe("schema evolution", function () {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
