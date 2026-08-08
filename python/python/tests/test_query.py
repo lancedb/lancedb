@@ -679,7 +679,7 @@ def test_distance_range(table: lancedb.table.Table):
 def test_select_arithmetic_with_distance(table, expression):
     result = (
         table.search([10, 10])
-        .select({"similarity": expression})
+        .select({"similarity": expression, "_distance": "_distance"})
         .distance_type("cosine")
         .to_arrow()
     )
