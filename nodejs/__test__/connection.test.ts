@@ -69,6 +69,33 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  it("should isolate object-form table creation across databases", async () => {
+    const otherTmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const otherDb = await connect(otherTmpDir.name);
+
+    try {
+      const firstTable = await db.createTable({
+        name: "defaultTable",
+        data: [{ rowId: "id1", vector: Array(384).fill(0) }],
+      });
+      const secondTable = await otherDb.createTable({
+        name: "defaultTable",
+        data: [{ rowId: "id2", vector: Array(384).fill(0) }],
+      });
+
+      await expect(db.tableNames()).resolves.toEqual(["defaultTable"]);
+      await expect(otherDb.tableNames()).resolves.toEqual(["defaultTable"]);
+
+      const firstRows = await firstTable.query().select(["rowId"]).toArray();
+      const secondRows = await secondTable.query().select(["rowId"]).toArray();
+      expect(firstRows.map((row) => row.rowId)).toEqual(["id1"]);
+      expect(secondRows.map((row) => row.rowId)).toEqual(["id2"]);
+    } finally {
+      otherDb.close();
+      otherTmpDir.removeCallback();
+    }
+  });
+
   it("should be able to drop tables`", async () => {
     await db.createTable("test", [{ id: 1 }, { id: 2 }]);
     await db.createTable("test2", [{ id: 1 }, { id: 2 }]);
