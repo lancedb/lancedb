@@ -1044,15 +1044,18 @@ export class LocalTable extends Table {
 
       const columns =
         typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
-      return createAutoQuery(this.inner, query, columns, async () => {
-        const functions = await this.getEmbeddingFunctions();
+      return createAutoQuery(this.inner, query, columns, async (metadata) => {
+        const functions = await getRegistry().parseFunctions(
+          new Map([["embedding_functions", metadata]]),
+        );
         // TODO: Support multiple embedding functions
         const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
           .values()
           .next().value;
-        if (!embeddingFunc) {
-          return undefined;
-        }
+        // The route only calls this callback when embedding metadata exists.
+        // parseFunctions either yields a provider or reports malformed metadata.
+        if (!embeddingFunc)
+          throw new Error("Invalid embedding function metadata");
         return await embeddingFunc.function.computeQueryEmbeddings(query);
       });
     }

@@ -278,6 +278,13 @@ impl Table {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
+    /// Return a read-only table handle pinned to the current query revision.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot(&self) -> napi::Result<Table> {
+        let snapshot = self.inner_ref()?.query_snapshot().await.default_error()?;
+        Ok(Table::new(snapshot))
+    }
+
     #[napi(catch_unwind)]
     pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(

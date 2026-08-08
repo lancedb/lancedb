@@ -47,6 +47,7 @@ import {
   BooleanQuery,
   Occur,
   Operator,
+  VectorQuery,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
 
@@ -2337,9 +2338,23 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
-    test("auto search follows embedding metadata across executions", async () => {
+    test("auto search stays consistent with the active revision", async () => {
+      let initCalls = 0;
+      let queryCalls = 0;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let releaseEmbedding!: () => void;
+      const embeddingReleased = new Promise<void>((resolve) => {
+        releaseEmbedding = resolve;
+      });
+
       @register("refresh-test")
       class TestEmbedding extends EmbeddingFunction<string> {
+        async init() {
+          initCalls += 1;
+        }
         ndims() {
           return 1;
         }
@@ -2347,6 +2362,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           return new arrow.Float32();
         }
         async computeQueryEmbeddings(value: string) {
+          queryCalls += 1;
+          if (value === "blocked") {
+            markStarted();
+            await embeddingReleased;
+          }
           return value === "greetings" ? [0.1] : [0.2];
         }
         async computeSourceEmbeddings(values: string[]) {
@@ -2362,7 +2382,10 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         readConsistencyInterval: 0,
       });
       const tracked = await reader.openTable("test");
-      const autoQuery = tracked.search("greetings").select(["text"]).limit(1);
+      const autoQuery = (tracked.search("greetings") as VectorQuery)
+        .nprobes(1)
+        .select(["text"])
+        .limit(1);
 
       const func = new TestEmbedding();
       const schema = LanceSchema({
@@ -2371,18 +2394,52 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       });
       const data = [{ text: "hello world" }, { text: "goodbye world" }];
       await writer.createTable("test", data, { mode: "overwrite", schema });
+      const baselineInitCalls = initCalls;
 
       expect(
         (await tracked.schema()).metadata.get("embedding_functions"),
       ).toBeDefined();
       const results = await autoQuery.toArray();
       expect(results[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
 
-      const ftsData = [{ text: "greetings from full text", vector: [0.0] }];
+      const repeatedResults = await autoQuery.toArray();
+      expect(repeatedResults[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
+
+      const multiVectorResults = await (
+        tracked.search("greetings") as VectorQuery
+      )
+        .addQueryVector(Promise.resolve([0.2]))
+        .select(["text"])
+        .limit(1)
+        .toArray();
+      expect(multiVectorResults).toHaveLength(2);
+      expect(multiVectorResults.map((row) => row.text).sort()).toEqual(
+        data.map((row) => row.text).sort(),
+      );
+
+      const pending = tracked
+        .search("blocked")
+        .select(["text"])
+        .limit(1)
+        .toArray();
+      await started;
+
+      const ftsData = [
+        { text: "greetings from full text", vector: [0.0] },
+        { text: "blocked from full text", vector: [0.0] },
+      ];
       const ftsTable = await writer.createTable("test", ftsData, {
         mode: "overwrite",
       });
       await ftsTable.createIndex("text", { config: Index.fts() });
+      releaseEmbedding();
+
+      const pendingResults = await pending;
+      expect(pendingResults[0].text).toBe(ftsData[1].text);
 
       expect(
         (await tracked.schema()).metadata.get("embedding_functions"),
