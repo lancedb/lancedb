@@ -43,12 +43,21 @@ import * as lancedb from "@lancedb/lancedb";
 
 const db = await lancedb.connect("data/sample-lancedb");
 const table = await db.openTable("my_table");
-const vectorStore = new LangChainLanceDB(embeddings, { table });
+const vectorStore = new LangChainLanceDB(embeddings, {
+  table,
+  textKey: "item",
+});
 
-const results = await vectorStore.similaritySearchVectorWithScore(
-  queryVector,
-  5,
-);
+const documents = await vectorStore.similaritySearch("foo", 5);
+```
+
+Affected versions of `@langchain/community` do not map LanceDB's `_distance`
+column to the score returned by `similaritySearchVectorWithScore`. Query the
+table directly when you need the numeric vector distance:
+
+```javascript
+const results = await table.vectorSearch(queryVector).limit(5).toArray();
+console.log(results[0]._distance);
 ```
 
 The [quickstart](https://docs.lancedb.com/quickstart/) contains more complete examples.
