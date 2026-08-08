@@ -2858,6 +2858,7 @@ def test_create_f16_table(mem_db: DBConnection):
 )
 def test_f16_index_search_with_open_batch_reader(mem_db: DBConnection, index_config):
     """Regression test for https://github.com/lancedb/lancedb/issues/2611."""
+    pytest.importorskip("pandas")
     dimension = 32
     num_rows = 512
     rng = np.random.default_rng(42)
