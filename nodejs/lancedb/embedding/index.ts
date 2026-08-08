@@ -5,6 +5,8 @@ import { Field, Schema } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./registry";
+import "./openai";
+import "./transformers";
 
 export {
   FieldOptions,

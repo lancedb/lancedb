@@ -16,6 +16,18 @@ describe("embedding function registry", () => {
     registries.length = 0;
   });
 
+  it("registers built-in providers through the public embedding API", () => {
+    jest.isolateModules(() => {
+      const { getRegistry } =
+        require("../lancedb/embedding") as EmbeddingModule;
+      const registry = getRegistry();
+      registries.push(registry);
+
+      expect(registry.get("openai")).toBeDefined();
+      expect(registry.get("huggingface")).toBeDefined();
+    });
+  });
+
   it("shares registrations across duplicated provider module graphs", () => {
     let registeringRegistry: EmbeddingFunctionRegistry | undefined;
 
