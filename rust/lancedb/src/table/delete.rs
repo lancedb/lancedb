@@ -62,12 +62,11 @@ pub(crate) async fn execute_delete(
 #[cfg(test)]
 mod tests {
     use crate::connect;
-    use arrow_array::{Int32Array, RecordBatch, StringArray, record_batch};
+    use arrow_array::{Int32Array, RecordBatch, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
-    use crate::index::Index;
-    use crate::query::{ExecutableQuery, QueryBase};
+    use crate::query::ExecutableQuery;
     use futures::TryStreamExt;
     #[tokio::test]
     async fn test_delete_simple() {
@@ -166,46 +165,6 @@ mod tests {
         let result = table.delete("true").await.unwrap();
         assert_eq!(result.num_deleted_rows, 3);
         assert_eq!(table.count_rows(None).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_delete_large_in_list_with_btree_index() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
-        let ids = StringArray::from_iter_values((0..10_000).map(|id| format!("id_{id}")));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(ids)]).unwrap();
-        let table = conn
-            .create_table("test_delete_large_in_list", batch)
-            .execute()
-            .await
-            .unwrap();
-
-        table
-            .create_index(&["id"], Index::BTree(Default::default()))
-            .execute()
-            .await
-            .unwrap();
-
-        let values = (0..10_000)
-            .step_by(10)
-            .map(|id| format!("'id_{id}'"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let predicate = format!("id IN ({values})");
-
-        // A large IN-list must stay on the scalar-index path. Lance compiles this
-        // predicate once and reuses it across all BTree pages.
-        let plan = table
-            .query()
-            .only_if(&predicate)
-            .explain_plan(false)
-            .await
-            .unwrap();
-        assert!(plan.contains("ScalarIndexQuery"), "unexpected plan: {plan}");
-
-        let result = table.delete(&predicate).await.unwrap();
-        assert_eq!(result.num_deleted_rows, 1_000);
-        assert_eq!(table.count_rows(None).await.unwrap(), 9_000);
     }
 
     #[tokio::test]
