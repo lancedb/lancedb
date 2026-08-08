@@ -3456,6 +3456,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 [[package]]
 name = "fsst"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "rand 0.9.5",
@@ -4815,6 +4816,7 @@ checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 [[package]]
 name = "lance"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -4889,6 +4891,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4910,6 +4913,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-scalar"
 version = "58.0.0"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4923,6 +4927,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow-stats"
 version = "58.0.0"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4932,6 +4937,7 @@ dependencies = [
 [[package]]
 name = "lance-bitpacking"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrayref",
  "crunchy",
@@ -4942,6 +4948,7 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4982,6 +4989,7 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5012,6 +5020,7 @@ dependencies = [
 [[package]]
 name = "lance-datagen"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5029,6 +5038,7 @@ dependencies = [
 [[package]]
 name = "lance-derive"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5038,6 +5048,7 @@ dependencies = [
 [[package]]
 name = "lance-encoding"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5072,6 +5083,7 @@ dependencies = [
 [[package]]
 name = "lance-file"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -5103,6 +5115,7 @@ dependencies = [
 [[package]]
 name = "lance-index"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -5170,6 +5183,7 @@ dependencies = [
 [[package]]
 name = "lance-index-core"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5192,6 +5206,7 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5213,7 +5228,7 @@ dependencies = [
  "moka",
  "object_store",
  "object_store_opendal",
- "opendal 0.58.1",
+ "opendal 0.58.1 (git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6)",
  "path_abs",
  "pin-project",
  "prost",
@@ -5231,6 +5246,7 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5247,6 +5263,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5259,6 +5276,7 @@ dependencies = [
 [[package]]
 name = "lance-namespace-impls"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -5312,6 +5330,7 @@ dependencies = [
 [[package]]
 name = "lance-select"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5327,6 +5346,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -5367,6 +5387,7 @@ dependencies = [
 [[package]]
 name = "lance-testing"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -5380,6 +5401,7 @@ dependencies = [
 [[package]]
 name = "lance-tokenizer"
 version = "11.0.0-beta.3"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "frostem",
  "icu_segmenter",
@@ -6476,6 +6498,17 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "opendal"
 version = "0.58.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20562cc7447fcc915fc5c23df305a412ea80a733c9f2fd9e2d267e2815be6d"
+dependencies = [
+ "opendal-core",
+ "opendal-service-s3 0.58.1 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "opendal"
+version = "0.58.1"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "ctor 1.0.12",
  "opendal-core",
@@ -6491,17 +6524,7 @@ dependencies = [
  "opendal-service-goosefs",
  "opendal-service-hf",
  "opendal-service-oss",
- "opendal-service-s3 0.58.1",
-]
-
-[[package]]
-name = "opendal"
-version = "0.58.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f20562cc7447fcc915fc5c23df305a412ea80a733c9f2fd9e2d267e2815be6d"
-dependencies = [
- "opendal-core",
- "opendal-service-s3 0.58.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opendal-service-s3 0.58.1 (git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6)",
 ]
 
 [[package]]
@@ -6727,6 +6750,8 @@ dependencies = [
 [[package]]
 name = "opendal-service-s3"
 version = "0.58.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e80cdf192d7eff05feed747894d64f81905ac4eaf132edf7ea270abdd2d663"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -6746,8 +6771,7 @@ dependencies = [
 [[package]]
 name = "opendal-service-s3"
 version = "0.58.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58e80cdf192d7eff05feed747894d64f81905ac4eaf132edf7ea270abdd2d663"
+source = "git+https://github.com/lancedb/lancedb.git?rev=83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6#83c84b3b6c49cd84f28636e41e5f24ebfc66bfa6"
 dependencies = [
  "base64 0.23.1",
  "bytes",

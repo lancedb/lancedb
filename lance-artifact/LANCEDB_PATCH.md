@@ -11,9 +11,9 @@ metadata. Keeping the change inside `AwsStoreProvider` leaves arbitrary registry
 their complete `ObjectStore` results untouched. Remove this patch when the same behavior is
 available in the pinned Lance release.
 
-The LanceDB workspace consumes every coupled Lance crate through a direct path into this artifact.
-That keeps Git consumers on the same checked-in source instead of relying on a root `[patch]`,
-which Cargo ignores when LanceDB itself is used as a dependency.
+The LanceDB workspace pins every coupled Lance crate to the immutable repository commit containing
+this artifact. That durable source survives transitive Git consumption instead of relying on a
+root `[patch]`, which Cargo ignores when LanceDB itself is used as a dependency.
 
 The artifact also contains Apache OpenDAL 0.58.1's `opendal` and `opendal-service-s3` crates. The
 only OpenDAL change adds a direct custom-provider hook alongside its existing credential-chain
