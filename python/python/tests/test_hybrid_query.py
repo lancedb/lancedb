@@ -366,7 +366,7 @@ def test_hybrid_prefilter_explain_plan(table_with_id: Table):
 
 
 def test_hybrid_prefilter_returns_filtered_row(table_with_id: Table):
-    """Regression test for https://github.com/lancedb/lancedb/issues/2435."""
+    """Regression test for the hybrid prefilter inversion fixed in #3096."""
     results = (
         table_with_id.search(query_type="hybrid")
         .vector([0.1, 0.1])
