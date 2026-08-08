@@ -10,6 +10,7 @@ use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
     dataloader::permutation::{
         builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
+        cache::{CachingPermutationReader, SharedOffsetCache},
         reader::PermutationReader,
         split::{SplitSizes, SplitStrategy},
     },
@@ -307,6 +308,168 @@ impl PyPermutationReader {
         future_into_py(slf.py(), async move {
             let reader = reader.with_limit(limit).await.infer_error()?;
             Ok(Self::from_reader(reader))
+        })
+    }
+
+    #[pyo3(signature = (selection=None, *, batch_size=None))]
+    pub fn read<'py>(
+        slf: PyRef<'py, Self>,
+        selection: Option<Bound<'py, PyAny>>,
+        batch_size: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let selection = Self::parse_selection(selection)?;
+        let reader = slf.reader.clone();
+        let batch_size = batch_size.unwrap_or(1024);
+        future_into_py(slf.py(), async move {
+            use lancedb::query::QueryExecutionOptions;
+            let mut execution_options = QueryExecutionOptions::default();
+            execution_options.max_batch_length = batch_size;
+            let stream = reader
+                .read(selection, execution_options)
+                .await
+                .infer_error()?;
+            Ok(RecordBatchStream::new(stream))
+        })
+    }
+
+    #[pyo3(signature = (indices, *, selection=None))]
+    pub fn take_offsets<'py>(
+        slf: PyRef<'py, Self>,
+        indices: Vec<u64>,
+        selection: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let selection = Self::parse_selection(selection)?;
+        let reader = slf.reader.clone();
+        future_into_py(slf.py(), async move {
+            let batch = reader
+                .take_offsets(&indices, selection)
+                .await
+                .infer_error()?;
+            Ok(PyArrowType(batch))
+        })
+    }
+}
+
+// ── SharedOffsetCache PyO3 wrapper ────────────────────────────────────────────
+
+#[pyclass(name = "SharedOffsetCache")]
+pub struct PySharedOffsetCache {
+    pub inner: Arc<SharedOffsetCache>,
+}
+
+#[pymethods]
+impl PySharedOffsetCache {
+    /// Create a new shared offset cache.
+    ///
+    /// # Arguments
+    /// * `cache_dir` – path to the local LanceDB database used as a cache store
+    /// * `table_name` – base table name (will be sanitised and versioned)
+    /// * `table_version` – version of the table being cached
+    #[classmethod]
+    pub fn create<'py>(
+        cls: &Bound<'py, PyType>,
+        cache_dir: String,
+        table_name: String,
+        table_version: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        future_into_py(cls.py(), async move {
+            let cache = SharedOffsetCache::new(&cache_dir, &table_name, table_version)
+                .await
+                .infer_error()?;
+            Ok(Self {
+                inner: Arc::new(cache),
+            })
+        })
+    }
+}
+
+// ── CachingPermutationReader PyO3 wrapper ────────────────────────────────────
+
+#[pyclass(name = "CachingPermutationReader")]
+pub struct PyCachingPermutationReader {
+    reader: Arc<CachingPermutationReader>,
+}
+
+impl PyCachingPermutationReader {
+    fn parse_selection(selection: Option<Bound<'_, PyAny>>) -> PyResult<Select> {
+        let Some(selection) = selection else {
+            return Ok(Select::All);
+        };
+        let selection = selection.cast_into::<PyDict>()?;
+        let selection = selection
+            .iter()
+            .map(|(key, value)| {
+                let key = key.extract::<String>()?;
+                let value = value.extract::<String>()?;
+                Ok((key, value))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Select::dynamic(&selection))
+    }
+}
+
+#[pymethods]
+impl PyCachingPermutationReader {
+    /// Create a new CachingPermutationReader from an existing PermutationReader
+    /// and a SharedOffsetCache.
+    #[classmethod]
+    pub fn create<'py>(
+        cls: &Bound<'py, PyType>,
+        reader: Bound<'py, PyAny>,
+        cache: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner_reader = reader
+            .extract::<PyRef<PyPermutationReader>>()?
+            .reader
+            .as_ref()
+            .clone();
+        let cache_inner = cache.extract::<PyRef<PySharedOffsetCache>>()?.inner.clone();
+
+        future_into_py(cls.py(), async move {
+            let caching_reader = CachingPermutationReader::new(inner_reader, cache_inner);
+            Ok(Self {
+                reader: Arc::new(caching_reader),
+            })
+        })
+    }
+
+    #[pyo3(signature = (selection=None))]
+    pub fn output_schema<'py>(
+        slf: PyRef<'py, Self>,
+        selection: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let selection = Self::parse_selection(selection)?;
+        let reader = slf.reader.clone();
+        future_into_py(slf.py(), async move {
+            let schema = reader.output_schema(selection).await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    #[pyo3(signature = ())]
+    pub fn count_rows<'py>(slf: PyRef<'py, Self>) -> u64 {
+        slf.reader.count_rows()
+    }
+
+    #[pyo3(signature = (offset))]
+    pub fn with_offset<'py>(slf: PyRef<'py, Self>, offset: u64) -> PyResult<Bound<'py, PyAny>> {
+        let reader = slf.reader.as_ref().clone();
+        future_into_py(slf.py(), async move {
+            let new_reader = reader.with_offset(offset).await.infer_error()?;
+            Ok(Self {
+                reader: Arc::new(new_reader),
+            })
+        })
+    }
+
+    #[pyo3(signature = (limit))]
+    pub fn with_limit<'py>(slf: PyRef<'py, Self>, limit: u64) -> PyResult<Bound<'py, PyAny>> {
+        let reader = slf.reader.as_ref().clone();
+        future_into_py(slf.py(), async move {
+            let new_reader = reader.with_limit(limit).await.infer_error()?;
+            Ok(Self {
+                reader: Arc::new(new_reader),
+            })
         })
     }
 
