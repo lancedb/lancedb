@@ -317,7 +317,8 @@ pub(crate) async fn execute_merge_insert(
 mod tests {
     use arrow_array::builder::FixedSizeBinaryBuilder;
     use arrow_array::{
-        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, UInt64Array,
+        FixedSizeListArray, Int32Array, NullArray, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -524,6 +525,74 @@ mod tests {
         let result = merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(result.num_deleted_rows, 5);
         assert_eq!(table.count_rows(None).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_fixed_size_list_above_u32_child_count() {
+        // Arrow's FixedSizeList take kernel uses u32 child indices. Previously,
+        // delete-by-source materialized the target payload in a full outer join,
+        // causing the final list below to overflow those indices and panic.
+        // A Null child keeps this boundary test small in memory.
+        const LIST_SIZE: i32 = 65_536;
+        const ROW_COUNT: usize = (u32::MAX as usize / LIST_SIZE as usize) + 1;
+        const BATCH_SIZE: usize = 8_192;
+
+        let item = Arc::new(Field::new("item", DataType::Null, true));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(item.clone(), LIST_SIZE),
+                false,
+            ),
+        ]));
+        let batch = |start: usize, len: usize| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(UInt32Array::from_iter_values(
+                        start as u32..(start + len) as u32,
+                    )),
+                    Arc::new(FixedSizeListArray::new(
+                        item.clone(),
+                        LIST_SIZE,
+                        Arc::new(NullArray::new(len * LIST_SIZE as usize)),
+                        None,
+                    )),
+                ],
+            )
+            .unwrap()
+        };
+
+        let target_batches = (0..ROW_COUNT)
+            .step_by(BATCH_SIZE)
+            .map(|start| {
+                let len = (ROW_COUNT - start).min(BATCH_SIZE);
+                Ok(batch(start, len))
+            })
+            .collect::<Vec<_>>();
+        let target_data: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(target_batches, schema.clone()));
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("fixed_size_list_overflow", target_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let source = batch(ROW_COUNT - 1, 1);
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_by_source_delete(None);
+        let result = merge
+            .execute(Box::new(RecordBatchIterator::new([Ok(source)], schema)))
+            .await
+            .unwrap();
+
+        assert_eq!(result.num_updated_rows, 1);
+        assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
     }
 }
 
