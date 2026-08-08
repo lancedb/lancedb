@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import * as fs from "node:fs";
+import * as vm from "node:vm";
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
@@ -36,6 +38,42 @@ function sampleRecords(): Array<Record<string, any>> {
     },
   ];
 }
+
+it("serializes an Arrow Table created in another JavaScript realm", async () => {
+  const context = vm.createContext({
+    TextDecoder,
+    TextEncoder,
+    console,
+    setTimeout,
+    clearTimeout,
+  });
+  vm.runInContext(
+    fs.readFileSync(
+      require.resolve("apache-arrow-15/Arrow.es2015.min"),
+      "utf8",
+    ),
+    context,
+  );
+  const foreignTable: unknown = vm.runInContext(
+    "Arrow.tableFromArrays({ id: new Int32Array([1, 2, 3]), text: ['foo', 'bar', 'baz'] })",
+    context,
+  );
+
+  const foreignMetadata = (
+    foreignTable as { schema: { metadata: Map<string, string> } }
+  ).schema.metadata;
+  expect(foreignMetadata).not.toBeInstanceOf(Map);
+
+  const buf = await fromDataToBuffer(
+    foreignTable as Parameters<typeof fromDataToBuffer>[0],
+  );
+  const actual = currentTableFromIPC(buf);
+
+  expect(actual.numRows).toBe(3);
+  expect(actual.getChild("id")?.toJSON()).toEqual([1, 2, 3]);
+  expect(actual.getChild("text")?.toJSON()).toEqual(["foo", "bar", "baz"]);
+});
+
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Arrow",
   (
@@ -64,7 +102,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       Float32,
       FixedSizeList,
       Precision,
-      tableFromArrays,
       tableFromIPC,
       DataType,
       Dictionary,
@@ -1062,21 +1099,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
-      it("preserves rows from a foreign Arrow Table", async function () {
-        const foreignTable = tableFromArrays({
-          id: new Int32Array([1, 2]),
-          text: ["foo", "bar"],
-        });
-
-        // biome-ignore lint/suspicious/noExplicitAny: Arrow Tables from supported versions are structurally compatible
-        const buf = await fromDataToBuffer(foreignTable as any);
-        const actual = tableFromIPC(buf);
-
-        expect(actual.numRows).toBe(2);
-        expect(actual.getChild("id")?.toJSON()).toEqual([1, 2]);
-        expect(actual.getChild("text")?.toJSON()).toEqual(["foo", "bar"]);
-      });
-
       it("preserves a dictionary shared by multiple fields", async function () {
         const values = ["alpha", "beta", "alpha"];
         const dictionaryVector = vectorFromArray(values);
