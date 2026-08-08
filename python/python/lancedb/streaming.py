@@ -153,10 +153,21 @@ class StreamingDataset(IterableDataset):
 
         Skipping weakens the elastic-determinism guarantee at the end of the
         epoch: splits that lose more rows than others run dry earlier, and
-        the epoch ends at the last cycle where every split still has a row,
-        so the final few global steps can differ across topologies (bounded
-        by the skew in bad-row counts across splits).  The sequence of
-        samples yielded from each split remains deterministic.  Mid-epoch
+        each rank's iterator ends at the last cycle where every split *it
+        owns* still has a row.  Because bad rows are not distributed evenly
+        across splits, this means one rank's iterator can yield noticeably
+        fewer or more steps than another rank's *in the same run* — there is
+        no cross-rank coordination that stops every rank at the same global
+        step.  This is generally safe for asynchronous or single-rank use,
+        but synchronous distributed training (e.g. ranks that call
+        ``all_reduce`` every step) can hang or deadlock if one rank's
+        iterator is exhausted while others are still stepping; callers doing
+        synchronous multi-rank training with ``on_transform_error != "raise"``
+        are responsible for their own cross-rank stopping mechanism (e.g.
+        broadcasting a stop signal on ``StopIteration``).  The final few
+        global steps can also differ across topologies (bounded by the skew
+        in bad-row counts across splits).  The sequence of samples yielded
+        from each split remains deterministic.  Mid-epoch
         checkpoints remain exact provided the transform fails
         deterministically; in multi-rank training each rank must save its
         own ``state_dict`` and the states must be combined with
@@ -537,6 +548,10 @@ class StreamingDataset(IterableDataset):
                         # (equal split sizes + round-robin); when
                         # on_transform_error drops rows a split can run dry
                         # early, ending the epoch at the last complete cycle.
+                        # This check only sees splits owned by this rank/worker
+                        # (my_splits) — there is no cross-rank coordination, so
+                        # a different rank with fewer skipped rows keeps going;
+                        # see the on_transform_error docstring.
                         exhausted = False
                         for i in range(n):
                             _ensure_cooked(i)
@@ -810,6 +825,28 @@ class StreamingDataset(IterableDataset):
 
         Raises ``ValueError`` if the states are empty or were not produced by
         the same run (mismatched seed, split count, epoch, or sample counts).
+
+        The merge is always all-to-all and topology-agnostic: collect the
+        ``state_dict()`` from every rank of the *previous* run into one list,
+        merge that whole list, and hand the identical merged result to every
+        rank of the *next* run — regardless of whether the rank count grew,
+        shrank, or stayed the same. There is no pairwise or subset merging
+        step, because each split's exact position is only known to whichever
+        rank owned that split, and the elementwise maximum needs every rank's
+        contribution to be correct.
+
+        Example: checkpointing 8 ranks and resuming on 4:
+
+        >>> states = [ds_rank_i.state_dict() for i in range(8)]  # 8 ranks
+        >>> merged = StreamingDataset.merge_state_dicts(states)
+        >>> for ds_rank_i in resumed_datasets:  # now only 4 ranks
+        ...     ds_rank_i.load_state_dict(merged)  # same dict on every rank
+
+        Checkpointing 4 ranks and resuming on 8 follows the identical
+        pattern: merge all 4 states, then load that one merged dict into
+        each of the 8 new ranks. The rank count on either side never affects
+        the merge itself, since ``merge_state_dicts`` only cares about the
+        list of states it is given.
         """
         if not states:
             raise ValueError("merge_state_dicts requires at least one state dict")
