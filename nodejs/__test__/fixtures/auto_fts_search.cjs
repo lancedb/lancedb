@@ -9,6 +9,8 @@ const { getRegistry } = require("../../dist/embedding/registry");
 async function main() {
   assert.equal(typeof embedding.getRegistry, "function");
   assert.equal(getRegistry().length(), 0);
+  assert.equal(embedding.getRegistry(), getRegistry());
+  assert.equal(getRegistry().length(), 2);
 
   const dir = tmp.dirSync({ unsafeCleanup: true });
   let db;
