@@ -365,6 +365,20 @@ def test_hybrid_prefilter_explain_plan(table_with_id: Table):
     )
 
 
+def test_hybrid_prefilter_returns_filtered_row(table_with_id: Table):
+    """Regression test for https://github.com/lancedb/lancedb/issues/2435."""
+    results = (
+        table_with_id.search(query_type="hybrid")
+        .vector([0.1, 0.1])
+        .text("dog")
+        .where("id = 3", prefilter=True)
+        .limit(1)
+        .to_arrow()
+    )
+
+    assert results["id"].to_pylist() == [3]
+
+
 def test_normalize_scores():
     cases = [
         (pa.array([0.1, 0.4]), pa.array([0.0, 1.0])),
