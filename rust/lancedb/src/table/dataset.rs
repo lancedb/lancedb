@@ -102,11 +102,17 @@ impl DatasetConsistencyWrapper {
     /// retaining this wrapper's live MemWAL read context.
     pub fn new_query_snapshot(&self, dataset: Arc<Dataset>) -> Self {
         let version = dataset.version().version;
+        let query_snapshot = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            // Preserve user time travel so the MemWAL safety guard still sees
+            // it. Latest and already-internal snapshots remain internal pins.
+            state.query_snapshot || state.pinned_version.is_none()
+        };
         Self {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
                 pinned_version: Some(version),
-                query_snapshot: true,
+                query_snapshot,
             })),
             consistency: ConsistencyMode::Lazy,
             shard_writer: self.shard_writer.clone(),

@@ -2569,6 +2569,103 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(bCalls).toBe(1);
     });
 
+    test("stale FTS routing keeps newer vector preparation", async () => {
+      let vectorCalls = 0;
+      let markVectorStarted!: () => void;
+      const vectorStarted = new Promise<void>((resolve) => {
+        markVectorStarted = resolve;
+      });
+      let releaseVector!: () => void;
+      const vectorReleased = new Promise<void>((resolve) => {
+        releaseVector = resolve;
+      });
+
+      @register("stale-fts-race")
+      class RaceEmbedding extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          vectorCalls += 1;
+          markVectorStarted();
+          await vectorReleased;
+          return [0.1];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.1]);
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      const ftsTable = await writer.createTable("stale_fts", [
+        { text: "hello", vector: [0.0] },
+      ]);
+      await ftsTable.createIndex("text", { config: Index.fts() });
+
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("stale_fts");
+      type Snapshot = {
+        schema: () => Promise<Buffer>;
+      };
+      type NativeWithSnapshot = {
+        querySnapshot: () => Promise<Snapshot>;
+      };
+      const native = (tracked as unknown as { inner: NativeWithSnapshot })
+        .inner;
+      const querySnapshot = native.querySnapshot.bind(native);
+      let snapshotCalls = 0;
+      let markStaleSchemaStarted!: () => void;
+      const staleSchemaStarted = new Promise<void>((resolve) => {
+        markStaleSchemaStarted = resolve;
+      });
+      let releaseStaleSchema!: () => void;
+      const staleSchemaReleased = new Promise<void>((resolve) => {
+        releaseStaleSchema = resolve;
+      });
+      native.querySnapshot = async () => {
+        const snapshot = await querySnapshot();
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          const schema = snapshot.schema.bind(snapshot);
+          snapshot.schema = async () => {
+            markStaleSchemaStarted();
+            await staleSchemaReleased;
+            return await schema();
+          };
+        }
+        return snapshot;
+      };
+
+      const query = tracked.search("hello");
+      const staleFtsExecution = query.toArray();
+      await staleSchemaStarted;
+
+      const embedding = new RaceEmbedding();
+      const vectorSchema = LanceSchema({
+        text: embedding.sourceField(new arrow.Utf8()),
+        vector: embedding.vectorField(),
+      });
+      await writer.createTable("stale_fts", [{ text: "hello" }], {
+        mode: "overwrite",
+        schema: vectorSchema,
+      });
+
+      const vectorExecution = query.toArray();
+      await vectorStarted;
+      releaseStaleSchema();
+      await staleFtsExecution;
+      releaseVector();
+      await vectorExecution;
+
+      await query.toArray();
+      expect(vectorCalls).toBe(1);
+    });
+
     test("tokenizes FTS queries by column or index name", async () => {
       const db = await connect(tmpDir.name);
       const data = [

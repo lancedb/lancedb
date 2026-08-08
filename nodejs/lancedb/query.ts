@@ -929,7 +929,6 @@ export function createAutoQuery(
     while (true) {
       const initial = await snapshotRoute();
       if (initial.embeddingMetadata === undefined) {
-        cachedPreparation = undefined;
         const inner = initial.table.query();
         inner.fullTextSearch({ query, columns });
         return { inner, route: "fts" };

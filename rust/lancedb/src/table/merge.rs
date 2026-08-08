@@ -933,6 +933,26 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn query_snapshot_preserves_time_travel_lsm_guard() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4]).await;
+
+        let version = table.version().await.unwrap();
+        table.checkout(version).await.unwrap();
+        let direct_error = table.query().execute().await.err().unwrap();
+        assert!(matches!(direct_error, Error::NotSupported { .. }));
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let snapshot_error = snapshot.query().execute().await.err().unwrap();
+        assert!(matches!(snapshot_error, Error::NotSupported { .. }));
+    }
+
+    #[tokio::test]
     async fn lsm_read_dedup_newest_wins() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1
