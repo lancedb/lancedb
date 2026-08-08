@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import lancedb
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfFlat, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -2846,6 +2846,52 @@ def test_create_f16_table(mem_db: DBConnection):
     expected = table.search(query).limit(2).to_arrow()
 
     assert "s-2" in expected["text"].to_pylist()
+
+
+@pytest.mark.parametrize(
+    "index_config",
+    [
+        IvfPq(distance_type="cosine", num_partitions=2, num_sub_vectors=2),
+        IvfFlat(distance_type="cosine", num_partitions=2),
+    ],
+    ids=["ivf-pq", "ivf-flat"],
+)
+def test_f16_index_search_with_open_batch_reader(mem_db: DBConnection, index_config):
+    """Regression test for https://github.com/lancedb/lancedb/issues/2611."""
+    pytest.importorskip("pandas")
+    dimension = 32
+    num_rows = 512
+    rng = np.random.default_rng(42)
+    text_vectors = rng.standard_normal((num_rows, dimension)).astype(np.float16)
+    image_vectors = rng.standard_normal((num_rows, dimension)).astype(np.float16)
+    data = pa.table(
+        {
+            "id": np.arange(num_rows),
+            "text_embedding": pa.FixedSizeListArray.from_arrays(
+                pa.array(text_vectors.reshape(-1)), dimension
+            ),
+            "image_embedding": pa.FixedSizeListArray.from_arrays(
+                pa.array(image_vectors.reshape(-1)), dimension
+            ),
+        }
+    )
+    table = mem_db.create_table("f16_index_with_open_reader", data=data)
+    table.create_index("image_embedding", config=index_config)
+
+    reader = table.search().select(["id", "text_embedding"]).to_batches()
+    for batch in reader:
+        for _, _row in batch.to_pandas().iterrows():
+            result = (
+                table.search(image_vectors[2], vector_column_name="image_embedding")
+                .select(["id", "_distance"])
+                .distance_type("cosine")
+                .limit(10)
+                .to_pandas()
+            )
+            assert result.iloc[0]["id"] == 2
+            return
+
+    pytest.fail("expected the outer query to return a batch")
 
 
 def test_add_with_embedding_function(mem_db: DBConnection):
