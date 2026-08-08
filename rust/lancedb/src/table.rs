@@ -60,7 +60,7 @@ use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
+use crate::utils::{PatchWriteParam, resolve_arrow_field_path};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
@@ -2385,11 +2385,6 @@ impl NativeTable {
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
 
         // Build table_id from namespace + name
         let mut table_id = namespace.clone();
@@ -2443,6 +2438,14 @@ impl NativeTable {
                 return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
             }
             Err(e) => return Err(e.into()),
+        };
+        // Resolve the store from the session registry before applying a
+        // connection-level write wrapper. Wrapper identity is part of the
+        // registry key, so including it in ReadParams prevents reuse when the
+        // opened table (and its wrapped store) is short-lived.
+        let dataset = match write_store_wrapper {
+            Some(wrapper) => dataset.with_object_store_wrappers([wrapper]),
+            None => dataset,
         };
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -2546,12 +2549,6 @@ impl NativeTable {
             params.session(sess);
         }
 
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
-
         // Build table_id from namespace + name
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
@@ -2573,6 +2570,13 @@ impl NativeTable {
                 },
                 e => e.into(),
             })?;
+        // Apply the write wrapper after the session registry has resolved the
+        // shared store. The cloned dataset retains the wrapper for subsequent
+        // reads, manifest commits, and any additional base stores.
+        let dataset = match write_store_wrapper {
+            Some(wrapper) => dataset.with_object_store_wrappers([wrapper]),
+            None => dataset,
+        };
 
         let uri = dataset.uri().to_string();
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);

@@ -1321,7 +1321,22 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct PassthroughStoreWrapper(Arc<AtomicUsize>);
+
+    impl WrappingObjectStore for PassthroughStoreWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            target: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            target
+        }
+    }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
@@ -1422,9 +1437,13 @@ mod tests {
             read_consistency_interval: None,
             session: Some(session),
         };
-        let db = ListingDatabase::connect_with_options(&request)
+        let mut db = ListingDatabase::connect_with_options(&request)
             .await
             .unwrap();
+        // A connection-level write wrapper must not prevent table opens from
+        // reusing the connection's registered object store.
+        let wrapper_calls = Arc::new(AtomicUsize::new(0));
+        db.store_wrapper = Some(Arc::new(PassthroughStoreWrapper(wrapper_calls.clone())));
 
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
         db.create_table(CreateTableRequest {
@@ -1440,6 +1459,7 @@ mod tests {
         .unwrap();
 
         let before_open = registry.stats();
+        let wrapper_calls_before_open = wrapper_calls.load(Ordering::Relaxed);
         for _ in 0..3 {
             let table = db
                 .open_table(OpenTableRequest {
@@ -1459,6 +1479,7 @@ mod tests {
         let after_open = registry.stats();
         assert_eq!(after_open.misses, before_open.misses);
         assert!(after_open.hits >= before_open.hits + 3);
+        assert!(wrapper_calls.load(Ordering::Relaxed) >= wrapper_calls_before_open + 3);
     }
 
     /// Regression test for https://github.com/lancedb/lancedb/issues/3197.
