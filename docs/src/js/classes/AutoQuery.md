@@ -9,8 +9,8 @@
 A builder for automatic string searches.
 
 Automatic search determines whether to use full-text or vector search from
-the table revision selected for execution. This builder exposes the common
-operations supported by both query families.
+the table revision selected for each execution. This builder exposes the
+common operations supported by both query families.
 
 ## Extends
 

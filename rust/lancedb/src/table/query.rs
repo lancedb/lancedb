@@ -70,6 +70,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
         .contains(&NamespaceClientPushdownOperation::QueryTable)
         && table.namespace_client.is_some()
         && table.dataset.current_branch().is_none()
+        // QueryTableRequest cannot carry a pinned dataset version. Pushing a
+        // time-travel query down would silently execute against latest.
+        && table.dataset.time_travel_version().is_none()
         && !requires_local_namespace_execution(query))
     {
         return Ok(false);
@@ -694,6 +697,7 @@ mod tests {
 
     use super::*;
     use crate::query::{QueryExecutionOptions, QueryRequest};
+    use crate::table::BaseTable;
 
     fn fixed_size_list_array(values: Vec<f32>, dimension: i32) -> FixedSizeListArray {
         FixedSizeListArray::try_new_from_values(Float32Array::from(values), dimension).unwrap()
@@ -886,8 +890,54 @@ mod tests {
 
         async fn query_table(&self, _request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
             self.query_table_calls.fetch_add(1, Ordering::SeqCst);
-            panic!("approx_mode queries must not be pushed down to namespace query_table");
+            panic!("query must not be pushed down to namespace query_table");
         }
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_pinned_snapshot_with_namespace_pushdown_runs_locally() {
+        use crate::connect;
+        use arrow_array::{Int32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]))],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_pinned_namespace_fallback", vec![batch])
+            .execute()
+            .await
+            .unwrap();
+
+        let namespace_client = Arc::new(CountingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+
+        let snapshot = native_table.checkout_current().await.unwrap();
+        let snapshot = snapshot.as_any().downcast_ref::<NativeTable>().unwrap();
+        assert!(snapshot.dataset.time_travel_version().is_some());
+
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql("id > 3".to_string())),
+            ..Default::default()
+        });
+        let stream = execute_query(snapshot, &query, QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+
+        assert_eq!(
+            batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+            2
+        );
+        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

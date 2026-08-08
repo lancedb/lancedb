@@ -1889,6 +1889,37 @@ describe("automatic search schema consistency", () => {
       second.close();
     }
   });
+
+  it("refreshes a reused automatic search for every execution", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const table = await first.createTable("docs", [
+        { text: "hello before", marker: "before" },
+      ]);
+      await table.createIndex("text", { config: Index.fts() });
+      const search = table.search("hello").select(["text"]);
+
+      const before = (await search.toArray())[0];
+      expect(before.text).toBe("hello before");
+      expect(before.marker).toBeUndefined();
+
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "hello after", marker: "after" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+
+      const after = (await search.toArray())[0];
+      expect(after.text).toBe("hello after");
+      expect(after.marker).toBeUndefined();
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
 });
 
 describe("schema evolution", function () {

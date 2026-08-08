@@ -1058,7 +1058,7 @@ export class LocalTable extends Table {
       const columns =
         typeof ftsColumns === "string" ? [ftsColumns] : ftsColumns;
       return Query.autoSearch(
-        this.inner.checkoutCurrent(),
+        () => this.inner.checkoutCurrent(),
         query,
         vector,
         columns,
