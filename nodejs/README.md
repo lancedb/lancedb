@@ -30,6 +30,36 @@ const results = await table.vectorSearch([0.1, 0.3]).limit(20).toArray();
 console.log(results);
 ```
 
+### Use an Existing Table with LangChain
+
+When wrapping an existing table with `@langchain/community`, open the table
+with LanceDB and pass the resulting table handle to LangChain. The LangChain
+`uri` and `tableName` options are used when creating a table; they do not open
+an existing table for search.
+
+```javascript
+import { LanceDB as LangChainLanceDB } from "@langchain/community/vectorstores/lancedb";
+import * as lancedb from "@lancedb/lancedb";
+
+const db = await lancedb.connect("data/sample-lancedb");
+const table = await db.openTable("my_table");
+const vectorStore = new LangChainLanceDB(embeddings, {
+  table,
+  textKey: "item",
+});
+
+const documents = await vectorStore.similaritySearch("foo", 5);
+```
+
+Affected versions of `@langchain/community` do not map LanceDB's `_distance`
+column to the score returned by `similaritySearchVectorWithScore`. Query the
+table directly when you need the numeric vector distance:
+
+```javascript
+const results = await table.vectorSearch(queryVector).limit(5).toArray();
+console.log(results[0]._distance);
+```
+
 The [quickstart](https://docs.lancedb.com/quickstart/) contains more complete examples.
 
 ## Development
