@@ -915,6 +915,24 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn query_snapshot_preserves_lsm_read_semantics() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let snapshot = table.query_snapshot().await.unwrap();
+        let rows = collect_id_value(snapshot.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[tokio::test]
     async fn lsm_read_dedup_newest_wins() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1

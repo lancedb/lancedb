@@ -872,8 +872,21 @@ class DeferredAutoQuery extends VectorQuery {
   }
 
   addQueryVector(vector: IntoVector): VectorQuery {
+    // Observe promised vectors immediately so a rejection cannot become an
+    // unhandled rejection while auto routing is still resolving (or when the
+    // eventual route is FTS and vector-only calls are intentionally skipped).
+    // The settled outcome remains fulfilled and is rethrown only if a vector
+    // execution actually consumes it.
+    const settledVector = Promise.resolve(vector).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason) => ({ status: "rejected" as const, reason }),
+    );
     this.deferred.doVectorCall(async (inner) => {
-      addQueryVectorToNative(inner, await vector);
+      const outcome = await settledVector;
+      if (outcome.status === "rejected") {
+        throw outcome.reason;
+      }
+      addQueryVectorToNative(inner, outcome.value);
     });
     return this;
   }
@@ -898,6 +911,7 @@ export function createAutoQuery(
   type CachedPreparation = {
     metadata: string;
     vector: Promise<Awaited<IntoVector>>;
+    settled: boolean;
   };
 
   let cachedPreparation: CachedPreparation | undefined;
@@ -923,13 +937,25 @@ export function createAutoQuery(
 
       const metadata = initial.embeddingMetadata;
       if (cachedPreparation?.metadata !== metadata) {
-        cachedPreparation = {
+        const vector = Promise.resolve().then(() => getVector(metadata));
+        const preparation: CachedPreparation = {
           metadata,
-          vector: getVector(metadata),
+          settled: false,
+          vector,
         };
+        void vector.then(
+          () => {
+            preparation.settled = true;
+          },
+          () => {
+            preparation.settled = true;
+          },
+        );
+        cachedPreparation = preparation;
       }
 
       const preparation = cachedPreparation;
+      const preparationWasWarm = preparation.settled;
       let vector: Awaited<IntoVector>;
       try {
         vector = await preparation.vector;
@@ -940,17 +966,29 @@ export function createAutoQuery(
         throw error;
       }
 
-      // Provider preparation can perform arbitrary asynchronous work.  Take a
-      // fresh pinned snapshot afterwards and only use the prepared vector if
-      // that snapshot has the same embedding configuration.
-      const current = await snapshotRoute();
-      if (current.embeddingMetadata !== metadata) {
-        cachedPreparation = undefined;
-        continue;
+      // Newly started (or still in-flight) provider preparation can perform
+      // arbitrary asynchronous work. Revalidate after that work, but reuse the
+      // initial pinned snapshot once preparation was already warm. This avoids
+      // a second remote describe request on every repeated execution.
+      if (!preparationWasWarm) {
+        const current = await snapshotRoute();
+        if (current.embeddingMetadata !== metadata) {
+          // A stale execution must not erase another revision's newer in-flight
+          // preparation.
+          if (cachedPreparation === preparation) {
+            cachedPreparation = undefined;
+          }
+          continue;
+        }
+
+        return {
+          inner: nearestToNative(current.table.query(), vector),
+          route: "vector",
+        };
       }
 
       return {
-        inner: nearestToNative(current.table.query(), vector),
+        inner: nearestToNative(initial.table.query(), vector),
         route: "vector",
       };
     }

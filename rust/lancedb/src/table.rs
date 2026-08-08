@@ -2854,11 +2854,14 @@ impl BaseTable for NativeTable {
 
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let dataset = self.dataset.get().await?;
-        let snapshot = dataset::DatasetConsistencyWrapper::new_time_travel(
-            (*dataset).clone(),
-            self.read_consistency_interval,
-        );
-        Ok(Arc::new(self.with_dataset(snapshot)))
+        let snapshot = self.dataset.new_query_snapshot(dataset);
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
     }
 
     async fn version(&self) -> Result<u64> {
