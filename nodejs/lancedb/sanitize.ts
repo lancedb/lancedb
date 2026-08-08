@@ -9,7 +9,7 @@
 // comes from the exact same library instance.  This is not always the case
 // and so we must sanitize the input to ensure that it is compatible.
 
-import { BufferType, Data } from "apache-arrow";
+import { BufferType, Data, Vector } from "apache-arrow";
 import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 import {
   Binary,
@@ -546,11 +546,17 @@ export function sanitizeTable(tableLike: TableLike): Table {
   }
   const schema = sanitizeSchema(tableLike.schema);
 
-  const batches = tableLike.batches.map(sanitizeRecordBatch);
+  const dictionaryCache = new WeakMap<object, Vector>();
+  const batches = tableLike.batches.map((batch) =>
+    sanitizeRecordBatch(batch, dictionaryCache),
+  );
   return new Table(schema, batches);
 }
 
-function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
+function sanitizeRecordBatch(
+  batchLike: RecordBatchLike,
+  dictionaryCache: WeakMap<object, Vector>,
+): RecordBatch {
   if (batchLike instanceof RecordBatch) {
     return batchLike;
   }
@@ -568,13 +574,35 @@ function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
     );
   }
   const schema = sanitizeSchema(batchLike.schema);
-  // biome-ignore lint/suspicious/noExplicitAny: Record batch data is a struct
-  const data = sanitizeData(batchLike.data) as Data<Struct<any>>;
+  const data = sanitizeData(batchLike.data, dictionaryCache) as Data<Struct>;
   return new RecordBatch(schema, data);
 }
-function sanitizeData(dataLike: DataLike): Data<DataType> {
+
+type DictionaryVectorLike = {
+  data: readonly DataLike[];
+};
+
+type DictionaryDataLike = DataLike & {
+  dictionary?: DictionaryVectorLike;
+};
+
+function sanitizeData(
+  dataLike: DataLike,
+  dictionaryCache: WeakMap<object, Vector>,
+): Data<DataType> {
   if (dataLike instanceof Data) {
     return dataLike;
+  }
+  const dictionaryLike = (dataLike as DictionaryDataLike).dictionary;
+  let dictionary: Vector | undefined;
+  if (dictionaryLike !== undefined) {
+    dictionary = dictionaryCache.get(dictionaryLike);
+    if (dictionary === undefined) {
+      dictionary = new Vector(
+        dictionaryLike.data.map((data) => sanitizeData(data, dictionaryCache)),
+      );
+      dictionaryCache.set(dictionaryLike, dictionary);
+    }
   }
   return new Data(
     sanitizeType(dataLike.type),
@@ -587,7 +615,8 @@ function sanitizeData(dataLike: DataLike): Data<DataType> {
       [BufferType.VALIDITY]: dataLike.nullBitmap,
       [BufferType.TYPE]: dataLike.typeIds,
     },
-    dataLike.children.map(sanitizeData),
+    dataLike.children.map((child) => sanitizeData(child, dictionaryCache)),
+    dictionary,
   );
 }
 

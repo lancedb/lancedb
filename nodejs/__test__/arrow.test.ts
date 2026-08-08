@@ -6,6 +6,7 @@ import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
 import {
+  Vector as CurrentVector,
   convertToTable,
   tableFromIPC as currentTableFromIPC,
   fromBufferToRecordBatch,
@@ -20,6 +21,7 @@ import {
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
+import { sanitizeTable } from "../lancedb/sanitize";
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
@@ -65,6 +67,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       tableFromIPC,
       DataType,
       Dictionary,
+      RecordBatch: ArrowRecordBatch,
       Table: ArrowTable,
       Uint8: ArrowUint8,
       vectorFromArray,
@@ -1057,6 +1060,31 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
+      it("preserves shared dictionary data from another Arrow version", async function () {
+        const values = ["alpha", "beta", "alpha"];
+        const dictionaryVector = vectorFromArray(values);
+        const firstBatch = new ArrowRecordBatch({
+          label: dictionaryVector.slice(0, 2).data[0],
+        });
+        const secondBatch = new ArrowRecordBatch({
+          label: dictionaryVector.slice(2).data[0],
+        });
+        const table = new ArrowTable([firstBatch, secondBatch]);
+
+        const sanitized = sanitizeTable(table);
+        expect([...sanitized.getChild("label")!]).toEqual(values);
+
+        const dictionaries = sanitized.batches.map(
+          (batch) => batch.data.children[0].dictionary,
+        );
+        expect(dictionaries[0]).toBeInstanceOf(CurrentVector);
+        expect(dictionaries[1]).toBe(dictionaries[0]);
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("label")!]).toEqual(values);
+      });
+
       it("can serialize list data from another Arrow version", async function () {
         const values = [["anime", "action"], [], null];
         const vector = vectorFromArray(
