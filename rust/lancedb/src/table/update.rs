@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use arrow_schema::DataType;
+use datafusion_expr::Expr;
 use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +90,7 @@ pub(crate) async fn execute_update(
 
     // 3. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
-        let predicate = safe_update_filter(&predicate, dataset.schema());
+        let predicate = safe_update_filter(&predicate, dataset.as_ref())?;
         builder = builder.update_where(&predicate)?;
     }
 
@@ -111,24 +112,35 @@ pub(crate) async fn execute_update(
     })
 }
 
-/// Keep filtered updates with 32-bit Arrow offsets on the sequential scan path.
+/// Keep vulnerable legacy updates on the early-materialization scan path.
 ///
-/// An indexed scan materializes matching rows with `TakeExec`, which concatenates
-/// values read from multiple fragments. That can overflow a single `Utf8`,
-/// `Binary`, or `List` array's 32-bit offsets. `IS TRUE` has the same filtering
-/// semantics (null still does not match) but intentionally prevents scalar-index
-/// extraction, keeping offset-bearing columns in fragment-sized scan batches.
-fn safe_update_filter(predicate: &str, schema: &lance_core::datatypes::Schema) -> String {
-    let has_offset_columns = schema
+/// Late materialization uses `TakeExec` to concatenate values read from multiple
+/// fragments. That can overflow a single 32-bit-offset array. Lance's update
+/// builder does not currently expose its scanner's materialization controls, so
+/// compose an expression that is selection-equivalent but cannot be pushed into
+/// the vulnerable late-materialization plan. Parse the caller's filter first so
+/// accepted SQL syntax, including trailing comments, is preserved.
+///
+/// This compatibility fallback is intentionally limited to legacy storage. V2
+/// readers do not use the affected materialization path and keep their original
+/// filter expression and indexed plan.
+fn safe_update_filter(predicate: &str, dataset: &lance::Dataset) -> Result<String> {
+    let has_offset_columns = dataset
+        .schema()
         .fields
         .iter()
         .any(|field| has_32_bit_offsets(&field.data_type()));
 
-    if has_offset_columns {
-        format!("({predicate}) IS TRUE")
-    } else {
-        predicate.to_owned()
+    if !dataset.manifest().should_use_legacy_format() || !has_offset_columns {
+        return Ok(predicate.to_owned());
     }
+
+    let mut scanner = dataset.scan();
+    scanner.filter(predicate)?;
+    let expression = scanner
+        .get_expr_filter()?
+        .expect("a filter was configured on the scanner");
+    crate::expr::expr_to_sql_string(&Expr::IsTrue(Box::new(expression)))
 }
 
 fn has_32_bit_offsets(data_type: &DataType) -> bool {
@@ -170,6 +182,14 @@ mod tests {
     use lance::io::exec::Planner;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn contains_take(plan: &dyn datafusion_physical_plan::ExecutionPlan) -> bool {
+        plan.name() == "TakeExec"
+            || plan
+                .children()
+                .iter()
+                .any(|child| contains_take(child.as_ref()))
+    }
 
     #[tokio::test]
     async fn test_update_all_types() {
@@ -457,14 +477,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_materializes_offset_columns_before_filter() {
-        fn contains_take(plan: &dyn datafusion_physical_plan::ExecutionPlan) -> bool {
-            plan.name() == "TakeExec"
-                || plan
-                    .children()
-                    .iter()
-                    .any(|child| contains_take(child.as_ref()))
-        }
-
         let batch = record_batch!(
             ("id", Int32, [0, 1, 2, 3]),
             (
@@ -512,7 +524,7 @@ mod tests {
             "test setup must late-materialize payload:\n{explanation}"
         );
 
-        let guarded_filter = super::safe_update_filter("split = 'test'", dataset.schema());
+        let guarded_filter = super::safe_update_filter("split = 'test'", dataset.as_ref()).unwrap();
         let filter = planner.parse_filter(&guarded_filter).unwrap();
         let filter = planner.optimize_expr(filter).unwrap();
         let mut scanner = dataset.scan();
@@ -549,6 +561,108 @@ mod tests {
                 .await
                 .unwrap(),
             8
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_v2_keeps_indexed_plan() {
+        let batch = record_batch!(
+            ("id", Int32, [0, 1, 2, 3]),
+            ("split", Utf8, ["test", "train", "test", "train"]),
+            ("payload", Utf8, ["a", "b", "c", "d"])
+        )
+        .unwrap();
+        let conn = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    data_storage_version: Some(LanceFileVersion::V2_0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("v2_offset_table", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch).execute().await.unwrap();
+        table
+            .create_index(&["split"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let predicate = "split = 'test'";
+        let update_filter = super::safe_update_filter(predicate, dataset.as_ref()).unwrap();
+        assert_eq!(update_filter, predicate);
+
+        let planner = Planner::new(Arc::new(dataset.schema().into()));
+        let filter = planner.parse_filter(&update_filter).unwrap();
+        let filter = planner.optimize_expr(filter).unwrap();
+        let mut scanner = dataset.scan();
+        scanner.with_row_id().filter_expr(filter);
+        let explanation = scanner.explain_plan(false).await.unwrap();
+        let plan = scanner.create_plan().await.unwrap();
+        assert!(
+            explanation.contains("ScalarIndexQuery"),
+            "v2 plan unexpectedly lost its scalar index:\n{explanation}"
+        );
+        assert!(
+            !contains_take(plan.as_ref()),
+            "v2 plan unexpectedly used the legacy TakeExec path:\n{explanation}"
+        );
+
+        let result = table
+            .update()
+            .only_if(predicate)
+            .column("split", "'TEST'")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.rows_updated, 4);
+    }
+
+    #[tokio::test]
+    async fn test_update_accepts_trailing_comment_filter() {
+        let conn = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    data_storage_version: Some(LanceFileVersion::Legacy),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2]), ("payload", Utf8, ["a", "b"])).unwrap();
+        let table = conn
+            .create_table("trailing_comment", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let predicate = "id = 1 -- valid trailing comment";
+        assert_eq!(table.count_rows(Some(predicate.into())).await.unwrap(), 1);
+        let result = table
+            .update()
+            .only_if(predicate)
+            .column("payload", "'updated'")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.rows_updated, 1);
+        assert_eq!(
+            table
+                .count_rows(Some("payload = 'updated'".into()))
+                .await
+                .unwrap(),
+            1
         );
     }
 
