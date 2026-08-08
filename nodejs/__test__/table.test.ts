@@ -453,51 +453,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       ]);
     });
 
-    // https://github.com/lancedb/lancedb/issues/1963
-    it("should query documents with LangChain PDF metadata", async () => {
-      const db = await connect(tmpDir.name);
-      const documents = [
-        {
-          text: "first page",
-          vector: [1, 0],
-          source: "first.pdf",
-          loc: { pageNumber: 1, lines: { from: 1, to: 12 } },
-          pdf: {
-            version: "1.10.100",
-            info: {
-              format: "PDF 1.7",
-              producer: "pdf.js",
-              creator: "Writer",
-            },
-            totalPages: 2,
-          },
-        },
-        {
-          text: "second page",
-          vector: [0, 1],
-          source: "second.pdf",
-          loc: { pageNumber: 2, lines: { from: 13, to: 24 } },
-          pdf: {
-            version: "1.10.100",
-            info: {
-              format: "PDF 1.7",
-              producer: "pdf.js",
-              creator: "Writer",
-            },
-            totalPages: 2,
-          },
-        },
-      ];
-      const documentsTable = await db.createTable("documents", documents);
-
-      const results = await documentsTable.query().toArray();
-
-      expect(results).toHaveLength(2);
-      expect(results[0].source).toBe("first.pdf");
-      expect(results[0].pdf.info.producer).toBe("pdf.js");
-      expect(results[1].loc.pageNumber).toBe(2);
-    });
-
     it("should be able to insert nullable data for non-nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
@@ -680,6 +635,56 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
   },
 );
+
+// https://github.com/lancedb/lancedb/issues/1963
+it("should query documents with LangChain PDF metadata", async () => {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const db = await connect(tmpDir.name);
+    const documents = [
+      {
+        text: "first page",
+        vector: [1, 0],
+        source: "first.pdf",
+        loc: { pageNumber: 1, lines: { from: 1, to: 12 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+      {
+        text: "second page",
+        vector: [0, 1],
+        source: "second.pdf",
+        loc: { pageNumber: 2, lines: { from: 13, to: 24 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+    ];
+    const documentsTable = await db.createTable("documents", documents);
+
+    const results = await documentsTable.query().toArray();
+
+    expect(results).toHaveLength(2);
+    expect(results[0].source).toBe("first.pdf");
+    expect(results[0].pdf.info.producer).toBe("pdf.js");
+    expect(results[1].loc.pageNumber).toBe(2);
+  } finally {
+    tmpDir.removeCallback();
+  }
+});
 
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
