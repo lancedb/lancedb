@@ -70,6 +70,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       RecordBatch: ArrowRecordBatch,
       Table: ArrowTable,
       Uint8: ArrowUint8,
+      makeData: arrowMakeData,
       vectorFromArray,
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     } = <any>arrow;
@@ -1060,6 +1061,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
+      it("preserves a dictionary shared by multiple fields", async function () {
+        const values = ["alpha", "beta", "alpha"];
+        const dictionaryVector = vectorFromArray(values);
+        const batch = new ArrowRecordBatch({
+          first: dictionaryVector.data[0],
+          second: dictionaryVector.data[0],
+        });
+        const table = new ArrowTable([batch]);
+
+        const sanitized = sanitizeTable(table);
+        expect([...sanitized.getChild("first")!]).toEqual(values);
+        expect([...sanitized.getChild("second")!]).toEqual(values);
+        const firstType = sanitized.schema.fields[0].type as {
+          dictionary: unknown;
+        };
+        const secondType = sanitized.schema.fields[1].type as {
+          dictionary: unknown;
+        };
+        expect(secondType.dictionary).toBe(firstType.dictionary);
+        expect(sanitized.batches[0].data.children[1].dictionary).toBe(
+          sanitized.batches[0].data.children[0].dictionary,
+        );
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("first")!]).toEqual(values);
+        expect([...actual.getChild("second")!]).toEqual(values);
+      });
+
       it("preserves shared dictionary data from another Arrow version", async function () {
         const values = ["alpha", "beta", "alpha"];
         const dictionaryVector = vectorFromArray(values);
@@ -1083,6 +1113,43 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const buf = await fromDataToBuffer(table);
         const actual = currentTableFromIPC(buf);
         expect([...actual.getChild("label")!]).toEqual(values);
+      });
+
+      it("preserves shared chunks in growing dictionaries", async function () {
+        const type = new Dictionary(new Utf8(), new Int32(), 42, false);
+        const firstDictionary = vectorFromArray(["alpha", "beta"], new Utf8());
+        const secondDictionary = firstDictionary.concat(
+          vectorFromArray(["gamma"], new Utf8()),
+        );
+        const firstData = arrowMakeData({
+          type,
+          data: Int32Array.from([0, 1]),
+          dictionary: firstDictionary,
+        });
+        const secondData = arrowMakeData({
+          type,
+          data: Int32Array.from([2]),
+          dictionary: secondDictionary,
+        });
+        const table = new ArrowTable([
+          new ArrowRecordBatch({ label: firstData }),
+          new ArrowRecordBatch({ label: secondData }),
+        ]);
+
+        const sanitized = sanitizeTable(table);
+        const expected = ["alpha", "beta", "gamma"];
+        expect([...sanitized.getChild("label")!]).toEqual(expected);
+        const firstLocalDictionary =
+          sanitized.batches[0].data.children[0].dictionary!;
+        const secondLocalDictionary =
+          sanitized.batches[1].data.children[0].dictionary!;
+        expect(secondLocalDictionary.data[0]).toBe(
+          firstLocalDictionary.data[0],
+        );
+
+        const buf = await fromTableToBuffer(sanitized);
+        const actual = currentTableFromIPC(buf);
+        expect([...actual.getChild("label")!]).toEqual(expected);
       });
 
       it("can serialize list data from another Arrow version", async function () {
