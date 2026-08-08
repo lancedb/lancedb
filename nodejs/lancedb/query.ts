@@ -111,13 +111,15 @@ export class QueryBase<
   NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
 > implements AsyncIterable<RecordBatch>
 {
+  protected inner!: NativeQueryType | Promise<NativeQueryType>;
+
   /**
    * @hidden
    */
-  protected constructor(
-    protected inner: NativeQueryType | Promise<NativeQueryType>,
-  ) {
-    // intentionally empty
+  protected constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
+    if (inner !== undefined) {
+      this.inner = inner;
+    }
   }
 
   // call a function on the inner (either a promise or the actual object)
@@ -133,6 +135,15 @@ export class QueryBase<
     } else {
       fn(this.inner);
     }
+  }
+
+  /**
+   * Return the native query used by the next terminal operation.
+   *
+   * @hidden
+   */
+  protected async getInner(): Promise<NativeQueryType> {
+    return this.inner;
   }
 
   /**
@@ -207,16 +218,11 @@ export class QueryBase<
   /**
    * @hidden
    */
-  protected nativeExecute(
+  protected async nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
-    if (this.inner instanceof Promise) {
-      return this.inner.then((inner) =>
-        inner.execute(options?.maxBatchLength, options?.timeoutMs),
-      );
-    } else {
-      return this.inner.execute(options?.maxBatchLength, options?.timeoutMs);
-    }
+    const inner = await this.getInner();
+    return inner.execute(options?.maxBatchLength, options?.timeoutMs);
   }
 
   /**
@@ -245,12 +251,7 @@ export class QueryBase<
   /** Collect the results as an Arrow @see {@link ArrowTable}. */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const batches = [];
-    let inner;
-    if (this.inner instanceof Promise) {
-      inner = await this.inner;
-    } else {
-      inner = this.inner;
-    }
+    const inner = await this.getInner();
     for await (const batch of new RecordBatchIterable(inner, options)) {
       batches.push(batch);
     }
@@ -279,11 +280,8 @@ export class QueryBase<
    * @returns A Promise that resolves to a string containing the query execution plan explanation.
    */
   async explainPlan(verbose = false): Promise<string> {
-    if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.explainPlan(verbose));
-    } else {
-      return this.inner.explainPlan(verbose);
-    }
+    const inner = await this.getInner();
+    return inner.explainPlan(verbose);
   }
 
   /**
@@ -321,13 +319,8 @@ export class QueryBase<
     distributedMetrics?: AnalyzePlanDistributedMetrics,
   ): Promise<string> {
     const distributedMetricsMode = distributedMetrics ?? "aggregate";
-    if (this.inner instanceof Promise) {
-      return this.inner.then((inner) =>
-        inner.analyzePlan(distributedMetricsMode),
-      );
-    } else {
-      return this.inner.analyzePlan(distributedMetricsMode);
-    }
+    const inner = await this.getInner();
+    return inner.analyzePlan(distributedMetricsMode);
   }
 
   /**
@@ -339,12 +332,8 @@ export class QueryBase<
    * @returns An Arrow Schema describing the output columns.
    */
   async outputSchema(): Promise<import("./arrow").Schema> {
-    let schemaBuffer: Buffer;
-    if (this.inner instanceof Promise) {
-      schemaBuffer = await this.inner.then((inner) => inner.outputSchema());
-    } else {
-      schemaBuffer = await this.inner.outputSchema();
-    }
+    const inner = await this.getInner();
+    const schemaBuffer = await inner.outputSchema();
     const schema = tableFromIPC(schemaBuffer).schema;
     return schema;
   }
@@ -356,7 +345,7 @@ export class StandardQueryBase<
   extends QueryBase<NativeQueryType>
   implements ExecutableQuery
 {
-  constructor(inner: NativeQueryType | Promise<NativeQueryType>) {
+  constructor(inner?: NativeQueryType | Promise<NativeQueryType>) {
     super(inner);
   }
 
@@ -788,6 +777,51 @@ export class TakeQuery extends QueryBase<NativeTakeQuery> {
   }
 }
 
+/**
+ * A builder for automatic string searches.
+ *
+ * Automatic search determines whether to use full-text or vector search from
+ * the table revision selected for each execution. This builder exposes the
+ * common operations supported by both query families.
+ *
+ * @hideconstructor
+ */
+export class AutoQuery extends StandardQueryBase<
+  NativeQuery | NativeVectorQuery
+> {
+  private readonly calls: Array<
+    (inner: NativeQuery | NativeVectorQuery) => void
+  > = [];
+
+  /** @hidden */
+  constructor(
+    private readonly createInner: () => Promise<
+      NativeQuery | NativeVectorQuery
+    >,
+  ) {
+    super();
+  }
+
+  /** @hidden */
+  protected override doCall(
+    fn: (inner: NativeQuery | NativeVectorQuery) => void,
+  ) {
+    this.calls.push(fn);
+  }
+
+  /** @hidden */
+  protected override async getInner(): Promise<
+    NativeQuery | NativeVectorQuery
+  > {
+    const calls = [...this.calls];
+    const inner = await this.createInner();
+    for (const call of calls) {
+      call(inner);
+    }
+    return inner;
+  }
+}
+
 /** A builder for LanceDB queries.
  *
  * @see {@link Table#query}, {@link Table#search}
@@ -800,6 +834,37 @@ export class Query extends StandardQueryBase<NativeQuery> {
    */
   constructor(tbl: NativeTable) {
     super(tbl.query());
+  }
+
+  /** @hidden */
+  static autoSearch(
+    tbl: () => Promise<NativeTable>,
+    query: string,
+    vector: (tbl: NativeTable) => Promise<Awaited<IntoVector> | undefined>,
+    columns?: string[],
+  ): AutoQuery {
+    const nativeQuery = async () => {
+      const snapshot = await Promise.resolve(tbl());
+      const resolved = await vector(snapshot);
+      const inner = snapshot.query();
+      if (resolved === undefined) {
+        inner.fullTextSearch({
+          query,
+          columns: columns ?? null,
+        });
+        return inner;
+      }
+
+      const raw = Array.isArray(resolved)
+        ? null
+        : extractVectorBuffer(resolved);
+      if (raw) {
+        return inner.nearestToRaw(raw.data, raw.dtype);
+      }
+      return inner.nearestTo(Float32Array.from(resolved as number[]));
+    };
+
+    return new AutoQuery(nativeQuery);
   }
 
   /**

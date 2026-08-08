@@ -473,6 +473,12 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn checkout_current(&self) -> napi::Result<Self> {
+        let table = self.inner_ref()?.checkout_current().await.default_error()?;
+        Ok(Self::new(table))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn checkout(&self, version: i64) -> napi::Result<()> {
         self.inner_ref()?
             .checkout(version as u64)
