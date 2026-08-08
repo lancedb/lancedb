@@ -68,10 +68,12 @@ use self::merge::MergeInsertBuilder;
 pub mod add_columns;
 mod add_data;
 pub mod branch_merge;
+pub mod checkpoint;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
 mod primary_key;
@@ -93,8 +95,8 @@ pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
+pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
@@ -368,6 +370,8 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
+/// A fresh spec maintains every index on the table, resolved on install.
+///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
 /// onto the MemWAL writer is a follow-up.
@@ -382,9 +386,12 @@ pub enum LsmWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
@@ -394,35 +401,41 @@ pub enum LsmWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
     /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
     Unsharded {
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index it can maintain, resolved on install — a
+        /// snapshot, so indexes created later need the spec unset and re-set.
+        /// `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
 }
 
 impl LsmWriteSpec {
-    /// Construct a hash-bucket sharding spec with no maintained indexes.
+    /// Construct a hash-bucket sharding spec maintaining every index on the table.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
             num_buckets,
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
     /// Construct an identity-sharding spec (shard by the raw value of
-    /// `column`) with no maintained indexes.
+    /// `column`) maintaining every index on the table.
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
@@ -434,28 +447,37 @@ impl LsmWriteSpec {
     pub fn identity(column: impl Into<String>) -> Self {
         Self::Identity {
             column: column.into(),
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Construct an unsharded spec with no maintained indexes.
+    /// Construct an unsharded spec maintaining every index on the table.
     pub fn unsharded() -> Self {
         Self::Unsharded {
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Replace the list of indexes the MemWAL should keep up to date as
-    /// rows are appended. Each name must reference an index that already
-    /// exists on the table at the time `set_lsm_write_spec` is called.
-    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
+    /// Set which indexes the MemWAL maintains.
+    ///
+    /// `None` (the default) resolves to every index on the table at install,
+    /// failing if one cannot be maintained — name the set to install anyway. A
+    /// list is verbatim: each name must already exist and be maintainable, and
+    /// an empty list maintains nothing.
+    ///
+    /// ```
+    /// # use lancedb::table::LsmWriteSpec;
+    /// // Every index the table has when the spec is installed:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
+    /// // Exactly these:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
+    /// // None at all:
+    /// LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new());
+    /// ```
+    pub fn with_maintained_indexes(mut self, indexes: impl Into<Option<Vec<String>>>) -> Self {
+        let indexes = indexes.into();
         match &mut self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -465,7 +487,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => *maintained_indexes = v,
+            } => *maintained_indexes = indexes,
         }
         self
     }
@@ -501,8 +523,9 @@ impl LsmWriteSpec {
         self
     }
 
-    /// Borrow the list of index names this spec asks MemWAL to maintain.
-    pub fn maintained_indexes(&self) -> &[String] {
+    /// Borrow the list of index names this spec asks MemWAL to maintain, or
+    /// `None` when it asks for every index on the table.
+    pub fn maintained_indexes(&self) -> Option<&[String]> {
         match self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -512,7 +535,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => maintained_indexes,
+            } => maintained_indexes.as_deref(),
         }
     }
 
@@ -683,6 +706,31 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         Err(Error::NotSupported {
             message: "get_lsm_write_spec is not supported on this table type".into(),
+        })
+    }
+    /// Seal every bucket's active memtable into L0.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn flush_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "flush_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Trigger a background L0 → base compaction pass per bucket.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn compact_lsm(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "compact_lsm is not supported on this table type".into(),
+        })
+    }
+    /// Read live LSM state, or `None` when the LSM write path is not
+    /// enabled for this table.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn get_lsm_stats(&self, _include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        Err(Error::NotSupported {
+            message: "get_lsm_stats is not supported on this table type".into(),
         })
     }
     /// Drain and close any cached MemWAL shard writers for this table.
@@ -1685,7 +1733,7 @@ impl Table {
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
     ///     .set_lsm_write_spec(
-    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
     ///     )
     ///     .await?;
     /// # Ok(())
@@ -1707,9 +1755,10 @@ impl Table {
     ///
     /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
     /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
-    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`].
+    /// The returned spec mirrors what was passed to
+    /// [`Table::set_lsm_write_spec`], except that
+    /// [`LsmWriteSpec::maintained_indexes`] always reports the concrete list
+    /// resolved when the spec was set — `None` never round-trips.
     ///
     /// # Example
     ///
@@ -1724,6 +1773,85 @@ impl Table {
     /// ```
     pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
         self.inner.get_lsm_write_spec().await
+    }
+
+    /// Converge this table's LSM write path into its base table.
+    ///
+    /// One `flush` to seal every memtable into L0, then compaction triggers
+    /// until every generation that existed at that moment has reached base.
+    /// The loop runs client-side, reading progress from `get_lsm_stats`, so
+    /// there is no held socket and nothing to reconcile if you drop this
+    /// future partway through.
+    ///
+    /// **Best-effort.** Generations created *after* the opening flush are
+    /// deliberately not waited on — that is what lets this terminate on a
+    /// table taking writes. Idempotent and safe on a cadence: an
+    /// already-converged table costs two round trips and triggers nothing.
+    ///
+    /// **No deadline, and the caller owns that.** It returns when the target
+    /// generations are gone, propagates a terminal server fault, and
+    /// otherwise waits however long the server takes. A slow table and a
+    /// stuck one are the same picture from here: the compactor pool is shared
+    /// across every table on the node, so a checkpoint queued behind
+    /// unrelated work is indistinguishable from one that is merging. Wrap
+    /// this in `tokio::time::timeout` for a wall-clock bound; abandoning it
+    /// partway costs nothing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let before = table.get_lsm_stats(false).await?;
+    /// table.checkpoint_lsm().await?;
+    /// let after = table.get_lsm_stats(false).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkpoint_lsm(&self) -> Result<()> {
+        checkpoint::checkpoint_lsm(self).await
+    }
+
+    /// Seal every bucket's active memtable into L0 without touching the
+    /// base table.
+    ///
+    /// Independently useful: flushing makes memtable rows readable from L0 at
+    /// a lower per-query cost. On a node that has not claimed this table it
+    /// claims it and replays the WAL log first — reporting "nothing to flush"
+    /// without replaying would lie about durable data.
+    pub async fn flush_lsm(&self) -> Result<()> {
+        self.inner.flush_lsm().await
+    }
+
+    /// Run one bounded L0 → base compaction pass per bucket, reporting what
+    /// it merged and what is left.
+    ///
+    /// One pass, not convergence: that bounds each request's cost and gives a
+    /// caller driving its own cadence a progress signal per round trip.
+    pub async fn compact_lsm(&self) -> Result<()> {
+        self.inner.compact_lsm().await
+    }
+
+    /// Read live per-bucket LSM state.
+    ///
+    /// Answers "how far behind is my fresh tier", "which bucket is hot", and
+    /// "why is my fresh-tier vector search brute-force". Mutates no table
+    /// state, though on a node that has not claimed this table it claims it,
+    /// exactly as a read would.
+    ///
+    /// `include_generation_rows` reports a row count per L0 generation. Off by
+    /// default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_lsm` polls this needing only generation numbers.
+    ///
+    /// `Ok(None)` only when the LSM write path is not enabled, matching
+    /// [`Table::get_lsm_write_spec`]. Stats is fresh-tier only, so with the
+    /// WAL off there is no manifest to report and a struct of zeros would
+    /// read as measurements.
+    ///
+    /// Do not build a checkpoint's termination on this: the completion
+    /// predicate lives in the `flush` and `compact` responses.
+    pub async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        self.inner.get_lsm_stats(include_generation_rows).await
     }
 
     /// Drain and close any cached MemWAL shard writers held for this table.
@@ -3441,9 +3569,24 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
-        let ds_clone = (*ds).clone();
-        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
-        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
+        // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
+        // would open every data file to read its column metadata, which costs one
+        // IO per fragment and reports 0 for legacy v1 storage.
+        //
+        // The manifest summary covers only the fragments' base data files, so
+        // overlay files (recorded on each fragment) and index files (recorded in
+        // the manifest's index section) are added separately.
+        let mut total_bytes = ds.manifest().summary().total_files_size as usize;
+        for frag in ds.manifest().fragments.iter() {
+            for overlay in &frag.overlays {
+                if let Some(size) = overlay.data_file.file_size_bytes.get() {
+                    total_bytes += size.get() as usize;
+                }
+            }
+        }
+        for index in ds.load_indices().await?.iter() {
+            total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
+        }
 
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
@@ -3515,7 +3658,12 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests,
+    /// and it excludes any file whose size the manifest does not record
+    /// (tables and indices written before writers persisted file sizes).
     pub total_bytes: usize,
 
     /// The number of rows in the table
@@ -3576,6 +3724,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -4958,7 +5107,7 @@ mod tests {
         // Bucket spec round-trips exactly, including the routing column (recovered
         // from its field id), maintained indexes, and writer config defaults.
         let spec = LsmWriteSpec::bucket("id", 4)
-            .with_maintained_indexes([idx_name])
+            .with_maintained_indexes(vec![idx_name.clone()])
             .with_writer_config_defaults([("durable_write", "false")]);
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
@@ -4968,15 +5117,125 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
+        // A spec left at its default maintains every index on the table, so it
+        // reads back naming the one on the table rather than as "infer".
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        assert_eq!(
+            table.get_lsm_write_spec().await.unwrap(),
+            Some(spec.with_maintained_indexes(vec![idx_name.clone()]))
+        );
         table.unset_lsm_write_spec().await.unwrap();
 
         // Unsharded round-trips (no routing column).
         let spec = LsmWriteSpec::unsharded();
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        assert_eq!(
+            table.get_lsm_write_spec().await.unwrap(),
+            Some(spec.with_maintained_indexes(vec![idx_name]))
+        );
+    }
+
+    /// The maintained set defaults to every index on the table, resolved at
+    /// install. An index the memtable cannot build fails the install rather
+    /// than being dropped: maintaining it would take the table offline for
+    /// writes, dropping it would hide that from the caller.
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_infers_maintained_indexes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("tag", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .name("id_btree".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["tag"], Index::Bitmap(Default::default()))
+            .name("tag_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        // Explicitly naming the bitmap index fails before anything commits.
+        let err = table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["tag_bitmap".to_string()]),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message } if message.contains("tag_bitmap")),
+            "expected the bitmap index to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // The default covers every index, so the bitmap fails it too.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
+            "expected the inferred set to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+
+        // Naming the maintainable subset installs.
+        table
+            .set_lsm_write_spec(
+                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some(["id_btree".to_string()].as_slice())
+        );
+
+        // Opting out entirely is distinct from the default.
+        table.unset_lsm_write_spec().await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice())
+        );
     }
 
     #[tokio::test]
@@ -5024,12 +5283,16 @@ mod tests {
 
         let res = table.stats().await.unwrap();
         println!("{:#?}", res);
+        // `total_bytes` is the full on-disk size of the 11 data files (this table
+        // has no index or overlay files), so it is well above the 2000 bytes of
+        // column data these 250 int32 pairs hold: each file carries its own footer
+        // and metadata.
         assert_eq!(
             res,
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
-                total_bytes: 2300,
+                total_bytes: 8925,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -5068,5 +5331,197 @@ mod tests {
                 },
             }
         )
+    }
+
+    /// `total_bytes` counts more than the base data files: index files and
+    /// overlay files recorded in the manifest are included too.
+    #[tokio::test]
+    pub async fn test_stats_includes_index_and_overlay_files() {
+        use lance::dataset::WriteDestination;
+        use lance::dataset::transaction::{DataOverlayGroup, Operation};
+        use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+        use lance_file::writer::FileWriterOptions;
+        use lance_io::utils::CachedFileSize;
+        use lance_table::format::DataFile;
+        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
+        use roaring::RoaringBitmap;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_stats_extra_files", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let data_only = table.stats().await.unwrap().total_bytes;
+        assert!(data_only > 0);
+
+        // A scalar index adds index files whose sizes are recorded in the
+        // manifest's index section.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let with_index = table.stats().await.unwrap().total_bytes;
+        let dataset = {
+            let native = table.as_native().unwrap();
+            (*native.dataset.get().await.unwrap()).clone()
+        };
+        let index_bytes: usize = dataset
+            .load_indices()
+            .await
+            .unwrap()
+            .iter()
+            .map(|idx| idx.total_size_bytes().unwrap_or(0) as usize)
+            .sum();
+        assert!(index_bytes > 0);
+        assert_eq!(with_index, data_only + index_bytes);
+
+        // Commit an overlay file supplying new `foo` values for the first three
+        // rows of fragment 0. There is no high-level API that writes overlays
+        // yet, so write the overlay's data file and commit the `DataOverlay`
+        // operation by hand.
+        let read_version = dataset.version().version;
+        let fragment_id = dataset.get_fragments()[0].id() as u64;
+        let foo_field_id = dataset.schema().field("foo").unwrap().id;
+        let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
+        let file_version = ConcreteFileVersion::from(LanceFileVersion::Stable);
+
+        let filename = "overlay.lance".to_string();
+        let store = dataset.object_store(None).await.unwrap();
+        let path = dataset.data_dir().child(filename.clone());
+        let obj_writer = store.create(&path).await.unwrap();
+        let mut writer = lance_file::versions::create_writer(
+            file_version,
+            obj_writer,
+            overlay_schema,
+            FileWriterOptions::default(),
+        )
+        .unwrap();
+        writer
+            .write_column(0, Arc::new(Int32Array::from(vec![1000, 1001, 1002])) as _)
+            .await
+            .unwrap();
+        let summary = writer.finish().await.unwrap();
+        let overlay_bytes = summary.size_bytes as usize;
+        assert!(overlay_bytes > 0);
+
+        let mut data_file = DataFile::new_unstarted(filename, file_version);
+        data_file.fields = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(field_id, _)| *field_id as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.column_indices = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(_, column_index)| *column_index as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.file_size_bytes = CachedFileSize::new(summary.size_bytes);
+
+        let overlay = DataOverlayFile {
+            data_file,
+            coverage: OverlayCoverage::dense(RoaringBitmap::from_iter(0..3)),
+            committed_version: 0,
+        };
+        Dataset::commit(
+            WriteDestination::Dataset(Arc::new(dataset)),
+            Operation::DataOverlay {
+                groups: vec![DataOverlayGroup {
+                    fragment_id,
+                    overlays: vec![overlay],
+                }],
+            },
+            Some(read_version),
+            None,
+            None,
+            Arc::new(Default::default()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        table.checkout_latest().await.unwrap();
+        let with_overlay = table.stats().await.unwrap().total_bytes;
+        assert_eq!(with_overlay, with_index + overlay_bytes);
+    }
+
+    /// `stats()` must stay manifest-only. Summing per-field `bytes_on_disk`
+    /// instead opens every data file, so cost would grow with fragment count.
+    #[tokio::test]
+    pub async fn test_stats_does_not_read_data_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+
+        conn.create_table("test_stats_io", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        const NUM_APPENDS: usize = 20;
+        for _ in 0..NUM_APPENDS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Reopen through a tracking store so the counters cover `stats()` alone and
+        // not the writes above.
+        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
+        let table = conn
+            .open_table("test_stats_io")
+            .lance_read_params(ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store_wrapper: Some(wrapper),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        io_stats.lock().unwrap().read_iops = 0;
+
+        let stats = table.stats().await.unwrap();
+        let read_iops = io_stats.lock().unwrap().read_iops;
+
+        assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
+        assert!(stats.total_bytes > 0);
+        // Reading the fragments' data files would take at least one IOP each.
+        assert!(
+            read_iops < stats.fragment_stats.num_fragments as u64,
+            "stats() issued {} read IOPs across {} fragments",
+            read_iops,
+            stats.fragment_stats.num_fragments
+        );
     }
 }

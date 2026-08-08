@@ -2,10 +2,14 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import ctypes
+import gc
 import os
 import sys
 import threading
 import warnings
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -96,6 +100,30 @@ def test_basic(mem_db: DBConnection):
 
     expected_data = pa.Table.from_pylist(data, schema=expected_schema)
     assert table.to_arrow() == expected_data
+
+
+def test_search_preserves_nulls_from_sliced_arrow_table(mem_db: DBConnection):
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3, 4],
+            "score_cn": [None, 22, None, 5, 8],
+            "score_mt": [None, 42, None, 5, 8],
+            "vector": [
+                [20, 19, -1, -1],
+                [41, 38, 22, 42],
+                [10, 10, -1, -1],
+                [5, 5, 5, 5],
+                [8, 8, 8, 8],
+            ],
+        }
+    ).slice(1)
+
+    table = mem_db.create_table("sliced_nullable", data=data)
+    result = table.search([41, 38, 22, 42]).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+    assert result["score_cn"].to_pylist() == [22]
+    assert result["score_mt"].to_pylist() == [42]
 
 
 def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
@@ -432,6 +460,38 @@ def test_add(mem_db: DBConnection):
         ],
     )
     _add(table, schema)
+
+
+def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
+    """Regression test for https://github.com/lancedb/lancedb/issues/2512."""
+    schema = pa.schema([pa.field("x", pa.int64())])
+    table = mem_db.create_table("test_add_releases_arrow_buffers", schema=schema)
+
+    class BufferOwner:
+        def __init__(self, size: int):
+            self.memory = ctypes.create_string_buffer(size)
+
+    owner_refs = []
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(3):
+            size = 8 * 1024
+            owner = BufferOwner(size)
+            arrow_buffer = pa.foreign_buffer(
+                ctypes.addressof(owner.memory), size, owner
+            )
+            array = pa.Array.from_buffers(pa.int64(), 1024, [None, arrow_buffer])
+            batch = pa.RecordBatch.from_arrays([array], schema=schema)
+            owner_refs.append(weakref.ref(owner))
+
+            table.add(batch)
+            del batch, array, arrow_buffer, owner
+
+        assert all(owner_ref() is None for owner_ref in owner_refs)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 def test_add_write_parallelism(mem_db: DBConnection):
@@ -869,6 +929,7 @@ def test_polars(mem_db: DBConnection):
 
     # enter table to polars dataframe
     result = table.to_polars()
+    assert isinstance(result, pl.LazyFrame)
     assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
 
     # make sure filtering isn't broken
@@ -1785,6 +1846,27 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
 
 
+def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
+    """Regression test for issue #2340."""
+    table = mem_db.create_table(
+        "test_nullable_fixed_size_list",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("feature", pa.list_(pa.float32(), 256)),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+
+    table.add([{"id": "1", "feature": None, "tags": ["tag1", "tag2"]}])
+
+    result = table.to_arrow()
+    assert result.to_pylist() == [
+        {"id": "1", "feature": None, "tags": ["tag1", "tag2"]}
+    ]
+
+
 def test_add_nullable_struct_with_none(mem_db: DBConnection):
     """Regression test for issue #2654: a nullable struct column whose
     first batch contains only None values must not crash in
@@ -1822,6 +1904,33 @@ def test_add_nullable_struct_with_none(mem_db: DBConnection):
     assert result.num_rows == 2
     assert result.column("id").to_pylist() == ["1", "2"]
     assert result.column("data").to_pylist() == [{"x": 1.0}, None]
+
+
+def test_read_mostly_null_list_v2_2_page_boundary(tmp_path):
+    # Regression test for #3194. This row/value count crosses a v2.2 structural
+    # encoding page boundary where Lance 3.0.0 sliced repetition/definition
+    # levels by row offset and decoded child arrays at different lengths.
+    num_rows = 64_885
+    num_values = 217
+    list_type = pa.list_(pa.float32())
+    source = pa.table(
+        {
+            "id": np.arange(num_rows, dtype=np.int64),
+            "coords": pa.array(
+                [[1.0, 2.0, 3.0, 4.0]] * num_values + [None] * (num_rows - num_values),
+                type=list_type,
+            ),
+        }
+    )
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+    table = db.create_table("test_sparse_nullable_list", data=source)
+
+    result = table.search().select(["id", "coords"]).limit(num_rows).to_arrow()
+
+    assert result.equals(source)
 
 
 def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
@@ -2109,6 +2218,45 @@ def test_merge(tmp_db: DBConnection, tmp_path):
     table.merge(other_dataset, left_on="id")
 
 
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_search_after_merge(tmp_path, storage_version):
+    pytest.importorskip("lance")
+    pd = pytest.importorskip("pandas")
+
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": storage_version},
+    )
+    rng = np.random.default_rng(42)
+    row_count = 512
+    vectors = rng.standard_normal((row_count, 8)).astype(np.float32)
+    table = db.create_table(
+        "search_after_merge",
+        data=pd.DataFrame(
+            {
+                "id": [str(i) for i in range(row_count)],
+                "vector": list(vectors),
+            }
+        ),
+    )
+    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+
+    links = pd.DataFrame(
+        {
+            "id": [str(i) for i in range(row_count // 2)],
+            "link": [f"https://example.com/{i}" for i in range(row_count // 2)],
+        }
+    )
+    table.merge(links, left_on="id")
+
+    query = table.search(vectors[-1]).refine_factor(50).limit(10)
+    assert "ANN" in query.explain_plan(verbose=True)
+
+    result = query.to_arrow()
+    links_by_id = dict(zip(result["id"].to_pylist(), result["link"].to_pylist()))
+    assert links_by_id[str(row_count - 1)] is None
+
+
 def test_delete(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -2122,6 +2270,27 @@ def test_delete(mem_db: DBConnection):
     assert table.version == 2
     assert len(table) == 1
     assert table.to_arrow()["id"].to_pylist() == [1]
+
+
+def test_concurrent_deletes_are_thread_safe(mem_db: DBConnection):
+    num_workers = 8
+    table = mem_db.create_table(
+        "my_table", data=[{"id": row_id} for row_id in range(num_workers)]
+    )
+    barrier = threading.Barrier(num_workers)
+
+    def delete(row_id: int):
+        barrier.wait()
+        return table.delete(f"id = {row_id}")
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        results = list(pool.map(delete, range(num_workers)))
+
+    assert all(result.num_deleted_rows == 1 for result in results)
+    assert sorted(result.version for result in results) == list(
+        range(2, num_workers + 2)
+    )
+    assert table.count_rows() == 0
 
 
 def test_delete_expr(mem_db: DBConnection):
@@ -2172,6 +2341,20 @@ def test_update(mem_db: DBConnection):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_with_arrow_scalar(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
+    table = mem_db.create_table("my_table", schema=schema)
+    table.add([{"id": 1, "vector": [1.0, 2.0, 3.0, 4.0]}])
+
+    value = table.search().select(["vector"]).limit(1).to_arrow()["vector"][0]
+    assert isinstance(value, pa.FixedSizeListScalar)
+
+    result = table.update(where="id == 1", values={"vector": value})
+
+    assert result.rows_updated == 1
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
 
 
 def test_update_types(mem_db: DBConnection):
@@ -2341,6 +2524,55 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2366
+    pd = pytest.importorskip("pandas")
+
+    class Document(LanceModel):
+        id: int
+        title: str
+        content: str
+
+    table = mem_db.create_table("documents", schema=Document)
+    table.add(
+        pd.DataFrame(
+            {
+                "title": ["Old title", "Unchanged"],
+                "id": [2, 3],
+                "content": ["Old content", "Keep this"],
+            }
+        )
+    )
+
+    # Pandas produces nullable Arrow fields, in an order that differs from the
+    # non-nullable Pydantic schema. This is valid as long as the data has no nulls.
+    new_data = pd.DataFrame(
+        {
+            "title": ["Inserted", "Updated"],
+            "id": [1, 2],
+            "content": ["New row", "New content"],
+        }
+    )
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+    expected = pa.Table.from_pylist(
+        [
+            {"id": 1, "title": "Inserted", "content": "New row"},
+            {"id": 2, "title": "Updated", "content": "New content"},
+            {"id": 3, "title": "Unchanged", "content": "Keep this"},
+        ],
+        schema=Document.to_arrow_schema(),
+    )
+    assert table.to_arrow().sort_by("id") == expected
+
+
 def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -2441,6 +2673,36 @@ def test_merge_insert_subschema(mem_db: DBConnection, data_format):
     assert table.to_arrow().sort_by("id") == expected
 
 
+def test_repeated_partial_merge_insert_with_scalar_index(mem_db: DBConnection):
+    def make_batch(start: int) -> pa.Table:
+        return pa.table(
+            {
+                "id": [f"id-{i:04}" for i in range(start, start + 100)],
+                "category": ["A"] * 100,
+                "value_a": [float(i) for i in range(start, start + 100)],
+                "value_b": [float(i) / 10 for i in range(100)],
+            }
+        )
+
+    table = mem_db.create_table("my_table", data=make_batch(0))
+    table.add(make_batch(100))
+    table.add(make_batch(200))
+    table.create_index("id", config=BTree())
+
+    ids = [f"id-{i:04}" for i in range(100, 200)]
+    for value in (999.0, 888.0):
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .execute(pa.table({"id": ids, "value_a": [value] * 100}))
+        )
+        assert result.num_updated_rows == 100
+
+    actual = table.to_arrow().sort_by("id")
+    assert actual.num_rows == 300
+    assert actual["value_a"].to_pylist()[100:200] == [888.0] * 100
+
+
 @pytest.mark.asyncio
 async def test_merge_insert_async(mem_db_async: AsyncConnection):
     data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
@@ -2537,15 +2799,40 @@ def test_create_with_embedding_function(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
+    dimension = 32
+    num_rows = 512
+    values = pa.array(
+        np.random.default_rng(42)
+        .standard_normal(num_rows * dimension)
+        .astype(np.float16)
+    )
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(num_rows)],
+            "vector": pa.FixedSizeListArray.from_arrays(values, dimension),
+        }
+    )
+    table = mem_db.create_table("f16_tbl", data=df)
+    assert table.schema.field("vector").type == pa.list_(pa.float16(), dimension)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_create_f16_table(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
+    rng = np.random.default_rng(42)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [np.random.randn(32).astype(np.float16) for _ in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
         }
     )
     table = mem_db.create_table(
@@ -3426,7 +3713,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3443,6 +3731,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -3467,8 +3762,8 @@ def test_create_table_empty_list_no_schema_error(mem_db: DBConnection):
         mem_db.create_table("test_empty_no_schema", data=[])
 
 
-def test_add_table_with_empty_embeddings(tmp_path):
-    """Test exact scenario from issue #1968
+def test_create_table_without_data_with_vector_schema(tmp_path):
+    """Test exact scenario from issue #1968.
 
     Regression test for issue #1968:
     https://github.com/lancedb/lancedb/issues/1968
@@ -3480,6 +3775,9 @@ def test_add_table_with_empty_embeddings(tmp_path):
         embedding: Vector(16)
 
     table = db.create_table("test", schema=MySchema)
+    assert table.count_rows() == 0
+    assert table.schema == MySchema.to_arrow_schema()
+
     table.add(
         [{"text": "bar", "embedding": [0.1] * 16}],
         on_bad_vectors="drop",
