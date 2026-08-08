@@ -14,20 +14,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=11.0.0-beta.3", default-features = false, "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=11.0.0-beta.3", "tag" = "v11.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance", default-features = false }
+lance-core = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-core" }
+lance-datagen = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-datagen" }
+lance-file = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-file" }
+lance-io = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-io", default-features = false }
+lance-index = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-index" }
+lance-linalg = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-linalg" }
+lance-namespace = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-namespace" }
+lance-namespace-impls = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-namespace-impls", default-features = false }
+lance-table = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-table" }
+lance-testing = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-testing" }
+lance-datafusion = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-datafusion" }
+lance-encoding = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-encoding" }
+lance-arrow = { version = "=11.0.0-beta.3", path = "lance-artifact/rust/lance-arrow" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "58.0.0", optional = false }
@@ -67,22 +67,6 @@ num-traits = "0.2"
 regex = "1.10"
 semver = "1.0.25"
 chrono = "0.4"
-
-[patch."https://github.com/lance-format/lance.git"]
-lance = { path = "lance-artifact/rust/lance" }
-lance-arrow = { path = "lance-artifact/rust/lance-arrow" }
-lance-core = { path = "lance-artifact/rust/lance-core" }
-lance-datafusion = { path = "lance-artifact/rust/lance-datafusion" }
-lance-datagen = { path = "lance-artifact/rust/lance-datagen" }
-lance-encoding = { path = "lance-artifact/rust/lance-encoding" }
-lance-file = { path = "lance-artifact/rust/lance-file" }
-lance-index = { path = "lance-artifact/rust/lance-index" }
-lance-io = { path = "lance-artifact/rust/lance-io" }
-lance-linalg = { path = "lance-artifact/rust/lance-linalg" }
-lance-namespace = { path = "lance-artifact/rust/lance-namespace" }
-lance-namespace-impls = { path = "lance-artifact/rust/lance-namespace-impls" }
-lance-table = { path = "lance-artifact/rust/lance-table" }
-lance-testing = { path = "lance-artifact/rust/lance-testing" }
 
 [profile.ci]
 debug = "line-tables-only"

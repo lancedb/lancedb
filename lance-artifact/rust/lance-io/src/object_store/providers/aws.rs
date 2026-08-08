@@ -153,6 +153,27 @@ enum RequestTimeAwsCredentialProvider {
     StorageOptions(Arc<StorageOptionsAccessor>),
 }
 
+#[derive(Debug)]
+struct FailClosedAwsCredentialProvider {
+    dynamic: RequestTimeAwsCredentialProvider,
+    fallback: ProvideCredentialChain<ReqsignAwsCredential>,
+}
+
+impl ProvideCredential for FailClosedAwsCredentialProvider {
+    type Credential = ReqsignAwsCredential;
+
+    async fn provide_credential(
+        &self,
+        ctx: &ReqsignContext,
+    ) -> reqsign_core::Result<Option<Self::Credential>> {
+        match self.dynamic.provide_credential(ctx).await {
+            Ok(Some(credential)) => Ok(Some(credential)),
+            Ok(None) => self.fallback.provide_credential(ctx).await,
+            Err(error) => Err(error),
+        }
+    }
+}
+
 fn request_time_expiration(options: &HashMap<String, String>) -> Option<ReqsignTimestamp> {
     let expires_at_millis = options.get("expires_at_millis")?.parse::<i64>().ok()?;
     let expires_at = ReqsignTimestamp::from_millisecond(expires_at_millis).ok()?;
@@ -248,14 +269,14 @@ fn build_opendal_s3_store(
         return Ok(OpendalStore::new(operator));
     };
 
-    let mut credential_chain = ProvideCredentialChain::new().push(dynamic_credentials);
+    let mut fallback = ProvideCredentialChain::new();
     if let (Some(key_id), Some(secret_key)) = (&config.access_key_id, &config.secret_access_key) {
         let static_provider = if let Some(token) = config.session_token.as_deref() {
             ReqsignStaticCredentialProvider::new(key_id, secret_key).with_session_token(token)
         } else {
             ReqsignStaticCredentialProvider::new(key_id, secret_key)
         };
-        credential_chain = credential_chain.push(static_provider);
+        fallback = fallback.push(static_provider);
     }
 
     let mut default_provider = ReqsignDefaultCredentialProvider::builder();
@@ -265,9 +286,14 @@ fn build_opendal_s3_store(
     if config.disable_ec2_metadata {
         default_provider = default_provider.no_imds();
     }
-    credential_chain = credential_chain.push(default_provider.build());
+    fallback = fallback.push(default_provider.build());
 
-    // Supplying a custom chain replaces OpenDAL's entire chain. Recreate assume-role wrapping so
+    let credential_provider = FailClosedAwsCredentialProvider {
+        dynamic: dynamic_credentials,
+        fallback,
+    };
+
+    // Supplying a custom provider replaces OpenDAL's entire chain. Recreate assume-role wrapping so
     // request-time source credentials retain the same authority as ordinary OpenDAL config.
     if let Some(role_arn) = config.role_arn.take() {
         let region = opendal_s3_region(&config)?;
@@ -276,7 +302,7 @@ fn build_opendal_s3_store(
             .with_env(ReqsignOsEnv)
             .with_http_send(HttpTransporter::default());
         let request_signer = ReqsignAwsV4Signer::new("sts", &region);
-        let signer = ReqsignSigner::new(context, credential_chain, request_signer);
+        let signer = ReqsignSigner::new(context, credential_provider, request_signer);
         let mut assume_role = AssumeRoleCredentialProvider::new(role_arn, signer)
             .with_region(region)
             .with_regional_sts_endpoint();
@@ -292,12 +318,16 @@ fn build_opendal_s3_store(
         if let Some(tags) = config.assume_role_session_tags.clone() {
             assume_role = assume_role.with_tags(tags.into_iter().collect());
         }
-        credential_chain = ProvideCredentialChain::new().push(assume_role);
+        let builder = config.into_builder().credential_provider(assume_role);
+        let operator = Operator::new(builder).map_err(|error| {
+            Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
+        })?;
+        return Ok(OpendalStore::new(operator));
     }
 
     let builder = config
         .into_builder()
-        .credential_provider_chain(credential_chain);
+        .credential_provider(credential_provider);
     let operator = Operator::new(builder).map_err(|error| {
         Error::invalid_input(format!("Failed to create S3 operator: {error:?}"))
     })?;
@@ -950,6 +980,66 @@ mod tests {
             2,
             "each multipart request must re-enter an expired credential provider"
         );
+    }
+
+    #[derive(Debug)]
+    struct FailingStorageOptionsProvider;
+
+    #[async_trait::async_trait]
+    impl StorageOptionsProvider for FailingStorageOptionsProvider {
+        async fn fetch_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+            Err(Error::invalid_input("injected credential refresh failure"))
+        }
+
+        fn provider_id(&self) -> String {
+            "failing-opendal-credential-test".to_string()
+        }
+    }
+
+    fn static_reqsign_fallback() -> ProvideCredentialChain<ReqsignAwsCredential> {
+        ProvideCredentialChain::new().push(ReqsignStaticCredentialProvider::new(
+            "fallback-key",
+            "fallback-secret",
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_opendal_dynamic_credential_errors_do_not_fall_back() {
+        let provider = FailClosedAwsCredentialProvider {
+            dynamic: RequestTimeAwsCredentialProvider::StorageOptions(Arc::new(
+                StorageOptionsAccessor::with_provider(Arc::new(FailingStorageOptionsProvider)),
+            )),
+            fallback: static_reqsign_fallback(),
+        };
+
+        let error = provider
+            .provide_credential(&ReqsignContext::new())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected credential refresh failure"),
+            "dynamic credential errors must reach the caller: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_opendal_dynamic_credential_absence_allows_fallback() {
+        let provider = FailClosedAwsCredentialProvider {
+            dynamic: RequestTimeAwsCredentialProvider::StorageOptions(Arc::new(
+                StorageOptionsAccessor::with_static_options(HashMap::new()),
+            )),
+            fallback: static_reqsign_fallback(),
+        };
+
+        let credential = provider
+            .provide_credential(&ReqsignContext::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.access_key_id, "fallback-key");
+        assert_eq!(credential.secret_access_key, "fallback-secret");
     }
 
     #[tokio::test]

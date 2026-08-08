@@ -10,3 +10,13 @@ keeps long-lived multipart uploads refreshable without rebuilding a store or cha
 metadata. Keeping the change inside `AwsStoreProvider` leaves arbitrary registry providers and
 their complete `ObjectStore` results untouched. Remove this patch when the same behavior is
 available in the pinned Lance release.
+
+The LanceDB workspace consumes every coupled Lance crate through a direct path into this artifact.
+That keeps Git consumers on the same checked-in source instead of relying on a root `[patch]`,
+which Cargo ignores when LanceDB itself is used as a dependency.
+
+The artifact also contains Apache OpenDAL 0.58.1's `opendal` and `opendal-service-s3` crates. The
+only OpenDAL change adds a direct custom-provider hook alongside its existing credential-chain
+hook. Lance uses the direct hook so a selected dynamic authority can propagate refresh and
+validation errors; static or ambient credentials are considered only when that authority returns
+`Ok(None)`. Remove these copies when upstream OpenDAL exposes an equivalent hook.

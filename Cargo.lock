@@ -5213,7 +5213,7 @@ dependencies = [
  "moka",
  "object_store",
  "object_store_opendal",
- "opendal",
+ "opendal 0.58.1",
  "path_abs",
  "pin-project",
  "prost",
@@ -5454,7 +5454,7 @@ dependencies = [
  "num-traits",
  "object_store",
  "object_store_opendal",
- "opendal",
+ "opendal 0.58.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "pin-project",
  "polars",
  "polars-arrow",
@@ -6422,7 +6422,7 @@ dependencies = [
  "futures",
  "mea",
  "object_store",
- "opendal",
+ "opendal 0.58.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "pin-project",
  "tokio",
 ]
@@ -6476,8 +6476,6 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "opendal"
 version = "0.58.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f20562cc7447fcc915fc5c23df305a412ea80a733c9f2fd9e2d267e2815be6d"
 dependencies = [
  "ctor 1.0.12",
  "opendal-core",
@@ -6493,7 +6491,17 @@ dependencies = [
  "opendal-service-goosefs",
  "opendal-service-hf",
  "opendal-service-oss",
- "opendal-service-s3",
+ "opendal-service-s3 0.58.1",
+]
+
+[[package]]
+name = "opendal"
+version = "0.58.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20562cc7447fcc915fc5c23df305a412ea80a733c9f2fd9e2d267e2815be6d"
+dependencies = [
+ "opendal-core",
+ "opendal-service-s3 0.58.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -6714,6 +6722,25 @@ dependencies = [
  "reqsign-core",
  "reqsign-file-read-tokio",
  "serde",
+]
+
+[[package]]
+name = "opendal-service-s3"
+version = "0.58.1"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "crc-fast",
+ "http 1.5.0",
+ "log",
+ "md-5 0.11.0",
+ "opendal-core",
+ "quick-xml 0.41.0",
+ "reqsign-aws-v4",
+ "reqsign-core",
+ "reqsign-file-read-tokio",
+ "serde",
+ "url",
 ]
 
 [[package]]

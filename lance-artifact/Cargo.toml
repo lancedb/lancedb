@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "third-party/opendal",
+    "third-party/opendal-service-s3",
     "rust/examples",
     "rust/lance",
     "rust/lance-arrow",
@@ -175,7 +177,7 @@ moka = { version = "0.12", features = ["future", "sync"] }
 ndarray = { version = "0.16.1", features = ["matrixmultiply-threading"] }
 num-traits = "0.2"
 object_store = { version = "0.13.2" }
-opendal = { version = "0.58.1" }
+opendal = { version = "0.58.1", path = "./third-party/opendal" }
 object_store_opendal = { version = "0.58" }
 reqsign-aws-v4 = { version = "3.1.0" }
 reqsign-core = { version = "3.2.1" }
