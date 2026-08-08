@@ -9,7 +9,7 @@
 // comes from the exact same library instance.  This is not always the case
 // and so we must sanitize the input to ensure that it is compatible.
 
-import { BufferType, Data } from "apache-arrow";
+import { BufferType, Data, Vector } from "apache-arrow";
 import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 import {
   Binary,
@@ -73,6 +73,20 @@ import {
   Union,
   Utf8,
 } from "./arrow";
+
+type SanitizationContext = {
+  types: WeakMap<object, DataType>;
+  vectors: WeakMap<object, Vector>;
+  data: WeakMap<object, Data<DataType>>;
+};
+
+function createSanitizationContext(): SanitizationContext {
+  return {
+    types: new WeakMap(),
+    vectors: new WeakMap(),
+    data: new WeakMap(),
+  };
+}
 
 export function sanitizeMetadata(
   metadataLike?: unknown,
@@ -186,6 +200,13 @@ export function sanitizeInterval(typeLike: object) {
 }
 
 export function sanitizeList(typeLike: object) {
+  return sanitizeListWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeListWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a List type to have an array-like `children` property",
@@ -194,19 +215,35 @@ export function sanitizeList(typeLike: object) {
   if (typeLike.children.length !== 1) {
     throw Error("Expected a List type to have exactly one child");
   }
-  return new List(sanitizeField(typeLike.children[0]));
+  return new List(sanitizeFieldWithContext(typeLike.children[0], context));
 }
 
 export function sanitizeStruct(typeLike: object) {
+  return sanitizeStructWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeStructWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a Struct type to have an array-like `children` property",
     );
   }
-  return new Struct(typeLike.children.map((child) => sanitizeField(child)));
+  return new Struct(
+    typeLike.children.map((child) => sanitizeFieldWithContext(child, context)),
+  );
 }
 
 export function sanitizeUnion(typeLike: object) {
+  return sanitizeUnionWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeUnionWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (
     !("typeIds" in typeLike) ||
     !("mode" in typeLike) ||
@@ -226,7 +263,7 @@ export function sanitizeUnion(typeLike: object) {
     typeLike.mode,
     // biome-ignore lint/suspicious/noExplicitAny: skip
     typeLike.typeIds as any,
-    typeLike.children.map((child) => sanitizeField(child)),
+    typeLike.children.map((child) => sanitizeFieldWithContext(child, context)),
   );
 }
 
@@ -234,6 +271,19 @@ export function sanitizeTypedUnion(
   typeLike: object,
   // eslint-disable-next-line @typescript-eslint/naming-convention
   UnionType: typeof DenseUnion | typeof SparseUnion,
+) {
+  return sanitizeTypedUnionWithContext(
+    typeLike,
+    UnionType,
+    createSanitizationContext(),
+  );
+}
+
+function sanitizeTypedUnionWithContext(
+  typeLike: object,
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  UnionType: typeof DenseUnion | typeof SparseUnion,
+  context: SanitizationContext,
 ) {
   if (!("typeIds" in typeLike)) {
     throw Error(
@@ -248,7 +298,7 @@ export function sanitizeTypedUnion(
 
   return new UnionType(
     typeLike.typeIds as Int32Array | number[],
-    typeLike.children.map((child) => sanitizeField(child)),
+    typeLike.children.map((child) => sanitizeFieldWithContext(child, context)),
   );
 }
 
@@ -262,6 +312,16 @@ export function sanitizeFixedSizeBinary(typeLike: object) {
 }
 
 export function sanitizeFixedSizeList(typeLike: object) {
+  return sanitizeFixedSizeListWithContext(
+    typeLike,
+    createSanitizationContext(),
+  );
+}
+
+function sanitizeFixedSizeListWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (!("listSize" in typeLike) || typeof typeLike.listSize !== "number") {
     throw Error("Expected a FixedSizeList type to have a `listSize` property");
   }
@@ -275,11 +335,18 @@ export function sanitizeFixedSizeList(typeLike: object) {
   }
   return new FixedSizeList(
     typeLike.listSize,
-    sanitizeField(typeLike.children[0]),
+    sanitizeFieldWithContext(typeLike.children[0], context),
   );
 }
 
 export function sanitizeMap(typeLike: object) {
+  return sanitizeMapWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeMapWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a Map type to have an array-like `children` property",
@@ -292,7 +359,10 @@ export function sanitizeMap(typeLike: object) {
     throw Error("Expected a Map type to have exactly one child");
   }
 
-  return new Map_(sanitizeField(typeLike.children[0]), typeLike.keysSorted);
+  return new Map_(
+    sanitizeFieldWithContext(typeLike.children[0], context),
+    typeLike.keysSorted,
+  );
 }
 
 export function sanitizeDuration(typeLike: object) {
@@ -303,6 +373,13 @@ export function sanitizeDuration(typeLike: object) {
 }
 
 export function sanitizeDictionary(typeLike: object) {
+  return sanitizeDictionaryWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeDictionaryWithContext(
+  typeLike: object,
+  context: SanitizationContext,
+) {
   if (!("id" in typeLike) || typeof typeLike.id !== "number") {
     throw Error("Expected a Dictionary type to have an `id` property");
   }
@@ -316,8 +393,8 @@ export function sanitizeDictionary(typeLike: object) {
     throw Error("Expected a Dictionary type to have an `isOrdered` property");
   }
   return new Dictionary(
-    sanitizeType(typeLike.dictionary),
-    sanitizeType(typeLike.indices) as TKeys,
+    sanitizeTypeWithContext(typeLike.dictionary, context),
+    sanitizeTypeWithContext(typeLike.indices, context) as TKeys,
     typeLike.id,
     typeLike.isOrdered,
   );
@@ -325,11 +402,22 @@ export function sanitizeDictionary(typeLike: object) {
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 export function sanitizeType(typeLike: unknown): DataType<any> {
+  return sanitizeTypeWithContext(typeLike, createSanitizationContext());
+}
+
+function sanitizeTypeWithContext(
+  typeLike: unknown,
+  context: SanitizationContext,
+): DataType {
   if (typeof typeLike === "string") {
     return dataTypeFromName(typeLike);
   }
   if (typeof typeLike !== "object" || typeLike === null) {
     throw Error("Expected a Type but object was null/undefined");
+  }
+  const cached = context.types.get(typeLike);
+  if (cached !== undefined) {
+    return cached;
   }
   if (
     !("typeId" in typeLike) ||
@@ -349,6 +437,16 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
     throw Error("Type's typeId property was not a function or number");
   }
 
+  const type = sanitizeTypeById(typeLike, typeId, context);
+  context.types.set(typeLike, type);
+  return type;
+}
+
+function sanitizeTypeById(
+  typeLike: object,
+  typeId: Type,
+  context: SanitizationContext,
+): DataType {
   switch (typeId) {
     case Type.NONE:
       throw Error("Received a Type with a typeId of NONE");
@@ -375,21 +473,21 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
     case Type.Interval:
       return sanitizeInterval(typeLike);
     case Type.List:
-      return sanitizeList(typeLike);
+      return sanitizeListWithContext(typeLike, context);
     case Type.Struct:
-      return sanitizeStruct(typeLike);
+      return sanitizeStructWithContext(typeLike, context);
     case Type.Union:
-      return sanitizeUnion(typeLike);
+      return sanitizeUnionWithContext(typeLike, context);
     case Type.FixedSizeBinary:
       return sanitizeFixedSizeBinary(typeLike);
     case Type.FixedSizeList:
-      return sanitizeFixedSizeList(typeLike);
+      return sanitizeFixedSizeListWithContext(typeLike, context);
     case Type.Map:
-      return sanitizeMap(typeLike);
+      return sanitizeMapWithContext(typeLike, context);
     case Type.Duration:
       return sanitizeDuration(typeLike);
     case Type.Dictionary:
-      return sanitizeDictionary(typeLike);
+      return sanitizeDictionaryWithContext(typeLike, context);
     case Type.Int8:
       return new Int8();
     case Type.Int16:
@@ -433,9 +531,9 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
     case Type.TimestampSecond:
       return sanitizeTypedTimestamp(typeLike, TimestampSecond);
     case Type.DenseUnion:
-      return sanitizeTypedUnion(typeLike, DenseUnion);
+      return sanitizeTypedUnionWithContext(typeLike, DenseUnion, context);
     case Type.SparseUnion:
-      return sanitizeTypedUnion(typeLike, SparseUnion);
+      return sanitizeTypedUnionWithContext(typeLike, SparseUnion, context);
     case Type.IntervalDayTime:
       return new IntervalDayTime();
     case Type.IntervalYearMonth:
@@ -454,6 +552,13 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
 }
 
 export function sanitizeField(fieldLike: unknown): Field {
+  return sanitizeFieldWithContext(fieldLike, createSanitizationContext());
+}
+
+function sanitizeFieldWithContext(
+  fieldLike: unknown,
+  context: SanitizationContext,
+): Field {
   if (fieldLike instanceof Field) {
     return fieldLike;
   }
@@ -471,7 +576,7 @@ export function sanitizeField(fieldLike: unknown): Field {
   }
   let type: DataType;
   try {
-    type = sanitizeType(fieldLike.type);
+    type = sanitizeTypeWithContext(fieldLike.type, context);
   } catch (error: unknown) {
     throw Error(
       `Unable to sanitize type for field: ${fieldLike.name} due to error: ${error}`,
@@ -501,6 +606,13 @@ export function sanitizeField(fieldLike: unknown): Field {
  * than lancedb is using.
  */
 export function sanitizeSchema(schemaLike: SchemaLike): Schema {
+  return sanitizeSchemaWithContext(schemaLike, createSanitizationContext());
+}
+
+function sanitizeSchemaWithContext(
+  schemaLike: SchemaLike,
+  context: SanitizationContext,
+): Schema {
   if (schemaLike instanceof Schema) {
     return schemaLike;
   }
@@ -522,7 +634,7 @@ export function sanitizeSchema(schemaLike: SchemaLike): Schema {
     );
   }
   const sanitizedFields = schemaLike.fields.map((field) =>
-    sanitizeField(field),
+    sanitizeFieldWithContext(field, context),
   );
   return new Schema(sanitizedFields, metadata);
 }
@@ -544,13 +656,18 @@ export function sanitizeTable(tableLike: TableLike): Table {
       "The table passed in does not appear to be a table (no 'columns' property)",
     );
   }
-  const schema = sanitizeSchema(tableLike.schema);
-
-  const batches = tableLike.batches.map(sanitizeRecordBatch);
+  const context = createSanitizationContext();
+  const schema = sanitizeSchemaWithContext(tableLike.schema, context);
+  const batches = tableLike.batches.map((batch) =>
+    sanitizeRecordBatch(batch, context),
+  );
   return new Table(schema, batches);
 }
 
-function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
+function sanitizeRecordBatch(
+  batchLike: RecordBatchLike,
+  context: SanitizationContext,
+): RecordBatch {
   if (batchLike instanceof RecordBatch) {
     return batchLike;
   }
@@ -567,19 +684,43 @@ function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
       "The record batch passed in does not appear to be a record batch (no 'data' property)",
     );
   }
-  const schema = sanitizeSchema(batchLike.schema);
-  const data = sanitizeData(batchLike.data);
+  const schema = sanitizeSchemaWithContext(batchLike.schema, context);
+  const data = sanitizeData(batchLike.data, context) as Data<Struct>;
   return new RecordBatch(schema, data);
 }
+
+type DictionaryVectorLike = {
+  data: readonly DataLike[];
+};
+
+type DictionaryDataLike = DataLike & {
+  dictionary?: DictionaryVectorLike;
+};
+
 function sanitizeData(
   dataLike: DataLike,
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-): import("apache-arrow").Data<Struct<any>> {
+  context: SanitizationContext,
+): Data<DataType> {
   if (dataLike instanceof Data) {
     return dataLike;
   }
-  return new Data(
-    dataLike.type,
+  const cachedData = context.data.get(dataLike);
+  if (cachedData !== undefined) {
+    return cachedData;
+  }
+  const dictionaryLike = (dataLike as DictionaryDataLike).dictionary;
+  let dictionary: Vector | undefined;
+  if (dictionaryLike !== undefined) {
+    dictionary = context.vectors.get(dictionaryLike);
+    if (dictionary === undefined) {
+      dictionary = new Vector(
+        dictionaryLike.data.map((data) => sanitizeData(data, context)),
+      );
+      context.vectors.set(dictionaryLike, dictionary);
+    }
+  }
+  const data = new Data(
+    sanitizeTypeWithContext(dataLike.type, context),
     dataLike.offset,
     dataLike.length,
     dataLike.nullCount,
@@ -589,7 +730,11 @@ function sanitizeData(
       [BufferType.VALIDITY]: dataLike.nullBitmap,
       [BufferType.TYPE]: dataLike.typeIds,
     },
+    dataLike.children.map((child) => sanitizeData(child, context)),
+    dictionary,
   );
+  context.data.set(dataLike, data);
+  return data;
 }
 
 const constructorsByTypeName = {
