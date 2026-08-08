@@ -25,14 +25,6 @@ Common methods supported by all query types
 
 - `AsyncIterable`&lt;`RecordBatch`&gt;
 
-## Properties
-
-### inner
-
-```ts
-protected inner: NativeQueryType | Promise<NativeQueryType>;
-```
-
 ## Methods
 
 ### analyzePlan()

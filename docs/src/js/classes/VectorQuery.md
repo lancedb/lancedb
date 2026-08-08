@@ -18,18 +18,6 @@ This builder can be reused to execute the query many times.
 
 - `StandardQueryBase`&lt;`NativeVectorQuery`&gt;
 
-## Properties
-
-### inner
-
-```ts
-protected inner: VectorQuery | Promise<VectorQuery>;
-```
-
-#### Inherited from
-
-`StandardQueryBase.inner`
-
 ## Methods
 
 ### addQueryVector()

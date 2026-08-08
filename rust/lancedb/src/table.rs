@@ -604,6 +604,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Create a read-only handle pinned to the table's current active revision.
+    ///
+    /// The returned handle is independent from later refreshes or checkouts on
+    /// this handle.  This is used by bindings that must prepare client-side
+    /// query state from the same revision that the query will execute against.
+    #[doc(hidden)]
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -1114,6 +1121,16 @@ impl Table {
     /// Get the arrow [Schema] of the table.
     pub async fn schema(&self) -> Result<SchemaRef> {
         self.inner.schema().await
+    }
+
+    /// Create a read-only handle pinned to the current active revision.
+    #[doc(hidden)]
+    pub async fn query_snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.query_snapshot().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Count the number of rows in this dataset.
@@ -2961,6 +2978,18 @@ impl BaseTable for NativeTable {
 
     fn id(&self) -> &str {
         &self.id
+    }
+
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let dataset = self.dataset.get().await?;
+        let snapshot = self.dataset.new_query_snapshot(dataset);
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
     }
 
     async fn version(&self) -> Result<u64> {
