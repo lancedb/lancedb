@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use arrow_schema::DataType;
-use datafusion_expr::Expr;
 use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -90,7 +89,7 @@ pub(crate) async fn execute_update(
 
     // 3. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
-        let predicate = safe_update_filter(&predicate, dataset.as_ref())?;
+        let predicate = safe_update_filter(&predicate, dataset.as_ref());
         builder = builder.update_where(&predicate)?;
     }
 
@@ -117,14 +116,17 @@ pub(crate) async fn execute_update(
 /// Late materialization uses `TakeExec` to concatenate values read from multiple
 /// fragments. That can overflow a single 32-bit-offset array. Lance's update
 /// builder does not currently expose its scanner's materialization controls, so
-/// compose an expression that is selection-equivalent but cannot be pushed into
-/// the vulnerable late-materialization plan. Parse the caller's filter first so
-/// accepted SQL syntax, including trailing comments, is preserved.
+/// cast the predicate to an integer before comparing it with `1`. Lance's
+/// scalar-index extractor does not unwrap non-literal casts, keeping every
+/// supported predicate out of the vulnerable late-materialization plan.
+///
+/// Keep the original SQL verbatim instead of parsing and serializing it. Newlines
+/// isolate the generated syntax from a trailing line comment in the predicate.
 ///
 /// This compatibility fallback is intentionally limited to legacy storage. V2
 /// readers do not use the affected materialization path and keep their original
 /// filter expression and indexed plan.
-fn safe_update_filter(predicate: &str, dataset: &lance::Dataset) -> Result<String> {
+fn safe_update_filter(predicate: &str, dataset: &lance::Dataset) -> String {
     let has_offset_columns = dataset
         .schema()
         .fields
@@ -132,15 +134,10 @@ fn safe_update_filter(predicate: &str, dataset: &lance::Dataset) -> Result<Strin
         .any(|field| has_32_bit_offsets(&field.data_type()));
 
     if !dataset.manifest().should_use_legacy_format() || !has_offset_columns {
-        return Ok(predicate.to_owned());
+        return predicate.to_owned();
     }
 
-    let mut scanner = dataset.scan();
-    scanner.filter(predicate)?;
-    let expression = scanner
-        .get_expr_filter()?
-        .expect("a filter was configured on the scanner");
-    crate::expr::expr_to_sql_string(&Expr::IsTrue(Box::new(expression)))
+    format!("CAST((\n{predicate}\n) AS INT) = 1")
 }
 
 fn has_32_bit_offsets(data_type: &DataType) -> bool {
@@ -524,7 +521,7 @@ mod tests {
             "test setup must late-materialize payload:\n{explanation}"
         );
 
-        let guarded_filter = super::safe_update_filter("split = 'test'", dataset.as_ref()).unwrap();
+        let guarded_filter = super::safe_update_filter("split = 'test'", dataset.as_ref());
         let filter = planner.parse_filter(&guarded_filter).unwrap();
         let filter = planner.optimize_expr(filter).unwrap();
         let mut scanner = dataset.scan();
@@ -597,7 +594,7 @@ mod tests {
 
         let dataset = table.dataset().unwrap().get().await.unwrap();
         let predicate = "split = 'test'";
-        let update_filter = super::safe_update_filter(predicate, dataset.as_ref()).unwrap();
+        let update_filter = super::safe_update_filter(predicate, dataset.as_ref());
         assert_eq!(update_filter, predicate);
 
         let planner = Planner::new(Arc::new(dataset.schema().into()));
@@ -663,6 +660,110 @@ mod tests {
                 .await
                 .unwrap(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_boolean_index_uses_early_materialization() {
+        let conn = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    data_storage_version: Some(LanceFileVersion::Legacy),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        let batch = record_batch!(
+            ("flag", Boolean, [true, false]),
+            ("payload", Utf8, ["a", "b"])
+        )
+        .unwrap();
+        let table = conn
+            .create_table("boolean_index", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch).execute().await.unwrap();
+        table
+            .create_index(&["flag"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let guarded_filter = super::safe_update_filter("flag", dataset.as_ref());
+        let mut scanner = dataset.scan();
+        scanner.with_row_id().filter(&guarded_filter).unwrap();
+        let explanation = scanner.explain_plan(false).await.unwrap();
+        let plan = scanner.create_plan().await.unwrap();
+        assert!(
+            !contains_take(plan.as_ref()),
+            "Boolean predicate retained late materialization:\n{explanation}"
+        );
+        assert!(
+            !explanation.contains("MaterializeIndex"),
+            "Boolean predicate retained scalar-index extraction:\n{explanation}"
+        );
+
+        let result = table
+            .update()
+            .only_if("flag")
+            .column("payload", "'updated'")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.rows_updated, 2);
+        assert_eq!(
+            table
+                .count_rows(Some("payload = 'updated'".into()))
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_accepts_quoted_reserved_identifier() {
+        let conn = connect("memory://")
+            .database_options(&ListingDatabaseOptions {
+                new_table_config: NewTableConfig {
+                    data_storage_version: Some(LanceFileVersion::Legacy),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        let batch =
+            record_batch!(("select", Int32, [1, 2]), ("payload", Utf8, ["a", "b"])).unwrap();
+        let table = conn
+            .create_table("reserved_identifier", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let predicate = "`select` = 1";
+        assert_eq!(table.count_rows(Some(predicate.into())).await.unwrap(), 2);
+        let result = table
+            .update()
+            .only_if(predicate)
+            .column("payload", "'updated'")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.rows_updated, 2);
+        assert_eq!(
+            table
+                .count_rows(Some("payload = 'updated'".into()))
+                .await
+                .unwrap(),
+            2
         );
     }
 
