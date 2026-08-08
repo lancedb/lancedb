@@ -7,6 +7,7 @@ import * as arrow18 from "apache-arrow-18";
 
 import {
   convertToTable,
+  tableFromIPC as currentTableFromIPC,
   fromBufferToRecordBatch,
   fromDataToBuffer,
   fromRecordBatchToBuffer,
@@ -64,7 +65,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       tableFromIPC,
       DataType,
       Dictionary,
+      Table: ArrowTable,
       Uint8: ArrowUint8,
+      vectorFromArray,
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     } = <any>arrow;
     type Schema = ApacheArrow["Schema"];
@@ -1054,6 +1057,23 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
+      it("can serialize list data from another Arrow version", async function () {
+        const values = [["anime", "action"], [], null];
+        const vector = vectorFromArray(
+          values,
+          new List(new Field("item", new Utf8(), true)),
+        );
+        const table = new ArrowTable({ tags: vector });
+
+        const buf = await fromDataToBuffer(table);
+        const actual = currentTableFromIPC(buf);
+        const actualTags = actual.getChild("tags");
+
+        expect(actualTags?.get(0)?.toJSON()).toEqual(values[0]);
+        expect(actualTags?.get(1)?.toJSON()).toEqual(values[1]);
+        expect(actualTags?.get(2)).toBeNull();
+      });
+
       it("can still import data", async function () {
         const schema = new arrow15.Schema([
           new arrow15.Field("id", new arrow15.Int32()),

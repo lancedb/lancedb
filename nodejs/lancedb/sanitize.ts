@@ -568,18 +568,16 @@ function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
     );
   }
   const schema = sanitizeSchema(batchLike.schema);
-  const data = sanitizeData(batchLike.data);
+  // biome-ignore lint/suspicious/noExplicitAny: Record batch data is a struct
+  const data = sanitizeData(batchLike.data) as Data<Struct<any>>;
   return new RecordBatch(schema, data);
 }
-function sanitizeData(
-  dataLike: DataLike,
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-): import("apache-arrow").Data<Struct<any>> {
+function sanitizeData(dataLike: DataLike): Data<DataType> {
   if (dataLike instanceof Data) {
     return dataLike;
   }
   return new Data(
-    dataLike.type,
+    sanitizeType(dataLike.type),
     dataLike.offset,
     dataLike.length,
     dataLike.nullCount,
@@ -589,6 +587,7 @@ function sanitizeData(
       [BufferType.VALIDITY]: dataLike.nullBitmap,
       [BufferType.TYPE]: dataLike.typeIds,
     },
+    dataLike.children.map(sanitizeData),
   );
 }
 
