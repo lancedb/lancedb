@@ -355,6 +355,7 @@ impl ListingDatabase {
         url.to_string()
     }
 
+    #[cfg(any(windows, test))]
     fn uses_local_file_provider(object_store: &ObjectStore) -> bool {
         matches!(
             object_store.scheme(),
