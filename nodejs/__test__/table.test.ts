@@ -2337,6 +2337,60 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
+    test("auto search follows embedding metadata across executions", async () => {
+      @register("refresh-test")
+      class TestEmbedding extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings(value: string) {
+          return value === "greetings" ? [0.1] : [0.2];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map((value) =>
+            value === "hello world" ? [0.1] : [0.2],
+          );
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      await writer.createTable("test", [{ text: "plain", vector: [0.0] }]);
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("test");
+      const autoQuery = tracked.search("greetings").select(["text"]).limit(1);
+
+      const func = new TestEmbedding();
+      const schema = LanceSchema({
+        text: func.sourceField(new arrow.Utf8()),
+        vector: func.vectorField(),
+      });
+      const data = [{ text: "hello world" }, { text: "goodbye world" }];
+      await writer.createTable("test", data, { mode: "overwrite", schema });
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeDefined();
+      const results = await autoQuery.toArray();
+      expect(results[0].text).toBe(data[0].text);
+
+      const ftsData = [{ text: "greetings from full text", vector: [0.0] }];
+      const ftsTable = await writer.createTable("test", ftsData, {
+        mode: "overwrite",
+      });
+      await ftsTable.createIndex("text", { config: Index.fts() });
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeUndefined();
+      const ftsResults = await autoQuery.toArray();
+      expect(ftsResults[0].text).toBe(ftsData[0].text);
+    });
+
     test("tokenizes FTS queries by column or index name", async () => {
       const db = await connect(tmpDir.name);
       const data = [

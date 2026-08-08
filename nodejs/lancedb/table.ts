@@ -44,6 +44,7 @@ import {
   Query,
   TakeQuery,
   VectorQuery,
+  createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
@@ -814,30 +815,10 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
-  private readonly hasEmbeddingFunctions: boolean;
 
-  private constructor(inner: _NativeTable, hasEmbeddingFunctions: boolean) {
+  constructor(inner: _NativeTable) {
     super();
     this.inner = inner;
-    this.hasEmbeddingFunctions = hasEmbeddingFunctions;
-  }
-
-  static async create(inner: _NativeTable): Promise<LocalTable> {
-    const schemaBuf = await inner.schema();
-    const schema = tableFromIPC(schemaBuf).schema;
-    const serializedFunctions = schema.metadata.get("embedding_functions");
-    let hasEmbeddingFunctions = false;
-    if (serializedFunctions !== undefined) {
-      try {
-        const functions: unknown = JSON.parse(serializedFunctions);
-        hasEmbeddingFunctions =
-          !Array.isArray(functions) || functions.length > 0;
-      } catch {
-        // Let parseFunctions report malformed metadata when the query executes.
-        hasEmbeddingFunctions = true;
-      }
-    }
-    return new LocalTable(inner, hasEmbeddingFunctions);
   }
   get name(): string {
     return this.inner.name;
@@ -1054,14 +1035,25 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (
-      queryType === "auto" &&
-      (!this.hasEmbeddingFunctions || instanceOfFullTextQuery(query))
-    ) {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
+    if (queryType === "auto") {
+      if (instanceOfFullTextQuery(query)) {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
+
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
+      return createAutoQuery(this.inner, query, columns, async () => {
+        const functions = await this.getEmbeddingFunctions();
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (!embeddingFunc) {
+          return undefined;
+        }
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
       });
     }
 
@@ -1481,9 +1473,7 @@ export class Branches {
     fromRef?: string,
     fromVersion?: number,
   ): Promise<Table> {
-    return await LocalTable.create(
-      await this.#inner.create(name, fromRef, fromVersion),
-    );
+    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
   }
 
   /**
@@ -1494,7 +1484,7 @@ export class Branches {
    * latest and stays writable.
    */
   async checkout(name: string, version?: number): Promise<Table> {
-    return await LocalTable.create(await this.#inner.checkout(name, version));
+    return new LocalTable(await this.#inner.checkout(name, version));
   }
 
   /** Delete a branch. */
