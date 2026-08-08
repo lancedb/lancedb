@@ -63,6 +63,15 @@ export class EmbeddingFunctionRegistry {
     };
   }
 
+  /** @ignore */
+  setBuiltIn<
+    T extends EmbeddingFunctionConstructor = EmbeddingFunctionConstructor,
+  >(name: string, ctor: T): T {
+    this.#functions.set(name, ctor);
+    Reflect.defineMetadata("lancedb::embedding::name", name, ctor);
+    return ctor;
+  }
+
   get<T extends EmbeddingFunction<unknown>>(
     name: string,
   ): EmbeddingFunctionCreate<T> | undefined;
@@ -243,8 +252,7 @@ export function registerBuiltIn<
 >(name: string, ctor: T): T {
   const builtInFunctions = getBuiltInFunctions(_REGISTRY);
   if (builtInFunctions.has(name)) {
-    Reflect.defineMetadata("lancedb::embedding::name", name, ctor);
-    return ctor;
+    return _REGISTRY.setBuiltIn(name, ctor);
   }
   _REGISTRY.register(name)(ctor);
   builtInFunctions.add(name);
