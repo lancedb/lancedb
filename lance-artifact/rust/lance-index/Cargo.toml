@@ -1,0 +1,173 @@
+[package]
+name = "lance-index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Lance indices implementation"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arc-swap = { workspace = true, features = ["weak"] }
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-ipc.workspace = true
+arrow-ord.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
+arrow-arith.workspace = true
+async-recursion.workspace = true
+async-trait.workspace = true
+bitvec.workspace = true
+datafusion-common.workspace = true
+datafusion-expr.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion.workspace = true
+dirs.workspace = true
+fst.workspace = true
+futures.workspace = true
+geoarrow-array = { workspace = true, optional = true }
+geoarrow-schema = { workspace = true, optional = true }
+geo-types = { workspace = true, optional = true }
+half.workspace = true
+itertools.workspace = true
+jieba-rs = { workspace = true, optional = true }
+jsonb.workspace = true
+lance-arrow.workspace = true
+lance-arrow-stats.workspace = true
+lance-core.workspace = true
+lance-index-core.workspace = true
+lance-datafusion.workspace = true
+lance-encoding.workspace = true
+lance-file.workspace = true
+lance-geo = { workspace = true, optional = true }
+lance-io.workspace = true
+lance-bitpacking.workspace = true
+libsais-rs = "0.2"
+lance-linalg.workspace = true
+lance-select.workspace = true
+lance-tokenizer.workspace = true
+lance-table.workspace = true
+log.workspace = true
+ndarray.workspace = true
+num-traits.workspace = true
+object_store.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+rand.workspace = true
+regex-syntax.workspace = true
+roaring.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+smallvec = "1.15"
+tokio.workspace = true
+tracing.workspace = true
+tempfile.workspace = true
+crossbeam-queue.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-channel = "2.3.1"
+rand_distr.workspace = true
+lance-datagen.workspace = true
+rangemap.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+criterion.workspace = true
+env_logger = "0.11.6"
+geo-traits.workspace = true
+lance-datagen.workspace = true
+lance-testing.workspace = true
+test-log.workspace = true
+rstest.workspace = true
+chrono.workspace = true
+
+[features]
+geo = ["dep:lance-geo", "lance-geo/geo", "dep:geoarrow-array", "dep:geoarrow-schema", "dep:geo-types"]
+protoc = ["dep:protobuf-src"]
+jieba-rs = ["tokenizer-jieba"]
+lindera = ["tokenizer-lindera"]
+tokenizer-lindera = ["lance-tokenizer/tokenizer-lindera"]
+tokenizer-jieba = ["dep:jieba-rs", "lance-tokenizer/tokenizer-jieba"]
+
+[build-dependencies]
+prost-build.workspace = true
+protobuf-src = { version = "2.1", optional = true }
+
+[package.metadata.docs.rs]
+# docs.rs uses an older version of Ubuntu that does not have the necessary protoc version
+features = ["protoc"]
+
+[[bench]]
+name = "find_partitions"
+harness = false
+
+[[bench]]
+name = "pq_dist_table"
+harness = false
+
+[[bench]]
+name = "4bitpq_dist_table"
+harness = false
+
+[[bench]]
+name = "pq_assignment"
+harness = false
+
+[[bench]]
+name = "hnsw"
+harness = false
+
+[[bench]]
+name = "sq"
+harness = false
+
+[[bench]]
+name = "ngram"
+harness = false
+
+[[bench]]
+name = "zonemap"
+harness = false
+
+[[bench]]
+name = "inverted"
+harness = false
+
+[[bench]]
+name = "kmeans"
+harness = false
+
+[[bench]]
+name = "compute_partition"
+harness = false
+
+[[bench]]
+name = "rq"
+harness = false
+
+[[bench]]
+name = "btree"
+harness = false
+
+[[bench]]
+name = "bitmap"
+harness = false
+
+[[bench]]
+name = "geo"
+harness = false
+required-features = ["geo"]
+
+[[bench]]
+name = "residual_transform"
+harness = false
+
+[lints]
+workspace = true

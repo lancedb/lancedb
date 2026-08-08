@@ -1,0 +1,54 @@
+[package]
+name = "lance-examples"
+description = "Lance examples in Rust"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[[example]]
+name = "full_text_search"
+path = "src/full_text_search.rs"
+
+[[example]]
+name = "hnsw"
+path = "src/hnsw.rs"
+
+[[example]]
+name = "ivf_hnsw"
+path = "src/ivf_hnsw.rs"
+
+[[example]]
+name = "llm_dataset_creation"
+path = "src/llm_dataset_creation.rs"
+
+[[example]]
+name = "write_read_ds"
+path = "src/write_read_ds.rs"
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+itertools = { workspace = true }
+futures = { workspace = true }
+lance = { workspace = true, features = ["aws", "azure", "gcp", "oss", "huggingface", "tencent", "goosefs"] }
+lance-index = { workspace = true }
+lance-core = { workspace = true }
+lance-linalg = { workspace = true }
+lance-datagen = { workspace = true }
+object_store = {workspace = true}
+tempfile = { workspace = true }
+tokio = { workspace = true }
+all_asserts = "2.3.1"
+env_logger = "0.11.7"
+hf-hub = "0.4.2"
+parquet = { version = "58.0.0", default-features = false, features = ["arrow", "async"] }
+tokenizers = "0.15.2"
+rand.workspace = true

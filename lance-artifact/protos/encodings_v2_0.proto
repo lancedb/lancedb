@@ -1,0 +1,347 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.encodings;
+
+import "google/protobuf/empty.proto";
+
+// This file contains a specification for encodings that can be used
+// to store and load Arrow data into a Lance file for the 2.0 format.  It
+// has been superseded by encodings21.proto which is used for the 2.1 format.
+//
+// # Types
+//
+// This file assumes the user wants to load data into Arrow arrays and
+// explains how to map Arrow arrays into Lance files.  Encodings are divided
+// into "array encoding" (which maps to an Arrow array and may contain multiple
+// buffers) and "buffer encoding" (which encodes a single buffer of data).
+//
+// # Encoding Tree
+//
+// Most encodings are layered on top of each other.  These form a tree of
+// encodings with a single root node.  To encode an array you will typically
+// start with the root node and then take the output from that root encoding
+// and feed it into child encodings.  The decoding process works in reverse.
+//
+// # Multi-column Encodings
+//
+// Some Arrow arrays will map to more than one column of Lance data.  For
+// example, struct arrays and list arrays.  This file only contains encodings
+// for a single column.  However, it does describe how multi-column arrays can
+// be encoded.
+
+// A pointer to a buffer in a Lance file
+//
+// A writer can place a buffer in three different locations.  The buffer
+// can go in the data page, in the column metadata, or in the file metadata.
+// The writer is free to choose whatever is most appropriate (for example, a dictionary
+// that is shared across all pages in a column will probably go in the column
+// metadata).  This specification does not dictate where the buffer should go.
+message Buffer {
+    // The index of the buffer in the collection of buffers
+    uint32 buffer_index = 1;
+    // The collection holding the buffer
+    enum BufferType {
+      // The buffer is stored in the data page itself
+      page = 0;
+      // The buffer is stored in the column metadata
+      column = 1;
+      // The buffer is stored in the file metadata
+      file = 2;
+    };
+    BufferType buffer_type = 2;
+}
+
+// An encoding that adds nullability to another array encoding
+//
+// This can wrap any array encoding and add nullability information
+message Nullable {
+  message NoNull {
+    ArrayEncoding values = 1;
+  }
+  message AllNull {}
+  message SomeNull {
+    ArrayEncoding validity = 1;
+    ArrayEncoding values = 2;
+  }
+  oneof nullability {
+    // The array has no nulls and there is a single buffer needed
+    NoNull no_nulls = 1;
+    // The array may have nulls and we need two buffers
+    SomeNull some_nulls = 2;
+    // All values are null (no buffers needed)
+    AllNull all_nulls = 3;
+  }
+}
+
+// An array encoding for variable-length list fields
+message List {
+    // An array containing the offsets into an items array.
+    //
+    // This array will have num_rows items and will never
+    // have nulls.
+    //
+    // If the list at index i is not null then offsets[i] will
+    // contain `base + len(list)` where `base` is defined as:
+    //   i == 0: 0
+    //   i >  0: (offsets[i-1] % null_offset_adjustment)
+    //
+    // To help understand we can consider the following example list:
+    // [ [A, B], null, [], [C, D, E] ]
+    //
+    // The offsets will be [2, ?, 2, 5]
+    //
+    // If the incoming list at index i IS null then offsets[i] will
+    // contain `base + len(list) + null_offset_adjustment` where `base`
+    // is defined the same as above.
+    //
+    // To complete the above example let's assume that `null_offset_adjustment`
+    // is 7.  Then the offsets will be [2, 9, 2, 5]
+    //
+    // If there are no nulls then the offsets we write here are exactly the
+    // same as the offsets in an Arrow list array (except we omit the leading
+    // 0 which is redundant)
+    //
+    // The reason we do this is so that reading a single list at index i only
+    // requires us to load the indices at i and i-1.
+    //
+    // If the offset at index i is greater than `null_offset_adjustment``
+    // then the list at index i is null.
+    //
+    // Otherwise the length of the list is `offsets[i] - base` where
+    // base is defined the same as above.
+    //
+    // Let's consider our example offsets: [2, 9, 2, 5]
+    //
+    // We can take any range of lists and determine how many list items are
+    // referenced by the sublist.
+    //
+    // 0..3: [_, 5] -> items 0..5 (base = 0* and end is 5)
+    // 0..2: [_, 2] -> items 0..2 (base = 0* and end is 2)
+    // 0..1: [_, 9] -> items 0..2 (base = 0* and end is 9 % 7)
+    // 1..3: [2, 5] -> items 2..5 (base = 2 and end is 5)
+    // 1..2: [2, 2] -> items 2..2 (base = 2 and end is 2)
+    // 2..3: [9, 5] -> items 2..5 (base = 9 % 7 and end is 5)
+    //
+    // * When the start of our range is the 0th item the base is always 0 and we only
+    //   need to load a single index from disk to determine the range.
+    //
+    // The data type of the offsets array is flexible and does not need
+    // to match the data type of the destination array.  Please note that the offsets
+    // array is very likely to be efficiently encoded by bit packing deltas.
+    ArrayEncoding offsets = 1;
+    // If a list is null then we add this value to the offset
+    //
+    // This value must be greater than the length of the items so that
+    // (offset + null_offset_adjustment) is never used by a non-null list.
+    //
+    // Note that this value cannot be equal to the length of the items
+    // because then a page with a single list would store [ X ] and we
+    // couldn't know if that is a null list or a list with X items.
+    //
+    // Therefore, the best choice for this value is 1 + # of items.
+    // Choosing this will maximize the bit packing that we can apply to the offsets.
+    uint64 null_offset_adjustment = 2;
+    // How many items are referenced by these offsets.  This is needed in
+    // order to determine which items pages map to this offsets page.
+    uint64 num_items = 3;
+}
+
+// An array encoding for fixed-size list fields
+message FixedSizeList {
+  /// The number of items in each list
+  uint32 dimension = 1;
+  /// True if the list is nullable
+  bool has_validity = 3;
+  /// The items in the list
+  ArrayEncoding items = 2;
+}
+
+message Compression {
+  string scheme = 1;
+  optional int32 level = 2;
+}
+
+// Fixed width items placed contiguously in a buffer
+message Flat {
+  // the number of bits per value, must be greater than 0, does
+  // not need to be a multiple of 8
+  uint64 bits_per_value = 1;
+  // the buffer of values
+  Buffer buffer = 2;
+  // The Compression message can specify the compression scheme (e.g. zstd) and any
+  // other information that is needed for decompression.
+  //
+  // If this array is compressed then the bits_per_value refers to the uncompressed
+  // data.
+  Compression compression = 3;
+}
+
+// Compression algorithm where all values have a constant value
+message Constant {
+  // The value (TODO: define encoding for literals?)
+  bytes value = 1;
+}
+
+// Items are bitpacked in a buffer
+message Bitpacked {
+  // the number of bits used for a value in the buffer
+  uint64 compressed_bits_per_value = 1;
+
+  // the number of bits of the uncompressed value. e.g. for a u32, this will be 32
+  uint64 uncompressed_bits_per_value = 2;
+
+  // The items in the list
+  Buffer buffer = 3;
+
+  // Whether or not a sign bit is included in the bitpacked value
+  bool signed = 4;
+}
+
+// Items are bitpacked in a buffer
+message BitpackedForNonNeg {
+  // the number of bits used for a value in the buffer
+  uint64 compressed_bits_per_value = 1;
+
+  // the number of bits of the uncompressed value. e.g. for a u32, this will be 32
+  uint64 uncompressed_bits_per_value = 2;
+
+  // The items in the list
+  Buffer buffer = 3;
+}
+
+// Opaque bitpacking variant where the bits per value are stored inline in the chunks themselves
+message InlineBitpacking {
+  // the number of bits of the uncompressed value. e.g. for a u32, this will be 32
+  uint64 uncompressed_bits_per_value = 2;
+}
+
+// Transparent bitpacking variant where the number of bits per value is fixed through the whole buffer
+message OutOfLineBitpacking {
+  // the number of bits of the uncompressed value. e.g. for a u32, this will be 32
+  uint64 uncompressed_bits_per_value = 2;
+  // The number of compressed bits per value, fixed across the entire buffer
+  uint64 compressed_bits_per_value = 3;
+}
+
+// An array encoding for shredded structs that will never be null
+//
+// There is no actual data in this column.
+//
+// TODO: Struct validity bitmaps will be placed here.
+message SimpleStruct {}
+
+// An array encoding for binary fields
+message Binary {
+  ArrayEncoding indices = 1;
+  ArrayEncoding bytes = 2;
+  uint64 null_adjustment = 3;
+}
+
+message Variable {
+  uint32 bits_per_offset = 1;
+}
+
+message Fsst {
+  ArrayEncoding binary = 1;
+  bytes symbol_table = 2;
+}
+
+// An array encoding for dictionary-encoded fields
+message Dictionary {
+  ArrayEncoding indices = 1;
+  ArrayEncoding items = 2;
+  uint32 num_dictionary_items = 3;
+}
+
+message PackedStruct {
+  repeated ArrayEncoding inner = 1;
+  Buffer buffer = 2;
+}
+
+message PackedStructFixedWidthMiniBlock {
+  ArrayEncoding Flat = 1;
+  repeated uint32 bits_per_values = 2;
+}
+
+message FixedSizeBinary {
+  ArrayEncoding bytes = 1;
+  uint32 byte_width = 2;
+}
+
+message Block {
+  string scheme = 1;
+}
+
+// Run-Length Encoding for miniblock format
+message Rle {
+  // Number of bits per value (8, 16, 32, 64, or 128)
+  uint64 bits_per_value = 1;
+}
+
+// Byte Stream Split encoding for floating point values
+message ByteStreamSplit {
+  // Number of bits per value (32 for float, 64 for double)
+  uint64 bits_per_value = 1;
+}
+
+// General miniblock encoding - wraps another miniblock encoding with compression
+message GeneralMiniBlock {
+  // The inner miniblock encoding (e.g., Rle, Bitpacked, etc.)
+  ArrayEncoding inner = 1;
+  // The compression scheme to apply to the miniblock buffers
+  Compression compression = 2;
+}
+
+// Encodings that decode into an Arrow array
+message ArrayEncoding {
+    oneof array_encoding {
+        Flat flat = 1;
+        Nullable nullable = 2;
+        FixedSizeList fixed_size_list = 3;
+        List list = 4;
+        SimpleStruct struct = 5;
+        Binary binary = 6;
+        Dictionary dictionary = 7;
+        Fsst fsst = 8;
+        PackedStruct packed_struct = 9;
+        Bitpacked bitpacked = 10;
+        FixedSizeBinary fixed_size_binary = 11;
+        BitpackedForNonNeg bitpacked_for_non_neg = 12;
+        Constant constant = 13;
+        InlineBitpacking inline_bitpacking = 14;
+        OutOfLineBitpacking out_of_line_bitpacking = 15;
+        Variable variable = 16;
+        PackedStructFixedWidthMiniBlock packed_struct_fixed_width_mini_block = 17;
+        Block block = 18;
+        Rle rle = 19;
+        GeneralMiniBlock general_mini_block = 20;
+        ByteStreamSplit byte_stream_split = 21;
+    }
+}
+
+// Wraps a column with a zone map index that can be used
+// to apply pushdown filters
+message ZoneIndex {
+  uint32 rows_per_zone = 1;
+  Buffer zone_map_buffer = 2;
+  ColumnEncoding inner = 3;
+}
+
+// Marks a column as blob data.  It will contain a packed struct
+// with fields position and size (u64)
+message Blob {
+  ColumnEncoding inner = 1;
+}
+
+// Encodings that describe a column of values
+message ColumnEncoding {
+  oneof column_encoding {
+    // No special encoding, just column values
+    google.protobuf.Empty values = 1;
+    ZoneIndex zone_index = 2;
+    Blob blob = 3;
+  }
+}

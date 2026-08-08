@@ -1,0 +1,25 @@
+[package]
+name = "lance-tools"
+description = "Tools for interacting with Lance files and tables"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "lance-tools"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+lance-core.workspace = true
+lance-file.workspace = true
+lance-io.workspace = true
+object_store.workspace = true
+tokio.workspace = true
+url.workspace = true

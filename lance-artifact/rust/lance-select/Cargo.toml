@@ -1,0 +1,39 @@
+[package]
+name = "lance-select"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+description = "Row-selection masks and index-result algebra for Lance"
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-schema = { workspace = true }
+byteorder = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+itertools = { workspace = true }
+lance-core = { workspace = true }
+roaring = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
+
+[[bench]]
+name = "index_expr_result"
+harness = false
+
+[[bench]]
+name = "row_addr_mask"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,251 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.index.pb;
+
+import "google/protobuf/any.proto";
+
+// The type of an index.
+enum IndexType {
+  // Vector index
+  VECTOR = 0;
+}
+
+message Index {
+  // The unique index name in the dataset.
+  string name = 1;
+
+  // Columns to be used to build the index.
+  repeated string columns = 2;
+
+  // The version of the dataset this index was built from.
+  uint64 dataset_version = 3;
+
+  // The [`IndexType`] of the index.
+  IndexType index_type = 4;
+
+  /// Index implementation details.
+  oneof implementation {
+    VectorIndex vector_index = 5;
+  }
+}
+
+message Tensor {
+  enum DataType {
+    BFLOAT16 = 0;
+    FLOAT16 = 1;
+    FLOAT32 = 2;
+    FLOAT64 = 3;
+    UINT8 = 4;
+    UINT16 = 5;
+    UINT32 = 6;
+    UINT64 = 7;
+  }
+
+  DataType data_type = 1;
+
+  // Data shape, [dim1, dim2, ...]
+  repeated uint32 shape = 2;
+
+  // Data buffer
+  bytes data = 3;
+}
+
+// Inverted Index File Metadata.
+message IVF {
+  // Centroids of partitions. `dimension * num_partitions` of float32s.
+  //
+  // Deprecated, use centroids_tensor instead.
+  repeated float centroids = 1;  // [deprecated = true];
+
+  // File offset of each partition.
+  repeated uint64 offsets = 2;
+
+  // Number of records in the partition.
+  repeated uint32 lengths = 3;
+
+  // Tensor of centroids. `num_partitions * dimension` of float32s.
+  Tensor centroids_tensor = 4;
+
+  // KMeans loss.
+  optional double loss = 5;
+}
+
+// Product Quantization.
+message PQ {
+  // The number of bits to present a centroid.
+  uint32 num_bits = 1;
+
+  // Number of sub vectors.
+  uint32 num_sub_vectors = 2;
+
+  // Vector dimension
+  uint32 dimension = 3;
+
+  // Codebook. `dimension * 2 ^ num_bits` of float32s.
+  repeated float codebook = 4;
+
+  // Tensor of codebook. `2 ^ num_bits * dimension` of floats.
+  Tensor codebook_tensor = 5;
+}
+
+// Transform type
+enum TransformType {
+  OPQ = 0;
+}
+
+// A transform matrix to apply to a vector or vectors.
+message Transform {
+  // The file offset the matrix is stored
+  uint64 position = 1;
+
+  // Data shape of the matrix, [rows, cols].
+  repeated uint32 shape = 2;
+
+  // Transform type.
+  TransformType type = 3;
+}
+
+// Flat Index
+message Flat {}
+
+// DiskAnn Index
+message DiskAnn {
+  // Graph spec version
+  uint32 spec = 1;
+
+  // Graph file
+  string filename = 2;
+
+  // r parameter
+  uint32 r = 3;
+
+  // alpha parameter
+  float alpha = 4;
+
+  // L parameter
+  uint32 L = 5;
+
+  /// Entry points to the graph
+  repeated uint64 entries = 6;
+}
+
+// One stage in the vector index pipeline.
+message VectorIndexStage {
+  oneof stage {
+    // Flat index
+    Flat flat = 1;
+    // `IVF` - Inverted File
+    IVF ivf = 2;
+    // Product Quantization
+    PQ pq = 3;
+    // Transformer
+    Transform transform = 4;
+    // DiskANN
+    DiskAnn diskann = 5;
+  }
+}
+
+// Metric Type for Vector Index
+enum VectorMetricType {
+  // L2 (Euclidean) Distance
+  L2 = 0;
+
+  // Cosine Distance
+  Cosine = 1;
+
+  // Dot Product
+  Dot = 2;
+
+  // Hamming Distance
+  Hamming = 3;
+}
+
+// Vector Index Metadata
+message VectorIndex {
+  // Index specification version.
+  uint32 spec_version = 1;
+
+  // Vector dimension;
+  uint32 dimension = 2;
+
+  // Composed vector index stages.
+  //
+  // For example, `IVF_PQ` index type can be expressed as:
+  //
+  // ```text
+  // let stages = vec![Ivf{}, PQ{num_bits: 8, num_sub_vectors: 16}]
+  // ```
+  repeated VectorIndexStage stages = 3;
+
+  // Vector distance metrics type
+  VectorMetricType metric_type = 4;
+}
+
+// Details for vector indexes, stored in the manifest's index_details field.
+message VectorIndexDetails {
+  VectorMetricType metric_type = 1;
+
+  // The target number of vectors per partition.
+  // 0 means unset.
+  uint64 target_partition_size = 2;
+
+  // Optional HNSW index configuration. If set, the index has an HNSW layer.
+  optional HnswParameters hnsw_index_config = 3;
+
+  message ProductQuantization {
+    uint32 num_bits = 1;
+    uint32 num_sub_vectors = 2;
+  }
+  message ScalarQuantization {
+    uint32 num_bits = 1;
+  }
+  message RabitQuantization {
+    enum RotationType {
+      FAST = 0;
+      MATRIX = 1;
+    }
+    uint32 num_bits = 1;
+    RotationType rotation_type = 2;
+  }
+
+  // No quantization; vectors are stored as-is.
+  message FlatCompression {}
+
+  oneof compression {
+    ProductQuantization pq = 4;
+    ScalarQuantization sq = 5;
+    RabitQuantization rq = 6;
+    FlatCompression flat = 8;
+  }
+
+  // Runtime hints: optional build preferences that don't affect index structure.
+  // Keys use reverse-DNS namespacing (e.g., "lance.ivf.max_iters", "lancedb.accelerator").
+  // Unrecognized keys must be silently ignored by all runtimes.
+  map<string, string> runtime_hints = 9;
+}
+
+// Hierarchical Navigable Small World (HNSW) parameters, used as an optional configuration for IVF indexes.
+message HnswParameters {
+  // The maximum number of outgoing edges per node in the HNSW graph. Higher values
+  // means more connections, better recall, but more memory and slower builds.
+  // Referred to as "M" in the HNSW literature.
+  uint32 max_connections = 1;
+  // "construction exploration factor": The size of the dynamic list used during
+  // index construction.
+  uint32 construction_ef = 2;
+  // The maximum number of levels in the HNSW graph.
+  uint32 max_level = 3;
+}
+
+message JsonIndexDetails {
+  string path = 1;
+  google.protobuf.Any target_details = 2;
+}
+message BloomFilterIndexDetails {}
+
+message RTreeIndexDetails {}
+
+message FMIndexDetails {}
