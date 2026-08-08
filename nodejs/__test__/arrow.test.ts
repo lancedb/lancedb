@@ -61,6 +61,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       Float32,
       FixedSizeList,
       Precision,
+      tableFromArrays,
       tableFromIPC,
       DataType,
       Dictionary,
@@ -1054,6 +1055,21 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     describe("when using two versions of arrow", function () {
+      it("preserves rows from a foreign Arrow Table", async function () {
+        const foreignTable = tableFromArrays({
+          id: new Int32Array([1, 2]),
+          text: ["foo", "bar"],
+        });
+
+        // biome-ignore lint/suspicious/noExplicitAny: Arrow Tables from supported versions are structurally compatible
+        const buf = await fromDataToBuffer(foreignTable as any);
+        const actual = tableFromIPC(buf);
+
+        expect(actual.numRows).toBe(2);
+        expect(actual.getChild("id")?.toJSON()).toEqual([1, 2]);
+        expect(actual.getChild("text")?.toJSON()).toEqual(["foo", "bar"]);
+      });
+
       it("can still import data", async function () {
         const schema = new arrow15.Schema([
           new arrow15.Field("id", new arrow15.Int32()),
