@@ -235,11 +235,13 @@ fn pk_columns(dataset: &Dataset) -> Result<Vec<String>> {
 /// SSTables are safe to drop for this query.
 ///
 /// A generation is droppable only once it is compacted into the base table AND
-/// covered by the catch-up of **every** index the query relies on. A query can
-/// use more than one -- a hybrid search reads a vector and a full-text index,
-/// and either may lag the other -- so the watermark is the minimum across all of
-/// them. Gating on only one would drop SSTables holding rows the other index has
-/// not yet indexed, and that arm would silently return fewer rows.
+/// covered by the catch-up of every index the query relies on, so the watermark
+/// is the minimum across `index_names`. Gating on fewer than all of them would
+/// drop SSTables holding rows an uncounted index has not yet indexed, and that
+/// arm would silently return fewer rows.
+///
+/// See [`arm_maintained_index_names`] for which indexes are collected today: a
+/// vector search with a scalar prefilter is not yet among them.
 ///
 /// An empty `index_names` (a plain scan) uses the compaction watermark alone.
 /// First occurrence per shard mirrors Lance's `compacted_generation_for_shard`.
@@ -495,10 +497,15 @@ async fn index_maintained(
 /// Every maintained base index this query relies on, used to gate SSTable
 /// exclusion by index catch-up.
 ///
-/// A query can rely on more than one: a hybrid search reads both a vector and a
-/// full-text index, and each has its own catch-up watermark. Returning all of
-/// them lets the caller retain SSTables to the *lowest* one; resolving only the
-/// first would drop SSTables the other index has not caught up to.
+/// Returns a list because the watermark must be the lowest across every index a
+/// query relies on. Today it never holds more than one: `reject_unsupported`
+/// refuses hybrid search, so the vector and full-text arms are mutually
+/// exclusive.
+///
+/// The case that is genuinely multi-index -- a vector search with a scalar or
+/// bitmap prefilter -- is **not collected yet**. Identifying those needs the
+/// planner's chosen indexes, not the columns the filter names, and no Lance API
+/// exposes them. Until it does, such a query is gated on its vector index alone.
 ///
 /// Empty for a plain scan, or when no maintained index covers the searched
 /// column.
