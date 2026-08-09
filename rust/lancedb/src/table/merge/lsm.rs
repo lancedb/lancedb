@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
@@ -113,6 +114,11 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         builder = builder.add_writer_config_default(key, value);
     }
     builder.execute().await?;
+    // Require recorded index catch-up from the moment WAL is turned on, while
+    // the table is provably clean: no SSTable has been compacted, so there is
+    // no unvalidated progress to inherit, and the migration never has to be run
+    // against a table already in flight.
+    dataset.require_mem_wal_index_catchup().await?;
     table.dataset.update(dataset);
     Ok(())
 }
