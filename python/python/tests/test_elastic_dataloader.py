@@ -1449,50 +1449,60 @@ def test_transform_queue_depth_bounds_cooked_rows(lance_table):
     )
 
 
-def test_transform_queue_depth_waits_for_full_batch_space(tmp_path):
-    """A new transform is submitted only once a full read_batch_size of space
-    opens in the cooked queue, not after a single row is consumed.
+def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
+    """Admission requires a full read_batch_size of free space, not just one slot.
 
-    With transform_queue_depth=1 and transform_parallelism=1 each transform
-    is submitted only when cooked is empty.  Because the main thread blocks in
-    _ensure_cooked while the transform is in flight, the cooked-queue size seen
-    by the transform thread is deterministically 0 for every invocation.
+    Patch ThreadPoolExecutor.submit to capture the cooked-queue depth at
+    submission time on the *main thread*.  This is race-free: submit() is called
+    by _try_submit_tx/_ensure_cooked on the main thread before any worker can
+    drain the queue, so we see the exact state the admission predicate evaluated.
 
-    Under the old (single-row) threshold the transforms after the first would
-    fire with batch_size-1 rows still in the cooked queue.
+    With transform_queue_depth=1 and batch_size=4, max_cooked_rows=4.
+    A transform may only be submitted when in_pipeline + batch_size <= 4, i.e.
+    when in_pipeline == 0 (cooked is completely empty).  Under the old broken
+    predicate (in_pipeline >= max_cooked_rows) the second transform would be
+    admitted with cooked containing batch_size-1 rows still unconsumed.
     """
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+
     db = lancedb.connect(tmp_path)
     batch_size = 4
-    # Four full batches so there are several transitions to observe.
+    # Four full batches → four transform submissions to observe.
     table = db.create_table("t", pa.table({"id": list(range(batch_size * 4))}))
 
-    cooked_sizes_at_start: list[int] = []
+    cooked_at_submit: list[int] = []
 
-    def tracking_transform(batch):
-        # _cooked_ref[0] is the cooked deque for split 0.  Reading it here is
-        # safe: the main thread is blocked in _ensure_cooked waiting for this
-        # future to complete, so nothing else can modify the deque concurrently.
-        if ds._cooked_ref is not None:
-            cooked_sizes_at_start.append(len(ds._cooked_ref[0]))
-        return batch.to_pylist()
+    original_submit = ThreadPoolExecutor.submit
 
-    ds = StreamingDataset(
-        table,
-        num_splits=1,
-        shuffle_seed=42,
-        read_batch_size=batch_size,
-        transform_queue_depth=1,
-        transform_parallelism=1,
-        transform=tracking_transform,
+    def tracking_submit(self, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_tx_call_guarded":
+            # Capture cooked depth synchronously on the main thread.
+            ref = ds._cooked_ref
+            cooked_at_submit.append(len(ref[0]) if ref is not None else -1)
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", tracking_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=42,
+            read_batch_size=batch_size,
+            transform_queue_depth=1,
+            transform_parallelism=1,
+        )
+        list(ds)
+
+    assert len(cooked_at_submit) == 4, (
+        f"Expected 4 transform submissions (one per batch), got {len(cooked_at_submit)}"
     )
-    list(ds)
-
-    assert len(cooked_sizes_at_start) == 4, (
-        f"Expected 4 transforms (one per batch), got {len(cooked_sizes_at_start)}"
-    )
-    assert all(size == 0 for size in cooked_sizes_at_start), (
-        "Each transform should start with an empty cooked queue (full-batch "
-        f"backpressure); got cooked sizes at start: {cooked_sizes_at_start}"
+    # With full-batch backpressure each transform is only admitted when the
+    # cooked queue is completely empty (depth == 0).  The old broken predicate
+    # would admit at depth == batch_size - 1 == 3.
+    assert all(depth == 0 for depth in cooked_at_submit), (
+        "Transform admitted with non-empty cooked queue; full-batch backpressure "
+        "requires in_pipeline + batch_size <= max_cooked_rows before admission. "
+        f"Cooked depths at each submission: {cooked_at_submit}"
     )
 
 
