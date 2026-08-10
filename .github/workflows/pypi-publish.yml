@@ -243,6 +243,7 @@ jobs:
     needs: [recover-windows]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       id-token: write
       contents: read
     steps:
