@@ -1,0 +1,24 @@
+[package]
+name = "lance-bitpacking"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Vendored copy of https://github.com/spiraldb/fastlanes for use in Lance"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrayref = "0.3"
+crunchy = "0.2"
+paste = "1"
+seq-macro = "0.3"
+
+[dev-dependencies]
+bitpacking = { workspace = true, features = ["bitpacker4x"] }
+
+[lints]
+workspace = true

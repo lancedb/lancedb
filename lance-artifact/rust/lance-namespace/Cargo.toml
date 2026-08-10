@@ -1,0 +1,23 @@
+[package]
+name = "lance-namespace"
+description = "Lance Namespace Core APIs"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+arrow.workspace = true
+lance-core.workspace = true
+snafu.workspace = true
+lance-namespace-reqwest-client.workspace = true
+
+[lints]
+workspace = true

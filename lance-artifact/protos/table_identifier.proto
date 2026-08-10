@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.datafusion;
+
+// Identifies a Lance dataset for remote reconstruction.
+//
+// Two modes:
+//   1. uri + serialized_manifest (fast): remote executor skips manifest read.
+//   2. uri + version + etag (lightweight): remote executor loads manifest from storage.
+message TableIdentifier {
+  string uri = 1;
+  uint64 version = 2;
+  optional string manifest_etag = 3;
+  optional bytes serialized_manifest = 4;
+  map<string, string> storage_options = 5;
+}

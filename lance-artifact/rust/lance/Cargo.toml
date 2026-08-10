@@ -1,0 +1,327 @@
+[package]
+name = "lance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+readme = "README.md"
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[package.metadata.docs.rs]
+features = []
+no-default-features = true
+
+[package.metadata.cargo-machete]
+ignored = ["tracing-chrome"]
+
+[dependencies]
+arc-swap = { workspace = true }
+lance-arrow = { workspace = true }
+lance-core = { workspace = true }
+lance-datafusion = { workspace = true }
+lance-encoding = { workspace = true }
+lance-file = { workspace = true }
+lance-io = { workspace = true }
+lance-linalg = { workspace = true }
+lance-index = { workspace = true }
+lance-namespace = { workspace = true }
+lance-select = { workspace = true }
+lance-tokenizer = { workspace = true }
+lance-table = { workspace = true }
+lance-bitpacking = { workspace = true }
+arrow-arith = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-ord = { workspace = true }
+arrow-row = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
+async-recursion.workspace = true
+async-trait.workspace = true
+byteorder.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap = { version = "4.1.1", features = ["derive"], optional = true }
+# Only used by the (disabled) `mem_wal_kv_point_lookup` benchmark's RocksDB arm.
+# Commented out so CI's all-features build never compiles the bundled librocksdb
+# C++ sources (needs libclang). Uncomment with the bench target + feature to run.
+# rocksdb = { version = "0.23", optional = true, default-features = false }
+crossbeam-queue = { workspace = true }
+crossbeam-skiplist.workspace = true
+# This is already used by datafusion
+dashmap = "6"
+# matches arrow-rs use
+half.workspace = true
+# Fast non-cryptographic hasher for the hot FTS mem-index insert path.
+rustc-hash = "2.1"
+# Compact FST term dictionary for the FTS mem-index partitions.
+fst = "0.4"
+itertools.workspace = true
+moka.workspace = true
+object_store = { workspace = true }
+aws-credential-types.workspace = true
+aws-credential-types.optional = true
+pin-project.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+roaring.workspace = true
+tokio.workspace = true
+url.workspace = true
+rand.workspace = true
+rayon.workspace = true
+futures.workspace = true
+uuid.workspace = true
+arrow.workspace = true
+# TODO: use datafusion sub-modules to reduce build size?
+datafusion.workspace = true
+datafusion-functions.workspace = true
+datafusion-physical-expr.workspace = true
+datafusion-physical-plan.workspace = true
+datafusion-expr.workspace = true
+either.workspace = true
+snafu = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+permutation = { version = "0.4.0" }
+aws-sdk-dynamodb = { workspace = true, optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+tracing.workspace = true
+humantime = { workspace = true }
+async_cell = "0.2.2"
+semver.workspace = true
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+
+[build-dependencies]
+prost-build.workspace = true
+protobuf-src = { version = "2.1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pprof.workspace = true
+# Need this so we can prevent dynamic linking in binaries (see cli feature)
+lzma-sys = { version = "0.1" }
+
+[dev-dependencies]
+lance-test-macros = { workspace = true }
+lance-datagen = { workspace = true }
+pretty_assertions = { workspace = true }
+libc = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
+approx.workspace = true
+all_asserts = "2.3.1"
+mock_instant.workspace = true
+lance-testing = { workspace = true }
+lance-io = { workspace = true, features = ["test-util"] }
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+env_logger = "0.11.7"
+tempfile.workspace = true
+test-log.workspace = true
+tracing-chrome = "0.7.1"
+rstest = { workspace = true }
+serial_test = { workspace = true }
+tracking-allocator = { version = "0.4", features = ["tracing-compat"] }
+# For S3 / DynamoDB tests
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true, default-features = false, features = ["default-https-client", "http-1x", "rt-tokio"] }
+geoarrow-array = { workspace = true }
+geoarrow-schema = { workspace = true }
+geo-types = { workspace = true }
+datafusion-substrait = { workspace = true }
+parquet = { version = "58", default-features = false, features = ["arrow", "async"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[features]
+default = ["aws", "azure", "gcp", "oss", "huggingface", "tencent", "tos", "goosefs", "geo"]
+backtrace = ["lance-core/backtrace"]
+fp16kernels = ["lance-linalg/fp16kernels"]
+# Prevent dynamic linking of lzma, which comes from datafusion
+cli = ["dep:clap", "lzma-sys/static"]
+dynamodb = ["lance-table/dynamodb", "dep:aws-sdk-dynamodb"]
+dynamodb_tests = ["dynamodb"]
+substrait = ["lance-datafusion/substrait"]
+protoc = [
+    "dep:protobuf-src",
+    "lance-encoding/protoc",
+    "lance-file/protoc",
+    "lance-index/protoc",
+    "lance-table/protoc",
+]
+aws = ["lance-io/aws", "dep:aws-credential-types"]
+gcp = ["lance-io/gcp"]
+azure = ["lance-io/azure"]
+oss = ["lance-io/oss"]
+tencent = ["lance-io/tencent"]
+goosefs = ["lance-io/goosefs"]
+tos = ["lance-io/tos"]
+huggingface = ["lance-io/huggingface"]
+# Publish object store metrics via the `metrics` crate.
+metrics = ["lance-io/metrics"]
+geo = ["lance-datafusion/geo", "lance-index/geo"]
+# Enable slow integration tests (disabled by default in CI)
+slow_tests = []
+# Compile the RocksDB comparison arm of the (disabled) mem_wal_kv_point_lookup
+# bench. Commented out so it stays out of CI's all-features build.
+# bench-rocksdb = ["dep:rocksdb"]
+
+[[bin]]
+name = "lq"
+required-features = ["cli"]
+
+[[bin]]
+name = "fm_contains_bench"
+required-features = ["cli"]
+
+[[bin]]
+name = "fm_index_tool"
+required-features = ["cli"]
+
+[[bench]]
+name = "scalar_index"
+harness = false
+
+[[bench]]
+name = "regex_ngram"
+harness = false
+
+[[bench]]
+name = "merge_insert"
+harness = false
+
+[[bench]]
+name = "scan"
+harness = false
+
+[[bench]]
+name = "s3_file_reader_diagnostics"
+harness = false
+
+[[bench]]
+name = "count_pushdown"
+harness = false
+
+[[bench]]
+name = "vector_index"
+harness = false
+
+[[bench]]
+name = "ivf_pq"
+harness = false
+
+[[bench]]
+name = "streaming_ivf_training"
+harness = false
+
+[[bench]]
+name = "take"
+harness = false
+
+[[bench]]
+name = "take_blob"
+harness = false
+
+[[bench]]
+name = "random_access"
+harness = false
+
+[[bench]]
+name = "fts_search"
+harness = false
+
+[[bench]]
+name = "vector_throughput"
+harness = false
+
+[[bench]]
+name = "distributed_vector_build"
+harness = false
+
+[[bench]]
+name = "mem_wal_write"
+path = "benches/mem_wal/write/mem_wal_write.rs"
+harness = false
+
+[[bench]]
+name = "memtable_read"
+path = "benches/mem_wal/read/memtable_read.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_point_lookup_bench"
+path = "benches/mem_wal/point_lookup/mem_wal_point_lookup_bench.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_vector_bench"
+path = "benches/mem_wal/vector/mem_wal_vector_bench.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_replay"
+path = "benches/mem_wal/write/mem_wal_replay.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_index_micro"
+path = "benches/mem_wal/vector/mem_wal_index_micro.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_recall_hnsw"
+path = "benches/mem_wal/vector/hnsw/mem_wal_recall_hnsw.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_hnsw_bench"
+path = "benches/mem_wal/vector/hnsw/mem_wal_hnsw_bench.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_shard_writer_backpressure"
+path = "benches/mem_wal/write/mem_wal_shard_writer_backpressure.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_fineweb_fts"
+path = "benches/mem_wal/fts/mem_wal_fineweb_fts.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_fts_bench"
+path = "benches/mem_wal/fts/mem_wal_fts_bench.rs"
+harness = false
+
+[[bench]]
+name = "mem_wal_fts_read_bench"
+path = "benches/mem_wal/fts/mem_wal_fts_read_bench.rs"
+harness = false
+
+# MemTable KV point-lookup benchmark (Lance vs RocksDB). Disabled as a build
+# target: it needs the optional `rocksdb` dep (bundled librocksdb C++, needs
+# libclang) which CI's all-features build can't compile. To run it, uncomment
+# this entry plus the `rocksdb` dependency and the `bench-rocksdb` feature.
+# [[bench]]
+# name = "mem_wal_kv_point_lookup"
+# path = "benches/mem_wal/kv/mem_wal_kv_point_lookup.rs"
+# harness = false
+
+[[bench]]
+name = "manifest_commit"
+harness = false
+
+[[bench]]
+name = "concurrent_append"
+harness = false
+
+[[bench]]
+name = "hamming"
+harness = false
+
+[lints]
+workspace = true

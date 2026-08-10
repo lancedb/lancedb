@@ -1,0 +1,86 @@
+[package]
+name = "lance-encoding"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Encoders and decoders for the Lance file format"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lance-arrow.workspace = true
+lance-core.workspace = true
+arrow-arith.workspace = true
+arrow-array.workspace = true
+arrow-data.workspace = true
+arrow-buffer.workspace = true
+arrow-cast.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
+lance-bitpacking = { workspace = true, optional = true }
+bytes.workspace = true
+futures.workspace = true
+fsst.workspace = true
+hex = "0.4.3"
+itertools.workspace = true
+log.workspace = true
+num-traits.workspace = true
+prost.workspace = true
+hyperloglogplus.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+bytemuck = { version = "1.14", features = ["extern_crate_alloc"] }
+byteorder.workspace = true
+lz4 = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
+
+[dev-dependencies]
+lance-datagen.workspace = true
+arrow-ord.workspace = true
+rand.workspace = true
+rstest.workspace = true
+test-log.workspace = true
+criterion = { workspace = true }
+lance-testing.workspace = true
+rand_xoshiro = { workspace = true }
+proptest.workspace = true
+serial_test.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protobuf-src = { version = "2.1", optional = true }
+
+[features]
+default = ["lz4", "zstd", "bitpacking"]
+protoc = ["dep:protobuf-src"]
+bitpacking = ["dep:lance-bitpacking"]
+lz4 = ["dep:lz4"]
+zstd = ["dep:zstd"]
+
+[package.metadata.docs.rs]
+# docs.rs uses an older version of Ubuntu that does not have the necessary protoc version
+features = ["protoc"]
+
+[package.metadata.cargo-machete]
+ignored = ["prost"]
+
+[[bench]]
+name = "decoder"
+harness = false
+
+[[bench]]
+name = "encoder"
+harness = false
+
+[[bench]]
+name = "buffer"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,377 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+import "file.proto";
+import "table.proto";
+import "google/protobuf/any.proto";
+
+package lance.table;
+
+// A transaction represents the changes to a dataset.
+//
+// This has two purposes:
+// 1. When retrying a commit, the transaction can be used to re-build an updated
+//    manifest.
+// 2. When there's a conflict, this can be used to determine whether the other
+//    transaction is compatible with this one.
+message Transaction {
+  // The version of the dataset this transaction was built from.
+  //
+  // For example, for a delete transaction this means the version of the dataset
+  // that was read from while evaluating the deletion predicate.
+  uint64 read_version = 1;
+
+  // The UUID that unique identifies a transaction.
+  string uuid = 2;
+
+  // Optional version tag.
+  string tag = 3;
+
+  // Optional properties for the transaction
+  // __lance_commit_message is a reserved key
+  map<string, string> transaction_properties = 4;
+
+  // Add new rows to the dataset.
+  message Append {
+    // The new fragments to append.
+    //
+    // Fragment IDs are not yet assigned.
+    repeated DataFragment fragments = 1;
+  }
+
+  // Mark rows as deleted.
+  message Delete {
+    // The fragments to update
+    //
+    // The fragment IDs will match existing fragments in the dataset.
+    repeated DataFragment updated_fragments = 1;
+    // The fragments to delete entirely.
+    repeated uint64 deleted_fragment_ids = 2;
+    // The predicate that was evaluated
+    //
+    // This may be used to determine whether the delete would have affected 
+    // files written by a concurrent transaction.
+    string predicate = 3;
+  }
+
+  // Create or overwrite the entire dataset.
+  message Overwrite {
+    // The new fragments
+    //
+    // Fragment IDs are not yet assigned.
+    repeated DataFragment fragments = 1;
+    // The new schema
+    repeated lance.file.Field schema = 2;
+    // Schema metadata.
+    map<string, bytes> schema_metadata = 3;
+    // Key-value pairs to merge with existing config.
+    map<string, string> config_upsert_values = 4;
+    // The base paths to be added for the initial dataset creation
+    repeated BasePath initial_bases = 5;
+  }
+
+  // Add or replace a new secondary index.
+  //
+  // This is also used to remove an index (we are replacing it with nothing)
+  //
+  // - new_indices: the modified indices, empty if dropping indices only
+  // - removed_indices: the indices that are being replaced
+  message CreateIndex {
+    repeated IndexMetadata new_indices = 1;
+    repeated IndexMetadata removed_indices = 2;
+  }
+
+  // An operation that rewrites but does not change the data in the table. These
+  // kinds of operations just rearrange data.
+  message Rewrite {
+    // The old fragments that are being replaced
+    //
+    // DEPRECATED: use groups instead.
+    //
+    // These should all have existing fragment IDs.
+    repeated DataFragment old_fragments = 1;
+    // The new fragments
+    //
+    // DEPRECATED: use groups instead.
+    //
+    // These fragments IDs are not yet assigned.
+    repeated DataFragment new_fragments = 2;
+
+    // During a rewrite an index may be rewritten.  We only serialize the UUID
+    // since a rewrite should not change the other index parameters.
+    message RewrittenIndex {
+      // The id of the index that will be replaced
+      UUID old_id = 1;
+      // the id of the new index
+      UUID new_id = 2;
+      // the new index details
+      google.protobuf.Any new_index_details = 3;
+      // the version of the new index
+      uint32 new_index_version = 4;
+      // Files in the new index with their sizes.
+      // Empty if file sizes are not available (e.g. older writers).
+      repeated IndexFile new_index_files = 5;
+    }
+
+    // A group of rewrite files that are all part of the same rewrite.
+    message RewriteGroup {
+      // The old fragment that is being replaced
+      //
+      // This should have an existing fragment ID.
+      repeated DataFragment old_fragments = 1;
+      // The new fragment
+      //
+      // The ID should have been reserved by an earlier
+      // reserve operation
+      repeated DataFragment new_fragments = 2;
+    }
+
+    // Groups of files that have been rewritten
+    repeated RewriteGroup groups = 3;
+    // Indices that have been rewritten
+    repeated RewrittenIndex rewritten_indices = 4;
+  }
+
+  // An operation that merges in a new column, altering the schema.
+  message Merge {
+    // The updated fragments
+    //
+    // These should all have existing fragment IDs.
+    repeated DataFragment fragments = 1;
+    // The new schema
+    repeated lance.file.Field schema = 2;
+    // Schema metadata.
+    map<string, bytes> schema_metadata = 3;
+  }
+
+  // An operation that projects a subset of columns, altering the schema.
+  message Project {
+    // The new schema
+    repeated lance.file.Field schema = 1;
+  }
+
+  // An operation that restores a dataset to a previous version.
+  message Restore {
+    // The version to restore to
+    uint64 version = 1;
+  }
+
+  // An operation that reserves fragment ids for future use in
+  // a rewrite operation.
+  message ReserveFragments {
+    uint32 num_fragments = 1;
+  }
+
+  // An operation that clones a dataset.
+  message Clone {
+    // - true:  Performs a metadata-only clone (copies manifest without data files).
+    //          The cloned dataset references original data through `base_paths`,
+    //          suitable for experimental scenarios or rapid metadata migration.
+    // - false: Performs a full deep clone using the underlying object storage's native
+    //          copy API (e.g., S3 CopyObject, GCS rewrite). This leverages server-side
+    //          bulk copy operations to bypass download/upload bottlenecks, achieving
+    //          near-linear speedup for large datasets (typically 3-10x faster than
+    //          manual file transfers). The operation maintains atomicity and data
+    //          integrity guarantees provided by the storage backend.
+    bool is_shallow = 1;
+    // the reference name in the source dataset
+    // in most cases it should be the branch or tag name in the source dataset
+    optional string ref_name = 2;
+    // the version of the source dataset for cloning
+    uint64 ref_version = 3;
+    // the absolute base path of the source dataset for cloning
+    string ref_path = 4;
+    // if the target dataset is a branch, this is the branch name of the target dataset
+    optional string branch_name = 5;
+  }
+  
+  // Exact set of key hashes for conflict detection.
+  // Used when the number of inserted rows is small.
+  message ExactKeySetFilter {
+    // 64-bit hashes of the inserted row keys.
+    repeated uint64 key_hashes = 1;
+  }
+
+  // Bloom filter for key existence tests.
+  // Used when the number of rows is large.
+  message BloomFilter {
+    // Bitset backing the bloom filter (SBBF format).
+    bytes bitmap = 1;
+    // Number of bits in the bitmap.
+    uint32 num_bits = 2;
+    // Number of items the filter was sized for.
+    // Used for intersection validation (filters with different sizes cannot be compared).
+    // Default: 8192
+    uint64 number_of_items = 3;
+    // False positive probability the filter was sized for.
+    // Used for intersection validation (filters with different parameters cannot be compared).
+    // Default: 0.00057
+    double probability = 4;
+  }
+
+  // A filter for checking key existence in set of rows inserted by a merge insert operation.
+  // Only created when the merge insert's ON columns match the schema's unenforced primary key.
+  // The presence of this filter indicates strict primary key conflict detection should be used.
+  // Can use either an exact set (for small row counts) or a Bloom filter (for large row counts).
+  message KeyExistenceFilter {
+    // Field IDs of columns participating in the key (must match unenforced primary key).
+    repeated int32 field_ids = 1;
+    // The underlying data structure storing the key hashes.
+    oneof data {
+      // Exact set of key hashes (used for small number of rows).
+      ExactKeySetFilter exact = 2;
+      // Bloom filter (used for large number of rows).
+      BloomFilter bloom = 3;
+    }
+  }
+
+  // Serialized as sorted distinct local physical row offsets within the fragment (0-based).
+  message UInt32List {
+    repeated uint32 values = 1;
+  }
+
+  // An operation that updates rows but does not add or remove rows.
+  message Update {
+    // The fragments that have been removed. These are fragments where all rows
+    // have been updated and moved to a new fragment.
+    repeated uint64 removed_fragment_ids = 1;
+    // The fragments that have been updated.
+    repeated DataFragment updated_fragments = 2;
+    // The new fragments where updated rows have been moved to.
+    repeated DataFragment new_fragments = 3;
+    // The ids of the fields that have been modified.
+    repeated uint32 fields_modified = 4;
+    /// SSTables to mark as compacted after this transaction.
+    repeated CompactedSsTable compacted_sstables = 5;
+    /// The fields that used to judge whether to preserve the new frag's id into
+    /// the frag bitmap of the specified indices.
+    repeated uint32 fields_for_preserving_frag_bitmap = 6;
+    // The mode of update
+    UpdateMode update_mode = 7;
+    // Filter for checking existence of keys in newly inserted rows, used for conflict detection.
+    // Only tracks keys from INSERT operations during merge insert, not updates.
+    optional KeyExistenceFilter inserted_rows = 8;
+    // Per-fragment physical row offsets that matched an update_columns hash join (RewriteColumns).
+    map<uint64, UInt32List> updated_fragment_offsets = 9;
+  }
+
+  // The mode of update operation
+  enum UpdateMode {
+
+    /// rows are deleted in current fragments and rewritten in new fragments.
+    /// This is most optimal when the majority of columns are being rewritten
+    /// or only a few rows are being updated.
+    REWRITE_ROWS = 0;
+
+    /// within each fragment, columns are fully rewritten and inserted as new data files.
+    /// Old versions of columns are tombstoned. This is most optimal when most rows are affected
+    /// but a small subset of columns are affected.
+    REWRITE_COLUMNS = 1;
+  }
+
+  // An entry for a map update. If value is not set, the key will be removed from the map.
+  message UpdateMapEntry {
+    // The key of the map entry to update.
+    string key = 1;
+    // The value to set for the key.
+    optional string value = 2;
+  }
+
+  message UpdateMap {
+    repeated UpdateMapEntry update_entries = 1;
+    // If true, the map will be replaced entirely with the new entries.
+    // If false, the new entries will be merged with the existing map.
+    bool replace = 2;
+  }
+  
+  // An operation that updates the table config, table metadata, schema metadata,
+  // or field metadata.
+  message UpdateConfig {
+    UpdateMap config_updates = 6;
+    UpdateMap table_metadata_updates = 7;
+    UpdateMap schema_metadata_updates = 8;
+    map<int32, UpdateMap> field_metadata_updates = 9;
+
+    // Deprecated -------------------------------
+    map<string, string> upsert_values = 1;
+    repeated string delete_keys = 2;
+    map<string, string> schema_metadata = 3;
+    map<uint32, FieldMetadataUpdate> field_metadata = 4;
+
+    message FieldMetadataUpdate {
+      map<string, string> metadata = 5;
+    }
+  }
+
+  message DataReplacementGroup {
+    uint64 fragment_id = 1;
+    DataFile new_file = 2;
+  }
+
+  // An operation that replaces the data in a region of the table with new data.
+  message DataReplacement {
+    repeated DataReplacementGroup replacements = 1;
+  }
+
+  // Overlay files to append to a single fragment, in order (the last entry is
+  // newest). The overlays are appended to the fragment's existing `overlays`
+  // list; they do not replace it, so overlays written by concurrent commits are
+  // preserved.
+  message DataOverlayGroup {
+    uint64 fragment_id = 1;
+    // Each DataOverlayFile.committed_version is left 0 by the writer and stamped
+    // to the new dataset version at commit time (re-stamped on retry), in the
+    // same way as the created-at / last-updated-at version sequences. The fields
+    // touched are read from each overlay's `data_file.fields`.
+    repeated DataOverlayFile overlays = 2;
+  }
+
+  // Attach overlay files to fragments, supplying new values for a subset of
+  // (row offset, field) cells without rewriting the fragments' base data files.
+  // See the DataOverlayFile message in table.proto for resolution, coverage, and
+  // versioning rules, and the Data Overlay Files and Transactions specifications
+  // for the (intentionally permissive) conflict semantics.
+  message DataOverlay {
+    repeated DataOverlayGroup groups = 1;
+  }
+
+  // Update SSTable compaction progress in the MemWAL index.
+  // This operation is used during merge-insert to atomically record which
+  // SSTables have been compacted into the base table.
+  message UpdateMemWalState {
+    // SSTables being marked as compacted.
+    repeated CompactedSsTable compacted_sstables = 1;
+  }
+
+  // An operation that updates base paths in the dataset.
+  message UpdateBases {
+    // The new base paths to add to the manifest.
+    repeated BasePath new_bases = 1;
+  }
+
+  // The operation of this transaction.
+  oneof operation {
+    Append append = 100;
+    Delete delete = 101;
+    Overwrite overwrite = 102;
+    CreateIndex create_index = 103;
+    Rewrite rewrite = 104;
+    Merge merge = 105;
+    Restore restore = 106;
+    ReserveFragments reserve_fragments = 107;
+    Update update = 108;
+    Project project = 109;
+    UpdateConfig update_config = 110;
+    DataReplacement data_replacement = 111;
+    UpdateMemWalState update_mem_wal_state = 112;
+    Clone clone = 113;
+    UpdateBases update_bases = 114;
+    DataOverlay data_overlay = 115;
+  }
+
+  // Fields 200/202 (`blob_append` / `blob_overwrite`) previously represented blob dataset ops.
+  reserved 200, 202;
+  reserved "blob_append", "blob_overwrite";
+}

@@ -1,0 +1,71 @@
+[package]
+name = "lance-file"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Utilities for the Lance file format"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lance-arrow.workspace = true
+lance-core.workspace = true
+lance-encoding.workspace = true
+lance-io.workspace = true
+arrow-arith.workspace = true
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-cast.workspace = true
+arrow-data.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
+async-recursion.workspace = true
+async-trait.workspace = true
+byteorder.workspace = true
+bytes.workspace = true
+datafusion-common.workspace = true
+futures.workspace = true
+log.workspace = true
+num-traits.workspace = true
+object_store.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+lance-datagen.workspace = true
+lance-testing.workspace = true
+criterion.workspace = true
+rstest.workspace = true
+proptest.workspace = true
+pretty_assertions.workspace = true
+rand.workspace = true
+test-log.workspace = true
+libc.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protobuf-src = { version = "2.1", optional = true }
+
+[features]
+protoc = ["dep:protobuf-src"]
+
+[package.metadata.docs.rs]
+# docs.rs uses an older version of Ubuntu that does not have the necessary protoc version
+features = ["protoc"]
+
+[[bench]]
+name = "reader"
+harness = false
+
+[[bench]]
+name = "schema"
+harness = false
+
+[lints]
+workspace = true

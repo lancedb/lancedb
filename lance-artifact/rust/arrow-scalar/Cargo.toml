@@ -1,0 +1,31 @@
+[package]
+name = "lance-arrow-scalar"
+version = "58.0.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Arrow scalar type with Ord, Hash, and Eq support"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+# Note: this is a core crate and we should aim to keep this dependency list
+# as minimal as possible.
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-data = { workspace = true }
+arrow-row = { workspace = true }
+arrow-schema = { workspace = true }
+half = { workspace = true }
+
+[dev-dependencies]
+arrow-ord = { workspace = true }
+proptest = { workspace = true }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

@@ -34,6 +34,7 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
+use crate::io::object_store::atomic_aws_session;
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
@@ -153,13 +154,15 @@ impl LanceNamespaceDatabase {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         new_table_config: NewTableConfig,
     ) -> Result<Self> {
+        // Namespace construction needs a shared session even when the connection did not supply
+        // one. Keep the original option separately so per-operation sessions retain precedence
+        // when tables are opened or created later.
+        let builder_session = atomic_aws_session(session.clone());
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
             builder = builder.property(key, value);
         }
-        if let Some(ref sess) = session {
-            builder = builder.session(sess.clone());
-        }
+        builder = builder.session(builder_session);
 
         // Install the read-freshness provider before building the client.
         let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
@@ -628,8 +631,36 @@ mod tests {
     use crate::query::ExecutableQuery;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use async_trait::async_trait;
     use futures::TryStreamExt;
+    use lance_io::object_store::{
+        ObjectStore as LanceObjectStore, ObjectStoreParams, ObjectStoreProvider,
+        ObjectStoreRegistry, uri_to_url,
+    };
     use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct FailingFileProvider;
+
+    #[async_trait]
+    impl ObjectStoreProvider for FailingFileProvider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            _params: &ObjectStoreParams,
+        ) -> lance_core::Result<LanceObjectStore> {
+            Err(lance_core::Error::invalid_input(
+                "operation-supplied session was used",
+            ))
+        }
+    }
+
+    fn file_object_store_uri(path: &str) -> String {
+        let file_url = uri_to_url(path).unwrap();
+        let mut url = url::Url::parse("file-object-store:///").unwrap();
+        url.set_path(file_url.path());
+        url.to_string()
+    }
 
     /// Helper function to create test data
     fn create_test_data() -> RecordBatch {
@@ -654,9 +685,91 @@ mod tests {
         properties.insert("root".to_string(), root_path);
 
         // This should succeed with directory-based namespace
-        let result = connect_namespace("dir", properties).execute().await;
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        let database = connection
+            .database()
+            .as_any()
+            .downcast_ref::<LanceNamespaceDatabase>()
+            .unwrap();
 
-        assert!(result.is_ok());
+        assert!(
+            database.session.is_none(),
+            "a builder-only default session must not override operation parameters"
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_read_session_takes_precedence_when_connection_has_no_session() {
+        let tmp_dir = tempdir().unwrap();
+        let properties = HashMap::from([(
+            "root".to_string(),
+            file_object_store_uri(tmp_dir.path().to_str().unwrap()),
+        )]);
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+        connection
+            .create_table("test", create_test_data())
+            .execute()
+            .await
+            .unwrap();
+
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file-object-store", Arc::new(FailingFileProvider));
+        let read_params = lance::dataset::ReadParams {
+            session: Some(Arc::new(lance::session::Session::new(16, 16, registry))),
+            ..Default::default()
+        };
+
+        let error = connection
+            .open_table("test")
+            .lance_read_params(read_params)
+            .execute()
+            .await
+            .expect_err("operation-supplied session was silently replaced");
+        assert!(
+            error
+                .to_string()
+                .contains("operation-supplied session was used")
+        );
+    }
+
+    #[tokio::test]
+    async fn operation_write_session_takes_precedence_when_connection_has_no_session() {
+        let tmp_dir = tempdir().unwrap();
+        let properties = HashMap::from([(
+            "root".to_string(),
+            file_object_store_uri(tmp_dir.path().to_str().unwrap()),
+        )]);
+        let connection = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+
+        let registry = Arc::new(ObjectStoreRegistry::default());
+        registry.insert("file-object-store", Arc::new(FailingFileProvider));
+        let write_params = lance::dataset::WriteParams {
+            session: Some(Arc::new(lance::session::Session::new(16, 16, registry))),
+            ..Default::default()
+        };
+
+        let error = connection
+            .create_table("test", create_test_data())
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(write_params),
+            })
+            .execute()
+            .await
+            .expect_err("operation-supplied session was silently replaced");
+        assert!(
+            error
+                .to_string()
+                .contains("operation-supplied session was used")
+        );
     }
 
     #[tokio::test]

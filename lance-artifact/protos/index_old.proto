@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.table;
+
+// NOTE: Do *NOT* add new index details here.  Add them to the index.proto file instead.
+// This file is in the lance.table package namespace while the index.proto file is in the
+// lance.index package namespace.
+//
+// These are only here for forward compatibility.  Older versions of Lance expect btree indexes
+// to have lance.table in the package namespace.
+//
+// If you need to modify these messages (e.g. to add new fields to btree or bitmap) then
+// it is ok to modify them here.
+
+// Currently many of these are empty messages because all needed details are either hard-coded (e.g.
+// filenames) or stored in the index itself.  However, we may want to add more details in the
+// future, in particular we can add details that may be useful for planning queries (e.g. don't
+// force us to load the index until we know we can make use of it)
+
+message BTreeIndexDetails {}
+message BitmapIndexDetails {}
+message LabelListIndexDetails {}
+message NGramIndexDetails {}
+message ZoneMapIndexDetails {
+  // Number of rows per zone. Optional for backwards compatibility: absent on
+  // datasets written before this field was added. When absent, no seed writer
+  // is created for the index.
+  optional uint64 rows_per_zone = 1;
+  // Whether seed-based incremental updates are enabled for this index.
+  // On-disk semantics: absent means seeds are disabled (old datasets written
+  // before this field was added). Present false means explicitly disabled.
+  // Present true means seeds are enabled: the index will embed per-fragment
+  // seed buffers in data files and harvest them during incremental updates
+  // to skip full column scans.
+  // Creation-time default: index creation code sets this to true for
+  // variable-length types (strings, binary) and fixed-width types wider than
+  // 8 bytes, and to false for narrow fixed-width types (e.g. Int64, Float64).
+  optional bool use_seeds = 2;
+  // Whether this index tracks exact null row addresses in a separate bitmap.
+  // Absent or false means legacy format: null positions are not tracked and
+  // IS NULL searches fall back to approximate zone-level statistics. Present
+  // true means IS NULL is exact and IS NOT NULL can be answered without a
+  // full scan.
+  optional bool has_null_bitmap = 3;
+}
+message InvertedIndexDetails {
+  enum DocumentGranularity {
+    ROW = 0;
+    LIST_ELEMENT = 1;
+  }
+
+  message CodeTokenizerConfig {
+    // Split one lexical identifier into subwords, e.g. getUserName ->
+    // get/user/name.
+    bool split_identifiers = 1;
+    // Split identifier subwords across letter/number boundaries, e.g.
+    // HTML2JSON -> html/2/json. An absent value uses the code tokenizer default;
+    // a present value records the explicit index-time choice.
+    optional bool split_on_numerics = 2;
+    // Keep the complete lexical identifier in addition to subwords, e.g.
+    // user_name plus user/name. An absent value uses the code tokenizer default;
+    // a present value records the explicit index-time choice.
+    optional bool preserve_original = 3;
+    // Index operator tokens such as "::", "->", and "!=". Operators are not
+    // indexed by default because they are often high-frequency noise.
+    bool index_operators = 4;
+  }
+
+  // Lexical tokenizer used after document-level text extraction. This is an
+  // implementation component such as "simple", "icu", "ngram", or "code".
+  // Input-time analyzer profiles are expanded into this field and the concrete
+  // options below before these details are persisted.
+  // Marking this field as optional as old versions of the index store blank details and we
+  // need to make sure we have a proper optional field to detect this.
+  optional string base_tokenizer = 1;
+  string language = 2;
+  bool with_position = 3;
+  optional uint32 max_token_length = 4;
+  bool lower_case = 5;
+  bool stem = 6;
+  bool remove_stop_words = 7;
+  bool ascii_folding = 8;
+  uint32 min_ngram_length = 9;
+  uint32 max_ngram_length = 10;
+  bool prefix_only = 11;
+  // Number of documents per compressed posting block. An absent value means
+  // the index predates this field and must use the legacy block size of 128.
+  // A present value records the block size used by the index; 256 is valid
+  // with format versions 3 and 4.
+  optional uint32 block_size = 12;
+  // Options for base_tokenizer = "code". Presence records the code tokenizer
+  // configuration used to build the index; absence means there is no
+  // code-specific configuration to apply.
+  CodeTokenizerConfig code_config = 13;
+  // The logical FTS document boundary. The protobuf default preserves the
+  // legacy row-document behavior when this field is absent.
+  DocumentGranularity document_granularity = 14;
+  // The posting-list payload format. This is separate from index_version,
+  // which identifies the overall inverted-index layout.
+  optional uint32 posting_format_version = 15;
+}

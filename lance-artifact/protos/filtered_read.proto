@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The Lance Authors
+
+syntax = "proto3";
+
+package lance.datafusion;
+
+import "table_identifier.proto";
+
+message U64Range {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message ProjectionProto {
+  repeated int32 field_ids = 1;
+  bool with_row_id = 2;
+  bool with_row_addr = 3;
+  bool with_row_last_updated_at_version = 4;
+  bool with_row_created_at_version = 5;
+  BlobHandlingProto blob_handling = 6;
+}
+
+message BlobHandlingProto {
+  oneof mode {
+    // All blobs read as binary
+    bool all_binary = 1;
+    // Blobs as descriptions, other binary as binary (default)
+    bool blobs_descriptions = 2;
+    // All binary columns as descriptions
+    bool all_descriptions = 3;
+    // Specific blobs read as binary, rest as descriptions (non-blob binary stays binary)
+    FieldIdSet some_blobs_binary = 4;
+    // Specific columns as binary, all other binary as descriptions
+    FieldIdSet some_binary = 5;
+  }
+}
+
+message FieldIdSet {
+  repeated uint32 field_ids = 1;
+}
+
+message FilteredReadThreadingModeProto {
+  oneof mode {
+    uint64 one_partition_multiple_threads = 1;
+    uint64 multiple_partitions = 2;
+  }
+}
+
+// Serializable form of FilteredReadOptions.
+message FilteredReadOptionsProto {
+  optional U64Range scan_range_before_filter = 1;
+  optional U64Range scan_range_after_filter = 2;
+  bool with_deleted_rows = 3;
+  optional uint32 batch_size = 4;
+  optional uint64 fragment_readahead = 5;
+  repeated uint64 fragment_ids = 6;
+  ProjectionProto projection = 7;
+  optional bytes refine_filter_substrait = 8;
+  optional bytes full_filter_substrait = 9;
+  FilteredReadThreadingModeProto threading_mode = 10;
+  optional uint64 io_buffer_size_bytes = 11;
+  // Arrow IPC schema for decoding Substrait filters (may be wider than projection).
+  optional bytes filter_schema_ipc = 12;
+}
+
+// Serializable form of FilteredReadPlan (planned/distributed mode).
+// RowAddrTreeMap serialized via its built-in serialize_into/deserialize_from.
+// Per-fragment filters are Substrait-encoded and deduplicated.
+message FilteredReadPlanProto {
+  bytes row_addr_tree_map = 1;
+  optional U64Range scan_range_after_filter = 2;
+  // Arrow IPC schema for decoding Substrait filters (matches the schema used at encode time).
+  optional bytes filter_schema_ipc = 3;
+  // Per-fragment filter mapping. Key is fragment id, value is a list index into
+  // filter_expressions. Multiple fragments can share the same list index when
+  // they have the same filter, avoiding duplicate Substrait encoding.
+  map<uint32, uint32> fragment_filter_ids = 4;
+  // Deduplicated Substrait-encoded filter expressions. Each entry is referenced
+  // by one or more values in fragment_filter_ids.
+  repeated bytes filter_expressions = 5;
+}
+
+// Top-level wrapper for FilteredReadExec serialization.
+message FilteredReadExecProto {
+  TableIdentifier table = 1;
+  FilteredReadOptionsProto options = 2;
+  // FilteredRead has two modes
+  // Plan-then-execute (distributed): The planner creates a FilteredReadPlan and sends it to a remote executor.
+  // Plan-and-execute (local): The executor creates the plan itself at execution time.
+  optional FilteredReadPlanProto plan = 3;
+  // Note: FilteredReadExec.index_input (child ExecutionPlan) is NOT serialized here.
+  // DataFusion's PhysicalExtensionCodec handles child plans automatically: it walks
+  // the plan tree via children() / with_new_children(), serializes each node, and
+  // passes deserialized children back as the `inputs` parameter in try_decode.
+  // This means any ExecutionPlan in the tree (including index_input) must also
+  // implement try_encode/try_decode in the PhysicalExtensionCodec.
+  // TODO: implement serialize/deserialize for lance-specific index input ExecutionPlans.
+}

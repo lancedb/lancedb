@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d036403fe9f78dbff2c0719e2319e043d9fa1e95aeecd63f8e69593a22c10ea4 # shrinks to values = [""]
+cc e7d31563fa5d35fe809e639d776be444b6042700b05fe695a0f6adc14fb171f7 # shrinks to values = []
+cc 6c525cb87c8a699c192a10bb4064837f4e91ca609cac82e3615da4776227b613 # shrinks to values = [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+cc 6a1991927899b890de6623bf046ebd7e6fd512c73c854a21be5a947bf15f98dd # shrinks to values = [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+cc 1436aa3ba65a78849c52480e744e8ed37a6eb64e793319f36f28e0ffd30c0f34 # shrinks to values = ["𐀀 𐀀aA  \u{80}aA\u{b}A \u{b}\00  0𐀀0 A𐀀\0ࠀaࠀAA0¡ 𐀀𐀀¡ 𐀀"]
+cc f1974dc3e72ef3d23ce7fd5a983f188a3f26bf9247f43dc25e7e71f46e0bedd9 # shrinks to values = ["\u{7f}", " \u{80}𐀀𐀀\0\0  \u{b}¡𐀀𐀀ࠀ\0 a\u{b} ¡𐀀𐀀0Aa𐀀a00 𐀀a𐀀A"]
