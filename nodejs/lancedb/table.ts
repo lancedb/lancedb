@@ -197,11 +197,7 @@ export interface LsmWriteSpec {
   column?: string;
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
-  /**
-   * Indexes the MemWAL keeps up to date. Omit to maintain every supported
-   * index, resolved on install — a snapshot, so indexes created later are not
-   * maintained. Pass `[]` for none.
-   */
+  /** Names of indexes the MemWAL should keep up to date during writes. */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
@@ -599,11 +595,6 @@ export abstract class Table {
    * All variants require the table to have an unenforced primary key
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
-   *
-   * Omitting `maintainedIndexes` maintains every index on the table, resolved
-   * here, failing if one cannot be maintained — name them to install anyway.
-   * Naming them pins an exact set, and a still-building index is rejected
-   * rather than quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
@@ -631,10 +622,9 @@ export abstract class Table {
    *
    * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
    * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
-   * The returned spec mirrors what was passed to
-   * {@link Table#setLsmWriteSpec}, except that `maintainedIndexes` always
-   * reports the concrete list resolved when the spec was set — `undefined`
-   * never round-trips.
+   * The returned spec — including its `maintainedIndexes` and
+   * `writerConfigDefaults` — mirrors what was passed to
+   * {@link Table#setLsmWriteSpec}.
    * @returns {Promise<LsmWriteSpec | undefined>}
    */
   abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;

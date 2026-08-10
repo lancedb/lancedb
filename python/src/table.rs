@@ -246,22 +246,12 @@ impl From<lancedb::table::MergeResult> for MergeResult {
     }
 }
 
-/// Render for `__repr__`, so the default reads as Python's `None` rather than
-/// Rust's `Some([..])`.
-fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
-    match maintained {
-        Some(names) => format!("{:?}", names),
-        None => "None".to_string(),
-    }
-}
-
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `merge_insert`.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
-/// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
-/// MemWAL supports, resolved on install.
+/// `with_writer_config_defaults(...)`.
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -301,11 +291,11 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default)
-    /// resolves every supported index on install; a list is verbatim,
-    /// and an empty list maintains nothing.
-    #[pyo3(signature = (indexes))]
-    pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that
+    /// already exists on the table at the time `set_lsm_write_spec`
+    /// is called.
+    pub fn with_maintained_indexes(&self, indexes: Vec<String>) -> Self {
         Self {
             inner: self.inner.clone().with_maintained_indexes(indexes),
         }
@@ -327,29 +317,23 @@ impl LsmWriteSpec {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
-                column,
-                num_buckets,
-                fmt_maintained(maintained_indexes),
-                writer_config_defaults,
+                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, num_buckets, maintained_indexes, writer_config_defaults,
             ),
             lancedb::table::LsmWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
-                column,
-                fmt_maintained(maintained_indexes),
-                writer_config_defaults,
+                "LsmWriteSpec.identity(column={:?}, maintained_indexes={:?}, writer_config_defaults={:?})",
+                column, maintained_indexes, writer_config_defaults,
             ),
             lancedb::table::LsmWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
-                fmt_maintained(maintained_indexes),
-                writer_config_defaults,
+                "LsmWriteSpec.unsharded(maintained_indexes={:?}, writer_config_defaults={:?})",
+                maintained_indexes, writer_config_defaults,
             ),
         }
     }
@@ -384,10 +368,10 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
+    /// Names of indexes the MemWAL should keep up to date during writes.
     #[getter]
-    pub fn maintained_indexes(&self) -> Option<Vec<String>> {
-        self.inner.maintained_indexes().map(<[String]>::to_vec)
+    pub fn maintained_indexes(&self) -> Vec<String> {
+        self.inner.maintained_indexes().to_vec()
     }
 
     /// Default `ShardWriter` configuration recorded by this spec.

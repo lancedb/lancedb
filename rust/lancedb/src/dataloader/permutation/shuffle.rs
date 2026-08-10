@@ -12,8 +12,7 @@ use lance_encoding::decoder::{DecoderPlugins, FilterExpression};
 use lance_file::{
     reader::{FileReader, FileReaderOptions},
     version::ConcreteFileVersion,
-    versions,
-    writer::FileWriterOptions,
+    writer::{FileWriter, FileWriterOptions},
 };
 use lance_io::{
     ReadBatchParams,
@@ -154,11 +153,13 @@ impl Shuffler {
                     source: None,
                 })?;
             let object_writer = object_store.create(&path).await?;
-            let writer = versions::create_writer(
-                ConcreteFileVersion::V2_1,
+            let writer = FileWriter::try_new(
                 object_writer,
                 schema.clone(),
-                FileWriterOptions::default(),
+                FileWriterOptions {
+                    format_version: Some(ConcreteFileVersion::V2_1.into()),
+                    ..Default::default()
+                },
             )?;
             file_writers.push(writer);
         }

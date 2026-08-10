@@ -370,8 +370,6 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// A fresh spec maintains every index on the table, resolved on install.
-///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
 /// onto the MemWAL writer is a follow-up.
@@ -386,12 +384,9 @@ pub enum LsmWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
-        ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
-        maintained_indexes: Option<Vec<String>>,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
@@ -401,41 +396,35 @@ pub enum LsmWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
-        ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
-        maintained_indexes: Option<Vec<String>>,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
     /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
     Unsharded {
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
-        ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
-        maintained_indexes: Option<Vec<String>>,
+        /// Names of indexes (already created on the table) that the
+        /// MemWAL should maintain in-memory as rows are appended.
+        maintained_indexes: Vec<String>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
 }
 
 impl LsmWriteSpec {
-    /// Construct a hash-bucket sharding spec maintaining every index on the table.
+    /// Construct a hash-bucket sharding spec with no maintained indexes.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
             num_buckets,
-            maintained_indexes: None,
+            maintained_indexes: Vec::new(),
             writer_config_defaults: HashMap::new(),
         }
     }
 
     /// Construct an identity-sharding spec (shard by the raw value of
-    /// `column`) maintaining every index on the table.
+    /// `column`) with no maintained indexes.
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
@@ -447,37 +436,28 @@ impl LsmWriteSpec {
     pub fn identity(column: impl Into<String>) -> Self {
         Self::Identity {
             column: column.into(),
-            maintained_indexes: None,
+            maintained_indexes: Vec::new(),
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Construct an unsharded spec maintaining every index on the table.
+    /// Construct an unsharded spec with no maintained indexes.
     pub fn unsharded() -> Self {
         Self::Unsharded {
-            maintained_indexes: None,
+            maintained_indexes: Vec::new(),
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Set which indexes the MemWAL maintains.
-    ///
-    /// `None` (the default) resolves to every index on the table at install,
-    /// failing if one cannot be maintained — name the set to install anyway. A
-    /// list is verbatim: each name must already exist and be maintainable, and
-    /// an empty list maintains nothing.
-    ///
-    /// ```
-    /// # use lancedb::table::LsmWriteSpec;
-    /// // Every index the table has when the spec is installed:
-    /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
-    /// // Exactly these:
-    /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
-    /// // None at all:
-    /// LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new());
-    /// ```
-    pub fn with_maintained_indexes(mut self, indexes: impl Into<Option<Vec<String>>>) -> Self {
-        let indexes = indexes.into();
+    /// Replace the list of indexes the MemWAL should keep up to date as
+    /// rows are appended. Each name must reference an index that already
+    /// exists on the table at the time `set_lsm_write_spec` is called.
+    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
         match &mut self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -487,7 +467,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => *maintained_indexes = indexes,
+            } => *maintained_indexes = v,
         }
         self
     }
@@ -523,9 +503,8 @@ impl LsmWriteSpec {
         self
     }
 
-    /// Borrow the list of index names this spec asks MemWAL to maintain, or
-    /// `None` when it asks for every index on the table.
-    pub fn maintained_indexes(&self) -> Option<&[String]> {
+    /// Borrow the list of index names this spec asks MemWAL to maintain.
+    pub fn maintained_indexes(&self) -> &[String] {
         match self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -535,7 +514,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => maintained_indexes.as_deref(),
+            } => maintained_indexes,
         }
     }
 
@@ -1733,7 +1712,7 @@ impl Table {
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
     ///     .set_lsm_write_spec(
-    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
+    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
     ///     )
     ///     .await?;
     /// # Ok(())
@@ -1755,10 +1734,9 @@ impl Table {
     ///
     /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
     /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`], except that
-    /// [`LsmWriteSpec::maintained_indexes`] always reports the concrete list
-    /// resolved when the spec was set — `None` never round-trips.
+    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
+    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
+    /// [`Table::set_lsm_write_spec`].
     ///
     /// # Example
     ///
@@ -5107,7 +5085,7 @@ mod tests {
         // Bucket spec round-trips exactly, including the routing column (recovered
         // from its field id), maintained indexes, and writer config defaults.
         let spec = LsmWriteSpec::bucket("id", 4)
-            .with_maintained_indexes(vec![idx_name.clone()])
+            .with_maintained_indexes([idx_name])
             .with_writer_config_defaults([("durable_write", "false")]);
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
@@ -5117,125 +5095,15 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
-        // A spec left at its default maintains every index on the table, so it
-        // reads back naming the one on the table rather than as "infer".
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name.clone()]))
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
         table.unset_lsm_write_spec().await.unwrap();
 
         // Unsharded round-trips (no routing column).
         let spec = LsmWriteSpec::unsharded();
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name]))
-        );
-    }
-
-    /// The maintained set defaults to every index on the table, resolved at
-    /// install. An index the memtable cannot build fails the install rather
-    /// than being dropped: maintaining it would take the table offline for
-    /// writes, dropping it would hide that from the caller.
-    #[tokio::test]
-    async fn test_set_lsm_write_spec_infers_maintained_indexes() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("tag", DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
-                Arc::new(StringArray::from(vec!["a", "b", "c"])),
-            ],
-        )
-        .unwrap();
-        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
-        let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let table = conn.create_table("t", reader).execute().await.unwrap();
-
-        table
-            .create_index(&["id"], Index::BTree(Default::default()))
-            .name("id_btree".to_string())
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(&["tag"], Index::Bitmap(Default::default()))
-            .name("tag_bitmap".to_string())
-            .execute()
-            .await
-            .unwrap();
-
-        // Explicitly naming the bitmap index fails before anything commits.
-        let err = table
-            .set_lsm_write_spec(
-                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["tag_bitmap".to_string()]),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidInput { ref message } if message.contains("tag_bitmap")),
-            "expected the bitmap index to be rejected, got {err:?}"
-        );
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
-
-        // The default covers every index, so the bitmap fails it too.
-        let err = table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidInput { ref message }
-                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
-            "expected the inferred set to be rejected, got {err:?}"
-        );
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
-
-        // Naming the maintainable subset installs.
-        table
-            .set_lsm_write_spec(
-                LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            table
-                .get_lsm_write_spec()
-                .await
-                .unwrap()
-                .unwrap()
-                .maintained_indexes(),
-            Some(["id_btree".to_string()].as_slice())
-        );
-
-        // Opting out entirely is distinct from the default.
-        table.unset_lsm_write_spec().await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
-            .await
-            .unwrap();
-        assert_eq!(
-            table
-                .get_lsm_write_spec()
-                .await
-                .unwrap()
-                .unwrap()
-                .maintained_indexes(),
-            Some([].as_slice())
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
     }
 
     #[tokio::test]
@@ -5340,7 +5208,7 @@ mod tests {
         use lance::dataset::WriteDestination;
         use lance::dataset::transaction::{DataOverlayGroup, Operation};
         use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
-        use lance_file::writer::FileWriterOptions;
+        use lance_file::writer::{FileWriter, FileWriterOptions};
         use lance_io::utils::CachedFileSize;
         use lance_table::format::DataFile;
         use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
@@ -5411,11 +5279,13 @@ mod tests {
         let store = dataset.object_store(None).await.unwrap();
         let path = dataset.data_dir().child(filename.clone());
         let obj_writer = store.create(&path).await.unwrap();
-        let mut writer = lance_file::versions::create_writer(
-            file_version,
+        let mut writer = FileWriter::try_new(
             obj_writer,
             overlay_schema,
-            FileWriterOptions::default(),
+            FileWriterOptions {
+                format_version: Some(file_version.into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         writer

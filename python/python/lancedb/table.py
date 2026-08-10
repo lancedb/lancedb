@@ -4676,13 +4676,6 @@ class AsyncTable:
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
-        By default the MemWAL maintains every index on the table, resolved
-        here — a snapshot, so an index created afterwards needs the spec unset
-        and set again. This fails if one cannot be maintained; name the set
-        with ``with_maintained_indexes`` to install anyway. That pins an exact
-        set (a still-building index is rejected, not omitted); ``[]`` maintains
-        none.
-
         Parameters
         ----------
         spec : LsmWriteSpec
@@ -4709,9 +4702,9 @@ class AsyncTable:
 
         Returns ``None`` when the MemWAL LSM write path is not enabled (no
         spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The returned spec mirrors what was passed to `set_lsm_write_spec`,
-        except that ``maintained_indexes`` always reports the concrete list
-        resolved when the spec was set — ``None`` never round-trips.
+        The returned spec — including its ``maintained_indexes`` and
+        ``writer_config_defaults`` — mirrors what was passed to
+        `set_lsm_write_spec`.
         """
         return await self._inner.get_lsm_write_spec()
 
