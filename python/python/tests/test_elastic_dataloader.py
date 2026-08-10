@@ -1452,10 +1452,18 @@ def test_transform_queue_depth_bounds_cooked_rows(lance_table):
 def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     """Admission requires a full read_batch_size of free space, not just one slot.
 
-    Patch ThreadPoolExecutor.submit to capture the cooked-queue depth at
-    submission time on the *main thread*.  This is race-free: submit() is called
-    by _try_submit_tx/_ensure_cooked on the main thread before any worker can
-    drain the queue, so we see the exact state the admission predicate evaluated.
+    The test intercepts ThreadPoolExecutor.submit to make I/O calls execute
+    synchronously on the main thread.  This ensures all raw batches land in
+    raw_batches (via _drain_io) before _try_submit_tx evaluates the admission
+    predicate for the first time.  Without this, the I/O future for batch N+1
+    might still be in io_pending at the capacity-minus-one transition, leaving
+    raw_batches empty and causing _try_submit_tx to skip the admission check
+    entirely — so both the correct and the broken predicate produce depth=0
+    observations and the test cannot distinguish them.
+
+    With all raw batches pre-loaded in raw_batches the 4→3 cooked transition
+    (consuming one row from a full cooked queue) always triggers _try_submit_tx
+    against a non-empty raw_batches.
 
     With transform_queue_depth=1 and batch_size=4, max_cooked_rows=4.
     A transform may only be submitted when in_pipeline + batch_size <= 4, i.e.
@@ -1463,6 +1471,7 @@ def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     predicate (in_pipeline >= max_cooked_rows) the second transform would be
     admitted with cooked containing batch_size-1 rows still unconsumed.
     """
+    import concurrent.futures as cf
     from concurrent.futures import ThreadPoolExecutor
     from unittest.mock import patch
 
@@ -1476,8 +1485,23 @@ def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     original_submit = ThreadPoolExecutor.submit
 
     def tracking_submit(self, fn, *args, **kwargs):
-        if getattr(fn, "__name__", "") == "_tx_call_guarded":
-            # Capture cooked depth synchronously on the main thread.
+        name = getattr(fn, "__name__", "")
+        if name == "_io_call":
+            # Run I/O synchronously on the calling (main) thread and return an
+            # already-completed Future.  _drain_io checks fut.done(), so a
+            # completed Future is moved to raw_batches immediately on the next
+            # _advance call — making raw-batch readiness deterministic at the
+            # capacity-minus-one transition instead of depending on I/O thread
+            # scheduling.
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        if name == "_tx_call_guarded":
+            # Capture cooked depth synchronously on the main thread before the
+            # transform worker can drain the queue.
             ref = ds._cooked_ref
             cooked_at_submit.append(len(ref[0]) if ref is not None else -1)
         return original_submit(self, fn, *args, **kwargs)
