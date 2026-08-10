@@ -114,10 +114,35 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         builder = builder.add_writer_config_default(key, value);
     }
     builder.execute().await?;
-    // Require recorded index catch-up from the moment WAL is turned on, while
-    // the table is provably clean: no SSTable has been compacted, so there is
-    // no unvalidated progress to inherit, and the migration never has to be run
-    // against a table already in flight.
+    table.dataset.update(dataset);
+    Ok(())
+}
+
+// =============================================================================
+// require_mem_wal_index_catchup
+// =============================================================================
+
+/// Switch this table to required index catch-up, one way.
+///
+/// Deliberately **not** part of installing the write spec. Until something can
+/// actually repair coverage, a table carrying the bit reports every index as
+/// not known to hold the compacted rows, so its SSTables are retained
+/// indefinitely -- and the WAL pod trims on the legacy rule meanwhile, leaving
+/// readers pointed at files that are gone. Turn this on only once remote
+/// maintenance owns the merge and the repair for the table.
+///
+/// Lance refuses the activation if the table already records SSTable
+/// compaction progress: those numbers predate this protocol and cannot be
+/// validated, so such a table must be drained rather than activated.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn require_mem_wal_index_catchup(table: &NativeTable) -> Result<()> {
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+    if dataset.mem_wal_index_details().await?.is_none() {
+        return Err(Error::InvalidInput {
+            message: "require_mem_wal_index_catchup: no LSM write spec is set on this table".into(),
+        });
+    }
     dataset.require_mem_wal_index_catchup().await?;
     table.dataset.update(dataset);
     Ok(())
