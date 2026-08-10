@@ -1803,6 +1803,24 @@ def test_resumability_with_skips_elastic_merge(lance_table):
     assert resumed == reference[steps * NUM_SPLITS :]
 
 
+def test_rows_skipped_flushed_when_split_entirely_bad(lance_table):
+    """A split whose rows all fail never completes a cycle, so the epoch ends
+    immediately — but rows_skipped must still report the drops after the
+    iterator exits (the shared-memory counter is flushed on exhaustion)."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0])  # every row of split 0 is bad
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    assert list(ds) == []
+    assert ds.rows_skipped == len(bad_ids)
+
+
 def test_merge_state_dicts_validates_consistency(lance_table):
     ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
     state = ds.state_dict()

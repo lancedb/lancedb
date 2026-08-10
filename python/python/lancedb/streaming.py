@@ -593,6 +593,19 @@ class StreamingDataset(IterableDataset):
 
                             yield row
                 finally:
+                    # Final stats flush: the per-cycle write above never runs
+                    # when iteration ends mid-cycle (e.g. a split whose rows
+                    # were all skipped before completing a single cycle), so
+                    # counters like rows_skipped would otherwise be stale.
+                    ws = self._worker_stats
+                    ws[0] = sum(split_sizes[j] - fetch_head[j] for j in range(n))
+                    ws[1] = 0  # queue-depth properties document 0 when idle
+                    ws[2] = 0
+                    ws[3] = sum(local_consumed)
+                    ws[4] = self._bytes_loaded
+                    ws[5] = int(self._fetch_time * 1_000_000)
+                    ws[6] = int(self._transform_time * 1_000_000)
+                    ws[7] = self._rows_skipped
                     self._raw_batches_ref = None
                     self._cooked_ref = None
                     self._fetch_head_ref = None
@@ -835,18 +848,33 @@ class StreamingDataset(IterableDataset):
         rank owned that split, and the elementwise maximum needs every rank's
         contribution to be correct.
 
-        Example: checkpointing 8 ranks and resuming on 4:
+        For example, checkpointing 8 ranks and resuming on 4 (the same
+        pattern applies when growing, e.g. 4 ranks resuming on 8)::
 
-        >>> states = [ds_rank_i.state_dict() for i in range(8)]  # 8 ranks
-        >>> merged = StreamingDataset.merge_state_dicts(states)
-        >>> for ds_rank_i in resumed_datasets:  # now only 4 ranks
-        ...     ds_rank_i.load_state_dict(merged)  # same dict on every rank
+            states = [ds.state_dict() for ds in previous_run_datasets]  # 8
+            merged = StreamingDataset.merge_state_dicts(states)
+            for ds in resumed_datasets:  # now only 4 ranks
+                ds.load_state_dict(merged)  # same dict on every rank
 
-        Checkpointing 4 ranks and resuming on 8 follows the identical
-        pattern: merge all 4 states, then load that one merged dict into
-        each of the 8 new ranks. The rank count on either side never affects
-        the merge itself, since ``merge_state_dicts`` only cares about the
-        list of states it is given.
+        The rank count on either side never affects the merge itself, since
+        ``merge_state_dicts`` only cares about the list of states it is
+        given.  Each split's position is recovered by elementwise maximum;
+        here rank 0 owned split 0 (and skipped two rows there) while rank 1
+        owned split 1 (and skipped one row):
+
+        >>> rank0 = {
+        ...     "shuffle_seed": 0, "num_splits": 2, "epoch": 0,
+        ...     "samples_consumed_per_split": [3, 3],
+        ...     "positions_consumed_per_split": [5, 3],
+        ... }
+        >>> rank1 = {
+        ...     "shuffle_seed": 0, "num_splits": 2, "epoch": 0,
+        ...     "samples_consumed_per_split": [3, 3],
+        ...     "positions_consumed_per_split": [3, 4],
+        ... }
+        >>> merged = StreamingDataset.merge_state_dicts([rank0, rank1])
+        >>> merged["positions_consumed_per_split"]
+        [5, 4]
         """
         if not states:
             raise ValueError("merge_state_dicts requires at least one state dict")
