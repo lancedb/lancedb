@@ -8,7 +8,7 @@ use std::{fmt::Formatter, sync::Arc};
 use futures::{StreamExt, TryFutureExt, stream::BoxStream};
 use lance::io::WrappingObjectStore;
 use object_store::{
-    CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+    CopyMode, CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
     UploadPart, path::Path,
 };
@@ -52,7 +52,7 @@ impl PrimaryOnly for Path {
 /// store. We have primary store that is durable but slow, and a secondary
 /// store that is fast but not asdurable
 ///
-/// Note: this object store does not mirror writes to *.manifest files
+/// Note: this object store does not mirror writes to `_latest.manifest`.
 #[async_trait]
 impl ObjectStore for MirroringObjectStore {
     async fn put_opts(
@@ -137,6 +137,16 @@ impl ObjectStore for MirroringObjectStore {
             // or may be evicted before the copy begins.
             match self.secondary.copy_opts(from, to, options.clone()).await {
                 Ok(()) | Err(Error::NotFound { .. }) => {}
+                // The secondary is a non-authoritative cache. A process can
+                // leave an orphaned manifest there if it exits before creating
+                // the durable primary object, so let the primary decide the
+                // outcome of create-only manifest copies.
+                Err(Error::AlreadyExists { .. } | Error::Precondition { .. })
+                    if options.mode == CopyMode::Create
+                        && to
+                            .filename()
+                            .map(|name| name.ends_with(".manifest"))
+                            .unwrap_or(false) => {}
                 Err(err) => return Err(err),
             }
             self.primary.copy_opts(from, to, options).await
@@ -336,6 +346,64 @@ mod test {
         assert_eq!(copied, "manifest contents");
         assert!(matches!(
             secondary_inner.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_create_manifest_recovers_from_orphaned_secondary() {
+        let primary: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary: secondary.clone(),
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+        secondary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+        secondary
+            .copy_if_not_exists(&staging, &finalized)
+            .await
+            .expect("simulate a crash after secondary create and before primary create");
+
+        store
+            .copy_if_not_exists(&staging, &finalized)
+            .await
+            .expect("an orphaned secondary manifest must not block primary creation");
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+
+        assert!(matches!(
+            store.copy_if_not_exists(&staging, &finalized).await,
+            Err(Error::AlreadyExists { .. } | Error::Precondition { .. })
+        ));
+
+        let non_manifest = Path::from("data/existing.lance");
+        secondary
+            .copy_if_not_exists(&staging, &non_manifest)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.copy_if_not_exists(&staging, &non_manifest).await,
+            Err(Error::AlreadyExists { .. } | Error::Precondition { .. })
+        ));
+        assert!(matches!(
+            primary.head(&non_manifest).await,
             Err(Error::NotFound { .. })
         ));
     }
