@@ -1,7 +1,8 @@
 name: Create release commit
 
-# This workflow increments the version, tags it, and pushes it. All SDKs share
-# a single version, so one tag releases all of them.
+# This workflow increments the version, updates lockfiles, tags the final
+# commit, and pushes it. All SDKs share a single version, so one tag releases
+# all of them.
 # When a tag is pushed, another workflow is triggered that creates a GH release
 # and uploads the binaries. This workflow is only for creating the tag.
 
@@ -63,6 +64,7 @@ jobs:
           pip install bump-my-version PyGithub packaging
           bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }}
           bash ci/update_lockfiles.sh --amend
+          bash ci/create_release_tag.sh
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@881a6320fdb16eb5318c5054f31c218aec2b324c # v1.3.0
