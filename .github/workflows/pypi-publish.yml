@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable release tag to recover (for example, v0.37.1)
+        required: true
+        type: string
+      source_run_id:
+        description: Failed tag workflow run containing the completed non-Windows wheels
+        required: true
+        type: string
   pull_request:
     # This should trigger a dry run (we skip the final publish step)
     paths:
@@ -29,6 +39,7 @@ concurrency:
 jobs:
   linux:
     name: Python ${{ matrix.config.package_name }} ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
+    if: github.event_name != 'workflow_dispatch'
     timeout-minutes: 60
     strategy:
       matrix:
@@ -84,6 +95,7 @@ jobs:
           path: target/wheels/*.whl
           if-no-files-found: error
   mac:
+    if: github.event_name != 'workflow_dispatch'
     timeout-minutes: 90
     runs-on: ${{ matrix.config.runner }}
     strategy:
@@ -113,7 +125,8 @@ jobs:
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
   windows:
-    timeout-minutes: 90
+    if: github.event_name != 'workflow_dispatch'
+    timeout-minutes: 120
     runs-on: windows-latest
     env:
       # link.exe is single-threaded and the long pole on Windows builds. Use
@@ -145,6 +158,32 @@ jobs:
           name: wheels-windows
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
+  recover-windows:
+    name: Recover Windows wheel
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: ./.github/workflows/build_windows_wheel
+        with:
+          python-minor-version: 10
+          args: "--release --strip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows-recovery
+          path: target/wheels/lancedb-*.whl
+          if-no-files-found: error
   publish:
     name: Publish wheels
     if: startsWith(github.ref, 'refs/tags/v')
@@ -165,11 +204,13 @@ jobs:
         run: ls -la target/wheels
       - name: Choose repo
         id: choose_repo
+        env:
+          RELEASE_REF: ${{ github.ref }}
         run: |
-          if [[ ${{ github.ref }} == *beta* ]]; then
-            echo "repo=fury" >> $GITHUB_OUTPUT
+          if [[ "$RELEASE_REF" == *beta* ]]; then
+            echo "repo=fury" >> "$GITHUB_OUTPUT"
           else
-            echo "repo=pypi" >> $GITHUB_OUTPUT
+            echo "repo=pypi" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish to Fury
         if: steps.choose_repo.outputs.repo == 'fury'
@@ -193,6 +234,70 @@ jobs:
       # `docker://ghcr.io/<repo>:<ref>` image reference that GHA tries to pull.
       - name: Publish to PyPI
         if: steps.choose_repo.outputs.repo == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: target/wheels/
+  recover-publish:
+    name: Recover PyPI publish
+    if: github.event_name == 'workflow_dispatch'
+    needs: [recover-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+      - name: Verify recovery source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          if [[ "$RELEASE_TAG" != v* || "$RELEASE_TAG" == *beta* ]]; then
+            echo "Recovery only supports stable v* release tags" >&2
+            exit 1
+          fi
+          TAG_SHA=$(git rev-parse HEAD)
+          RUN_SHA=$(gh api "/repos/${{ github.repository }}/actions/runs/$SOURCE_RUN_ID" --jq .head_sha)
+          if [[ "$TAG_SHA" != "$RUN_SHA" ]]; then
+            echo "Source run $SOURCE_RUN_ID ($RUN_SHA) does not match $RELEASE_TAG ($TAG_SHA)" >&2
+            exit 1
+          fi
+      - name: Download Linux wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: wheels-linux-*
+          path: target/wheels
+          merge-multiple: true
+      - name: Download macOS wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: wheels-mac-*
+          path: target/wheels
+          merge-multiple: true
+      - name: Download recovered Windows wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-windows-recovery
+          path: target/wheels
+      - name: Validate recovered wheels
+        run: |
+          find target/wheels -maxdepth 1 -type f -name '*.whl' -print
+          WHEEL_COUNT=$(find target/wheels -maxdepth 1 -type f -name '*.whl' | wc -l)
+          if [[ "$WHEEL_COUNT" -ne 5 ]]; then
+            echo "Expected 5 wheels, found $WHEEL_COUNT" >&2
+            exit 1
+          fi
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: target/wheels/
