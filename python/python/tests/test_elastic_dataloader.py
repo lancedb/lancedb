@@ -1524,9 +1524,7 @@ def test_shuffle_seed_none_generates_stable_seed(lance_table):
     assert first == second, "Same resolved seed must produce the same ordering"
 
 
-# ---------------------------------------------------------------------------
 # Sequence packing tests
-# ---------------------------------------------------------------------------
 
 
 def _create_token_table(tmp_path, documents):
@@ -1547,41 +1545,30 @@ def _packed_dataset(table, pack_sequences, *, pad_id=0, **kwargs):
     )
 
 
-def test_pack_sequences_emits_tokens_and_document_ids(tmp_path):
-    table = _create_token_table(tmp_path, [[1, 2], [3, 4]])
+def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2], [3, 4], [5]])
     dataset = _packed_dataset(table, 6)
 
     blocks = list(dataset)
 
-    assert len(blocks) == 1
+    assert len(blocks) == 2
     assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 3, 4, 9]
     assert blocks[0]["doc_ids"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert blocks[1]["input_ids"].tolist() == [5, 9, 0, 0, 0, 0]
+    assert blocks[1]["doc_ids"].tolist() == [0, 0, 0, 0, 0, 0]
     assert blocks[0]["input_ids"].dtype == torch.int64
     assert blocks[0]["doc_ids"].dtype == torch.int64
 
 
-def test_pack_sequences_pads_final_short_tail(tmp_path):
-    table = _create_token_table(tmp_path, [[1, 2]])
-    dataset = _packed_dataset(table, 4)
-
-    blocks = list(dataset)
-
-    assert len(blocks) == 1
-    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 0]
-
-
-def test_pack_sequences_pads_lagging_splits_to_complete_cycles(tmp_path):
-    # split 0 has four real tokens including EOS markers, while split 1 has
-    # eleven.  Packing must emit three complete two-split cycles rather than
-    # stopping at the short split at the beginning of the first/second cycle.
+def test_pack_sequences_pads_lagging_splits(tmp_path):
     table = _create_token_table(
         tmp_path,
         [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
     )
     dataset = _packed_dataset(table, 5, num_splits=2)
-
     input_ids = [block["input_ids"].tolist() for block in dataset]
-
+    # Split 0 has four real tokens including EOS markers, while split 1 has
+    # eleven. Packing must emit three complete two-split cycles.
     assert input_ids == [
         [1, 9, 2, 9, 0],
         [10, 11, 12, 13, 14],
@@ -1619,17 +1606,7 @@ def test_pack_sequences_checkpoint_resumes_partial_buffers(tmp_path):
     ]
 
 
-def test_pack_sequences_checkpoint_rejects_different_padding(tmp_path):
-    table = _create_token_table(tmp_path, [[1, 2]])
-    dataset = _packed_dataset(table, 4)
-    checkpoint = dataset.state_dict()
-    resumed = _packed_dataset(table, 4, pad_id=8)
-
-    with pytest.raises(ValueError, match="pad_id mismatch"):
-        resumed.load_state_dict(checkpoint)
-
-
-def test_pack_sequences_requires_padding_id(tmp_path):
+def test_pack_sequences_validates_padding_id(tmp_path):
     table = _create_token_table(tmp_path, [[1, 2]])
 
     with pytest.raises(ValueError, match="pad_id is required"):
@@ -1640,6 +1617,11 @@ def test_pack_sequences_requires_padding_id(tmp_path):
             pack_sequences=4,
             eos_id=9,
         )
+
+    checkpoint = _packed_dataset(table, 4).state_dict()
+    resumed = _packed_dataset(table, 4, pad_id=8)
+    with pytest.raises(ValueError, match="pad_id mismatch"):
+        resumed.load_state_dict(checkpoint)
 
 
 # ---------------------------------------------------------------------------
