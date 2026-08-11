@@ -28,7 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::function::RegisterFunctionJobSpec;
+use crate::function::{Function, FunctionId, RegisterFunctionJobSpec};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -561,6 +561,33 @@ impl Connection {
         spec: RegisterFunctionJobSpec,
     ) -> Result<crate::job::Job> {
         self.internal.register_function(spec).await
+    }
+
+    /// Look up the Function currently bound to a database-scoped name.
+    ///
+    /// The name is lookup indirection only and is never part of the returned
+    /// [`Function`]. Empty names return [`Error::InvalidInput`] before backend
+    /// dispatch. Only remote databases support enterprise catalog lookup;
+    /// nonempty local lookups return [`Error::NotSupported`].
+    pub async fn lookup_function_by_name(&self, name: impl AsRef<str>) -> Result<Function> {
+        let name = name.as_ref();
+        // Public nonempty invariant: validate before any Database backend sees
+        // the call so local and remote Connections agree on InvalidInput.
+        if name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "function lookup name must be non-empty".into(),
+            });
+        }
+        self.internal.lookup_function_by_name(name).await
+    }
+
+    /// Look up an immutable Function by exact opaque [`FunctionId`].
+    ///
+    /// Exact-ID lookup is independent of later catalog name changes. Only
+    /// remote databases support enterprise catalog lookup; local databases
+    /// return [`Error::NotSupported`].
+    pub async fn lookup_function_by_id(&self, function_id: &FunctionId) -> Result<Function> {
+        self.internal.lookup_function_by_id(function_id).await
     }
 
     /// Drop a table in the database.

@@ -23,7 +23,7 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
-use crate::function::RegisterFunctionJobSpec;
+use crate::function::{Function, FunctionId, RegisterFunctionJobSpec};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -615,6 +615,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             self.client.clone(),
             job_id,
         ))))
+    }
+
+    async fn lookup_function_by_name(&self, name: &str) -> Result<Function> {
+        let selector = super::function::FunctionLookupSelector::by_name(name)?;
+        super::function::lookup_function(&self.client, selector).await
+    }
+
+    async fn lookup_function_by_id(&self, function_id: &FunctionId) -> Result<Function> {
+        let selector = super::function::FunctionLookupSelector::by_function_id(function_id);
+        super::function::lookup_function(&self.client, selector).await
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -3404,6 +3414,768 @@ mod tests {
                 "/v1/jobs/describe".to_string(),
             ],
             "flow must be submit then describe only, with no Function name lookup"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Function lookup transport (RED until lookup_function_by_{name,id})
+    // -------------------------------------------------------------------------
+
+    const LOOKUP_CATALOG_NAME: &str = "text.normalize.lookup-name";
+    const LOOKUP_FUNCTION_ID: &str = "fn.exact.lookup-handle";
+    const LOOKUP_SERVER_MESSAGE_MARKER: &str =
+        "SERVER_LOOKUP_DIAGNOSTIC_MARKER name=text.normalize.lookup-name id=fn.exact.lookup-handle";
+
+    fn sample_lookup_function() -> Function {
+        let id = FunctionId::try_new(LOOKUP_FUNCTION_ID).expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn lookup_function_wire(function: &Function) -> Value {
+        serde_json::to_value(function).expect("serialize Function wire")
+    }
+
+    fn lookup_success_body(function: &Function, extra_outer: Option<Value>) -> String {
+        let mut body = json!({
+            "function": lookup_function_wire(function),
+        });
+        if let Some(Value::Object(extra)) = extra_outer {
+            let object = body.as_object_mut().expect("lookup success must be object");
+            for (k, v) in extra {
+                object.insert(k, v);
+            }
+        }
+        body.to_string()
+    }
+
+    fn lookup_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_lookup_payload_free(err: &Error) {
+        let text = lookup_error_chain_text(err);
+        assert!(
+            !text.contains(LOOKUP_SERVER_MESSAGE_MARKER),
+            "server diagnostic marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(LOOKUP_CATALOG_NAME),
+            "catalog name must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(LOOKUP_FUNCTION_ID),
+            "FunctionId must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains("SENSITIVE_LOOKUP_BODY_MARKER"),
+            "non-success/malformed body marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_lookup_name_request(request: &reqwest::Request, expected_name: &str) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/v1/functions/lookup");
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("lookup request must carry a JSON body");
+        let actual: Value = serde_json::from_slice(body).expect("lookup body must be JSON");
+        assert_eq!(
+            actual,
+            json!({ "name": expected_name }),
+            "name lookup body must be exactly {{\"name\":...}}"
+        );
+        assert!(
+            actual.get("function_id").is_none(),
+            "name lookup must not send function_id: {actual}"
+        );
+    }
+
+    fn assert_lookup_id_request(request: &reqwest::Request, expected_id: &str) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/v1/functions/lookup");
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("lookup request must carry a JSON body");
+        let actual: Value = serde_json::from_slice(body).expect("lookup body must be JSON");
+        assert_eq!(
+            actual,
+            json!({ "function_id": expected_id }),
+            "id lookup body must be exactly {{\"function_id\":...}}"
+        );
+        assert!(
+            actual.get("name").is_none(),
+            "id lookup must not send name: {actual}"
+        );
+    }
+
+    /// Name lookup uses exact path/body and returns the immutable Function value.
+    #[tokio::test]
+    async fn lookup_function_by_name_posts_exact_body_and_returns_function_without_name() {
+        let expected = sample_lookup_function();
+        let body = lookup_success_body(&expected, None);
+        let conn = Connection::new_with_handler(move |request| {
+            assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let function = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect("name lookup must succeed");
+        assert_exact_function(&function, &expected);
+
+        let debug = format!("{function:?}");
+        let wire = serde_json::to_value(&function).expect("Function serializes");
+        assert!(
+            !debug.contains(LOOKUP_CATALOG_NAME),
+            "returned Function debug must not carry the catalog name: {debug}"
+        );
+        assert!(
+            wire.get("name").is_none(),
+            "returned Function wire must not include a name field: {wire}"
+        );
+        assert_eq!(function.id().as_str(), LOOKUP_FUNCTION_ID);
+    }
+
+    /// Exact-ID lookup uses exact path/body and is independent of catalog name.
+    #[tokio::test]
+    async fn lookup_function_by_id_posts_exact_body_and_returns_function() {
+        let expected = sample_lookup_function();
+        let body = lookup_success_body(&expected, None);
+        let id = FunctionId::try_new(LOOKUP_FUNCTION_ID).expect("valid FunctionId");
+        let conn = Connection::new_with_handler(move |request| {
+            assert_lookup_id_request(&request, LOOKUP_FUNCTION_ID);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let function = conn
+            .lookup_function_by_id(&id)
+            .await
+            .expect("id lookup must succeed");
+        assert_exact_function(&function, &expected);
+        let debug = format!("{function:?}");
+        assert!(
+            !debug.contains(LOOKUP_CATALOG_NAME),
+            "id lookup Function must not invent a catalog name: {debug}"
+        );
+    }
+
+    /// Unknown outer success fields are accepted; Function decoding stays strict.
+    #[tokio::test]
+    async fn lookup_function_accepts_additive_outer_success_fields() {
+        let expected = sample_lookup_function();
+        let body = lookup_success_body(
+            &expected,
+            Some(json!({
+                "server_extra": {"ok": true},
+                "request_echo_name": LOOKUP_CATALOG_NAME,
+            })),
+        );
+        let conn = Connection::new_with_handler(move |request| {
+            assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let function = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect("additive outer success must decode");
+        assert_exact_function(&function, &expected);
+    }
+
+    /// Empty selectors fail closed before any HTTP request is issued.
+    #[tokio::test]
+    async fn lookup_function_empty_selectors_fail_before_transport() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let conn = Connection::new_with_handler(move |_request| -> http::Response<String> {
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            panic!("empty selector must not issue an HTTP request");
+        });
+
+        let err = conn
+            .lookup_function_by_name("")
+            .await
+            .expect_err("empty name must fail before transport");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name must be InvalidInput, got {err:?}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            0,
+            "empty name must not touch transport"
+        );
+
+        // Empty FunctionId cannot be constructed; lookup by id is therefore
+        // unreachable with an empty selector. Keep the contract explicit.
+        let empty_id = FunctionId::try_new("").expect_err("empty FunctionId rejected");
+        assert!(
+            matches!(empty_id, Error::InvalidInput { .. }),
+            "empty FunctionId must be InvalidInput, got {empty_id:?}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            0,
+            "empty FunctionId construction must not touch transport"
+        );
+    }
+
+    /// Known explicit not-found code becomes Error::Function; status/message ignored.
+    #[tokio::test]
+    async fn lookup_function_explicit_not_found_code_is_function_error() {
+        let body = json!({
+            "error_code": "name_or_function_not_found",
+            "message": LOOKUP_SERVER_MESSAGE_MARKER,
+            "looks_like": "definition_validation_failure",
+        })
+        .to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+            http::Response::builder()
+                .status(404)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect_err("missing name must fail");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), "name_or_function_not_found");
+                assert_ne!(code.as_str(), "definition_validation_failure");
+                assert!(
+                    !message.contains(LOOKUP_SERVER_MESSAGE_MARKER),
+                    "Function error message must be sanitized, got {message}"
+                );
+                assert!(
+                    !message.contains(LOOKUP_CATALOG_NAME),
+                    "Function error message must not echo the catalog name, got {message}"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_lookup_payload_free(&err);
+    }
+
+    /// Unknown nonempty explicit code is preserved; HTTP status does not override it.
+    #[tokio::test]
+    async fn lookup_function_preserves_unknown_explicit_code_despite_status_and_message() {
+        let raw = "enterprise_future_lookup_category_xyz";
+        let body = json!({
+            "error_code": raw,
+            "message": format!(
+                "{LOOKUP_SERVER_MESSAGE_MARKER} revoked_function name_or_function_not_found"
+            ),
+        })
+        .to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_lookup_id_request(&request, LOOKUP_FUNCTION_ID);
+            http::Response::builder()
+                .status(409)
+                .body(body.clone())
+                .unwrap()
+        });
+        let id = FunctionId::try_new(LOOKUP_FUNCTION_ID).expect("valid FunctionId");
+
+        let err = conn
+            .lookup_function_by_id(&id)
+            .await
+            .expect_err("unknown explicit code must surface");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), raw);
+                assert!(
+                    matches!(code, FunctionErrorCode::Unrecognized(_)),
+                    "unknown code must stay Unrecognized, got {code:?}"
+                );
+                assert!(
+                    !message.contains(LOOKUP_SERVER_MESSAGE_MARKER),
+                    "diagnostic message must be sanitized"
+                );
+                assert_ne!(code.as_str(), "revoked_function");
+                assert_ne!(code.as_str(), "name_or_function_not_found");
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_lookup_payload_free(&err);
+    }
+
+    /// Missing/empty/wrong-type error_code on non-success stays payload-free Http.
+    #[tokio::test]
+    async fn lookup_function_missing_or_invalid_error_code_is_payload_free_http() {
+        let cases: Vec<(&str, u16, String)> = vec![
+            (
+                "missing_code_404",
+                404,
+                json!({
+                    "message": LOOKUP_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "empty_code",
+                400,
+                json!({
+                    "error_code": "",
+                    "message": LOOKUP_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "wrong_type_code",
+                400,
+                json!({
+                    "error_code": 123,
+                    "message": LOOKUP_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "null_code",
+                404,
+                json!({
+                    "error_code": null,
+                    "message": LOOKUP_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "non_json",
+                404,
+                format!("not-json {LOOKUP_SERVER_MESSAGE_MARKER} SENSITIVE_LOOKUP_BODY_MARKER"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, status, response_body) in cases {
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+                http::Response::builder()
+                    .status(status)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn.lookup_function_by_name(LOOKUP_CATALOG_NAME).await {
+                Err(err @ Error::Http { .. }) => assert_lookup_payload_free(&err),
+                Err(Error::Function { .. }) => unexpected.push(format!(
+                    "{label}: must not invent Error::Function without explicit code"
+                )),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid/missing error_code must stay payload-free Http: {unexpected:?}"
+        );
+    }
+
+    /// Malformed/missing/invalid success payloads stay payload-free Http.
+    #[tokio::test]
+    async fn lookup_function_invalid_success_payload_is_payload_free_http() {
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "missing_function",
+                json!({
+                    "server_extra": true,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": LOOKUP_SERVER_MESSAGE_MARKER,
+                })
+                .to_string(),
+            ),
+            (
+                "null_function",
+                json!({
+                    "function": null,
+                    "SENSITIVE_LOOKUP_BODY_MARKER": LOOKUP_SERVER_MESSAGE_MARKER,
+                })
+                .to_string(),
+            ),
+            (
+                "wrong_type_function",
+                json!({
+                    "function": "not-an-object",
+                    "SENSITIVE_LOOKUP_BODY_MARKER": LOOKUP_SERVER_MESSAGE_MARKER,
+                })
+                .to_string(),
+            ),
+            (
+                "invalid_function_unknown_field",
+                json!({
+                    "function": {
+                        "format_version": 1,
+                        "id": LOOKUP_FUNCTION_ID,
+                        "signature": {
+                            "parameters": [],
+                            "output": {
+                                "data_type_ipc": lookup_function_wire(&sample_lookup_function())
+                                    ["signature"]["output"]["data_type_ipc"].clone(),
+                                "nullable": true
+                            }
+                        },
+                        "name": LOOKUP_CATALOG_NAME,
+                        "SENSITIVE_LOOKUP_BODY_MARKER": true
+                    }
+                })
+                .to_string(),
+            ),
+            (
+                "malformed_json",
+                format!("not-json {LOOKUP_SERVER_MESSAGE_MARKER} SENSITIVE_LOOKUP_BODY_MARKER"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, response_body) in cases {
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+                http::Response::builder()
+                    .status(200)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn.lookup_function_by_name(LOOKUP_CATALOG_NAME).await {
+                Err(err @ Error::Http { .. }) => assert_lookup_payload_free(&err),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid success payloads must fail closed as payload-free Http: {unexpected:?}"
+        );
+    }
+
+    /// Local databases reject both lookup seams without mutating state.
+    #[tokio::test]
+    async fn lookup_function_local_database_returns_not_supported_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let err_name = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect_err("local name lookup must be unsupported");
+        assert!(
+            matches!(err_name, Error::NotSupported { .. }),
+            "expected NotSupported for name lookup, got {err_name:?}"
+        );
+
+        let id = FunctionId::try_new(LOOKUP_FUNCTION_ID).expect("valid FunctionId");
+        let err_id = conn
+            .lookup_function_by_id(&id)
+            .await
+            .expect_err("local id lookup must be unsupported");
+        assert!(
+            matches!(err_id, Error::NotSupported { .. }),
+            "expected NotSupported for id lookup, got {err_id:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "unsupported lookup must not mutate tables");
+    }
+
+    /// Empty name is a public Connection invariant: InvalidInput on local too.
+    #[tokio::test]
+    async fn lookup_function_local_empty_name_is_invalid_input_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let err = conn
+            .lookup_function_by_name("")
+            .await
+            .expect_err("empty name must fail before backend dispatch");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name must be InvalidInput on local Connection, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "empty-name rejection must not mutate tables");
+    }
+
+    /// Database trait seam must reject empty names as InvalidInput (not NotSupported).
+    ///
+    /// `Connection::database()` exposes `Arc<dyn Database>`; callers that bypass
+    /// Connection prevalidation must still get backend-independent InvalidInput.
+    #[tokio::test]
+    async fn lookup_function_local_database_trait_empty_name_is_invalid_input_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let err = conn
+            .database()
+            .lookup_function_by_name("")
+            .await
+            .expect_err("empty name must fail on Database trait default");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name via Database trait must be InvalidInput, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(
+            before, after,
+            "Database-trait empty-name rejection must not mutate tables"
+        );
+    }
+
+    /// One retry keeps the SDK-generated request id and exact body before success.
+    #[tokio::test]
+    async fn lookup_function_retry_preserves_request_id_and_body() {
+        let expected = sample_lookup_function();
+        let success_body = lookup_success_body(&expected, None);
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body(format!(
+                            "{LOOKUP_SERVER_MESSAGE_MARKER} SENSITIVE_LOOKUP_BODY_MARKER"
+                        ))
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(success_body.clone())
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let function = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect("lookup must succeed after one retry");
+        assert_exact_function(&function, &expected);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Response-body read failures consume the read budget, keep request id/body.
+    #[tokio::test]
+    async fn lookup_function_retries_response_body_read_failure_with_read_budget() {
+        let expected = sample_lookup_function();
+        let success_body = lookup_success_body(&expected, None);
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_lookup_name_request(&request, LOOKUP_CATALOG_NAME);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let stream = futures::stream::once(async {
+                        Err::<bytes::Bytes, _>(std::io::Error::other(
+                            "simulated lookup response body read failure",
+                        ))
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(reqwest::Body::wrap_stream(stream))
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(reqwest::Body::from(success_body.clone()))
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                // retries=1 would exhaust immediately if body-read were misclassified
+                // as a request failure; read_retries=2 allows one read failure then success.
+                retry_config: RetryConfig {
+                    retries: Some(1),
+                    read_retries: Some(2),
+                    connect_retries: Some(1),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let function = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect("lookup must succeed after one response-body read retry");
+        assert_exact_function(&function, &expected);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "body-read failure must consume read budget and retry once"
+        );
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Nonretryable client/header errors must not be repeated.
+    #[tokio::test]
+    async fn lookup_function_nonretryable_client_error_is_not_repeated() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_ref = calls.clone();
+
+        #[derive(Debug)]
+        struct CountingErrorHeaderProvider {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for CountingErrorHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(Error::Runtime {
+                    message: "Failed to fetch auth token".to_string(),
+                })
+            }
+        }
+
+        let conn = Connection::new_with_handler_and_config(
+            move |_request| -> http::Response<&'static str> {
+                panic!("lookup must not reach transport when header provider fails");
+            },
+            ClientConfig {
+                header_provider: Some(Arc::new(CountingErrorHeaderProvider { calls: calls_ref })
+                    as Arc<dyn HeaderProvider>),
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    connect_retries: Some(3),
+                    read_retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .lookup_function_by_name(LOOKUP_CATALOG_NAME)
+            .await
+            .expect_err("header provider failure must surface");
+        match err {
+            Error::Runtime { message } => {
+                assert_eq!(message, "Failed to fetch auth token");
+            }
+            other => panic!("expected Runtime from header provider, got {other:?}"),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "nonretryable client/header error must not be repeated"
         );
     }
 }

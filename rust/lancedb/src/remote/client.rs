@@ -791,6 +791,41 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         Ok((request_id, response))
     }
 
+    /// Send one attempt with a caller-owned request id.
+    ///
+    /// Used by Function lookup so the helper can inspect non-success bodies for
+    /// an explicit `error_code` before deciding whether to retry. Does not log
+    /// request bodies or headers (lookup selectors must stay out of logs) and
+    /// does not interpret HTTP status.
+    pub(crate) async fn send_attempt_with_request_id(
+        &self,
+        req_builder: RequestBuilder,
+        request_id: &str,
+    ) -> Result<Response> {
+        let (client, request) = req_builder.build_split();
+        let mut request = request.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
+        self.set_request_id(&mut request, request_id);
+        request = self.apply_dynamic_headers(request).await?;
+        if log::log_enabled!(log::Level::Debug) {
+            debug!(
+                "{}",
+                format_request_log(&request, request_id, RequestPrivacy::Sensitive)
+            );
+        }
+        let response = self
+            .sender
+            .send(&client, request)
+            .await
+            .err_to_http(request_id.to_string())?;
+        debug!(
+            "Received response for request_id={}: {:?}",
+            request_id, response
+        );
+        Ok(response)
+    }
+
     /// Send the request using retries configured in the RetryConfig.
     /// If retry_5xx is false, 5xx requests will not be retried regardless of the statuses configured
     /// in the RetryConfig.

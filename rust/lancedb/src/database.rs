@@ -30,7 +30,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
-use crate::function::RegisterFunctionJobSpec;
+use crate::function::{Function, FunctionId, RegisterFunctionJobSpec};
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -324,6 +324,31 @@ pub trait Database:
     /// Local databases do not support registration.
     async fn register_function(&self, _spec: RegisterFunctionJobSpec) -> Result<crate::job::Job> {
         job_op_not_supported("register_function")
+    }
+    /// Look up the Function currently bound to a database-scoped name.
+    ///
+    /// The name is lookup indirection only and is never part of the returned
+    /// [`Function`]. Empty names return [`crate::Error::InvalidInput`] before
+    /// the unsupported fallback so local and remote backends agree. Nonempty
+    /// names on databases without enterprise catalog lookup return
+    /// [`crate::Error::NotSupported`].
+    async fn lookup_function_by_name(&self, name: &str) -> Result<Function> {
+        // Public nonempty invariant on the Database trait seam itself:
+        // Connection::database() exposes Arc<dyn Database>, so empty-name
+        // rejection cannot rely solely on Connection prevalidation.
+        if name.is_empty() {
+            return Err(crate::error::Error::InvalidInput {
+                message: "function lookup name must be non-empty".into(),
+            });
+        }
+        job_op_not_supported("lookup_function_by_name")
+    }
+    /// Look up an immutable Function by exact opaque [`FunctionId`].
+    ///
+    /// Exact-ID lookup is independent of later catalog name changes. Local
+    /// databases do not support enterprise catalog lookup.
+    async fn lookup_function_by_id(&self, _function_id: &FunctionId) -> Result<Function> {
+        job_op_not_supported("lookup_function_by_id")
     }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
