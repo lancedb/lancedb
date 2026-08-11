@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Immutable first-class Function and generated-column value model (B1a).
+//! Immutable first-class Function and generated-column value model (B1a/B1c).
 //!
 //! This module defines transport and metadata value types only. It does not
 //! provide catalogs, job execution, query planning, or generated-column runtime.
+
+mod definition;
+
+pub use definition::{FunctionCapability, FunctionDefinition, PythonFunctionDefinition};
 
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -251,6 +255,44 @@ impl FunctionSignature {
     pub fn output(&self) -> &FunctionOutput {
         &self.output
     }
+
+    fn to_wire(&self) -> Result<SignatureWire> {
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|parameter| {
+                Ok(ParameterWire {
+                    name: parameter.name.clone(),
+                    data_type_ipc: encode_type_ipc_b64(&parameter.data_type)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SignatureWire {
+            parameters,
+            output: OutputWire {
+                data_type_ipc: encode_type_ipc_b64(&self.output.data_type)?,
+                nullable: self.output.nullable,
+            },
+        })
+    }
+
+    fn from_wire(wire: SignatureWire) -> Result<Self> {
+        let parameters = wire
+            .parameters
+            .into_iter()
+            .map(|parameter| {
+                Ok(FunctionParameter::new(
+                    parameter.name,
+                    decode_type_ipc_b64(&parameter.data_type_ipc)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let output = FunctionOutput::new(
+            decode_type_ipc_b64(&wire.output.data_type_ipc)?,
+            wire.output.nullable,
+        );
+        Self::try_new(parameters, output)
+    }
 }
 
 /// Immutable first-class function value (format version 1).
@@ -308,27 +350,10 @@ struct OutputWire {
 
 impl Function {
     fn to_wire(&self) -> Result<FunctionWire> {
-        let parameters = self
-            .signature
-            .parameters
-            .iter()
-            .map(|parameter| {
-                Ok(ParameterWire {
-                    name: parameter.name.clone(),
-                    data_type_ipc: encode_type_ipc_b64(&parameter.data_type)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
         Ok(FunctionWire {
             format_version: FORMAT_VERSION_V1,
             id: self.id.value.clone(),
-            signature: SignatureWire {
-                parameters,
-                output: OutputWire {
-                    data_type_ipc: encode_type_ipc_b64(&self.signature.output.data_type)?,
-                    nullable: self.signature.output.nullable,
-                },
-            },
+            signature: self.signature.to_wire()?,
         })
     }
 
@@ -340,22 +365,7 @@ impl Function {
             )));
         }
         let id = FunctionId::try_new(wire.id)?;
-        let parameters = wire
-            .signature
-            .parameters
-            .into_iter()
-            .map(|parameter| {
-                Ok(FunctionParameter::new(
-                    parameter.name,
-                    decode_type_ipc_b64(&parameter.data_type_ipc)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let output = FunctionOutput::new(
-            decode_type_ipc_b64(&wire.signature.output.data_type_ipc)?,
-            wire.signature.output.nullable,
-        );
-        let signature = FunctionSignature::try_new(parameters, output)?;
+        let signature = FunctionSignature::from_wire(wire.signature)?;
         Ok(Self { id, signature })
     }
 }
