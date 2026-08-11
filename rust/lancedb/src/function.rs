@@ -7,8 +7,10 @@
 //! provide catalogs, job execution, query planning, or generated-column runtime.
 
 mod definition;
+mod registration;
 
 pub use definition::{FunctionCapability, FunctionDefinition, PythonFunctionDefinition};
+pub use registration::RegisterFunctionJobSpec;
 
 use std::collections::HashSet;
 use std::io::Cursor;
