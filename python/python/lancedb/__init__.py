@@ -24,6 +24,7 @@ from .schema import blob, vector, BlobType
 from .job import AsyncJob, Job
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
+from ._udf import udf
 from ._lancedb import Session
 from .namespace import (
     connect_namespace,
@@ -523,5 +524,6 @@ __all__ = [
     "RemoteDBConnection",
     "Session",
     "Table",
+    "udf",
     "__version__",
 ]
