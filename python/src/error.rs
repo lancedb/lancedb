@@ -114,6 +114,16 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         .getattr(intern!(py, "JobCancelledError"))?;
                     Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                 }),
+                LanceError::Function { code, message } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "FunctionError"))?;
+                    // Structural projection only: code.as_str() + sanitized message.
+                    // Never infer a code from HTTP status or diagnostic text.
+                    Err(PyErr::from_value(
+                        cls.call1((message.as_str(), code.as_str()))?,
+                    ))
+                }),
                 _ => self.runtime_error(),
             },
         }

@@ -3,8 +3,8 @@
 
 """Private first-class Function namespace facades for database connections.
 
-These helpers are internal submission surfaces. They are not durable resources
-and are not part of the public top-level export surface.
+These helpers are internal submission and lookup surfaces. They are not durable
+resources and are not part of the public top-level export surface.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import _udf
+from ._lancedb import Function
 from .job import AsyncJob, Job
 
 if TYPE_CHECKING:
@@ -36,6 +37,14 @@ class _SyncFunctions:
         native_job = self._connection._submit_register_function(name, definition)
         return Job(AsyncJob(native_job))
 
+    def get(self, name: str) -> Function:
+        """Return the Function currently bound to a database-scoped name."""
+        return self._connection._lookup_function_by_name(name)
+
+    def get_by_id(self, function_id: str) -> Function:
+        """Return the immutable Function for an exact Function ID."""
+        return self._connection._lookup_function_by_id(function_id)
+
 
 class _AsyncFunctions:
     """Asynchronous `async_db.functions` facade."""
@@ -55,3 +64,11 @@ class _AsyncFunctions:
         definition = _udf._build_function_definition(decorated_udf)
         native_job = await self._connection._register_function(name, definition)
         return AsyncJob(native_job)
+
+    async def get(self, name: str) -> Function:
+        """Return the Function currently bound to a database-scoped name."""
+        return await self._connection._lookup_function_by_name(name)
+
+    async def get_by_id(self, function_id: str) -> Function:
+        """Return the immutable Function for an exact Function ID."""
+        return await self._connection._lookup_function_by_id(function_id)

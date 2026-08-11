@@ -23,7 +23,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
-    function::RegisterFunctionJobSpec,
+    function::{FunctionId, RegisterFunctionJobSpec},
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -607,6 +607,37 @@ impl Connection {
             let spec = RegisterFunctionJobSpec::try_new(name, definition, None).infer_error()?;
             let job = inner.register_function(spec).await.infer_error()?;
             Ok(crate::job::Job::new(job))
+        })
+    }
+
+    /// Look up the Function currently bound to a database-scoped name.
+    ///
+    /// Wraps the exact Rust [`lancedb::function::Function`] once. Empty names
+    /// fail as [`PyValueError`] before transport via the Rust connection.
+    pub fn _lookup_function_by_name<'py>(
+        self_: PyRef<'py, Self>,
+        name: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let function = inner.lookup_function_by_name(&name).await.infer_error()?;
+            Ok(crate::function::Function::new(function))
+        })
+    }
+
+    /// Look up an immutable Function by exact opaque Function ID string.
+    ///
+    /// Constructs [`FunctionId`] with [`FunctionId::try_new`] before dispatch so
+    /// empty IDs fail as [`PyValueError`] before transport.
+    pub fn _lookup_function_by_id<'py>(
+        self_: PyRef<'py, Self>,
+        function_id: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let id = FunctionId::try_new(function_id).infer_error()?;
+            let function = inner.lookup_function_by_id(&id).await.infer_error()?;
+            Ok(crate::function::Function::new(function))
         })
     }
 }

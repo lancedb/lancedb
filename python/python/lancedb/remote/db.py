@@ -26,6 +26,7 @@ from ..db import DBConnection, LOOP
 from ..job import Job
 
 if TYPE_CHECKING:
+    from .._lancedb import Function
     from .._lancedb import Job as NativeJob
     from .._lancedb import JobDescription, JobInfo, _FunctionDefinition
 from ..embeddings import EmbeddingFunctionConfig
@@ -740,6 +741,14 @@ class RemoteDBConnection(DBConnection):
         self, name: str, definition: "_FunctionDefinition"
     ) -> "NativeJob":
         return LOOP.run(self._conn._register_function(name, definition))
+
+    @override
+    def _lookup_function_by_name(self, name: str) -> "Function":
+        return LOOP.run(self._conn._lookup_function_by_name(name))
+
+    @override
+    def _lookup_function_by_id(self, function_id: str) -> "Function":
+        return LOOP.run(self._conn._lookup_function_by_id(function_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:

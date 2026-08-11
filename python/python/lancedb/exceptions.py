@@ -35,3 +35,23 @@ class JobCancelledError(RuntimeError):
     """Exception raised when an asynchronous job was cancelled."""
 
     pass
+
+
+class FunctionError(RuntimeError):
+    """Exception raised when a first-class Function operation fails.
+
+    ``code`` is the stable semantic category from the native error. The
+    message is a sanitized client diagnostic and must not be used to recover
+    or override the code.
+    """
+
+    __slots__ = ("_code",)
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self._code = code
+
+    @property
+    def code(self) -> str:
+        """Stable Function error category string."""
+        return self._code

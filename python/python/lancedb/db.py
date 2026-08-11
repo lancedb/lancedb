@@ -65,6 +65,7 @@ if TYPE_CHECKING:
 
     from ._functions import _AsyncFunctions, _SyncFunctions
     from ._lancedb import Connection as LanceDbConnection
+    from ._lancedb import Function
     from ._lancedb import Job as NativeJob
     from ._lancedb import JobDescription, JobInfo
     from ._lancedb import _FunctionDefinition
@@ -669,6 +670,24 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "function registration is not supported for this connection type"
+        )
+
+    def _lookup_function_by_name(self, name: str) -> "Function":
+        """Look up a Function by database-scoped name via the native connection.
+
+        Connection subclasses that share the native Connection override this hook.
+        """
+        raise NotImplementedError(
+            "function lookup is not supported for this connection type"
+        )
+
+    def _lookup_function_by_id(self, function_id: str) -> "Function":
+        """Look up a Function by exact Function ID via the native connection.
+
+        Connection subclasses that share the native Connection override this hook.
+        """
+        raise NotImplementedError(
+            "function lookup is not supported for this connection type"
         )
 
 
@@ -1293,6 +1312,14 @@ class LanceDBConnection(DBConnection):
         self, name: str, definition: "_FunctionDefinition"
     ) -> NativeJob:
         return LOOP.run(self._conn._register_function(name, definition))
+
+    @override
+    def _lookup_function_by_name(self, name: str) -> "Function":
+        return LOOP.run(self._conn._lookup_function_by_name(name))
+
+    @override
+    def _lookup_function_by_id(self, function_id: str) -> "Function":
+        return LOOP.run(self._conn._lookup_function_by_id(function_id))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2051,6 +2078,12 @@ class AsyncConnection(object):
         self, name: str, definition: "_FunctionDefinition"
     ) -> NativeJob:
         return await self._inner._register_function(name, definition)
+
+    async def _lookup_function_by_name(self, name: str) -> "Function":
+        return await self._inner._lookup_function_by_name(name)
+
+    async def _lookup_function_by_id(self, function_id: str) -> "Function":
+        return await self._inner._lookup_function_by_id(function_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
