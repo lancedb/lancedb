@@ -3,16 +3,23 @@
 
 """Local authoring declaration surface for first-class UDFs.
 
-This module only snapshots declaration metadata onto a Python function. It does
-not package source, mint durable identity, or register anything with a database.
+This module snapshots declaration metadata onto a Python function and privately
+validates packagable callables into a source snapshot. It does not mint durable
+identity or register anything with a database.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
+import stat
+import symtable
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar
+from pathlib import Path
+from types import CodeType, FunctionType
+from typing import NoReturn, ParamSpec, TypeVar
 
 import pyarrow as pa
 
@@ -22,6 +29,12 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 _CONFIG_ATTR = "__lancedb_udf_config__"
+_SYNTHETIC_SOURCE_FILENAME = "<lancedb-udf>"
+_PACKAGING_ERROR = "udf is not packagable"
+_ALLOWED_PARAM_KINDS = (
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    inspect.Parameter.KEYWORD_ONLY,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +46,22 @@ class _UdfConfig:
     output_nullable: bool
     python: str
     packages: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PackagedUdf:
+    """Private frozen snapshot of a validated packagable UDF."""
+
+    source: str
+    module: str
+    callable_name: str
+    config: _UdfConfig
+
+    def __repr__(self) -> str:
+        return (
+            f"_PackagedUdf(source=<redacted>, module={self.module!r}, "
+            f"callable_name={self.callable_name!r}, config={self.config!r})"
+        )
 
 
 def _validate_inputs(
@@ -122,3 +151,212 @@ def _get_udf_config(fn: object) -> _UdfConfig:
     if not isinstance(config, _UdfConfig):
         raise TypeError("function is not decorated with @udf")
     return config
+
+
+def _packaging_reject() -> NoReturn:
+    raise ValueError(_PACKAGING_ERROR) from None
+
+
+def _is_ordinary_function(fn: FunctionType) -> bool:
+    if fn.__name__ == "<lambda>":
+        return False
+    if fn.__qualname__ != fn.__name__:
+        return False
+    if inspect.iscoroutinefunction(fn) or inspect.isasyncgenfunction(fn):
+        return False
+    if inspect.isgeneratorfunction(fn):
+        return False
+    return True
+
+
+def _resolve_source_path(fn: FunctionType, module: object) -> Path:
+    try:
+        fn_source: str | None = inspect.getsourcefile(fn)
+    except TypeError:
+        fn_source = None
+        source_lookup_failed = True
+    else:
+        source_lookup_failed = False
+    if source_lookup_failed:
+        _packaging_reject()
+    module_file = vars(module).get("__file__")
+    if not fn_source or not isinstance(module_file, str) or module_file == "":
+        _packaging_reject()
+    try:
+        resolved_paths: tuple[Path, Path] | None = (
+            Path(fn_source).resolve(),
+            Path(module_file).resolve(),
+        )
+    except (OSError, RuntimeError):
+        resolved_paths = None
+    if resolved_paths is None:
+        _packaging_reject()
+    fn_path, module_path = resolved_paths
+    if fn_path != module_path:
+        _packaging_reject()
+    if fn_path.suffix != ".py":
+        _packaging_reject()
+    try:
+        mode: int | None = fn_path.stat().st_mode
+    except OSError:
+        mode = None
+    if mode is None:
+        _packaging_reject()
+    if not stat.S_ISREG(mode):
+        _packaging_reject()
+    return fn_path
+
+
+def _validate_source(
+    source: str, callable_name: str
+) -> tuple[CodeType, symtable.SymbolTable]:
+    try:
+        module_code = compile(
+            source,
+            _SYNTHETIC_SOURCE_FILENAME,
+            "exec",
+            optimize=sys.flags.optimize,
+        )
+        ast.parse(source, filename=_SYNTHETIC_SOURCE_FILENAME, mode="exec")
+        table = symtable.symtable(source, _SYNTHETIC_SOURCE_FILENAME, "exec")
+        parsed: tuple[CodeType, symtable.SymbolTable] | None = (module_code, table)
+    except Exception:
+        parsed = None
+    if parsed is None:
+        _packaging_reject()
+    module_code, table = parsed
+
+    for child in table.get_children():
+        if child.get_name() == callable_name and child.get_type() == "function":
+            return module_code, table
+    _packaging_reject()
+
+
+def _source_bound_names(table: symtable.SymbolTable) -> set[str]:
+    names: set[str] = set()
+    for symbol in table.get_symbols():
+        if symbol.is_imported() or symbol.is_assigned() or symbol.is_namespace():
+            names.add(symbol.get_name())
+    return names
+
+
+def _code_fingerprint(code: CodeType) -> tuple[object, ...]:
+    """Structural fingerprint ignoring only location/debug fields."""
+    constants = tuple(
+        _code_fingerprint(constant) if isinstance(constant, CodeType) else constant
+        for constant in code.co_consts
+    )
+    return (
+        code.co_name,
+        getattr(code, "co_qualname", code.co_name),
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_flags,
+        code.co_code,
+        code.co_names,
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        getattr(code, "co_exceptiontable", b""),
+        constants,
+    )
+
+
+def _toplevel_code_candidates(
+    module_code: CodeType, callable_name: str
+) -> list[CodeType]:
+    candidates: list[CodeType] = []
+    for constant in module_code.co_consts:
+        if not isinstance(constant, CodeType):
+            continue
+        if constant.co_name != callable_name:
+            continue
+        if getattr(constant, "co_qualname", callable_name) != callable_name:
+            continue
+        candidates.append(constant)
+    return candidates
+
+
+def _validate_loaded_code_matches_source(
+    fn: FunctionType, module_code: CodeType
+) -> None:
+    candidates = _toplevel_code_candidates(module_code, fn.__name__)
+    if not candidates:
+        _packaging_reject()
+    target = _code_fingerprint(fn.__code__)
+    if not any(_code_fingerprint(candidate) == target for candidate in candidates):
+        _packaging_reject()
+
+
+def _validate_signature(fn: FunctionType, config: _UdfConfig) -> None:
+    try:
+        signature: inspect.Signature | None = inspect.signature(fn)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is None:
+        _packaging_reject()
+    parameters = list(signature.parameters.values())
+    expected = [name for name, _ in config.inputs]
+    actual = [parameter.name for parameter in parameters]
+    if actual != expected:
+        _packaging_reject()
+    for parameter in parameters:
+        if parameter.kind not in _ALLOWED_PARAM_KINDS:
+            _packaging_reject()
+
+
+def _validate_ambient_globals(fn: FunctionType, table: symtable.SymbolTable) -> None:
+    try:
+        closure_vars: inspect.ClosureVars | None = inspect.getclosurevars(fn)
+    except (TypeError, ValueError):
+        closure_vars = None
+    if closure_vars is None:
+        _packaging_reject()
+    if closure_vars.nonlocals:
+        _packaging_reject()
+    bound_names = _source_bound_names(table)
+    for name in closure_vars.globals:
+        if name not in bound_names:
+            _packaging_reject()
+
+
+def _package_udf(fn: object) -> _PackagedUdf:
+    """Validate and snapshot a packagable ``@udf``-decorated function."""
+    config = _get_udf_config(fn)
+    if not isinstance(fn, FunctionType) or not _is_ordinary_function(fn):
+        _packaging_reject()
+
+    module_name = fn.__module__
+    if (
+        not isinstance(module_name, str)
+        or module_name == ""
+        or module_name == "__main__"
+    ):
+        _packaging_reject()
+    module = sys.modules.get(module_name)
+    if module is None:
+        _packaging_reject()
+    callable_name = fn.__name__
+    if vars(module).get(callable_name) is not fn:
+        _packaging_reject()
+
+    source_path = _resolve_source_path(fn, module)
+    try:
+        source: str | None = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        source = None
+    if source is None:
+        _packaging_reject()
+
+    module_code, table = _validate_source(source, callable_name)
+    _validate_signature(fn, config)
+    _validate_ambient_globals(fn, table)
+    _validate_loaded_code_matches_source(fn, module_code)
+
+    return _PackagedUdf(
+        source=source,
+        module=module_name,
+        callable_name=callable_name,
+        config=config,
+    )
