@@ -6,9 +6,90 @@ use std::sync::{Arc, PoisonError};
 
 use arrow_schema::ArrowError;
 use datafusion_common::DataFusionError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Stable Function error category (FF-006).
+///
+/// The known variants serialize to fixed JSON strings. Any other wire string
+/// decodes as [`Self::Unrecognized`] with the exact value preserved, and
+/// re-serializes unchanged. Category judgment is structural: do not infer a
+/// code from diagnostic message text, HTTP status, job phase, or retryability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FunctionErrorCode {
+    /// Function definition failed validation.
+    DefinitionValidationFailure,
+    /// A named Function or Function reference was not found.
+    NameOrFunctionNotFound,
+    /// A Function name conflicts with an existing name.
+    NameConflict,
+    /// The requested runtime or capability is not supported.
+    UnsupportedRuntimeOrCapability,
+    /// The Function has been revoked and cannot be used.
+    RevokedFunction,
+    /// User-defined Function execution failed.
+    UdfExecutionFailure,
+    /// A generated column was not fully materialized.
+    GeneratedColumnIncomplete,
+    /// Input was stale or conflicted with the current state.
+    StaleOrConflictingInput,
+    /// A wire string this client version does not recognize.
+    ///
+    /// The inner value is preserved exactly for forward compatibility.
+    Unrecognized(String),
+}
+
+impl FunctionErrorCode {
+    /// The stable JSON / wire string for this code.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::DefinitionValidationFailure => "definition_validation_failure",
+            Self::NameOrFunctionNotFound => "name_or_function_not_found",
+            Self::NameConflict => "name_conflict",
+            Self::UnsupportedRuntimeOrCapability => "unsupported_runtime_or_capability",
+            Self::RevokedFunction => "revoked_function",
+            Self::UdfExecutionFailure => "udf_execution_failure",
+            Self::GeneratedColumnIncomplete => "generated_column_incomplete",
+            Self::StaleOrConflictingInput => "stale_or_conflicting_input",
+            Self::Unrecognized(raw) => raw.as_str(),
+        }
+    }
+
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "definition_validation_failure" => Self::DefinitionValidationFailure,
+            "name_or_function_not_found" => Self::NameOrFunctionNotFound,
+            "name_conflict" => Self::NameConflict,
+            "unsupported_runtime_or_capability" => Self::UnsupportedRuntimeOrCapability,
+            "revoked_function" => Self::RevokedFunction,
+            "udf_execution_failure" => Self::UdfExecutionFailure,
+            "generated_column_incomplete" => Self::GeneratedColumnIncomplete,
+            "stale_or_conflicting_input" => Self::StaleOrConflictingInput,
+            other => Self::Unrecognized(other.to_string()),
+        }
+    }
+}
+
+impl Display for FunctionErrorCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for FunctionErrorCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for FunctionErrorCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        Ok(Self::from_wire(String::deserialize(deserializer)?.as_str()))
+    }
+}
 
 /// Why a job failed, to whatever precision the backend provides.
 ///
@@ -18,6 +99,12 @@ pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// backend does not supply it.
 #[derive(Debug, Clone, Default)]
 pub struct JobFailure {
+    /// Stable Function error category, when the backend supplied one.
+    ///
+    /// Present only when copied from [`Error::Function`] or decoded from a
+    /// remote `error_code` field. Never inferred from message, phase,
+    /// retryable, HTTP status, or other diagnostics.
+    pub error_code: Option<FunctionErrorCode>,
     /// The stage the job was in, when known.
     pub phase: Option<String>,
     /// A human-readable reason, when known.
@@ -30,8 +117,16 @@ pub struct JobFailure {
 
 impl JobFailure {
     /// A failure whose only known detail is the error that caused it.
+    ///
+    /// When `source` is [`Error::Function`], [`Self::error_code`] is copied
+    /// from that error. Other error kinds leave `error_code` as [`None`].
     pub(crate) fn from_source(source: Arc<Error>) -> Self {
+        let error_code = match source.as_ref() {
+            Error::Function { code, .. } => Some(code.clone()),
+            _ => None,
+        };
         Self {
+            error_code,
             message: Some(source.to_string()),
             source: Some(source),
             ..Default::default()
@@ -92,6 +187,15 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
+    /// A first-class Function operation failed with a stable category.
+    ///
+    /// [`Self::Function::code`] is the semantic category. [`Self::Function::message`]
+    /// is diagnostic only and must not be used to recover or override the code.
+    #[snafu(display("Function error ({code}): {message}"))]
+    Function {
+        code: FunctionErrorCode,
+        message: String,
+    },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

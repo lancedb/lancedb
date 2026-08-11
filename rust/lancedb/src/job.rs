@@ -180,3 +180,64 @@ impl JobHandle for SpawnedJob {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::FunctionErrorCode;
+
+    #[tokio::test]
+    async fn spawned_job_function_failure_returns_job_failed_with_same_code() {
+        let job = Job::spawned(tokio::spawn(async {
+            Err(Error::Function {
+                code: FunctionErrorCode::UdfExecutionFailure,
+                // Message names a different category on purpose; code is structural.
+                message: "looks like name_conflict to a string parser".to_string(),
+            })
+        }));
+
+        let err = job
+            .wait()
+            .await
+            .expect_err("Function failure must fail the job");
+        match err {
+            Error::JobFailed { failure, .. } => match &failure.error_code {
+                Some(code) => {
+                    assert_eq!(code, &FunctionErrorCode::UdfExecutionFailure);
+                    assert_ne!(code, &FunctionErrorCode::NameConflict);
+                }
+                None => panic!("local Function failure must project error_code onto JobFailure"),
+            },
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawned_job_preserves_unrecognized_function_error_code() {
+        let raw = "enterprise_future_category_xyz";
+        let job = Job::spawned(tokio::spawn({
+            let raw = raw.to_string();
+            async move {
+                Err(Error::Function {
+                    code: FunctionErrorCode::Unrecognized(raw),
+                    message: "future server category".to_string(),
+                })
+            }
+        }));
+
+        let err = job
+            .wait()
+            .await
+            .expect_err("Function failure must fail the job");
+        match err {
+            Error::JobFailed { failure, .. } => match &failure.error_code {
+                Some(FunctionErrorCode::Unrecognized(preserved)) => {
+                    assert_eq!(preserved, raw);
+                }
+                Some(other) => panic!("unrecognized code must not become known: {other:?}"),
+                None => panic!("unrecognized Function code must be preserved on JobFailure"),
+            },
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
+    }
+}

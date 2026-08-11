@@ -457,6 +457,9 @@ struct RemoteListJobsResponse {
 /// which report only the terminal state.
 #[derive(serde::Deserialize)]
 struct RemoteReportedFailure {
+    /// Stable Function error category when the server supplied one.
+    #[serde(default)]
+    error_code: Option<crate::error::FunctionErrorCode>,
     #[serde(default)]
     phase: Option<String>,
     #[serde(default)]
@@ -575,6 +578,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             creation_ms: body.creation_ms,
             spec: body.spec,
             failure: body.failure.map(|reported| crate::error::JobFailure {
+                error_code: reported.error_code,
                 phase: reported.phase,
                 message: reported.message,
                 retryable: reported.retryable,
@@ -2423,5 +2427,106 @@ mod tests {
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
         assert!(polls.load(Ordering::SeqCst) >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_get_job_decodes_known_failure_error_code() {
+        use crate::error::FunctionErrorCode;
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-1","job_type":"create_index","job_state":"FAILED","creation_ms":1000,"spec":{},"failure":{"error_code":"name_or_function_not_found","phase":"validate","message":"looks like definition_validation_failure","retryable":false}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.get_job("job-1").await.unwrap().unwrap();
+        let failure = job.failure.expect("failure payload present");
+        match &failure.error_code {
+            Some(code) => {
+                assert_eq!(code, &FunctionErrorCode::NameOrFunctionNotFound);
+                assert_ne!(code, &FunctionErrorCode::DefinitionValidationFailure);
+            }
+            None => panic!("known error_code must be decoded by get_job"),
+        }
+        assert_eq!(failure.phase.as_deref(), Some("validate"));
+        assert_eq!(failure.retryable, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_get_job_preserves_unrecognized_failure_error_code() {
+        use crate::error::FunctionErrorCode;
+
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-1","job_type":"create_index","job_state":"FAILED","creation_ms":1000,"spec":{},"failure":{"error_code":"enterprise_future_category_xyz","phase":"execute","message":"new category","retryable":true}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.get_job("job-1").await.unwrap().unwrap();
+        let failure = job.failure.expect("failure payload present");
+        match &failure.error_code {
+            Some(FunctionErrorCode::Unrecognized(raw)) => {
+                assert_eq!(raw, "enterprise_future_category_xyz");
+            }
+            Some(other) => panic!("unknown error_code must stay Unrecognized, got {other:?}"),
+            None => panic!("unknown error_code must not be dropped by get_job"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_job_allows_older_failure_payload_without_error_code() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-1","job_type":"create_index","job_state":"FAILED","creation_ms":1000,"spec":{},"failure":{"phase":"execute","message":"stale_or_conflicting_input in logs","retryable":true}}"#,
+                )
+                .unwrap()
+        });
+        let job = conn.get_job("job-1").await.unwrap().unwrap();
+        let failure = job.failure.expect("failure payload present");
+        assert!(
+            failure.error_code.is_none(),
+            "older get_job payloads without error_code must not invent a category: {failure:?}"
+        );
+        assert_eq!(failure.phase.as_deref(), Some("execute"));
+        assert_eq!(failure.retryable, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_conn_job_wait_decodes_failure_error_code_without_transport_override() {
+        use crate::error::FunctionErrorCode;
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            // Transport is HTTP 200 with FAILED state; category comes only from error_code.
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-1","job_type":"create_index","job_state":"FAILED","creation_ms":1,"failure":{"error_code":"unsupported_runtime_or_capability","phase":"dispatch","message":"revoked_function in transport logs","retryable":false}}"#,
+                )
+                .unwrap()
+        });
+        let err = conn
+            .job("job-1")
+            .unwrap()
+            .wait()
+            .await
+            .expect_err("FAILED must surface JobFailed");
+        match err {
+            Error::JobFailed { failure, .. } => match &failure.error_code {
+                Some(code) => {
+                    assert_eq!(code, &FunctionErrorCode::UnsupportedRuntimeOrCapability);
+                    assert_ne!(code, &FunctionErrorCode::RevokedFunction);
+                }
+                None => panic!("Database job wait must decode failure.error_code"),
+            },
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
     }
 }

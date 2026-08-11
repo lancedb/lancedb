@@ -10,7 +10,7 @@ use tokio::time::sleep;
 
 use serde::{Deserialize, Deserializer};
 
-use crate::error::{Error, JobFailure, Result};
+use crate::error::{Error, FunctionErrorCode, JobFailure, Result};
 use crate::job::JobHandle;
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
@@ -67,6 +67,9 @@ impl From<&str> for JobState {
 /// report only the terminal state.
 #[derive(Deserialize)]
 struct ReportedFailure {
+    /// Stable Function error category when the server supplied one.
+    #[serde(default)]
+    error_code: Option<FunctionErrorCode>,
     #[serde(default)]
     phase: Option<String>,
     #[serde(default)]
@@ -133,6 +136,7 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
                         failure: description
                             .failure
                             .map(|reported| JobFailure {
+                                error_code: reported.error_code,
                                 phase: reported.phase,
                                 message: reported.message,
                                 retryable: reported.retryable,
@@ -166,5 +170,89 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             .check_response(&request_id, response)
             .await
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::FunctionErrorCode;
+    use crate::remote::client::test_utils::client_with_handler;
+
+    #[tokio::test]
+    async fn wait_decodes_known_failure_error_code() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-err","job_state":"FAILED","failure":{"error_code":"stale_or_conflicting_input","phase":"commit","message":"looks like udf_execution_failure","retryable":true}}"#,
+                )
+                .unwrap()
+        });
+        let job = RemoteJob::new(client, "job-err".into());
+        let err = job.wait().await.expect_err("FAILED must surface JobFailed");
+        match err {
+            Error::JobFailed { failure, .. } => {
+                match &failure.error_code {
+                    Some(code) => {
+                        assert_eq!(code, &FunctionErrorCode::StaleOrConflictingInput);
+                        assert_ne!(code, &FunctionErrorCode::UdfExecutionFailure);
+                    }
+                    None => panic!("known error_code must be decoded"),
+                }
+                assert_eq!(failure.phase.as_deref(), Some("commit"));
+                assert_eq!(failure.retryable, Some(true));
+            }
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_preserves_unrecognized_failure_error_code() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-err","job_state":"FAILED","failure":{"error_code":"enterprise_future_category_xyz","phase":"execute","message":"new category","retryable":false}}"#,
+                )
+                .unwrap()
+        });
+        let job = RemoteJob::new(client, "job-err".into());
+        let err = job.wait().await.expect_err("FAILED must surface JobFailed");
+        match err {
+            Error::JobFailed { failure, .. } => match &failure.error_code {
+                Some(FunctionErrorCode::Unrecognized(raw)) => {
+                    assert_eq!(raw, "enterprise_future_category_xyz");
+                }
+                Some(other) => panic!("unknown error_code must stay Unrecognized, got {other:?}"),
+                None => panic!("unknown error_code must not be dropped"),
+            },
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_allows_older_failure_payload_without_error_code() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"job_id":"job-err","job_state":"FAILED","failure":{"phase":"execute","message":"generated_column_incomplete in logs","retryable":true}}"#,
+                )
+                .unwrap()
+        });
+        let job = RemoteJob::new(client, "job-err".into());
+        let err = job.wait().await.expect_err("FAILED must surface JobFailed");
+        match err {
+            Error::JobFailed { failure, .. } => {
+                assert!(
+                    failure.error_code.is_none(),
+                    "older payloads without error_code must not invent a category from message/phase/retryable: {failure:?}"
+                );
+                assert_eq!(failure.phase.as_deref(), Some("execute"));
+                assert_eq!(failure.retryable, Some(true));
+            }
+            other => panic!("expected Error::JobFailed, got {other:?}"),
+        }
     }
 }
