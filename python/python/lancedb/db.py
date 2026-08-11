@@ -672,6 +672,17 @@ class DBConnection(EnforceOverrides):
             "function registration is not supported for this connection type"
         )
 
+    def _submit_replace_function(
+        self, name: str, current: "Function", definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        """Submit a Function conditional replace job via the native connection.
+
+        Connection subclasses that support registration override this hook.
+        """
+        raise NotImplementedError(
+            "function replace is not supported for this connection type"
+        )
+
     def _lookup_function_by_name(self, name: str) -> "Function":
         """Look up a Function by database-scoped name via the native connection.
 
@@ -1312,6 +1323,12 @@ class LanceDBConnection(DBConnection):
         self, name: str, definition: "_FunctionDefinition"
     ) -> NativeJob:
         return LOOP.run(self._conn._register_function(name, definition))
+
+    @override
+    def _submit_replace_function(
+        self, name: str, current: "Function", definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        return LOOP.run(self._conn._replace_function(name, current, definition))
 
     @override
     def _lookup_function_by_name(self, name: str) -> "Function":
@@ -2078,6 +2095,11 @@ class AsyncConnection(object):
         self, name: str, definition: "_FunctionDefinition"
     ) -> NativeJob:
         return await self._inner._register_function(name, definition)
+
+    async def _replace_function(
+        self, name: str, current: "Function", definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        return await self._inner._replace_function(name, current, definition)
 
     async def _lookup_function_by_name(self, name: str) -> "Function":
         return await self._inner._lookup_function_by_name(name)

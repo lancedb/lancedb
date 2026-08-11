@@ -610,6 +610,30 @@ impl Connection {
         })
     }
 
+    /// Submit a first-class Function conditional replace job.
+    ///
+    /// Accepts the observed native [`crate::function::Function`] handle and the
+    /// exact private [`crate::function::PyFunctionDefinition`], then builds
+    /// [`RegisterFunctionJobSpec`] with `expected_current_function_id =
+    /// Some(current.id)`. Reads only `current.inner().id().clone()`. Does not
+    /// JSON round-trip the definition.
+    pub fn _replace_function<'py>(
+        self_: PyRef<'py, Self>,
+        name: String,
+        current: Bound<'_, crate::function::Function>,
+        definition: Bound<'_, crate::function::PyFunctionDefinition>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let definition = definition.get().inner().clone();
+        let current_id = current.get().inner().id().clone();
+        future_into_py(self_.py(), async move {
+            let spec = RegisterFunctionJobSpec::try_new(name, definition, Some(current_id))
+                .infer_error()?;
+            let job = inner.register_function(spec).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     /// Look up the Function currently bound to a database-scoped name.
     ///
     /// Wraps the exact Rust [`lancedb::function::Function`] once. Empty names

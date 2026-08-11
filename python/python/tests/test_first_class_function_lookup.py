@@ -618,7 +618,6 @@ def test_no_direct_db_lookup_methods_and_no_deleted_keywords():
         assert not hasattr(db, "get_function")
         assert not hasattr(db.functions, "get_by_name")
         assert not hasattr(db.functions, "list")
-        assert not hasattr(db.functions, "replace")
         assert not hasattr(db.functions, "remove")
         assert not hasattr(db.functions, "revoke")
 

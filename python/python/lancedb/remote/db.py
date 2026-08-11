@@ -743,6 +743,12 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn._register_function(name, definition))
 
     @override
+    def _submit_replace_function(
+        self, name: str, current: "Function", definition: "_FunctionDefinition"
+    ) -> "NativeJob":
+        return LOOP.run(self._conn._replace_function(name, current, definition))
+
+    @override
     def _lookup_function_by_name(self, name: str) -> "Function":
         return LOOP.run(self._conn._lookup_function_by_name(name))
 

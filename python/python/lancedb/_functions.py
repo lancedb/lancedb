@@ -37,6 +37,16 @@ class _SyncFunctions:
         native_job = self._connection._submit_register_function(name, definition)
         return Job(AsyncJob(native_job))
 
+    def replace(
+        self, name: str, current: Function, decorated_udf: Callable[..., object]
+    ) -> Job:
+        """Conditionally replace a Function; return sync [Job][lancedb.job.Job]."""
+        definition = _udf._build_function_definition(decorated_udf)
+        native_job = self._connection._submit_replace_function(
+            name, current, definition
+        )
+        return Job(AsyncJob(native_job))
+
     def get(self, name: str) -> Function:
         """Return the Function currently bound to a database-scoped name."""
         return self._connection._lookup_function_by_name(name)
@@ -63,6 +73,14 @@ class _AsyncFunctions:
         """Register a decorated UDF and return an [AsyncJob][lancedb.job.AsyncJob]."""
         definition = _udf._build_function_definition(decorated_udf)
         native_job = await self._connection._register_function(name, definition)
+        return AsyncJob(native_job)
+
+    async def replace(
+        self, name: str, current: Function, decorated_udf: Callable[..., object]
+    ) -> AsyncJob:
+        """Conditionally replace a Function; return [AsyncJob][lancedb.job.AsyncJob]."""
+        definition = _udf._build_function_definition(decorated_udf)
+        native_job = await self._connection._replace_function(name, current, definition)
         return AsyncJob(native_job)
 
     async def get(self, name: str) -> Function:
