@@ -6,11 +6,13 @@
 //! This module defines transport and metadata value types only. It does not
 //! provide catalogs, job execution, query planning, or generated-column runtime.
 
+mod change_generated_column;
 mod create_generated_column;
 mod definition;
 mod refresh_generated_column;
 mod registration;
 
+pub use change_generated_column::ChangeGeneratedColumnJobSpec;
 pub use create_generated_column::CreateGeneratedColumnJobSpec;
 pub use definition::{FunctionCapability, FunctionDefinition, PythonFunctionDefinition};
 pub use refresh_generated_column::RefreshGeneratedColumnJobSpec;
