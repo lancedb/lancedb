@@ -219,7 +219,7 @@ class StreamingDataset(IterableDataset):
             ):
                 raise ValueError(
                     f"pack_sequences requires a list-typed token column; "
-                    f"{columns[0]!r} has type {field.type}"
+                    f"{columns[0]} has type {field.type}"
                 )
 
         self._table = table
@@ -478,7 +478,7 @@ class StreamingDataset(IterableDataset):
                 else:
                     break  # split exhausted
 
-        # ── Packing helpers (pack_sequences mode) ─────────────────────────────
+        # sequence packing helpers
         pack_len = cast(int, self._pack_sequences)
         eos_id = cast(int, self._eos_id)
         pad_id = cast(int, self._pad_id)
@@ -745,12 +745,6 @@ class StreamingDataset(IterableDataset):
         In row mode the returned dict is topology-independent: at global step
         boundaries every split has been consumed the same number of times, so
         the per-split count is a single uniform value.
-
-        In ``pack_sequences`` mode the state is keyed by global split index
-        (documents consumed plus partial-block buffers per split), so each
-        owned split resumes exactly.  A topology-changing packed resume must
-        collect the state of every rank and DataLoader worker; one iterator's
-        state only covers its owned splits.
         """
         if self._pack_sequences is not None:
             return {
