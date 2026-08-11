@@ -6,9 +6,11 @@
 //! This module defines transport and metadata value types only. It does not
 //! provide catalogs, job execution, query planning, or generated-column runtime.
 
+mod create_generated_column;
 mod definition;
 mod registration;
 
+pub use create_generated_column::CreateGeneratedColumnJobSpec;
 pub use definition::{FunctionCapability, FunctionDefinition, PythonFunctionDefinition};
 pub use registration::RegisterFunctionJobSpec;
 
