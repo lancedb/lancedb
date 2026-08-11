@@ -8,10 +8,12 @@
 
 mod create_generated_column;
 mod definition;
+mod refresh_generated_column;
 mod registration;
 
 pub use create_generated_column::CreateGeneratedColumnJobSpec;
 pub use definition::{FunctionCapability, FunctionDefinition, PythonFunctionDefinition};
+pub use refresh_generated_column::RefreshGeneratedColumnJobSpec;
 pub use registration::RegisterFunctionJobSpec;
 
 use std::collections::HashSet;
@@ -820,18 +822,25 @@ impl GeneratedColumnDefinition {
     }
 
     /// Serialize to the strict metadata JSON string.
+    ///
+    /// Byte-identical to [`Serialize`] for the same value: both paths share
+    /// the same private wire-encoding step.
     pub fn to_metadata_json(&self) -> Result<String> {
-        let wire = GeneratedColumnWire {
-            format_version: FORMAT_VERSION_V1,
-            output_field_id: self.output_field_id,
-            function_call: self.function_call.to_wire()?,
-            dependency_epoch: self.dependency_epoch,
-            materialized_epoch: self.materialized_epoch,
-        };
+        let wire = self.to_wire()?;
         serde_json::to_string(&wire).map_err(|e| invalid_input(format!("serialize metadata: {e}")))
     }
 
     /// Deserialize metadata JSON and require `expected_output_field_id`.
+    ///
+    /// Validation order (fail-closed precedence for multi-invalid payloads):
+    /// parse JSON and the strict private wire shape, unsupported
+    /// `format_version`, negative `output_field_id`, mismatch with
+    /// `expected_output_field_id`, `materialized_epoch > dependency_epoch`,
+    /// then structural [`FunctionCall`] decode.
+    ///
+    /// Generic [`Deserialize`] shares the same path without the external
+    /// `expected_output_field_id` check (version, non-negative output id,
+    /// epoch ordering, then [`FunctionCall`]).
     ///
     /// Decoding is structural: the embedded [`FunctionCall`] is not validated
     /// against a catalog [`Function`]. Callers that will execute the call must
@@ -843,35 +852,7 @@ impl GeneratedColumnDefinition {
             .map_err(|e| invalid_input(format!("invalid generated column metadata JSON: {e}")))?;
         let wire: GeneratedColumnWire = serde_json::from_value(value)
             .map_err(|e| invalid_input(format!("invalid generated column metadata: {e}")))?;
-        if wire.format_version != FORMAT_VERSION_V1 {
-            return Err(invalid_input(format!(
-                "unsupported generated column format_version {}",
-                wire.format_version
-            )));
-        }
-        if wire.output_field_id < 0 {
-            return Err(invalid_input(
-                "generated column output_field_id must be non-negative",
-            ));
-        }
-        if wire.output_field_id != expected_output_field_id {
-            return Err(invalid_input(format!(
-                "generated column output_field_id mismatch: metadata has {}, expected {}",
-                wire.output_field_id, expected_output_field_id
-            )));
-        }
-        if wire.materialized_epoch > wire.dependency_epoch {
-            return Err(invalid_input(
-                "materialized_epoch must not be greater than dependency_epoch",
-            ));
-        }
-        let function_call = FunctionCall::from_wire(wire.function_call)?;
-        Ok(Self {
-            output_field_id: wire.output_field_id,
-            function_call,
-            dependency_epoch: wire.dependency_epoch,
-            materialized_epoch: wire.materialized_epoch,
-        })
+        Self::from_wire_validated(wire, Some(expected_output_field_id))
     }
 
     /// Increment `dependency_epoch` by one using checked arithmetic.
@@ -889,6 +870,84 @@ impl GeneratedColumnDefinition {
     /// Set `materialized_epoch` to the current `dependency_epoch`.
     pub fn mark_materialized(&mut self) {
         self.materialized_epoch = self.dependency_epoch;
+    }
+
+    fn to_wire(&self) -> Result<GeneratedColumnWire> {
+        Ok(GeneratedColumnWire {
+            format_version: FORMAT_VERSION_V1,
+            output_field_id: self.output_field_id,
+            function_call: self.function_call.to_wire()?,
+            dependency_epoch: self.dependency_epoch,
+            materialized_epoch: self.materialized_epoch,
+        })
+    }
+
+    fn from_wire(wire: GeneratedColumnWire) -> Result<Self> {
+        Self::from_wire_validated(wire, None)
+    }
+
+    /// Shared wire validation for [`Deserialize`] and [`Self::from_metadata_json`].
+    ///
+    /// Order: format version, non-negative `output_field_id`, optional expected
+    /// field-id match, epoch ordering, then structural [`FunctionCall`] decode.
+    /// The optional expected check is applied immediately after the non-negative
+    /// check so metadata decode does not postpone external context validation.
+    fn from_wire_validated(
+        wire: GeneratedColumnWire,
+        expected_output_field_id: Option<i32>,
+    ) -> Result<Self> {
+        if wire.format_version != FORMAT_VERSION_V1 {
+            return Err(invalid_input(format!(
+                "unsupported generated column format_version {}",
+                wire.format_version
+            )));
+        }
+        if wire.output_field_id < 0 {
+            return Err(invalid_input(
+                "generated column output_field_id must be non-negative",
+            ));
+        }
+        if let Some(expected) = expected_output_field_id
+            && wire.output_field_id != expected
+        {
+            return Err(invalid_input(format!(
+                "generated column output_field_id mismatch: metadata has {}, expected {}",
+                wire.output_field_id, expected
+            )));
+        }
+        if wire.materialized_epoch > wire.dependency_epoch {
+            return Err(invalid_input(
+                "materialized_epoch must not be greater than dependency_epoch",
+            ));
+        }
+        let function_call = FunctionCall::from_wire(wire.function_call)?;
+        Ok(Self {
+            output_field_id: wire.output_field_id,
+            function_call,
+            dependency_epoch: wire.dependency_epoch,
+            materialized_epoch: wire.materialized_epoch,
+        })
+    }
+}
+
+impl Serialize for GeneratedColumnDefinition {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_wire()
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GeneratedColumnDefinition {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = GeneratedColumnWire::deserialize(deserializer)?;
+        Self::from_wire(wire).map_err(D::Error::custom)
     }
 }
 
