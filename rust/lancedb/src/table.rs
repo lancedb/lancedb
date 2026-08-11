@@ -4376,18 +4376,31 @@ mod tests {
     /// opening should return the completed table instead of stale corruption.
     #[tokio::test]
     async fn test_open_recovers_from_concurrent_create_commit() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let file_uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
-        let uri = file_uri.replacen("file:", "file-object-store:", 1);
+        use lance_table::io::commit::RenameCommitHandler;
+
+        let uri = "memory:///database/test.lance";
+        let inner = Arc::new(object_store::memory::InMemory::new());
 
         let batch = make_test_batches();
         let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(reader, &uri, None).await.unwrap();
+        Dataset::write(
+            reader,
+            uri,
+            Some(WriteParams {
+                store_params: Some(ObjectStoreParams {
+                    object_store: Some((inner.clone(), url::Url::parse(uri).unwrap())),
+                    ..Default::default()
+                }),
+                commit_handler: Some(Arc::new(RenameCommitHandler)),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
 
         let hide_first_list = Arc::new(AtomicBool::new(true));
         let object_store = Arc::new(OpenRecoveryTestStore {
-            inner: Arc::new(object_store::local::LocalFileSystem::new()),
+            inner,
             parent: object_store::path::Path::from("does-not-match"),
             sibling_count: 0,
             parent_list_calls: Arc::new(AtomicUsize::new(0)),
@@ -4400,14 +4413,14 @@ mod tests {
         });
         let read_params = ReadParams {
             store_options: Some(ObjectStoreParams {
-                object_store: Some((object_store, url::Url::parse(&uri).unwrap())),
+                object_store: Some((object_store, url::Url::parse(uri).unwrap())),
                 ..Default::default()
             }),
             ..Default::default()
         };
 
         let table = NativeTable::open_with_params(
-            &uri,
+            uri,
             "test",
             Vec::new(),
             None,

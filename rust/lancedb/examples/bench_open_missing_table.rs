@@ -16,18 +16,30 @@
 //! the same machine, filesystem, fixture sizes, settings, lockfile, and alternating
 //! baseline/candidate execution order.
 
-use std::fs::{self, File};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use lancedb::connection::Connection;
 use lancedb::{Error, connect};
+use object_store::ObjectStoreExt as _;
+use object_store::path::Path;
 
-fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
+const MAX_SIBLINGS: usize = 1_000_000;
+const MAX_WARMUPS: usize = 10_000;
+const MAX_TRIALS: usize = 100_000;
+
+fn env_usize(key: &str, default: usize, max: usize) -> Result<usize> {
+    let value = match std::env::var(key) {
+        Ok(value) => value
+            .parse()
+            .with_context(|| format!("invalid {key} value: {value}"))?,
+        Err(std::env::VarError::NotPresent) => default,
+        Err(error) => return Err(error).with_context(|| format!("reading {key}")),
+    };
+    if value == 0 || value > max {
+        bail!("{key} must be between 1 and {max}");
+    }
+    Ok(value)
 }
 
 fn sibling_counts() -> Result<Vec<usize>> {
@@ -43,19 +55,23 @@ fn sibling_counts() -> Result<Vec<usize>> {
         .collect::<Result<Vec<_>>>()?;
     counts.sort_unstable();
     counts.dedup();
-    if counts.is_empty() || counts[0] == 0 {
-        bail!("BENCH_SIBLINGS must contain positive cardinalities");
+    if counts.is_empty() || counts[0] == 0 || counts[counts.len() - 1] > MAX_SIBLINGS {
+        bail!("BENCH_SIBLINGS values must be between 1 and {MAX_SIBLINGS}");
     }
     Ok(counts)
 }
 
-fn add_siblings(database_path: &std::path::Path, start: usize, end: usize) -> Result<()> {
+async fn add_siblings(
+    store: &object_store::local::LocalFileSystem,
+    start: usize,
+    end: usize,
+) -> Result<()> {
     for index in start..end {
-        let table_path = database_path.join(format!("sibling_{index:06}.lance"));
-        fs::create_dir(&table_path)
-            .with_context(|| format!("creating table prefix {table_path:?}"))?;
-        File::create(table_path.join("_marker"))
-            .with_context(|| format!("creating marker under {table_path:?}"))?;
+        let marker = Path::from(format!("sibling_{index:06}.lance/_marker"));
+        store
+            .put(&marker, bytes::Bytes::new().into())
+            .await
+            .with_context(|| format!("creating benchmark marker {marker}"))?;
     }
     Ok(())
 }
@@ -79,15 +95,13 @@ fn percentile(sorted: &[Duration], percentile: usize) -> Duration {
 #[tokio::main]
 async fn main() -> Result<()> {
     let counts = sibling_counts()?;
-    let warmups = env_usize("BENCH_WARMUPS", 10);
-    let trials = env_usize("BENCH_TRIALS", 100);
-    if warmups == 0 || trials == 0 {
-        bail!("BENCH_WARMUPS and BENCH_TRIALS must be positive");
-    }
+    let warmups = env_usize("BENCH_WARMUPS", 10, MAX_WARMUPS)?;
+    let trials = env_usize("BENCH_TRIALS", 100, MAX_TRIALS)?;
 
     let fixture = tempfile::tempdir().context("creating benchmark fixture")?;
-    let database_path = fixture.path().join("database");
-    fs::create_dir(&database_path).context("creating benchmark database directory")?;
+    let database_path = fixture.path();
+    let fixture_store = object_store::local::LocalFileSystem::new_with_prefix(database_path)
+        .context("creating benchmark object store")?;
     let db = connect(database_path.to_str().context("non-UTF-8 fixture path")?)
         .execute()
         .await?;
@@ -108,7 +122,7 @@ async fn main() -> Result<()> {
 
     let mut created = 0;
     for sibling_count in counts {
-        add_siblings(&database_path, created, sibling_count)?;
+        add_siblings(&fixture_store, created, sibling_count).await?;
         created = sibling_count;
 
         for index in 0..warmups {
