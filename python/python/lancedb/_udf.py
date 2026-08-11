@@ -23,7 +23,7 @@ from typing import NoReturn, ParamSpec, TypeVar
 
 import pyarrow as pa
 
-__all__ = ["udf"]
+__all__ = ["FunctionCapability", "udf"]
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -37,6 +37,111 @@ _ALLOWED_PARAM_KINDS = (
 )
 
 
+class FunctionCapability:
+    """Local capability declaration for a first-class UDF.
+
+    Construct via :meth:`network` or :meth:`secret`. Direct construction is
+    rejected so callers cannot create an uninitialized capability.
+    """
+
+    __slots__ = ("_kind", "_origin", "_reference", "_environment_variable")
+
+    def __new__(cls, *args: object, **kwargs: object) -> FunctionCapability:
+        raise TypeError(
+            "FunctionCapability cannot be constructed directly; "
+            "use FunctionCapability.network() or FunctionCapability.secret()"
+        )
+
+    @classmethod
+    def _create(
+        cls,
+        kind: str,
+        origin: str | None,
+        reference: str | None,
+        environment_variable: str | None,
+    ) -> FunctionCapability:
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "_kind", kind)
+        object.__setattr__(obj, "_origin", origin)
+        object.__setattr__(obj, "_reference", reference)
+        object.__setattr__(obj, "_environment_variable", environment_variable)
+        return obj
+
+    @classmethod
+    def network(cls, origin: str) -> FunctionCapability:
+        if not isinstance(origin, str):
+            raise TypeError("origin must be a string")
+        if origin == "":
+            raise ValueError("origin must be non-empty")
+        return cls._create("network", origin, None, None)
+
+    @classmethod
+    def secret(cls, reference: str, *, environment_variable: str) -> FunctionCapability:
+        if not isinstance(reference, str):
+            raise TypeError("reference must be a string")
+        if not isinstance(environment_variable, str):
+            raise TypeError("environment_variable must be a string")
+        if reference == "":
+            raise ValueError("reference must be non-empty")
+        if environment_variable == "":
+            raise ValueError("environment_variable must be non-empty")
+        return cls._create("secret", None, reference, environment_variable)
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    @property
+    def origin(self) -> str | None:
+        return self._origin
+
+    @property
+    def reference(self) -> str | None:
+        return self._reference
+
+    @property
+    def environment_variable(self) -> str | None:
+        return self._environment_variable
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(
+            f"{type(self).__name__!r} object attribute {name!r} is read-only"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(
+            f"{type(self).__name__!r} object attribute {name!r} is read-only"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FunctionCapability):
+            return NotImplemented
+        return (
+            self._kind == other._kind
+            and self._origin == other._origin
+            and self._reference == other._reference
+            and self._environment_variable == other._environment_variable
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self._kind,
+                self._origin,
+                self._reference,
+                self._environment_variable,
+            )
+        )
+
+    def __repr__(self) -> str:
+        if self._kind == "network":
+            return f"FunctionCapability.network({self._origin!r})"
+        return (
+            "FunctionCapability.secret("
+            f"environment_variable={self._environment_variable!r})"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class _UdfConfig:
     """Private frozen snapshot of a ``@udf`` declaration."""
@@ -46,6 +151,7 @@ class _UdfConfig:
     output_nullable: bool
     python: str
     packages: tuple[str, ...]
+    capabilities: tuple[FunctionCapability, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +206,23 @@ def _validate_packages(packages: object) -> tuple[str, ...]:
     return tuple(snapshot)
 
 
+def _validate_capabilities(capabilities: object) -> tuple[FunctionCapability, ...]:
+    if isinstance(capabilities, (str, bytes, bytearray)):
+        raise TypeError(
+            "udf capabilities must be a sequence of FunctionCapability, not a string"
+        )
+    if not isinstance(capabilities, Sequence):
+        raise TypeError("udf capabilities must be a sequence of FunctionCapability")
+    snapshot: list[FunctionCapability] = []
+    for capability in capabilities:
+        if not isinstance(capability, FunctionCapability):
+            raise TypeError(
+                "udf capabilities must contain only FunctionCapability values"
+            )
+        snapshot.append(capability)
+    return tuple(snapshot)
+
+
 def udf(
     *,
     inputs: Mapping[str, pa.DataType],
@@ -107,6 +230,7 @@ def udf(
     python: str,
     packages: Sequence[str] = (),
     output_nullable: bool = True,
+    capabilities: Sequence[FunctionCapability] = (),
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     """Declare a local UDF without packaging or registration.
 
@@ -123,6 +247,7 @@ def udf(
     package_snapshot = _validate_packages(packages)
     if not isinstance(output_nullable, bool):
         raise TypeError("udf output_nullable must be a bool")
+    capability_snapshot = _validate_capabilities(capabilities)
 
     config = _UdfConfig(
         inputs=input_snapshot,
@@ -130,6 +255,7 @@ def udf(
         output_nullable=output_nullable,
         python=python,
         packages=package_snapshot,
+        capabilities=capability_snapshot,
     )
 
     def decorator(fn: Callable[_P, _R]) -> Callable[_P, _R]:
