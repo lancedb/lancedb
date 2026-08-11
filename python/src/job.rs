@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::function::Function;
 use crate::runtime::future_into_py;
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
 
@@ -19,6 +20,23 @@ impl Job {
             inner: Arc::new(inner),
         }
     }
+}
+
+/// Project a Rust [`lancedb::JobResult`] onto the Python success surface.
+///
+/// Delegates variant interpretation to [`lancedb::JobResult::into_function`]:
+/// no nested Function collapses to Python `None`; an exact Function becomes
+/// the corresponding [`Function`] handle.
+fn project_wait_result(result: lancedb::JobResult) -> Option<Function> {
+    result.into_function().map(Function::new)
+}
+
+/// Project a describe `result` onto Python `Optional[Function]`.
+///
+/// Rust `None`, `Some(JobResult::None)`, and JSON null all become Python
+/// `None`. Only `Some(JobResult::Function)` becomes a [`Function`] handle.
+fn project_description_result(result: Option<lancedb::JobResult>) -> Option<Function> {
+    result.and_then(project_wait_result)
 }
 
 #[pymethods]
@@ -39,8 +57,8 @@ impl Job {
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            inner.wait().await.infer_error()?;
-            Ok(())
+            let result = inner.wait().await.infer_error()?;
+            Ok(project_wait_result(result))
         })
     }
 
@@ -115,6 +133,7 @@ pub struct JobDescription {
     creation_ms: i64,
     spec_json: Option<String>,
     failure: Option<JobFailureInfo>,
+    result: Option<Function>,
 }
 
 #[pymethods]
@@ -140,6 +159,7 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 message: failure.message,
                 retryable: failure.retryable,
             }),
+            result: project_description_result(description.result),
         }
     }
 }

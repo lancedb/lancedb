@@ -12,6 +12,7 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import Function
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -507,6 +508,7 @@ __all__ = [
     "FtsToken",
     "col",
     "Expr",
+    "Function",
     "func",
     "lit",
     "URI",

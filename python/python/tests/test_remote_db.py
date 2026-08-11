@@ -2306,3 +2306,228 @@ def test_remote_connection_jobs_surface():
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+# Pinned Rust-canonical schema-only type IPC (base64). PyArrow's schema-only
+# FileWriter bytes are not byte-identical to the Arrow Rust FileWriter used by
+# the strict Function decoder, so these fixtures are derived from Rust serde.
+_FIRST_CLASS_FUNCTION_JOB_RESULT_INT32_TYPE_IPC_B64 = (
+    "QVJST1cxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP"
+    "////94AAAAEAAAAAAACgAMAAoACQAEAAoAAAAQAAAAAAEEAAgACAAAAAQACAAAAAQAAAABAAAAFAAAABAAFAAQ"
+    "AA4ADwAEAAAACAAQAAAAGAAAACAAAAAAAAECHAAAAAgADAAEAAsACAAAACAAAAAAAAABAAAAAAAAAAAAAAAA/"
+    "////wAAAAAUAAAAAAAAAAwAFAASAAwACAAEAAwAAABsAAAAcAAAABAAAAAAAAQACAAIAAAABAAIAAAABAAAAA"
+    "EAAAAUAAAAEAAUABAADgAPAAQAAAAIABAAAAAYAAAAIAAAAAAAAQIcAAAACAAMAAQACwAIAAAAIAAAAAAAAAE"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACQAAAAQVJST1cx"
+)
+_FIRST_CLASS_FUNCTION_JOB_RESULT_UTF8_TYPE_IPC_B64 = (
+    "QVJST1cxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP"
+    "////94AAAAEAAAAAAACgAMAAoACQAEAAoAAAAQAAAAAAEEAAgACAAAAAQACAAAAAQAAAABAAAAFAAAABAAFAAQ"
+    "AA4ADwAEAAAACAAQAAAAGAAAAAwAAAAAAAEFEAAAAAAAAAAEAAQABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/"
+    "////wAAAAAQAAAADAAUABIADAAIAAQADAAAAGAAAABkAAAAEAAAAAAABAAIAAgAAAAEAAgAAAAEAAAAAQAAAB"
+    "QAAAAQABQAEAAOAA8ABAAAAAgAEAAAABgAAAAMAAAAAAABBRAAAAAAAAAABAAEAAQAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAIAAAABBUlJPVzE="
+)
+_FIRST_CLASS_FUNCTION_JOB_RESULT_FUNCTION_ID = "fn.exact.python-job-result"
+_FIRST_CLASS_FUNCTION_JOB_RESULT_ABSENT = object()
+_FIRST_CLASS_FUNCTION_JOB_RESULT_NULL = object()
+
+
+def _first_class_function_job_result_function_wire():
+    int32_ipc = _FIRST_CLASS_FUNCTION_JOB_RESULT_INT32_TYPE_IPC_B64
+    utf8_ipc = _FIRST_CLASS_FUNCTION_JOB_RESULT_UTF8_TYPE_IPC_B64
+    return {
+        "kind": "function",
+        "format_version": 1,
+        "function": {
+            "format_version": 1,
+            "id": _FIRST_CLASS_FUNCTION_JOB_RESULT_FUNCTION_ID,
+            "signature": {
+                "parameters": [
+                    {"name": "x", "data_type_ipc": int32_ipc},
+                    {"name": "label", "data_type_ipc": utf8_ipc},
+                ],
+                "output": {
+                    "data_type_ipc": int32_ipc,
+                    "nullable": True,
+                },
+            },
+        },
+    }
+
+
+def _first_class_function_job_result_none_wire():
+    return {"kind": "none", "format_version": 1}
+
+
+def _first_class_function_job_result_describe_body(
+    job_id, job_type, result=_FIRST_CLASS_FUNCTION_JOB_RESULT_ABSENT
+):
+    body = {
+        "job_id": job_id,
+        "job_state": "DONE",
+        "job_type": job_type,
+        "creation_ms": 1,
+        "spec": {},
+    }
+    if result is _FIRST_CLASS_FUNCTION_JOB_RESULT_NULL:
+        body["result"] = None
+    elif result is not _FIRST_CLASS_FUNCTION_JOB_RESULT_ABSENT:
+        body["result"] = result
+    return body
+
+
+def _first_class_function_job_result_describe_handler(bodies_by_job_id):
+    def handler(request):
+        content_len = int(request.headers.get("Content-Length", 0))
+        body = request.rfile.read(content_len) if content_len > 0 else b""
+        payload = json.loads(body) if body else {}
+        if request.path != "/v1/jobs/describe":
+            request.send_response(404)
+            request.end_headers()
+            return
+        job_id = payload["job_id"]
+        if job_id not in bodies_by_job_id:
+            request.send_response(404)
+            request.end_headers()
+            return
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(bodies_by_job_id[job_id]).encode())
+
+    return handler
+
+
+def _assert_exact_first_class_function_job_result(function):
+    assert isinstance(function, lancedb.Function)
+    assert function is not None
+    assert not isinstance(function, dict)
+    assert function.id == _FIRST_CLASS_FUNCTION_JOB_RESULT_FUNCTION_ID
+    assert function.parameters == (("x", pa.int32()), ("label", pa.utf8()))
+    assert function.output_type == pa.int32()
+    assert function.output_nullable is True
+    text = repr(function)
+    assert "Function" in text
+    assert _FIRST_CLASS_FUNCTION_JOB_RESULT_FUNCTION_ID in text
+    for token in ("definition", "source", "packages", "artifact", "digest", "secret"):
+        assert token not in text.lower()
+
+
+def test_first_class_function_job_result_sync_wait_returns_exact_function():
+    bodies = {
+        "job-register": _first_class_function_job_result_describe_body(
+            "job-register",
+            "register_function",
+            _first_class_function_job_result_function_wire(),
+        )
+    }
+    with mock_lancedb_connection(
+        _first_class_function_job_result_describe_handler(bodies)
+    ) as db:
+        result = db.job("job-register").wait()
+        _assert_exact_first_class_function_job_result(result)
+
+        timed_out = db.job("job-register").wait(timeout=timedelta(seconds=5))
+        _assert_exact_first_class_function_job_result(timed_out)
+
+        with pytest.raises(TypeError):
+            lancedb.Function()
+        with pytest.raises(AttributeError):
+            result.id = "mutated"
+        with pytest.raises(AttributeError):
+            result.parameters = ()
+        with pytest.raises(AttributeError):
+            result.output_type = pa.int64()
+        with pytest.raises(AttributeError):
+            result.output_nullable = False
+
+
+@pytest.mark.asyncio
+async def test_first_class_function_job_result_async_wait_returns_exact_function():
+    bodies = {
+        "job-register": _first_class_function_job_result_describe_body(
+            "job-register",
+            "register_function",
+            _first_class_function_job_result_function_wire(),
+        )
+    }
+    async with mock_lancedb_connection_async(
+        _first_class_function_job_result_describe_handler(bodies)
+    ) as db:
+        result = await db.job("job-register").wait()
+        _assert_exact_first_class_function_job_result(result)
+
+        timed_out = await db.job("job-register").wait(timeout=timedelta(seconds=5))
+        _assert_exact_first_class_function_job_result(timed_out)
+
+
+def test_first_class_function_job_result_no_result_wait_returns_none():
+    bodies = {
+        "job-index-absent": _first_class_function_job_result_describe_body(
+            "job-index-absent", "create_index"
+        ),
+        "job-index-explicit": _first_class_function_job_result_describe_body(
+            "job-index-explicit",
+            "create_index",
+            _first_class_function_job_result_none_wire(),
+        ),
+    }
+    with mock_lancedb_connection(
+        _first_class_function_job_result_describe_handler(bodies)
+    ) as db:
+        assert db.job("job-index-absent").wait() is None
+        assert db.job("job-index-explicit").wait(timeout=timedelta(seconds=5)) is None
+
+
+@pytest.mark.asyncio
+async def test_first_class_function_job_result_async_no_result_wait_returns_none():
+    bodies = {
+        "job-index-absent": _first_class_function_job_result_describe_body(
+            "job-index-absent", "create_index"
+        ),
+        "job-index-explicit": _first_class_function_job_result_describe_body(
+            "job-index-explicit",
+            "create_index",
+            _first_class_function_job_result_none_wire(),
+        ),
+    }
+    async with mock_lancedb_connection_async(
+        _first_class_function_job_result_describe_handler(bodies)
+    ) as db:
+        assert await db.job("job-index-absent").wait() is None
+        assert (
+            await db.job("job-index-explicit").wait(timeout=timedelta(seconds=5))
+            is None
+        )
+
+
+def test_first_class_function_job_result_get_job_result_projection():
+    bodies = {
+        "job-register": _first_class_function_job_result_describe_body(
+            "job-register",
+            "register_function",
+            _first_class_function_job_result_function_wire(),
+        ),
+        "job-absent": _first_class_function_job_result_describe_body(
+            "job-absent", "create_index"
+        ),
+        "job-null": _first_class_function_job_result_describe_body(
+            "job-null",
+            "create_index",
+            _FIRST_CLASS_FUNCTION_JOB_RESULT_NULL,
+        ),
+        "job-explicit-none": _first_class_function_job_result_describe_body(
+            "job-explicit-none",
+            "create_index",
+            _first_class_function_job_result_none_wire(),
+        ),
+    }
+    with mock_lancedb_connection(
+        _first_class_function_job_result_describe_handler(bodies)
+    ) as db:
+        register_description = db.get_job("job-register")
+        _assert_exact_first_class_function_job_result(register_description.result)
+
+        assert db.get_job("job-absent").result is None
+        assert db.get_job("job-null").result is None
+        assert db.get_job("job-explicit-none").result is None

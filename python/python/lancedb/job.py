@@ -10,6 +10,7 @@ from typing import Optional
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
+from ._lancedb import Function
 
 
 class AsyncJob:
@@ -44,18 +45,22 @@ class AsyncJob:
             return "finished"
         return await self._inner.status()
 
-    async def wait(self, timeout: Optional[timedelta] = None):
+    async def wait(self, timeout: Optional[timedelta] = None) -> Optional[Function]:
         """Wait until the operation reaches a terminal state.
+
+        Returns the success result when present (currently a
+        :class:`~lancedb.Function`), or `None` when the job finished without
+        one.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
         if self._inner is None:
-            return
+            return None
         if timeout is None:
-            await self._inner.wait()
+            return await self._inner.wait()
         else:
-            await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
+            return await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
 
     async def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""
@@ -88,15 +93,19 @@ class Job:
             return "finished"
         return LOOP.run(self._inner.status())
 
-    def wait(self, timeout: Optional[timedelta] = None):
+    def wait(self, timeout: Optional[timedelta] = None) -> Optional[Function]:
         """Block until the operation reaches a terminal state.
+
+        Returns the success result when present (currently a
+        :class:`~lancedb.Function`), or `None` when the job finished without
+        one.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
         if self._inner is None:
-            return
-        LOOP.run(self._inner.wait(timeout))
+            return None
+        return LOOP.run(self._inner.wait(timeout))
 
     def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""

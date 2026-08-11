@@ -23,6 +23,7 @@ pub mod arrow;
 pub mod connection;
 pub mod error;
 pub mod expr;
+pub mod function;
 pub mod header;
 pub mod index;
 pub mod job;
@@ -45,6 +46,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
+    m.add_class::<crate::function::Function>()?;
     m.add_class::<crate::job::Job>()?;
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;
