@@ -6,10 +6,124 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::error::{Error, JobFailure, Result};
+use crate::function::Function;
+
+const JOB_RESULT_FORMAT_VERSION_V1: u32 = 1;
+
+fn invalid_input(message: impl Into<String>) -> Error {
+    Error::InvalidInput {
+        message: message.into(),
+    }
+}
+
+/// Result value produced by a completed Job (format version 1).
+///
+/// This is a non-resource transport value. It is not a Job handle, does not
+/// observe lifecycle, and does not preserve unknown wire shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum JobResult {
+    /// The Job completed without a Function result.
+    None,
+    /// The Job completed with a [`Function`] value.
+    Function(Function),
+}
+
+impl JobResult {
+    /// Wire format version (always 1 for this type).
+    pub fn format_version(&self) -> u32 {
+        JOB_RESULT_FORMAT_VERSION_V1
+    }
+
+    /// Borrow the nested [`Function`] when this is [`JobResult::Function`].
+    pub fn function(&self) -> Option<&Function> {
+        match self {
+            Self::None => None,
+            Self::Function(function) => Some(function),
+        }
+    }
+
+    /// Consume this value and return the nested [`Function`] when present.
+    pub fn into_function(self) -> Option<Function> {
+        match self {
+            Self::None => None,
+            Self::Function(function) => Some(function),
+        }
+    }
+
+    fn to_wire(&self) -> JobResultWire {
+        match self {
+            Self::None => JobResultWire::None {
+                format_version: JOB_RESULT_FORMAT_VERSION_V1,
+            },
+            Self::Function(function) => JobResultWire::Function {
+                format_version: JOB_RESULT_FORMAT_VERSION_V1,
+                function: function.clone(),
+            },
+        }
+    }
+
+    fn from_wire(wire: JobResultWire) -> Result<Self> {
+        match wire {
+            JobResultWire::None { format_version } => {
+                if format_version != JOB_RESULT_FORMAT_VERSION_V1 {
+                    return Err(invalid_input(format!(
+                        "unsupported JobResult format_version {format_version}"
+                    )));
+                }
+                Ok(Self::None)
+            }
+            JobResultWire::Function {
+                format_version,
+                function,
+            } => {
+                if format_version != JOB_RESULT_FORMAT_VERSION_V1 {
+                    return Err(invalid_input(format!(
+                        "unsupported JobResult format_version {format_version}"
+                    )));
+                }
+                Ok(Self::Function(function))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum JobResultWire {
+    #[serde(rename = "none")]
+    None { format_version: u32 },
+    #[serde(rename = "function")]
+    Function {
+        format_version: u32,
+        function: Function,
+    },
+}
+
+impl Serialize for JobResult {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_wire().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for JobResult {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = JobResultWire::deserialize(deserializer)?;
+        Self::from_wire(wire).map_err(D::Error::custom)
+    }
+}
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]

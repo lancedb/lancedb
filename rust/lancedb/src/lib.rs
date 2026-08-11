@@ -206,7 +206,7 @@ use serde::{Deserialize, Serialize};
 pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
-pub use job::Job;
+pub use job::{Job, JobResult};
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 /// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
