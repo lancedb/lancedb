@@ -23,6 +23,8 @@ from typing import NoReturn, ParamSpec, TypeVar
 
 import pyarrow as pa
 
+from . import _lancedb
+
 __all__ = ["FunctionCapability", "udf"]
 
 _P = ParamSpec("_P")
@@ -206,6 +208,20 @@ def _validate_packages(packages: object) -> tuple[str, ...]:
     return tuple(snapshot)
 
 
+def _reject_non_exact_capability() -> NoReturn:
+    # Exact-type only: subclasses are authoring inputs we never accept. Keep the
+    # message fixed so hostile markers never enter exception text.
+    raise TypeError(
+        "udf capabilities must contain only FunctionCapability values"
+    ) from None
+
+
+def _require_exact_capability(capability: object) -> FunctionCapability:
+    if type(capability) is not FunctionCapability:
+        _reject_non_exact_capability()
+    return capability
+
+
 def _validate_capabilities(capabilities: object) -> tuple[FunctionCapability, ...]:
     if isinstance(capabilities, (str, bytes, bytearray)):
         raise TypeError(
@@ -213,14 +229,7 @@ def _validate_capabilities(capabilities: object) -> tuple[FunctionCapability, ..
         )
     if not isinstance(capabilities, Sequence):
         raise TypeError("udf capabilities must be a sequence of FunctionCapability")
-    snapshot: list[FunctionCapability] = []
-    for capability in capabilities:
-        if not isinstance(capability, FunctionCapability):
-            raise TypeError(
-                "udf capabilities must contain only FunctionCapability values"
-            )
-        snapshot.append(capability)
-    return tuple(snapshot)
+    return tuple(_require_exact_capability(capability) for capability in capabilities)
 
 
 def udf(
@@ -485,4 +494,45 @@ def _package_udf(fn: object) -> _PackagedUdf:
         module=module_name,
         callable_name=callable_name,
         config=config,
+    )
+
+
+def _normalize_capability_triple(
+    capability: FunctionCapability,
+) -> tuple[str, str, str | None]:
+    """Normalize a local capability declaration to the native triple shape."""
+    # Private config is untrusted; re-check exact type before any property access.
+    capability = _require_exact_capability(capability)
+    if capability.kind == "network":
+        origin = capability.origin
+        if origin is None:
+            raise ValueError("invalid network capability") from None
+        return ("network", origin, None)
+    if capability.kind == "secret":
+        reference = capability.reference
+        environment_variable = capability.environment_variable
+        if reference is None or environment_variable is None:
+            raise ValueError("invalid secret capability") from None
+        return ("secret", reference, environment_variable)
+    # Fail closed without echoing the unknown kind.
+    raise ValueError("unsupported capability kind") from None
+
+
+def _build_function_definition(fn: object) -> _lancedb._FunctionDefinition:
+    """Package a ``@udf`` and bridge it to the private native definition."""
+    packaged = _package_udf(fn)
+    config = packaged.config
+    capabilities = [
+        _normalize_capability_triple(capability) for capability in config.capabilities
+    ]
+    return _lancedb._new_function_definition(
+        parameters=list(config.inputs),
+        output_type=config.output,
+        output_nullable=config.output_nullable,
+        module=packaged.module,
+        callable_name=packaged.callable_name,
+        source=packaged.source,
+        python=config.python,
+        packages=list(config.packages),
+        capabilities=capabilities,
     )

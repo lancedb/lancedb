@@ -226,6 +226,24 @@ class Function:
     @property
     def output_nullable(self) -> bool: ...
 
+class _FunctionDefinition:
+    """Private owner of the Rust FunctionDefinition registration input."""
+
+    def _to_json(self) -> str: ...
+
+def _new_function_definition(
+    *,
+    parameters: list[tuple[str, pa.DataType]],
+    output_type: pa.DataType,
+    output_nullable: bool,
+    module: str,
+    callable_name: str,
+    source: str,
+    python: str,
+    packages: list[str],
+    capabilities: list[tuple[str, str, Optional[str]]],
+) -> _FunctionDefinition: ...
+
 class Job:
     @property
     def id(self) -> Optional[str]: ...

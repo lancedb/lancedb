@@ -381,6 +381,43 @@ def test_udf_capabilities_ordered_immutable_config_default_and_validation():
     assert "unique-bad-capability-string-xyz" not in repr(bad_mixed.value)
 
 
+def test_udf_capabilities_rejects_function_capability_subclass_before_property_access():
+    marker = "unique-hostile-capability-subclass-marker-xyz"
+
+    class _HostileFunctionCapability(FunctionCapability):
+        @property
+        def kind(self) -> str:
+            raise RuntimeError(marker)
+
+        @property
+        def origin(self) -> str | None:
+            raise RuntimeError(marker)
+
+        @property
+        def reference(self) -> str | None:
+            raise RuntimeError(marker)
+
+        @property
+        def environment_variable(self) -> str | None:
+            raise RuntimeError(marker)
+
+    hostile = object.__new__(_HostileFunctionCapability)
+    assert isinstance(hostile, FunctionCapability)
+    assert type(hostile) is not FunctionCapability
+
+    def target(x):
+        return x
+
+    with pytest.raises(TypeError) as exc_info:
+        _decorate(target, capabilities=[hostile])
+    assert marker not in str(exc_info.value)
+    assert marker not in repr(exc_info.value)
+    assert _SECRET_REFERENCE not in str(exc_info.value)
+    assert _SECRET_REFERENCE not in repr(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
 def test_package_udf_preserves_capabilities_and_redacts_secret_reference():
     packaged = _package_udf(packable_with_capabilities)
     config = packaged.config

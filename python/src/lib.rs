@@ -47,6 +47,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<crate::function::Function>()?;
+    m.add_class::<crate::function::PyFunctionDefinition>()?;
     m.add_class::<crate::job::Job>()?;
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;
@@ -90,6 +91,10 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(expr_col, m)?)?;
     m.add_function(wrap_pyfunction!(expr_lit, m)?)?;
     m.add_function(wrap_pyfunction!(expr_func, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::function::_new_function_definition,
+        m
+    )?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
