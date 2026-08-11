@@ -63,8 +63,11 @@ if TYPE_CHECKING:
     import pyarrow as pa
     from .pydantic import LanceModel
 
+    from ._functions import _AsyncFunctions, _SyncFunctions
     from ._lancedb import Connection as LanceDbConnection
+    from ._lancedb import Job as NativeJob
     from ._lancedb import JobDescription, JobInfo
+    from ._lancedb import _FunctionDefinition
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from ._lancedb import Session
@@ -648,6 +651,24 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "job_history is not supported for this connection type"
+        )
+
+    @property
+    def functions(self) -> "_SyncFunctions":
+        """First-class Function operations for this connection."""
+        from ._functions import _SyncFunctions
+
+        return _SyncFunctions(self)
+
+    def _submit_register_function(
+        self, name: str, definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        """Submit a Function registration job via the native connection.
+
+        Connection subclasses that support registration override this hook.
+        """
+        raise NotImplementedError(
+            "function registration is not supported for this connection type"
         )
 
 
@@ -1266,6 +1287,12 @@ class LanceDBConnection(DBConnection):
         Lists history across all jobs when `job_id` is None.
         """
         return LOOP.run(self._conn.job_history(job_id))
+
+    @override
+    def _submit_register_function(
+        self, name: str, definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        return LOOP.run(self._conn._register_function(name, definition))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2012,6 +2039,18 @@ class AsyncConnection(object):
         Lists history across all jobs when `job_id` is None.
         """
         return await self._inner.job_history(job_id)
+
+    @property
+    def functions(self) -> "_AsyncFunctions":
+        """First-class Function operations for this connection."""
+        from ._functions import _AsyncFunctions
+
+        return _AsyncFunctions(self)
+
+    async def _register_function(
+        self, name: str, definition: "_FunctionDefinition"
+    ) -> NativeJob:
+        return await self._inner._register_function(name, definition)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

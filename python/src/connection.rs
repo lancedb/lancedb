@@ -23,6 +23,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
+    function::RegisterFunctionJobSpec,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -587,6 +588,25 @@ impl Connection {
                 }
                 Ok(list.unbind())
             })
+        })
+    }
+
+    /// Submit a first-class Function registration job.
+    ///
+    /// Accepts the exact private [`crate::function::PyFunctionDefinition`] and
+    /// builds [`RegisterFunctionJobSpec`] with `expected_current_function_id =
+    /// None` (create-if-absent). Does not JSON round-trip the definition.
+    pub fn _register_function<'py>(
+        self_: PyRef<'py, Self>,
+        name: String,
+        definition: Bound<'_, crate::function::PyFunctionDefinition>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let definition = definition.get().inner().clone();
+        future_into_py(self_.py(), async move {
+            let spec = RegisterFunctionJobSpec::try_new(name, definition, None).infer_error()?;
+            let job = inner.register_function(spec).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 }

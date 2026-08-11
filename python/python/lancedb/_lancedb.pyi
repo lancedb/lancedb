@@ -153,6 +153,9 @@ class Connection(object):
     async def job_history(
         self, job_id: Optional[str] = None
     ) -> List[pa.RecordBatch]: ...
+    async def _register_function(
+        self, name: str, definition: "_FunctionDefinition"
+    ) -> Job: ...
     async def create_table(
         self,
         name: str,

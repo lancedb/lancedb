@@ -26,7 +26,8 @@ from ..db import DBConnection, LOOP
 from ..job import Job
 
 if TYPE_CHECKING:
-    from .._lancedb import JobDescription, JobInfo
+    from .._lancedb import Job as NativeJob
+    from .._lancedb import JobDescription, JobInfo, _FunctionDefinition
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -733,6 +734,12 @@ class RemoteDBConnection(DBConnection):
         Lists history across all jobs when `job_id` is None.
         """
         return LOOP.run(self._conn.job_history(job_id))
+
+    @override
+    def _submit_register_function(
+        self, name: str, definition: "_FunctionDefinition"
+    ) -> "NativeJob":
+        return LOOP.run(self._conn._register_function(name, definition))
 
     @override
     def namespace_client(self) -> LanceNamespace:

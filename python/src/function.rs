@@ -93,8 +93,7 @@ impl PyFunctionDefinition {
         Self { inner }
     }
 
-    /// Crate-private accessor for later registration slices.
-    #[allow(dead_code)]
+    /// Crate-private accessor for registration submit bindings.
     pub(crate) fn inner(&self) -> &FunctionDefinition {
         &self.inner
     }
