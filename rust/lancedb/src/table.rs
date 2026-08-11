@@ -215,6 +215,8 @@ async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
         if local_path.extension().and_then(|ext| ext.to_str()) != Some(LANCE_FILE_EXTENSION) {
             return Ok(false);
         }
+        // A local table URI intentionally grants access to this exact path; LanceDB does
+        // not confine local databases beneath a separate filesystem root. nosemgrep
         return match std::fs::symlink_metadata(&local_path) {
             Ok(_) => Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
