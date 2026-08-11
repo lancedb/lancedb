@@ -55,6 +55,10 @@ class _SyncFunctions:
         """Return the immutable Function for an exact Function ID."""
         return self._connection._lookup_function_by_id(function_id)
 
+    def remove(self, name: str, current: Function) -> None:
+        """Conditionally remove a Function catalog name binding."""
+        return self._connection._remove_function_name(name, current)
+
 
 class _AsyncFunctions:
     """Asynchronous `async_db.functions` facade."""
@@ -90,3 +94,7 @@ class _AsyncFunctions:
     async def get_by_id(self, function_id: str) -> Function:
         """Return the immutable Function for an exact Function ID."""
         return await self._connection._lookup_function_by_id(function_id)
+
+    async def remove(self, name: str, current: Function) -> None:
+        """Conditionally remove a Function catalog name binding."""
+        return await self._connection._remove_function_name(name, current)

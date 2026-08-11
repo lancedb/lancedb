@@ -664,6 +664,29 @@ impl Connection {
             Ok(crate::function::Function::new(function))
         })
     }
+
+    /// Conditionally remove a database-scoped Function catalog name.
+    ///
+    /// Clones the observed native [`crate::function::Function`] once and
+    /// delegates to Rust [`lancedb::Connection::remove_function_name`]. Empty
+    /// names fail as [`PyValueError`] before transport via the Rust connection.
+    pub fn _remove_function_name<'py>(
+        self_: PyRef<'py, Self>,
+        name: String,
+        current: Bound<'_, crate::function::Function>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let current = current.get().inner().clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .remove_function_name(&name, &current)
+                .await
+                .infer_error()?;
+            // `()` maps to an empty Python tuple via IntoPyObject; return Option
+            // so the async bridge yields exact Python None.
+            Ok(None::<()>)
+        })
+    }
 }
 
 #[pyfunction]

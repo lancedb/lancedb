@@ -701,6 +701,15 @@ class DBConnection(EnforceOverrides):
             "function lookup is not supported for this connection type"
         )
 
+    def _remove_function_name(self, name: str, current: "Function") -> None:
+        """Conditionally remove a Function catalog name via the native connection.
+
+        Connection subclasses that share the native Connection override this hook.
+        """
+        raise NotImplementedError(
+            "function name removal is not supported for this connection type"
+        )
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -1337,6 +1346,10 @@ class LanceDBConnection(DBConnection):
     @override
     def _lookup_function_by_id(self, function_id: str) -> "Function":
         return LOOP.run(self._conn._lookup_function_by_id(function_id))
+
+    @override
+    def _remove_function_name(self, name: str, current: "Function") -> None:
+        return LOOP.run(self._conn._remove_function_name(name, current))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2106,6 +2119,9 @@ class AsyncConnection(object):
 
     async def _lookup_function_by_id(self, function_id: str) -> "Function":
         return await self._inner._lookup_function_by_id(function_id)
+
+    async def _remove_function_name(self, name: str, current: "Function") -> None:
+        return await self._inner._remove_function_name(name, current)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

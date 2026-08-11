@@ -757,6 +757,10 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn._lookup_function_by_id(function_id))
 
     @override
+    def _remove_function_name(self, name: str, current: "Function") -> None:
+        return LOOP.run(self._conn._remove_function_name(name, current))
+
+    @override
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
 
