@@ -11,6 +11,11 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
 - **Resumability**: state_dict / load_state_dict capture per-split consumption
   counts so training can resume from an exact mid-epoch position even when the
   distributed topology changes between runs.
+
+Transform failures on bad rows (e.g. nulls or NaNs from incomplete data) can
+be tolerated with ``on_transform_error="skip"``; see the parameter
+documentation on StreamingDataset for how this interacts with the guarantees
+above.
 """
 
 import ctypes
@@ -24,7 +29,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from multiprocessing import RawArray
-from typing import Any, Callable, cast, Iterator, Optional
+from typing import Any, Callable, cast, Iterator, Optional, Union
 
 import pyarrow as pa
 import torch
@@ -154,6 +159,49 @@ class StreamingDataset(IterableDataset):
         Padding token id used to complete blocks when a split runs out of
         real tokens mid-cycle or at epoch end.  Required with
         ``pack_sequences``, ignored otherwise.
+    on_transform_error:
+        What to do when the transform raises an exception:
+
+        - ``"raise"`` (the default): the exception propagates and iteration
+          aborts.
+        - ``"skip"``: the failing rows are dropped and iteration continues.
+        - ``"warn"``: like ``"skip"``, but a warning is logged for each
+          failing batch.
+        - a callable ``handler(exc) -> bool``: called with the exception;
+          return ``True`` to skip the failing rows or ``False`` to re-raise.
+          Useful to skip only expected error types (compatible with
+          ``webdataset.handlers`` style handlers).
+
+        When a batch fails, the transform is re-invoked on each single-row
+        slice of the batch so that only the rows that actually fail are
+        dropped.  Transforms should therefore be deterministic and accept
+        batches of any size (including one row).  Skipped rows are counted in
+        ``rows_skipped``.
+
+        Skipping weakens the elastic-determinism guarantee at the end of the
+        epoch: splits that lose more rows than others run dry earlier, and
+        each rank's iterator ends at the last cycle where every split *it
+        owns* still has a row.  Because bad rows are not distributed evenly
+        across splits, this means one rank's iterator can yield noticeably
+        fewer or more steps than another rank's *in the same run* — there is
+        no cross-rank coordination that stops every rank at the same global
+        step.  This is generally safe for asynchronous or single-rank use,
+        but synchronous distributed training (e.g. ranks that call
+        ``all_reduce`` every step) can hang or deadlock if one rank's
+        iterator is exhausted while others are still stepping; callers doing
+        synchronous multi-rank training with ``on_transform_error != "raise"``
+        are responsible for their own cross-rank stopping mechanism (e.g.
+        broadcasting a stop signal on ``StopIteration``).  The final few
+        global steps can also differ across topologies (bounded by the skew
+        in bad-row counts across splits).  The sequence of samples yielded
+        from each split remains deterministic.  Mid-epoch
+        checkpoints remain exact provided the transform fails
+        deterministically; in multi-rank training each rank must save its
+        own ``state_dict`` and the states must be combined with
+        ``merge_state_dicts`` before resuming on a different topology.
+        Prefer the ``filter`` parameter when bad rows can be expressed as a
+        SQL predicate (e.g. ``"col IS NOT NULL"``) — filtering happens before
+        splits are built, so every guarantee is fully preserved.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -182,6 +230,7 @@ class StreamingDataset(IterableDataset):
         pack_sequences: Optional[int] = None,
         eos_id: Optional[int] = None,
         pad_id: Optional[int] = None,
+        on_transform_error: Union[str, Callable[[Exception], bool]] = "raise",
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
     ):
@@ -221,6 +270,13 @@ class StreamingDataset(IterableDataset):
                     f"pack_sequences requires a list-typed token column; "
                     f"{columns[0]} has type {field.type}"
                 )
+        if on_transform_error not in ("raise", "skip", "warn") and not callable(
+            on_transform_error
+        ):
+            raise ValueError(
+                "on_transform_error must be 'raise', 'skip', 'warn', or a "
+                f"callable, got {on_transform_error!r}"
+            )
 
         self._table = table
         self._num_splits = num_splits
@@ -239,6 +295,7 @@ class StreamingDataset(IterableDataset):
         self._pack_sequences = pack_sequences
         self._eos_id = eos_id
         self._pad_id = pad_id
+        self._on_transform_error = on_transform_error
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
 
@@ -260,19 +317,28 @@ class StreamingDataset(IterableDataset):
         # in the main process.  RawArray is picklable via the forkserver
         # reduction protocol so it survives the dataset pickle round-trip.
         # Layout: [unscanned_rows, raw_rows, cooked_rows, consumed_rows,
-        #          bytes_loaded, fetch_time_us, transform_time_us]
-        self._worker_stats: RawArray = RawArray(ctypes.c_int64, 7)
+        #          bytes_loaded, fetch_time_us, transform_time_us,
+        #          rows_skipped]
+        self._worker_stats: RawArray = RawArray(ctypes.c_int64, 8)
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
         # Cumulative seconds spent in LanceDB I/O and in transform functions.
         self._fetch_time: float = 0.0
         self._transform_time: float = 0.0
+        # Cumulative rows dropped by on_transform_error across all iterations.
+        self._rows_skipped: int = 0
 
         # Number of samples each split has already been consumed.  At global
         # step boundaries all splits have consumed this many samples, so a
         # single scalar captures the topology-independent checkpoint state.
         self._resume_offset: int = 0
+        # Permutation position each split has consumed through, keyed by
+        # global split index.  Equal to _resume_offset for every split unless
+        # on_transform_error skipped rows, in which case skipped positions
+        # push the watermark of the affected splits further ahead.  Splits
+        # this instance has never iterated have no entry.
+        self._resume_positions: dict[int, int] = {}
 
         # Build the permutation table once, deterministically.
         builder = permutation_builder(table)
@@ -343,6 +409,7 @@ class StreamingDataset(IterableDataset):
         # Set identity transform on each Permutation so __getitems__ returns
         # the raw RecordBatch.  Stage 2 applies the real transform.
         permutations: list[Permutation] = []
+        initial_positions: list[int] = []
         for split_idx in my_splits:
             perm = Permutation.from_tables(
                 self._table, self._perm_table, split=split_idx
@@ -350,21 +417,27 @@ class StreamingDataset(IterableDataset):
             if self._columns is not None:
                 perm = perm.select_columns(self._columns)
             perm = perm.with_transform(lambda batch: batch)
-            # Packing consumes documents at different rates per split, so it
-            # tracks per-split offsets; row mode uses the uniform offset.
-            skip = (
+            # Packing tracks documents consumed per split. Row mode tracks
+            # absolute permutation positions so transform failures can skip
+            # rows without making resume repeat them.
+            start_pos = (
                 self._pack_consumed[split_idx]
                 if self._pack_sequences is not None
-                else self._resume_offset
+                else self._resume_positions.get(split_idx, self._resume_offset)
             )
-            if skip > 0:
-                perm = perm.with_skip(skip)
+            if start_pos > 0:
+                perm = perm.with_skip(start_pos)
+            initial_positions.append(start_pos)
             permutations.append(perm)
 
         n = len(permutations)
         split_sizes = [perm.num_rows for perm in permutations]
         initial_offset = self._resume_offset
         local_consumed = [0] * n
+        # Permutation position each split has consumed through (absolute,
+        # i.e. counted from the start of the unskipped split).  Runs ahead of
+        # initial + local_consumed when rows are skipped.
+        pos_consumed = list(initial_positions)
 
         batch_size = self._read_batch_size
         max_prefetch = self._prefetch_batches
@@ -387,12 +460,14 @@ class StreamingDataset(IterableDataset):
                 else Transforms.arrow2python
             )
 
-        # Per-split pipeline state.
+        # Per-split pipeline state.  Batches are paired with the absolute
+        # permutation position of their first row so that skipped rows can be
+        # accounted for in pos_consumed.
         fetch_head = [0] * n
-        io_pending = [deque() for _ in range(n)]  # Future[RecordBatch]
-        raw_batches = [deque() for _ in range(n)]  # RecordBatch — fetched, awaiting tx
-        tx_pending = [deque() for _ in range(n)]  # Future[list[Any]]
-        cooked = [deque() for _ in range(n)]  # rows ready to yield
+        io_pending = [deque() for _ in range(n)]  # (abs_start, Future[RecordBatch])
+        raw_batches = [deque() for _ in range(n)]  # (abs_start, RecordBatch)
+        tx_pending = [deque() for _ in range(n)]  # Future[list[(abs_pos, row)]]
+        cooked = [deque() for _ in range(n)]  # (abs_pos, row) ready to yield
 
         # Limit simultaneous transforms to transform_workers across all splits.
         tx_semaphore = threading.Semaphore(transform_workers)
@@ -415,7 +490,8 @@ class StreamingDataset(IterableDataset):
             fetch_head[i] += fetch
             perm_i = permutations[i]
             indices = list(range(start, start + fetch))
-            io_pending[i].append(io_pool.submit(_io_call, perm_i, indices))
+            abs_start = initial_positions[i] + start
+            io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
 
         def _fill_io(i: int) -> None:
             while len(io_pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
@@ -423,15 +499,72 @@ class StreamingDataset(IterableDataset):
 
         def _drain_io(i: int) -> None:
             """Move completed I/O futures into raw_batches non-blockingly."""
-            while io_pending[i] and io_pending[i][0].done():
-                raw_batches[i].append(io_pending[i].popleft().result())
+            while io_pending[i] and io_pending[i][0][1].done():
+                abs_start, fut = io_pending[i].popleft()
+                raw_batches[i].append((abs_start, fut.result()))
 
         # ── Stage 2 helpers ───────────────────────────────────────────────────
 
-        def _tx_call_guarded(batch):
+        on_error = self._on_transform_error
+
+        def _should_skip(exc: Exception) -> bool:
+            if on_error == "raise":
+                return False
+            if callable(on_error):
+                return bool(on_error(exc))
+            return True  # "skip" or "warn"
+
+        def _check_row_count(rows: list, num_rows: int) -> None:
+            if len(rows) != num_rows:
+                raise ValueError(
+                    f"transform returned {len(rows)} rows for a batch of "
+                    f"{num_rows}; transforms must return exactly one output "
+                    "row per input row.  To drop bad rows, raise inside the "
+                    "transform and pass on_transform_error='skip'."
+                )
+
+        def _transform_isolated(abs_start, batch, batch_exc):
+            """Re-run the transform on single-row slices, dropping failures."""
+            out = []
+            skipped = 0
+            first_exc = None
+            for j in range(batch.num_rows):
+                try:
+                    rows = list(final_transform(batch.slice(j, 1)))
+                except Exception as exc:
+                    if not _should_skip(exc):
+                        raise
+                    skipped += 1
+                    if first_exc is None:
+                        first_exc = exc
+                    continue
+                _check_row_count(rows, 1)
+                out.append((abs_start + j, rows[0]))
+            self._rows_skipped += skipped
+            if skipped and on_error == "warn":
+                logger.warning(
+                    "Skipped %d of %d rows whose transform failed (first error: %r)",
+                    skipped,
+                    batch.num_rows,
+                    first_exc if first_exc is not None else batch_exc,
+                )
+            return out
+
+        def _transform_batch(abs_start, batch):
+            """Apply the transform, returning [(abs_pos, row), ...]."""
+            try:
+                rows = list(final_transform(batch))
+            except Exception as exc:
+                if not _should_skip(exc):
+                    raise
+                return _transform_isolated(abs_start, batch, exc)
+            _check_row_count(rows, batch.num_rows)
+            return [(abs_start + j, row) for j, row in enumerate(rows)]
+
+        def _tx_call_guarded(abs_start, batch):
             try:
                 t0 = time.perf_counter()
-                result = final_transform(batch)
+                result = _transform_batch(abs_start, batch)
                 self._transform_time += time.perf_counter() - t0
                 return result
             finally:
@@ -440,8 +573,8 @@ class StreamingDataset(IterableDataset):
         def _try_submit_tx(i: int) -> None:
             """Submit transforms for raw_batches[i] up to available capacity."""
             while raw_batches[i] and tx_semaphore.acquire(blocking=False):
-                batch = raw_batches[i].popleft()
-                tx_pending[i].append(tx_pool.submit(_tx_call_guarded, batch))
+                abs_start, batch = raw_batches[i].popleft()
+                tx_pending[i].append(tx_pool.submit(_tx_call_guarded, abs_start, batch))
 
         def _drain_tx(i: int) -> None:
             """Move completed transform futures into cooked non-blockingly."""
@@ -469,11 +602,14 @@ class StreamingDataset(IterableDataset):
                     # Acquire a transform slot (may block briefly if all
                     # transform_workers are busy with other splits).
                     tx_semaphore.acquire()
-                    batch = raw_batches[i].popleft()
-                    tx_pending[i].append(tx_pool.submit(_tx_call_guarded, batch))
+                    abs_start, batch = raw_batches[i].popleft()
+                    tx_pending[i].append(
+                        tx_pool.submit(_tx_call_guarded, abs_start, batch)
+                    )
                 elif io_pending[i]:
                     # Block on the oldest in-flight I/O fetch.
-                    raw_batches[i].append(io_pending[i].popleft().result())
+                    abs_start, fut = io_pending[i].popleft()
+                    raw_batches[i].append((abs_start, fut.result()))
                     _advance(i)
                 else:
                     break  # split exhausted
@@ -496,10 +632,12 @@ class StreamingDataset(IterableDataset):
                 if not cooked[i]:
                     return
                 buf["starts"].append(len(buf["tokens"]))
-                buf["tokens"].extend(cooked[i].popleft())
+                pos, tokens = cooked[i].popleft()
+                buf["tokens"].extend(tokens)
                 buf["tokens"].append(eos_id)
                 pack_consumed[my_splits[i]] += 1
                 local_consumed[i] += 1
+                pos_consumed[i] = pos + 1
                 _advance(i)
 
         def _emit_block(i: int) -> dict[str, Any]:
@@ -540,12 +678,13 @@ class StreamingDataset(IterableDataset):
                     # worker process.
                     ws = self._worker_stats
                     ws[0] = sum(split_sizes[j] - fetch_head[j] for j in range(n))
-                    ws[1] = sum(batch.num_rows for q in raw_batches for batch in q)
+                    ws[1] = sum(batch.num_rows for q in raw_batches for _, batch in q)
                     ws[2] = sum(len(q) for q in cooked)
                     ws[3] = sum(local_consumed)
                     ws[4] = self._bytes_loaded
                     ws[5] = int(self._fetch_time * 1_000_000)
                     ws[6] = int(self._transform_time * 1_000_000)
+                    ws[7] = self._rows_skipped
 
                 try:
                     for i in range(n):
@@ -577,15 +716,28 @@ class StreamingDataset(IterableDataset):
                         return
 
                     while True:
-                        # Stop when any split is exhausted (all exhaust
-                        # simultaneously: equal split sizes + round-robin).
-                        if any(local_consumed[i] >= split_sizes[i] for i in range(n)):
+                        # A cycle only runs if every split can still produce a
+                        # row.  Without skips all splits exhaust simultaneously
+                        # (equal split sizes + round-robin); when
+                        # on_transform_error drops rows a split can run dry
+                        # early, ending the epoch at the last complete cycle.
+                        # This check only sees splits owned by this rank/worker
+                        # (my_splits) — there is no cross-rank coordination, so
+                        # a different rank with fewer skipped rows keeps going;
+                        # see the on_transform_error docstring.
+                        exhausted = False
+                        for i in range(n):
+                            _ensure_cooked(i)
+                            if not cooked[i]:
+                                exhausted = True
+                                break
+                        if exhausted:
                             break
 
                         for i in range(n):
-                            _ensure_cooked(i)
-                            row = cooked[i].popleft()
+                            pos, row = cooked[i].popleft()
                             local_consumed[i] += 1
+                            pos_consumed[i] = pos + 1
                             _advance(i)
 
                             # After the last split in each cycle: update the
@@ -594,10 +746,25 @@ class StreamingDataset(IterableDataset):
                             # even when __iter__ runs in a worker process.
                             if i == n - 1:
                                 self._resume_offset = initial_offset + local_consumed[i]
+                                for j, split_idx in enumerate(my_splits):
+                                    self._resume_positions[split_idx] = pos_consumed[j]
                                 _update_stats()
 
                             yield row
                 finally:
+                    # Final stats flush: the per-cycle write above never runs
+                    # when iteration ends mid-cycle (e.g. a split whose rows
+                    # were all skipped before completing a single cycle), so
+                    # counters like rows_skipped would otherwise be stale.
+                    ws = self._worker_stats
+                    ws[0] = sum(split_sizes[j] - fetch_head[j] for j in range(n))
+                    ws[1] = 0  # queue-depth properties document 0 when idle
+                    ws[2] = 0
+                    ws[3] = sum(local_consumed)
+                    ws[4] = self._bytes_loaded
+                    ws[5] = int(self._fetch_time * 1_000_000)
+                    ws[6] = int(self._transform_time * 1_000_000)
+                    ws[7] = self._rows_skipped
                     self._raw_batches_ref = None
                     self._cooked_ref = None
                     self._fetch_head_ref = None
@@ -651,7 +818,7 @@ class StreamingDataset(IterableDataset):
         batches.  Returns 0 when not iterating.
         """
         if self._raw_batches_ref is not None:
-            return sum(batch.num_rows for q in self._raw_batches_ref for batch in q)
+            return sum(batch.num_rows for q in self._raw_batches_ref for _, batch in q)
         return int(self._worker_stats[1])
 
     @property
@@ -680,6 +847,19 @@ class StreamingDataset(IterableDataset):
                 for size, head in zip(self._split_sizes_ref, self._fetch_head_ref)
             )
         return int(self._worker_stats[0])
+
+    @property
+    def rows_skipped(self) -> int:
+        """Number of rows dropped because their transform raised an exception.
+
+        Only ever non-zero when ``on_transform_error`` is set to ``"skip"``,
+        ``"warn"``, or a callable that returned ``True``.  Accumulates across
+        multiple iterations of the same dataset instance and is never reset
+        automatically.
+        """
+        if self._raw_batches_ref is not None:
+            return self._rows_skipped
+        return int(self._worker_stats[7])
 
     @property
     def consumed_rows(self) -> int:
@@ -742,9 +922,16 @@ class StreamingDataset(IterableDataset):
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
 
-        In row mode the returned dict is topology-independent: at global step
-        boundaries every split has been consumed the same number of times, so
-        the per-split count is a single uniform value.
+        In row mode, the returned dict is topology-independent at global step
+        boundaries. ``positions_consumed_per_split`` records how far each
+        split's permutation has advanced, which can differ from the sample
+        count when ``on_transform_error`` skips rows. Combine state dicts from
+        every rank with
+        [merge_state_dicts][lancedb.streaming.StreamingDataset.merge_state_dicts]
+        before resuming on a different topology.
+
+        Packed state also includes partial token buffers and is not topology-
+        independent because packing and padding happen within each iterator.
         """
         if self._pack_sequences is not None:
             return {
@@ -757,11 +944,16 @@ class StreamingDataset(IterableDataset):
                 "samples_consumed_per_split": list(self._pack_consumed),
                 "pack_buffers": deepcopy(self._pack_buffers),
             }
+        positions = [
+            self._resume_positions.get(split, self._resume_offset)
+            for split in range(self._num_splits)
+        ]
         return {
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
             "epoch": self._epoch,
             "samples_consumed_per_split": [self._resume_offset] * self._num_splits,
+            "positions_consumed_per_split": positions,
         }
 
     def load_state_dict(self, state: dict) -> None:
@@ -804,3 +996,96 @@ class StreamingDataset(IterableDataset):
             self._resume_offset = consumed[0] if consumed else 0
         else:
             self._resume_offset = int(consumed)
+        # Older checkpoints predate positions_consumed_per_split; without
+        # skipped rows positions equal sample counts, so falling back to
+        # _resume_offset (the .get default in __iter__) is exact.
+        positions = state.get("positions_consumed_per_split")
+        if positions is None:
+            self._resume_positions = {}
+        else:
+            self._resume_positions = {
+                split: int(pos) for split, pos in enumerate(positions)
+            }
+
+    @staticmethod
+    def merge_state_dicts(states: list[dict]) -> dict:
+        """Merge state dicts saved by different ranks into one exact state.
+
+        Only needed when ``on_transform_error`` skips rows in multi-rank
+        training: each rank then knows the exact permutation position only for
+        its own splits, and records a lower bound for the rest.  Because
+        exactly one rank owns each split, the elementwise maximum across all
+        ranks' ``positions_consumed_per_split`` recovers the exact position of
+        every split.  Without skipped rows every rank's state is already
+        identical and merging is a no-op.
+
+        Raises ``ValueError`` if the states are empty or were not produced by
+        the same run (mismatched seed, split count, epoch, or sample counts).
+
+        The merge is always all-to-all and topology-agnostic: collect the
+        ``state_dict()`` from every rank of the *previous* run into one list,
+        merge that whole list, and hand the identical merged result to every
+        rank of the *next* run — regardless of whether the rank count grew,
+        shrank, or stayed the same. There is no pairwise or subset merging
+        step, because each split's exact position is only known to whichever
+        rank owned that split, and the elementwise maximum needs every rank's
+        contribution to be correct.
+
+        For example, checkpointing 8 ranks and resuming on 4 (the same
+        pattern applies when growing, e.g. 4 ranks resuming on 8)::
+
+            states = [ds.state_dict() for ds in previous_run_datasets]  # 8
+            merged = StreamingDataset.merge_state_dicts(states)
+            for ds in resumed_datasets:  # now only 4 ranks
+                ds.load_state_dict(merged)  # same dict on every rank
+
+        The rank count on either side never affects the merge itself, since
+        ``merge_state_dicts`` only cares about the list of states it is
+        given.  Each split's position is recovered by elementwise maximum;
+        here rank 0 owned split 0 (and skipped two rows there) while rank 1
+        owned split 1 (and skipped one row):
+
+        >>> rank0 = {
+        ...     "shuffle_seed": 0, "num_splits": 2, "epoch": 0,
+        ...     "samples_consumed_per_split": [3, 3],
+        ...     "positions_consumed_per_split": [5, 3],
+        ... }
+        >>> rank1 = {
+        ...     "shuffle_seed": 0, "num_splits": 2, "epoch": 0,
+        ...     "samples_consumed_per_split": [3, 3],
+        ...     "positions_consumed_per_split": [3, 4],
+        ... }
+        >>> merged = StreamingDataset.merge_state_dicts([rank0, rank1])
+        >>> merged["positions_consumed_per_split"]
+        [5, 4]
+        """
+        if not states:
+            raise ValueError("merge_state_dicts requires at least one state dict")
+        first = states[0]
+        for state in states[1:]:
+            for key in ("shuffle_seed", "num_splits", "epoch"):
+                if state[key] != first[key]:
+                    raise ValueError(
+                        f"{key} mismatch across state dicts: "
+                        f"{state[key]} != {first[key]}"
+                    )
+            if (
+                state["samples_consumed_per_split"]
+                != first["samples_consumed_per_split"]
+            ):
+                raise ValueError(
+                    "samples_consumed_per_split mismatch across state dicts; "
+                    "state_dict() must be called at the same global step "
+                    "boundary on every rank"
+                )
+        merged = dict(first)
+        all_positions = [
+            state.get(
+                "positions_consumed_per_split", state["samples_consumed_per_split"]
+            )
+            for state in states
+        ]
+        merged["positions_consumed_per_split"] = [
+            max(per_split) for per_split in zip(*all_positions)
+        ]
+        return merged
