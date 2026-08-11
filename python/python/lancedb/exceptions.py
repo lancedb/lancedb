@@ -3,6 +3,8 @@
 
 """Custom exception handling"""
 
+from typing import Optional
+
 
 class MissingValueError(ValueError):
     """Exception raised when a required value is missing."""
@@ -26,9 +28,24 @@ class MissingColumnError(KeyError):
 
 
 class JobFailedError(RuntimeError):
-    """Exception raised when an asynchronous job reaches the failed state."""
+    """Exception raised when an asynchronous job reaches the failed state.
 
-    pass
+    ``error_code`` is the optional exact category string projected from the
+    native job failure when the backend supplied one. The RuntimeError
+    message remains the existing diagnostic text and must not be used to
+    recover or override the code.
+    """
+
+    __slots__ = ("_error_code",)
+
+    def __init__(self, message: str, error_code: Optional[str] = None) -> None:
+        super().__init__(message)
+        self._error_code = error_code
+
+    @property
+    def error_code(self) -> Optional[str]:
+        """Exact job failure error category string, when supplied."""
+        return self._error_code
 
 
 class JobCancelledError(RuntimeError):

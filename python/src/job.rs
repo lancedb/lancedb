@@ -111,14 +111,16 @@ pub struct JobFailureInfo {
     phase: Option<String>,
     message: Option<String>,
     retryable: Option<bool>,
+    /// Exact wire `error_code` string when Rust decoded one; never inferred.
+    error_code: Option<String>,
 }
 
 #[pymethods]
 impl JobFailureInfo {
     fn __repr__(&self) -> String {
         format!(
-            "JobFailureInfo(phase={:?}, message={:?}, retryable={:?})",
-            self.phase, self.message, self.retryable
+            "JobFailureInfo(phase={:?}, message={:?}, retryable={:?}, error_code={:?})",
+            self.phase, self.message, self.retryable, self.error_code
         )
     }
 }
@@ -158,6 +160,11 @@ impl From<lancedb::database::JobDescription> for JobDescription {
                 phase: failure.phase,
                 message: failure.message,
                 retryable: failure.retryable,
+                // Structural projection only: exact as_str(); never infer.
+                error_code: failure
+                    .error_code
+                    .as_ref()
+                    .map(|code| code.as_str().to_string()),
             }),
             result: project_description_result(description.result),
         }
