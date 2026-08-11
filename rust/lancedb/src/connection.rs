@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::RegisterFunctionJobSpec;
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -548,6 +549,18 @@ impl Connection {
     /// `job_id` is `None`), as recorded Arrow batches.
     pub async fn job_history(&self, job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
         self.internal.job_history(job_id).await
+    }
+
+    /// Submit a first-class Function registration job.
+    ///
+    /// Returns a [`crate::job::Job`] handle for the accepted server-side job.
+    /// Only remote databases support registration; local databases return
+    /// [`Error::NotSupported`].
+    pub async fn register_function(
+        &self,
+        spec: RegisterFunctionJobSpec,
+    ) -> Result<crate::job::Job> {
+        self.internal.register_function(spec).await
     }
 
     /// Drop a table in the database.

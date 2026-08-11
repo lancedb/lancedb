@@ -15,6 +15,51 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+/// Privacy mode for request logging and non-success response handling.
+///
+/// [`RequestPrivacy::Standard`] preserves the existing harmless JSON body
+/// visibility. [`RequestPrivacy::Sensitive`] never includes request bodies or
+/// headers in logs, and never folds response bodies into error chains.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestPrivacy {
+    Standard,
+    Sensitive,
+}
+
+/// Format a request for debug logging according to [`RequestPrivacy`].
+fn format_request_log(request: &Request, request_id: &str, privacy: RequestPrivacy) -> String {
+    match privacy {
+        RequestPrivacy::Standard => {
+            let content_type = request
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok());
+            if content_type == Some("application/json") {
+                let body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+                format!(
+                    "Sending request_id={}: {:?} with body {}",
+                    request_id, request, body
+                )
+            } else {
+                format!("Sending request_id={}: {:?}", request_id, request)
+            }
+        }
+        RequestPrivacy::Sensitive => {
+            // Safe context only: request id, method, and URL. Never body or headers.
+            format!(
+                "Sending request_id={}: {} {}",
+                request_id,
+                request.method(),
+                request.url()
+            )
+        }
+    }
+}
+
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug)]
 pub struct TlsConfig {
@@ -753,9 +798,37 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub async fn send_with_retry(
         &self,
         req_builder: RequestBuilder,
-        mut make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
+        make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
         retry_5xx: bool,
     ) -> Result<(String, Response)> {
+        self.send_with_retry_inner(req_builder, make_body, retry_5xx, RequestPrivacy::Standard)
+            .await
+    }
+
+    /// Like [`Self::send_with_retry`], but never logs request bodies/headers and
+    /// never folds non-success response bodies into retry or HTTP error chains.
+    ///
+    /// Privacy affects only logging and error-body exposure; retry budgets are
+    /// identical to [`Self::send_with_retry`] for the same [`RetryConfig`].
+    pub(crate) async fn send_sensitive_with_retry(
+        &self,
+        req_builder: RequestBuilder,
+        make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
+        retry_5xx: bool,
+    ) -> Result<(String, Response)> {
+        self.send_with_retry_inner(req_builder, make_body, retry_5xx, RequestPrivacy::Sensitive)
+            .await
+    }
+
+    async fn send_with_retry_inner(
+        &self,
+        req_builder: RequestBuilder,
+        mut make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
+        retry_5xx: bool,
+        privacy: RequestPrivacy,
+    ) -> Result<(String, Response)> {
+        // Privacy must never alter retry budgets: both Standard and Sensitive
+        // share the same ResolvedRetryConfig / RetryCounter semantics.
         let retry_config = &self.retry_config;
         let non_5xx_statuses = retry_config
             .statuses
@@ -772,6 +845,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         let mut r = r.map_err(|e| Error::Runtime {
             message: format!("Failed to build request: {}", e),
         })?;
+        // One SDK-generated request id is reused across every retry attempt.
         let request_id = self.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
@@ -790,12 +864,14 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let mut request = request.map_err(|e| Error::Runtime {
                 message: format!("Failed to build request: {}", e),
             })?;
-            self.set_request_id(&mut request, &request_id.clone());
+            self.set_request_id(&mut request, &request_id);
 
             // Apply dynamic headers before each retry attempt
             request = self.apply_dynamic_headers(request).await?;
 
-            self.log_request(&request, &request_id);
+            if log::log_enabled!(log::Level::Debug) {
+                debug!("{}", format_request_log(&request, &request_id, privacy));
+            }
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
 
@@ -811,10 +887,16 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     if (retry_5xx && retry_config.statuses.contains(&status))
                         || non_5xx_statuses.contains(&status) =>
                 {
-                    let source = self
-                        .check_response(&retry_counter.request_id, response)
-                        .await
-                        .unwrap_err();
+                    let source = match privacy {
+                        RequestPrivacy::Standard => self
+                            .check_response(&retry_counter.request_id, response)
+                            .await
+                            .unwrap_err(),
+                        RequestPrivacy::Sensitive => self
+                            .check_sensitive_response(&retry_counter.request_id, response)
+                            .await
+                            .unwrap_err(),
+                    };
                     retry_counter.increment_request_failures(source)?;
                 }
                 Err(err) if err.is_connect() => {
@@ -839,22 +921,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &str) {
         if log::log_enabled!(log::Level::Debug) {
-            let content_type = request
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap());
-            if content_type == Some("application/json") {
-                let body = request.body().as_ref().unwrap().as_bytes().unwrap();
-                let body = String::from_utf8_lossy(body);
-                debug!(
-                    "Sending request_id={}: {:?} with body {}",
-                    request_id, request, body
-                );
-            } else {
-                debug!("Sending request_id={}: {:?}", request_id, request);
-            }
+            debug!(
+                "{}",
+                format_request_log(request, request_id, RequestPrivacy::Standard)
+            );
         }
     }
 
@@ -893,6 +965,27 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             };
             Err(Error::Http {
                 source: message.into(),
+                request_id: request_id.into(),
+                status_code: Some(status),
+            })
+        }
+    }
+
+    /// Like [`Self::check_response`], but discards the response body on failure
+    /// so marker-bearing payloads never enter [`Error::Http`] chains.
+    pub(crate) async fn check_sensitive_response(
+        &self,
+        request_id: &str,
+        response: Response,
+    ) -> Result<Response> {
+        let status = response.status();
+        if status.is_success() {
+            Ok(response)
+        } else {
+            // Discard the body entirely; never fold it into Error::Http.
+            let _ = response.bytes().await;
+            Err(Error::Http {
+                source: status.to_string().into(),
                 request_id: request_id.into(),
                 status_code: Some(status),
             })
@@ -1066,6 +1159,7 @@ pub mod test_utils {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     // Serializes the env-var-mutating tests below: cargo test runs tests in
@@ -1663,5 +1757,254 @@ mod tests {
             std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
         }
         assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
+    }
+
+    // -------------------------------------------------------------------------
+    // Sensitive-request privacy mode (generic transport; RED until helpers exist)
+    // -------------------------------------------------------------------------
+
+    const PRIVACY_SOURCE_MARKER: &str = "SENSITIVE_PRIVACY_SOURCE_BODY_MARKER_client";
+    const PRIVACY_SECRET_MARKER: &str = "secret://team/client-privacy-token";
+
+    fn privacy_json_request(url: &str, body: &str, request_id: &str) -> Request {
+        reqwest::Client::new()
+            .post(url)
+            .header("content-type", "application/json")
+            .header("x-request-id", request_id)
+            .body(body.to_string())
+            .build()
+            .expect("build privacy fixture request")
+    }
+
+    fn assert_markers_absent(text: &str) {
+        assert!(
+            !text.contains(PRIVACY_SOURCE_MARKER),
+            "source marker must be absent: {text}"
+        );
+        assert!(
+            !text.contains(PRIVACY_SECRET_MARKER),
+            "secret marker must be absent: {text}"
+        );
+    }
+
+    fn error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    /// Standard JSON request logging keeps the current harmless body visibility.
+    #[test]
+    fn format_request_log_standard_retains_harmless_json_body() {
+        let request_id = "req-privacy-standard";
+        let body = r#"{"ok":true,"note":"harmless-visible-body"}"#;
+        let request = privacy_json_request("http://localhost/v1/table/", body, request_id);
+
+        let log = format_request_log(&request, request_id, RequestPrivacy::Standard);
+
+        assert!(
+            log.contains(request_id),
+            "standard log must retain request id: {log}"
+        );
+        assert!(
+            log.contains("POST"),
+            "standard log must retain method: {log}"
+        );
+        assert!(
+            log.contains("/v1/table/"),
+            "standard log must retain URL path: {log}"
+        );
+        assert!(
+            log.contains("harmless-visible-body"),
+            "standard JSON logging must retain body visibility: {log}"
+        );
+        assert!(
+            log.contains(body) || log.contains(r#""note":"harmless-visible-body""#),
+            "standard JSON logging must include the harmless JSON body: {log}"
+        );
+    }
+
+    /// Sensitive JSON formatting redacts the entire body and keeps only safe context.
+    #[test]
+    fn format_request_log_sensitive_redacts_json_body_keeps_safe_context() {
+        let request_id = "req-privacy-sensitive";
+        let body =
+            format!(r#"{{"source":"{PRIVACY_SOURCE_MARKER}","secret":"{PRIVACY_SECRET_MARKER}"}}"#);
+        let request =
+            privacy_json_request("http://localhost/v1/functions/register", &body, request_id);
+
+        let log = format_request_log(&request, request_id, RequestPrivacy::Sensitive);
+
+        assert!(
+            log.contains(request_id),
+            "sensitive log must retain request id: {log}"
+        );
+        assert!(
+            log.contains("POST"),
+            "sensitive log must retain method: {log}"
+        );
+        assert!(
+            log.contains("/v1/functions/register"),
+            "sensitive log must retain URL path: {log}"
+        );
+        assert_markers_absent(&log);
+        assert!(
+            !log.contains(&body),
+            "sensitive JSON formatting must redact the entire body: {log}"
+        );
+    }
+
+    /// Sensitive non-success responses omit the response body from Error::Http text.
+    #[tokio::test]
+    async fn check_sensitive_response_omits_non_success_response_body() {
+        let client = test_utils::client_with_handler(|_| {
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let response: Response = http::Response::builder()
+            .status(400)
+            .body(format!(
+                "client error echoed {PRIVACY_SOURCE_MARKER} and {PRIVACY_SECRET_MARKER}"
+            ))
+            .unwrap()
+            .into();
+
+        let err = client
+            .check_sensitive_response("req-privacy-check", response)
+            .await
+            .expect_err("non-success sensitive response must fail closed");
+
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        assert_markers_absent(&error_chain_text(&err));
+    }
+
+    /// Sensitive send+retry must not leak request/response markers into retry errors.
+    #[tokio::test]
+    async fn send_sensitive_with_retry_omits_markers_from_exhausted_retry_errors() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counted = call_count.clone();
+        let client = test_utils::client_with_handler_and_config(
+            move |request| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let body = request.body().and_then(|b| b.as_bytes()).unwrap_or(b"");
+                let body = std::str::from_utf8(body).unwrap_or("");
+                assert!(
+                    body.contains(PRIVACY_SOURCE_MARKER) && body.contains(PRIVACY_SECRET_MARKER),
+                    "trusted wire body must still carry sensitive fields"
+                );
+                http::Response::builder()
+                    .status(500)
+                    .body(format!(
+                        "server echoed {PRIVACY_SOURCE_MARKER} and {PRIVACY_SECRET_MARKER}"
+                    ))
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    // RetryCounter treats `retries` as max request failures, so
+                    // retries=2 yields exactly two transport attempts before Error::Retry.
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let payload = serde_json::json!({
+            "source": PRIVACY_SOURCE_MARKER,
+            "secret": PRIVACY_SECRET_MARKER,
+        });
+        let req = client.post("/v1/functions/register").json(&payload);
+        let err = client
+            .send_sensitive_with_retry(req, None, true)
+            .await
+            .expect_err("exhausted sensitive 5xx retries must fail");
+
+        assert!(
+            matches!(err, Error::Retry { .. }),
+            "expected Error::Retry, got {err:?}"
+        );
+        assert_markers_absent(&error_chain_text(&err));
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "RetryCounter max request failures=2 must make exactly two transport attempts"
+        );
+    }
+
+    /// Standard and Sensitive share the same RetryCounter attempt budget.
+    #[tokio::test]
+    async fn send_with_retry_standard_and_sensitive_share_attempt_budget() {
+        async fn exhausted_attempts(sensitive: bool) -> usize {
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let counted = call_count.clone();
+            let client = test_utils::client_with_handler_and_config(
+                move |_| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(500)
+                        .body(format!(
+                            "server echoed {PRIVACY_SOURCE_MARKER} and {PRIVACY_SECRET_MARKER}"
+                        ))
+                        .unwrap()
+                },
+                ClientConfig {
+                    retry_config: RetryConfig {
+                        retries: Some(2),
+                        backoff_factor: Some(0.0),
+                        backoff_jitter: Some(0.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+
+            let payload = serde_json::json!({
+                "source": PRIVACY_SOURCE_MARKER,
+                "secret": PRIVACY_SECRET_MARKER,
+            });
+            let req = client.post("/v1/functions/register").json(&payload);
+            let err = if sensitive {
+                client
+                    .send_sensitive_with_retry(req, None, true)
+                    .await
+                    .expect_err("exhausted sensitive 5xx retries must fail")
+            } else {
+                client
+                    .send_with_retry(req, None, true)
+                    .await
+                    .expect_err("exhausted standard 5xx retries must fail")
+            };
+            assert!(
+                matches!(err, Error::Retry { .. }),
+                "expected Error::Retry, got {err:?}"
+            );
+            if sensitive {
+                assert_markers_absent(&error_chain_text(&err));
+            }
+            call_count.load(Ordering::SeqCst)
+        }
+
+        let standard_attempts = exhausted_attempts(false).await;
+        let sensitive_attempts = exhausted_attempts(true).await;
+        assert_eq!(
+            standard_attempts, sensitive_attempts,
+            "Standard and Sensitive must share the same attempt budget for identical RetryConfig"
+        );
+        assert_eq!(
+            standard_attempts, 2,
+            "RetryCounter max request failures=2 must make exactly two transport attempts"
+        );
     }
 }

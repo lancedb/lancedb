@@ -23,6 +23,7 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::function::RegisterFunctionJobSpec;
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -576,6 +577,46 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .map_err(Into::into)
     }
 
+    async fn register_function(&self, spec: RegisterFunctionJobSpec) -> Result<crate::job::Job> {
+        let req = self.client.post("/v1/functions/register").json(&spec);
+        let (request_id, rsp) = self
+            .client
+            .send_sensitive_with_retry(req, None, true)
+            .await?;
+        let rsp = self
+            .client
+            .check_sensitive_response(&request_id, rsp)
+            .await?;
+
+        // Payload-free protocol failure: never fold response bytes into Error::Http.
+        let bytes = rsp.bytes().await.err_to_http(request_id.clone())?;
+        let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(Error::Http {
+                    source: "register function response is not valid JSON".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+        let job_id = match value.get("job_id") {
+            Some(serde_json::Value::String(job_id)) if !job_id.is_empty() => job_id.clone(),
+            _ => {
+                return Err(Error::Http {
+                    source: "register function response missing or invalid job_id".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+
+        Ok(crate::job::Job::new(Box::new(super::job::RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = if !request.namespace_path.is_empty() {
             let namespace_id =
@@ -1077,9 +1118,15 @@ mod tests {
         Connection, Error,
         database::CreateTableMode,
         error::FunctionErrorCode,
-        function::{Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature},
+        function::{
+            Function, FunctionCapability, FunctionDefinition, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, PythonFunctionDefinition,
+            RegisterFunctionJobSpec,
+        },
         job::JobResult,
-        remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
+        remote::{
+            ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE, RetryConfig,
+        },
     };
     use serde_json::{Value, json};
 
@@ -2960,6 +3007,403 @@ mod tests {
         assert_eq!(
             serde_json::to_value(JobResult::Function(expected)).expect("serialize Function"),
             function_wire
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // RegisterFunctionJobSpec remote submit transport (RED until register_function)
+    // -------------------------------------------------------------------------
+
+    const REGISTER_SOURCE_MARKER: &str = "def normalize(text, limit):\n    return text[:limit]  # SENSITIVE_REGISTER_SOURCE_MARKER\n";
+    const REGISTER_SECRET_MARKER: &str = "secret://team/register-function-privacy-token";
+
+    fn sample_register_function_job_spec() -> RegisterFunctionJobSpec {
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("valid FunctionSignature");
+        let python = PythonFunctionDefinition::try_new(
+            "normalize_mod",
+            "normalize",
+            REGISTER_SOURCE_MARKER,
+            "3.12",
+            vec!["Unidecode==1.3.8".to_string()],
+        )
+        .expect("valid PythonFunctionDefinition");
+        let capabilities = vec![
+            FunctionCapability::try_network("https://api.example.com").expect("network capability"),
+            FunctionCapability::try_secret(REGISTER_SECRET_MARKER, "API_TOKEN")
+                .expect("secret capability"),
+        ];
+        let definition = FunctionDefinition::try_new(signature, python, capabilities)
+            .expect("valid FunctionDefinition");
+        RegisterFunctionJobSpec::try_new("text.normalize", definition, None)
+            .expect("valid RegisterFunctionJobSpec")
+    }
+
+    fn register_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_register_markers_absent(err: &Error) {
+        let text = register_error_chain_text(err);
+        assert!(
+            !text.contains(REGISTER_SOURCE_MARKER),
+            "Python source marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REGISTER_SECRET_MARKER),
+            "secret reference marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_register_request(
+        request: &reqwest::Request,
+        expected_spec: &RegisterFunctionJobSpec,
+    ) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/v1/functions/register");
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("register request must carry a JSON body");
+        let actual: Value = serde_json::from_slice(body).expect("register body must be JSON");
+        let expected =
+            serde_json::to_value(expected_spec).expect("serialize RegisterFunctionJobSpec");
+        assert_eq!(
+            actual, expected,
+            "POST body must be the exact RegisterFunctionJobSpec wire"
+        );
+        assert!(
+            actual
+                .to_string()
+                .contains("SENSITIVE_REGISTER_SOURCE_MARKER"),
+            "trusted request body must include full Python source"
+        );
+        assert_eq!(
+            actual["definition"]["capabilities"][1]["reference"],
+            Value::String(REGISTER_SECRET_MARKER.into()),
+            "trusted request body must include secret reference"
+        );
+    }
+
+    /// Successful submit uses exact path/method/body and projects a non-empty Job id.
+    #[tokio::test]
+    async fn register_function_submit_posts_exact_spec_and_returns_remote_job() {
+        let spec = sample_register_function_job_spec();
+        let expected_body = serde_json::to_value(&spec).expect("serialize spec");
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/functions/register");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let actual: Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(actual, expected_body);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id":"job-register-transport-1","server_extra":{"ok":true}}"#)
+                .unwrap()
+        });
+
+        let job = conn
+            .register_function(spec)
+            .await
+            .expect("register_function submit must succeed");
+        assert_eq!(
+            job.id(),
+            Some("job-register-transport-1"),
+            "successful submit must project the non-empty job_id onto the unified remote Job"
+        );
+    }
+
+    /// One retry keeps the SDK-generated request id and exact body before success.
+    #[tokio::test]
+    async fn register_function_submit_retry_preserves_request_id_and_body() {
+        let spec = sample_register_function_job_spec();
+        let expected_body = serde_json::to_value(&spec).expect("serialize spec");
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let expected_spec = sample_register_function_job_spec();
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_register_request(&request, &expected_spec);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(request.body().unwrap().as_bytes().unwrap())
+                        .unwrap(),
+                    expected_body
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body("transient register failure")
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-register-retry-1"}"#)
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let job = conn
+            .register_function(spec)
+            .await
+            .expect("register_function must succeed after one retry");
+        assert_eq!(job.id(), Some("job-register-retry-1"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Missing/null/empty/wrong-type/malformed job_id fail closed as Error::Http.
+    #[tokio::test]
+    async fn register_function_submit_invalid_job_id_is_http_without_markers() {
+        let cases: Vec<(&str, String)> = vec![
+            ("missing", r#"{"server_extra":true}"#.to_string()),
+            ("null", r#"{"job_id":null}"#.to_string()),
+            ("empty", r#"{"job_id":""}"#.to_string()),
+            ("wrong_type", r#"{"job_id":123}"#.to_string()),
+            ("malformed", "not-json".to_string()),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, response_body) in cases {
+            let spec = sample_register_function_job_spec();
+            let expected_body = serde_json::to_value(&spec).expect("serialize spec");
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/functions/register");
+                let actual: Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(actual, expected_body);
+                http::Response::builder()
+                    .status(200)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+
+            match conn.register_function(spec).await {
+                Err(err @ Error::Http { .. }) => assert_register_markers_absent(&err),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid job_id shapes must fail closed as Error::Http: {unexpected:?}"
+        );
+    }
+
+    /// Non-retry 4xx and exhausted 5xx bodies that echo markers stay out of error text.
+    #[tokio::test]
+    async fn register_function_submit_error_bodies_omit_sensitive_markers() {
+        let echoed =
+            format!("register failed with {REGISTER_SOURCE_MARKER} and {REGISTER_SECRET_MARKER}");
+
+        // Non-retryable 4xx
+        {
+            let spec = sample_register_function_job_spec();
+            let body = echoed.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/functions/register");
+                http::Response::builder()
+                    .status(400)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let err = conn
+                .register_function(spec)
+                .await
+                .expect_err("4xx register submit must fail");
+            assert!(
+                matches!(err, Error::Http { .. }),
+                "non-retry 4xx must surface as Error::Http, got {err:?}"
+            );
+            assert_register_markers_absent(&err);
+        }
+
+        // Exhausted retryable 5xx
+        {
+            let spec = sample_register_function_job_spec();
+            let body = echoed.clone();
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempts_ref = attempts.clone();
+            let conn = Connection::new_with_handler_and_config(
+                move |request| {
+                    attempts_ref.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(request.url().path(), "/v1/functions/register");
+                    http::Response::builder()
+                        .status(500)
+                        .body(body.clone())
+                        .unwrap()
+                },
+                ClientConfig {
+                    retry_config: RetryConfig {
+                        // RetryCounter treats `retries` as max request failures, so
+                        // retries=2 yields exactly two transport attempts before Error::Retry.
+                        retries: Some(2),
+                        backoff_factor: Some(0.0),
+                        backoff_jitter: Some(0.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let err = conn
+                .register_function(spec)
+                .await
+                .expect_err("exhausted 5xx register submit must fail");
+            assert!(
+                matches!(err, Error::Retry { .. }),
+                "exhausted 5xx must surface as Error::Retry, got {err:?}"
+            );
+            assert_eq!(
+                attempts.load(Ordering::SeqCst),
+                2,
+                "RetryCounter max request failures=2 must make exactly two transport attempts"
+            );
+            assert_register_markers_absent(&err);
+        }
+    }
+
+    /// Local databases reject registration without mutating database state.
+    #[tokio::test]
+    async fn register_function_local_database_returns_not_supported_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let err = conn
+            .register_function(sample_register_function_job_spec())
+            .await
+            .expect_err("local register_function must be unsupported");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "unsupported register must not mutate tables");
+    }
+
+    /// Submit then existing /v1/jobs/describe returns the exact Function (no name lookup).
+    #[tokio::test]
+    async fn register_function_submit_then_describe_returns_exact_function() {
+        let expected = sample_description_function();
+        let function_wire = job_result_function_wire(&expected);
+        let describe_body = describe_body(
+            "job-register-wait-1",
+            "DONE",
+            JsonField::Present(Value::String("register_function".into())),
+            JsonField::Present(function_wire),
+        );
+        let spec = sample_register_function_job_spec();
+        let expected_spec_body = serde_json::to_value(&spec).expect("serialize spec");
+        let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let paths_ref = paths.clone();
+
+        let conn = Connection::new_with_handler(move |request| {
+            let path = request.url().path().to_string();
+            paths_ref.lock().unwrap().push(path.clone());
+            match path.as_str() {
+                "/v1/functions/register" => {
+                    assert_eq!(request.method(), &reqwest::Method::POST);
+                    let actual: Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(actual, expected_spec_body);
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-register-wait-1"}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/jobs/describe" => {
+                    assert_eq!(request.method(), &reqwest::Method::POST);
+                    let body: Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["job_id"], "job-register-wait-1");
+                    assert!(
+                        body.get("name").is_none(),
+                        "describe must not perform a second name lookup: {body}"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_body.clone())
+                        .unwrap()
+                }
+                other => panic!("unexpected path for register+wait flow: {other}"),
+            }
+        });
+
+        let job = conn
+            .register_function(spec)
+            .await
+            .expect("register_function submit must return a Job");
+        assert_eq!(job.id(), Some("job-register-wait-1"));
+
+        let waited = job.wait().await.expect("wait via /v1/jobs/describe");
+        let function = waited
+            .function()
+            .expect("register_function success must be JobResult::Function");
+        assert_exact_function(function, &expected);
+
+        let seen = paths.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                "/v1/functions/register".to_string(),
+                "/v1/jobs/describe".to_string(),
+            ],
+            "flow must be submit then describe only, with no Function name lookup"
         );
     }
 }

@@ -30,6 +30,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
+use crate::function::RegisterFunctionJobSpec;
 use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
@@ -316,6 +317,13 @@ pub trait Database:
     /// `None`), as recorded Arrow batches.
     async fn job_history(&self, _job_id: Option<&str>) -> Result<Vec<RecordBatch>> {
         job_op_not_supported("job_history")
+    }
+    /// Submit a first-class Function registration job.
+    ///
+    /// Returns a [`crate::job::Job`] handle for the accepted server-side job.
+    /// Local databases do not support registration.
+    async fn register_function(&self, _spec: RegisterFunctionJobSpec) -> Result<crate::job::Job> {
+        job_op_not_supported("register_function")
     }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
