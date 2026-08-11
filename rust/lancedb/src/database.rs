@@ -230,6 +230,12 @@ pub struct JobDescription {
     pub creation_ms: i64,
     /// The job-type-specific specification. Null when the server omits it.
     pub spec: serde_json::Value,
+    /// Explicit success result from the describe envelope, when present.
+    ///
+    /// Missing or JSON `null` wire `result` is [`None`]. An explicit
+    /// [`crate::JobResult::None`] object is `Some(JobResult::None)`. An exact
+    /// Function result is `Some(JobResult::Function(...))`.
+    pub result: Option<crate::job::JobResult>,
     /// Why the job failed, when the job is failed and the server reports a
     /// reason.
     pub failure: Option<crate::error::JobFailure>,

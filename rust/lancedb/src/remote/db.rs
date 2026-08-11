@@ -453,51 +453,6 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
-/// The server's account of why a job failed. Absent from older servers,
-/// which report only the terminal state.
-#[derive(serde::Deserialize)]
-struct RemoteReportedFailure {
-    /// Stable Function error category when the server supplied one.
-    #[serde(default)]
-    error_code: Option<crate::error::FunctionErrorCode>,
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    retryable: Option<bool>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDescribeJobResponse {
-    job_id: String,
-    #[serde(default)]
-    job_type: String,
-    job_state: String,
-    #[serde(default)]
-    creation_ms: i64,
-    #[serde(default)]
-    spec: serde_json::Value,
-    #[serde(default)]
-    failure: Option<RemoteReportedFailure>,
-}
-
-/// Server job states -> the client vocabulary ("running" / "finished" /
-/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
-/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
-/// (in_progress / succeeded / failed / canceled / timed_out). States this
-/// client version does not know (e.g. created, queued) pass through as-is.
-fn job_state_to_client(state: &str) -> String {
-    match state {
-        "IN_PROGRESS" | "in_progress" => "running",
-        "DONE" | "done" | "succeeded" => "finished",
-        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
-        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
-        other => other,
-    }
-    .to_string()
-}
-
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -538,7 +493,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 job_id: row.job_id,
                 table: row.table,
                 job_type: row.job_type,
-                state: job_state_to_client(&row.state),
+                state: super::job::job_state_to_client(&row.state),
                 created_at_millis: row.created_at_millis,
             }));
             page_token = body.page_token;
@@ -570,20 +525,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let body: RemoteDescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        let body: super::job::DescribeJobResponse =
+            rsp.json().await.err_to_http(request_id.clone())?;
+        let job_id = body.require_job_id(request_id.clone())?;
+        let result = body
+            .project_success_result(request_id)?
+            .into_description_result();
+        let state = body.client_state();
         Ok(Some(JobDescription {
-            job_id: body.job_id,
+            job_id,
             job_type: body.job_type,
-            state: job_state_to_client(&body.job_state),
+            state,
             creation_ms: body.creation_ms,
             spec: body.spec,
-            failure: body.failure.map(|reported| crate::error::JobFailure {
-                error_code: reported.error_code,
-                phase: reported.phase,
-                message: reported.message,
-                retryable: reported.retryable,
-                source: None,
-            }),
+            result,
+            failure: body
+                .failure
+                .map(super::job::ReportedFailure::into_job_failure),
         }))
     }
 
@@ -1118,8 +1076,12 @@ mod tests {
     use crate::{
         Connection, Error,
         database::CreateTableMode,
+        error::FunctionErrorCode,
+        function::{Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature},
+        job::JobResult,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+    use serde_json::{Value, json};
 
     #[test]
     fn test_cache_key_security() {
@@ -2336,6 +2298,67 @@ mod tests {
         assert_eq!(failure.retryable, Some(true));
     }
 
+    /// Typed get_job keeps requiring an echoed response job_id even when the
+    /// rest of a create_index DONE describe looks valid.
+    #[tokio::test]
+    async fn test_get_job_omitted_job_id_is_http() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_type":"create_index","job_state":"DONE","creation_ms":1,"spec":{}}"#)
+                .unwrap()
+        });
+        let err = conn
+            .get_job("job-1")
+            .await
+            .expect_err("get_job must require response job_id");
+        match err {
+            Error::Http { .. } => {}
+            other => panic!("expected Error::Http, got {other:?}"),
+        }
+    }
+
+    /// Documented lowercase describe/list aliases stay stable on get_job.
+    #[tokio::test]
+    async fn test_get_job_normalizes_documented_state_aliases() {
+        let cases = [
+            ("in_progress", "running"),
+            ("done", "finished"),
+            ("succeeded", "finished"),
+            ("failed", "failed"),
+            ("timed_out", "failed"),
+            ("cancelled", "cancelled"),
+            ("canceled", "cancelled"),
+            ("IN_PROGRESS", "running"),
+            ("DONE", "finished"),
+            ("FAILED", "failed"),
+            ("CANCELLED", "cancelled"),
+            ("TIMED_OUT", "failed"),
+        ];
+        for (wire_state, expected_client_state) in cases {
+            let body = format!(
+                r#"{{"job_id":"job-alias","job_type":"create_index","job_state":"{wire_state}","creation_ms":1,"spec":{{}}}}"#
+            );
+            let conn = Connection::new_with_handler(move |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let job = conn
+                .get_job("job-alias")
+                .await
+                .unwrap_or_else(|err| panic!("alias {wire_state} must describe: {err:?}"))
+                .expect("job must exist");
+            assert_eq!(
+                job.state, expected_client_state,
+                "get_job alias {wire_state} must normalize to {expected_client_state}"
+            );
+            assert_eq!(job.job_id, "job-alias");
+        }
+    }
+
     #[tokio::test]
     async fn test_get_job_missing_is_none() {
         let conn = Connection::new_with_handler(|_| {
@@ -2528,5 +2551,415 @@ mod tests {
             },
             other => panic!("expected Error::JobFailed, got {other:?}"),
         }
+    }
+
+    /// Optional JSON object field for deterministic `/v1/jobs/describe` fixtures.
+    #[derive(Clone)]
+    enum JsonField {
+        Absent,
+        Null,
+        Present(Value),
+    }
+
+    fn sample_description_function() -> Function {
+        let id = FunctionId::try_new("fn.exact.remote-job-description").expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("x", DataType::Int32),
+                FunctionParameter::new("label", DataType::Utf8),
+            ],
+            FunctionOutput::new(DataType::Int32, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn assert_exact_function(actual: &Function, expected: &Function) {
+        assert_eq!(actual.id(), expected.id());
+        assert_eq!(actual.signature(), expected.signature());
+    }
+
+    fn job_result_none_wire() -> Value {
+        serde_json::to_value(JobResult::None).expect("serialize JobResult::None wire")
+    }
+
+    fn job_result_function_wire(function: &Function) -> Value {
+        serde_json::to_value(JobResult::Function(function.clone()))
+            .expect("serialize JobResult::Function wire")
+    }
+
+    fn describe_body(
+        job_id: &str,
+        job_state: &str,
+        job_type: JsonField,
+        result: JsonField,
+    ) -> String {
+        let mut body = json!({
+            "job_id": job_id,
+            "job_state": job_state,
+            "creation_ms": 1,
+            "spec": {},
+        });
+        let object = body
+            .as_object_mut()
+            .expect("describe body must be a JSON object");
+        match job_type {
+            JsonField::Absent => {}
+            JsonField::Null => {
+                object.insert("job_type".into(), Value::Null);
+            }
+            JsonField::Present(value) => {
+                object.insert("job_type".into(), value);
+            }
+        }
+        match result {
+            JsonField::Absent => {}
+            JsonField::Null => {
+                object.insert("result".into(), Value::Null);
+            }
+            JsonField::Present(value) => {
+                object.insert("result".into(), value);
+            }
+        }
+        body.to_string()
+    }
+
+    fn conn_with_describe_body(body: String) -> Connection {
+        Connection::new_with_handler(move |request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/jobs/describe");
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        })
+    }
+
+    /// register_function DONE Function is shared by get_job and job(id).wait().
+    #[tokio::test]
+    async fn remote_job_description_result_register_function_done_matches_wait() {
+        let expected = sample_description_function();
+        let body = describe_body(
+            "job-register",
+            "DONE",
+            JsonField::Present(Value::String("register_function".into())),
+            JsonField::Present(job_result_function_wire(&expected)),
+        );
+        let conn = conn_with_describe_body(body);
+
+        let description = conn
+            .get_job("job-register")
+            .await
+            .expect("valid register_function describe must succeed")
+            .expect("job must exist");
+        let from_get = description
+            .result
+            .as_ref()
+            .and_then(JobResult::function)
+            .expect("register_function success must be Some(Function)");
+        assert_exact_function(from_get, &expected);
+
+        let waited = conn
+            .job("job-register")
+            .expect("job handle")
+            .wait()
+            .await
+            .expect("wait over the same fixture must succeed");
+        let from_wait = waited
+            .function()
+            .expect("wait must return the exact Function");
+        assert_exact_function(from_wait, &expected);
+    }
+
+    /// Known no-result DONE: omitted/null stay None; explicit None is Some(None).
+    #[tokio::test]
+    async fn remote_job_description_result_known_no_result_omission_vs_explicit_none() {
+        for result_field in [JsonField::Absent, JsonField::Null] {
+            let body = describe_body(
+                "job-create-index",
+                "DONE",
+                JsonField::Present(Value::String("create_index".into())),
+                result_field,
+            );
+            let description = conn_with_describe_body(body)
+                .get_job("job-create-index")
+                .await
+                .expect("known no-result describe must succeed")
+                .expect("job must exist");
+            assert_eq!(description.result, None);
+        }
+
+        let body = describe_body(
+            "job-create-index-explicit",
+            "DONE",
+            JsonField::Present(Value::String("create_index".into())),
+            JsonField::Present(job_result_none_wire()),
+        );
+        let description = conn_with_describe_body(body)
+            .get_job("job-create-index-explicit")
+            .await
+            .expect("explicit None describe must succeed")
+            .expect("job must exist");
+        assert_eq!(description.result, Some(JobResult::None));
+    }
+
+    /// Unknown nonterminal and ordinary FAILED/CANCELLED stay describable with no result.
+    #[tokio::test]
+    async fn remote_job_description_result_nonterminal_unknown_and_failed_cancelled_without_result()
+    {
+        let unknown_running = describe_body(
+            "job-future-running",
+            "IN_PROGRESS",
+            JsonField::Present(Value::String("future_job_type_xyz".into())),
+            JsonField::Absent,
+        );
+        let description = conn_with_describe_body(unknown_running)
+            .get_job("job-future-running")
+            .await
+            .expect("unknown nonterminal without result must remain describable")
+            .expect("job must exist");
+        assert_eq!(description.job_type, "future_job_type_xyz");
+        assert_eq!(description.state, "running");
+        assert_eq!(description.result, None);
+
+        for (job_id, job_state, client_state) in [
+            ("job-failed", "FAILED", "failed"),
+            ("job-cancelled", "CANCELLED", "cancelled"),
+        ] {
+            let body = describe_body(
+                job_id,
+                job_state,
+                JsonField::Present(Value::String("create_index".into())),
+                JsonField::Absent,
+            );
+            let description = conn_with_describe_body(body)
+                .get_job(job_id)
+                .await
+                .expect("FAILED/CANCELLED without result must remain describable")
+                .expect("job must exist");
+            assert_eq!(description.state, client_state);
+            assert_eq!(
+                description.result, None,
+                "must not invent a result for {job_state}"
+            );
+        }
+    }
+
+    /// get_job rejects the same strict invalid describe shapes as RemoteJob::wait.
+    #[tokio::test]
+    async fn remote_job_description_result_strict_invalid_cases_are_http() {
+        let function = sample_description_function();
+        let function_wire = job_result_function_wire(&function);
+        let none_wire = job_result_none_wire();
+
+        let mut unknown_kind = none_wire.clone();
+        unknown_kind["kind"] = Value::String("artifact".into());
+
+        let mut unknown_version = none_wire.clone();
+        unknown_version["format_version"] = Value::from(2);
+
+        let mut unknown_outer_field = none_wire.clone();
+        unknown_outer_field
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected_field".into(), Value::Bool(true));
+
+        let mut empty_function_id = function_wire.clone();
+        empty_function_id["function"]["id"] = Value::String("".into());
+
+        let cases = [
+            (
+                "register_missing",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Absent,
+            ),
+            (
+                "register_null",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Null,
+            ),
+            (
+                "register_explicit_none",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(none_wire.clone()),
+            ),
+            (
+                "known_no_result_with_function",
+                "DONE",
+                JsonField::Present(Value::String("create_index".into())),
+                JsonField::Present(function_wire.clone()),
+            ),
+            (
+                "unknown_done_missing",
+                "DONE",
+                JsonField::Present(Value::String("future_job_type_xyz".into())),
+                JsonField::Absent,
+            ),
+            (
+                "unknown_done_explicit_none",
+                "DONE",
+                JsonField::Present(Value::String("future_job_type_xyz".into())),
+                JsonField::Present(none_wire.clone()),
+            ),
+            (
+                "unknown_done_explicit_function",
+                "DONE",
+                JsonField::Present(Value::String("future_job_type_xyz".into())),
+                JsonField::Present(function_wire.clone()),
+            ),
+            (
+                "malformed_unknown_kind",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(unknown_kind),
+            ),
+            (
+                "malformed_unknown_version",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(unknown_version),
+            ),
+            (
+                "malformed_unknown_outer_field",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(unknown_outer_field),
+            ),
+            (
+                "malformed_empty_function_id",
+                "DONE",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(empty_function_id),
+            ),
+            (
+                "failed_carrying_function",
+                "FAILED",
+                JsonField::Present(Value::String("register_function".into())),
+                JsonField::Present(function_wire),
+            ),
+            (
+                "cancelled_carrying_none",
+                "CANCELLED",
+                JsonField::Present(Value::String("create_index".into())),
+                JsonField::Present(none_wire),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (job_id, job_state, job_type, result_field) in cases {
+            let body = describe_body(job_id, job_state, job_type, result_field);
+            match conn_with_describe_body(body).get_job(job_id).await {
+                Err(Error::Http { .. }) => {}
+                Ok(Some(description)) => unexpected.push(format!(
+                    "{job_id}: Ok(Some(result={:?}))",
+                    description.result
+                )),
+                Ok(None) => unexpected.push(format!("{job_id}: Ok(None)")),
+                Err(other) => unexpected.push(format!("{job_id}: Err({other:?})")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "strict invalid get_job cases must be Error::Http: {unexpected:?}"
+        );
+    }
+
+    /// Unknown informational outer fields are tolerated for a valid Function description.
+    #[tokio::test]
+    async fn remote_job_description_result_unknown_outer_fields_tolerated() {
+        let expected = sample_description_function();
+        let body = json!({
+            "job_id": "job-register-extra",
+            "job_state": "DONE",
+            "job_type": "register_function",
+            "creation_ms": 42,
+            "spec": {"ignored": true},
+            "result": job_result_function_wire(&expected),
+            "server_note": "informational-only",
+            "extra_admin_field": 7,
+        })
+        .to_string();
+        let description = conn_with_describe_body(body)
+            .get_job("job-register-extra")
+            .await
+            .expect("unknown outer fields must not block description")
+            .expect("job must exist");
+        assert_eq!(description.job_id, "job-register-extra");
+        assert_eq!(description.creation_ms, 42);
+        let function = description
+            .result
+            .as_ref()
+            .and_then(JobResult::function)
+            .expect("expected Some(Function)");
+        assert_exact_function(function, &expected);
+    }
+
+    /// Existing description fields and stable failure error_code stay intact with absent result.
+    #[tokio::test]
+    async fn remote_job_description_result_existing_fields_intact_when_result_absent() {
+        let body = json!({
+            "job_id": "job-1",
+            "job_type": "create_index",
+            "job_state": "FAILED",
+            "creation_ms": 1000,
+            "spec": {"column": "vec"},
+            "failure": {
+                "error_code": "name_or_function_not_found",
+                "phase": "validate",
+                "message": "looks like definition_validation_failure",
+                "retryable": false
+            }
+        })
+        .to_string();
+        let description = conn_with_describe_body(body)
+            .get_job("job-1")
+            .await
+            .expect("failure description without result must succeed")
+            .expect("job must exist");
+        assert_eq!(description.job_id, "job-1");
+        assert_eq!(description.job_type, "create_index");
+        assert_eq!(description.state, "failed");
+        assert_eq!(description.creation_ms, 1000);
+        assert_eq!(description.spec["column"], "vec");
+        assert_eq!(description.result, None);
+        let failure = description.failure.expect("failure payload present");
+        match &failure.error_code {
+            Some(code) => {
+                assert_eq!(code, &FunctionErrorCode::NameOrFunctionNotFound);
+                assert_ne!(code, &FunctionErrorCode::DefinitionValidationFailure);
+            }
+            None => panic!("known error_code must remain decoded while result is absent"),
+        }
+        assert_eq!(failure.phase.as_deref(), Some("validate"));
+        assert_eq!(failure.retryable, Some(false));
+    }
+
+    /// Fixture wires round-trip through the pinned public JobResult serde.
+    #[test]
+    fn remote_job_description_result_fixture_wires_match_job_result_serde() {
+        let none_wire = job_result_none_wire();
+        let none: JobResult =
+            serde_json::from_value(none_wire.clone()).expect("None wire must decode");
+        assert_eq!(none, JobResult::None);
+        assert_eq!(
+            serde_json::to_value(JobResult::None).expect("serialize None"),
+            none_wire
+        );
+
+        let expected = sample_description_function();
+        let function_wire = job_result_function_wire(&expected);
+        let decoded: JobResult =
+            serde_json::from_value(function_wire.clone()).expect("Function wire must decode");
+        match decoded {
+            JobResult::Function(function) => assert_exact_function(&function, &expected),
+            JobResult::None => panic!("Function fixture must not decode as None"),
+        }
+        assert_eq!(
+            serde_json::to_value(JobResult::Function(expected)).expect("serialize Function"),
+            function_wire
+        );
     }
 }

@@ -36,7 +36,9 @@ impl<'de> Deserialize<'de> for JobState {
 }
 
 impl JobState {
-    /// The client vocabulary label for this state.
+    /// Forward-observing label for [`RemoteJob::status`]: known describe
+    /// variants map to the client vocabulary; unrecognized/lowercase wire
+    /// labels pass through unchanged.
     fn client_label(&self) -> String {
         match self {
             Self::InProgress => "running".to_string(),
@@ -61,6 +63,22 @@ impl From<&str> for JobState {
             other => Self::Other(other.to_string()),
         }
     }
+}
+
+/// Server job states -> the client vocabulary ("running" / "finished" /
+/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
+/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
+/// (in_progress / succeeded / failed / canceled / timed_out). States this
+/// client version does not know (e.g. created, queued) pass through as-is.
+pub(super) fn job_state_to_client(state: &str) -> String {
+    match state {
+        "IN_PROGRESS" | "in_progress" => "running",
+        "DONE" | "done" | "succeeded" => "finished",
+        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
+        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
+        other => other,
+    }
+    .to_string()
 }
 
 /// Closed current no-result job_type vocabulary.
@@ -102,7 +120,7 @@ enum ExpectedSuccessResult {
 /// The server's account of why a job failed. Absent from older servers, which
 /// report only the terminal state.
 #[derive(Deserialize)]
-struct ReportedFailure {
+pub(super) struct ReportedFailure {
     /// Stable Function error category when the server supplied one.
     #[serde(default)]
     error_code: Option<FunctionErrorCode>,
@@ -114,17 +132,98 @@ struct ReportedFailure {
     retryable: Option<bool>,
 }
 
+impl ReportedFailure {
+    pub(super) fn into_job_failure(self) -> JobFailure {
+        JobFailure {
+            error_code: self.error_code,
+            phase: self.phase,
+            message: self.message,
+            retryable: self.retryable,
+            source: None,
+        }
+    }
+}
+
 /// Outer `/v1/jobs/describe` envelope. Unknown informational fields are ignored;
 /// `result` stays raw so lifecycle reads do not depend on JobResult decoding.
+///
+/// Response `job_id` is optional so [`RemoteJob`] status/wait can parse
+/// state-only envelopes. Typed [`crate::database::JobDescription`] paths must
+/// call [`DescribeJobResponse::require_job_id`].
 #[derive(Deserialize)]
-struct DescribeJobResponse {
+pub(super) struct DescribeJobResponse {
+    #[serde(default)]
+    job_id: Option<String>,
     job_state: JobState,
     #[serde(default)]
-    job_type: String,
+    pub(super) job_type: String,
+    #[serde(default)]
+    pub(super) creation_ms: i64,
+    #[serde(default)]
+    pub(super) spec: serde_json::Value,
     #[serde(default)]
     result: Option<serde_json::Value>,
     #[serde(default)]
-    failure: Option<ReportedFailure>,
+    pub(super) failure: Option<ReportedFailure>,
+}
+
+impl DescribeJobResponse {
+    /// Require a non-empty echoed response `job_id` for typed get_job.
+    pub(super) fn require_job_id(&self, request_id: String) -> Result<String> {
+        match self.job_id.as_deref() {
+            Some(job_id) if !job_id.is_empty() => Ok(job_id.to_string()),
+            _ => Err(protocol_http(
+                request_id,
+                "describe response missing job_id",
+            )),
+        }
+    }
+
+    /// Description/list-aligned client label, including documented lowercase
+    /// aliases. Distinct from [`JobState::client_label`] used by status.
+    pub(super) fn client_state(&self) -> String {
+        match &self.job_state {
+            JobState::Other(raw) => job_state_to_client(raw),
+            state => state.client_label(),
+        }
+    }
+
+    /// Strict success-result projection for describe: Missing versus Present.
+    pub(super) fn project_success_result(&self, request_id: String) -> Result<RawSuccessResult> {
+        project_describe_success_result(
+            &self.job_state,
+            &self.job_type,
+            self.result.as_ref(),
+            request_id,
+        )
+    }
+}
+
+/// Wire success-result presence after strict job-type expectation checks.
+///
+/// Distinguishes a missing/null wire `result` from an explicit decoded
+/// [`JobResult`] object so [`crate::database::JobDescription`] can keep
+/// `None` versus `Some(JobResult::None)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RawSuccessResult {
+    Missing,
+    Present(JobResult),
+}
+
+impl RawSuccessResult {
+    pub(super) fn into_description_result(self) -> Option<JobResult> {
+        match self {
+            Self::Missing => None,
+            Self::Present(result) => Some(result),
+        }
+    }
+
+    fn into_wait_result(self) -> JobResult {
+        match self {
+            Self::Missing => JobResult::None,
+            Self::Present(result) => result,
+        }
+    }
 }
 
 fn protocol_http(request_id: String, message: impl Into<String>) -> Error {
@@ -148,12 +247,12 @@ fn expected_success_result(job_type: &str) -> Option<ExpectedSuccessResult> {
     None
 }
 
-/// Strict DONE projection of a describe payload into [`JobResult`].
-fn project_done_job_result(
+/// Strict DONE projection that preserves Missing versus Present([`JobResult`]).
+fn project_done_raw_result(
     job_type: &str,
     raw_result: Option<&serde_json::Value>,
     request_id: String,
-) -> Result<JobResult> {
+) -> Result<RawSuccessResult> {
     let Some(expected) = expected_success_result(job_type) else {
         return Err(protocol_http(
             request_id,
@@ -167,7 +266,7 @@ fn project_done_job_result(
             "register_function DONE response missing Function result",
         )),
         (ExpectedSuccessResult::None, None) | (ExpectedSuccessResult::AbsentResultOnly, None) => {
-            Ok(JobResult::None)
+            Ok(RawSuccessResult::Missing)
         }
         (ExpectedSuccessResult::AbsentResultOnly, Some(_)) => Err(protocol_http(
             request_id,
@@ -179,9 +278,11 @@ fn project_done_job_result(
             };
             match (expected, decoded) {
                 (ExpectedSuccessResult::Function, JobResult::Function(function)) => {
-                    Ok(JobResult::Function(function))
+                    Ok(RawSuccessResult::Present(JobResult::Function(function)))
                 }
-                (ExpectedSuccessResult::None, JobResult::None) => Ok(JobResult::None),
+                (ExpectedSuccessResult::None, JobResult::None) => {
+                    Ok(RawSuccessResult::Present(JobResult::None))
+                }
                 _ => Err(protocol_http(
                     request_id,
                     "job result kind does not match job_type expectation",
@@ -189,6 +290,24 @@ fn project_done_job_result(
             }
         }
     }
+}
+
+fn project_describe_success_result(
+    job_state: &JobState,
+    job_type: &str,
+    raw_result: Option<&serde_json::Value>,
+    request_id: String,
+) -> Result<RawSuccessResult> {
+    if !matches!(job_state, JobState::Done) {
+        if raw_result.is_some() {
+            return Err(protocol_http(
+                request_id,
+                "non-DONE job describe response carried a success result",
+            ));
+        }
+        return Ok(RawSuccessResult::Missing);
+    }
+    project_done_raw_result(job_type, raw_result, request_id)
 }
 
 pub struct RemoteJob<S: HttpSend> {
@@ -234,32 +353,17 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
             let (request_id, description) = self.describe().await?;
-            if !matches!(description.job_state, JobState::Done) && description.result.is_some() {
-                return Err(protocol_http(
-                    request_id,
-                    "non-DONE job describe response carried a success result",
-                ));
-            }
+            let projected = description.project_success_result(request_id)?;
             match description.job_state {
                 JobState::Done => {
-                    return project_done_job_result(
-                        &description.job_type,
-                        description.result.as_ref(),
-                        request_id,
-                    );
+                    return Ok(projected.into_wait_result());
                 }
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
                         failure: description
                             .failure
-                            .map(|reported| JobFailure {
-                                error_code: reported.error_code,
-                                phase: reported.phase,
-                                message: reported.message,
-                                retryable: reported.retryable,
-                                source: None,
-                            })
+                            .map(ReportedFailure::into_job_failure)
                             .unwrap_or_default(),
                     });
                 }
@@ -315,6 +419,55 @@ mod tests {
         let job = RemoteJob::new(client, "job-done".into());
         let result = job.wait().await.expect("DONE with no result must succeed");
         assert_eq!(result, JobResult::None);
+    }
+
+    /// Lifecycle reads accept a state-only DONE envelope: no echoed job_id,
+    /// job_type, creation_ms, spec, failure, or result.
+    #[tokio::test]
+    async fn remote_job_lifecycle_state_only_done_without_job_id() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_state":"DONE"}"#)
+                .unwrap()
+        });
+        let status_job = RemoteJob::new(client, "job-state-only".into());
+        let status = status_job
+            .status()
+            .await
+            .expect("state-only DONE must not require response job_id");
+        assert_eq!(status, "finished");
+
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_state":"DONE"}"#)
+                .unwrap()
+        });
+        let wait_job = RemoteJob::new(client, "job-state-only".into());
+        let result = wait_job
+            .wait()
+            .await
+            .expect("historical missing job_type/result DONE must project None");
+        assert_eq!(result, JobResult::None);
+    }
+
+    /// status keeps forward-observing lowercase/unrecognized labels; it does
+    /// not apply get_job's documented alias normalization.
+    #[tokio::test]
+    async fn remote_job_lifecycle_status_preserves_lowercase_state_label() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id":"job-lower","job_state":"done"}"#)
+                .unwrap()
+        });
+        let job = RemoteJob::new(client, "job-lower".into());
+        let status = job
+            .status()
+            .await
+            .expect("lowercase describe state must remain readable");
+        assert_eq!(status, "done");
     }
 
     #[tokio::test]
