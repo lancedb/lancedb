@@ -1525,6 +1525,124 @@ def test_shuffle_seed_none_generates_stable_seed(lance_table):
 
 
 # ---------------------------------------------------------------------------
+# Sequence packing tests
+# ---------------------------------------------------------------------------
+
+
+def _create_token_table(tmp_path, documents):
+    db = lancedb.connect(tmp_path)
+    tokens = pa.array(documents, type=pa.list_(pa.int64()))
+    return db.create_table("tokens", pa.table({"tokens": tokens}))
+
+
+def _packed_dataset(table, pack_sequences, *, pad_id=0, **kwargs):
+    return StreamingDataset(
+        table,
+        shuffle=False,
+        columns=["tokens"],
+        pack_sequences=pack_sequences,
+        eos_id=9,
+        pad_id=pad_id,
+        **kwargs,
+    )
+
+
+def test_pack_sequences_emits_tokens_and_document_ids(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2], [3, 4]])
+    dataset = _packed_dataset(table, 6)
+
+    blocks = list(dataset)
+
+    assert len(blocks) == 1
+    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 3, 4, 9]
+    assert blocks[0]["doc_ids"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert blocks[0]["input_ids"].dtype == torch.int64
+    assert blocks[0]["doc_ids"].dtype == torch.int64
+
+
+def test_pack_sequences_pads_final_short_tail(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+    dataset = _packed_dataset(table, 4)
+
+    blocks = list(dataset)
+
+    assert len(blocks) == 1
+    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 0]
+
+
+def test_pack_sequences_pads_lagging_splits_to_complete_cycles(tmp_path):
+    # split 0 has four real tokens including EOS markers, while split 1 has
+    # eleven.  Packing must emit three complete two-split cycles rather than
+    # stopping at the short split at the beginning of the first/second cycle.
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    dataset = _packed_dataset(table, 5, num_splits=2)
+
+    input_ids = [block["input_ids"].tolist() for block in dataset]
+
+    assert input_ids == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+        [0, 0, 0, 0, 0],
+        [15, 16, 17, 9, 20],
+        [0, 0, 0, 0, 0],
+        [9, 0, 0, 0, 0],
+    ]
+
+
+def test_pack_sequences_checkpoint_resumes_partial_buffers(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    dataset = _packed_dataset(table, 5, num_splits=2)
+    iterator = iter(dataset)
+    first_cycle = [next(iterator), next(iterator)]
+    checkpoint = dataset.state_dict()
+    expected_remaining = list(iterator)
+
+    resumed = _packed_dataset(table, 5, num_splits=2)
+    resumed.load_state_dict(checkpoint)
+    actual_remaining = list(resumed)
+
+    assert [block["input_ids"].tolist() for block in first_cycle] == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+    ]
+    assert [block["input_ids"].tolist() for block in actual_remaining] == [
+        block["input_ids"].tolist() for block in expected_remaining
+    ]
+    assert [block["doc_ids"].tolist() for block in actual_remaining] == [
+        block["doc_ids"].tolist() for block in expected_remaining
+    ]
+
+
+def test_pack_sequences_checkpoint_rejects_different_padding(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+    dataset = _packed_dataset(table, 4)
+    checkpoint = dataset.state_dict()
+    resumed = _packed_dataset(table, 4, pad_id=8)
+
+    with pytest.raises(ValueError, match="pad_id mismatch"):
+        resumed.load_state_dict(checkpoint)
+
+
+def test_pack_sequences_requires_padding_id(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+
+    with pytest.raises(ValueError, match="pad_id is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Doc examples — each test mirrors the code snippet in index.mdx so that
 # broken doc examples are caught before they ship.
 # ---------------------------------------------------------------------------
