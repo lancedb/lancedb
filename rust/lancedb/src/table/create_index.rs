@@ -423,6 +423,7 @@ mod tests {
     use futures::TryStreamExt;
     use tempfile::tempdir;
 
+    use crate::JobResult;
     use crate::connect;
     use crate::connection::ConnectBuilder;
     use crate::index::Index;
@@ -538,7 +539,8 @@ mod tests {
         assert_eq!(job.id(), None);
         // The build runs as a task, so the index need not exist yet; it must
         // once the job resolves.
-        job.wait().await.unwrap();
+        let result = job.wait().await.unwrap();
+        assert_eq!(result, JobResult::None);
         assert_eq!(table.list_indices().await.unwrap().len(), 1);
         // Cancelling a finished job is a no-op.
         job.cancel().await.unwrap();
@@ -570,10 +572,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for waiter in waiters {
-            waiter.await.unwrap().unwrap();
+            let result = waiter.await.unwrap().unwrap();
+            assert_eq!(result, JobResult::None);
         }
         // A wait after the job settled still reports the same outcome.
-        job.wait().await.unwrap();
+        let late = job.wait().await.unwrap();
+        assert_eq!(late, JobResult::None);
         assert_eq!(table.list_indices().await.unwrap().len(), 1);
     }
 
@@ -716,7 +720,7 @@ mod tests {
         match job.wait().await {
             Err(crate::Error::JobCancelled { .. }) => {}
             // The build may finish before the abort lands.
-            Ok(()) => {}
+            Ok(JobResult::None) => {}
             other => panic!("unexpected job outcome: {other:?}"),
         }
     }

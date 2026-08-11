@@ -292,7 +292,7 @@ fn unknown_kind_field_version_and_malformed_function_fail_closed() -> Result<()>
 
     let function = sample_function()?;
     let function_json =
-        serde_json::to_value(&JobResult::Function(function)).expect("serialize Function");
+        serde_json::to_value(JobResult::Function(function)).expect("serialize Function");
 
     let mut missing_function = function_json.clone();
     missing_function.as_object_mut().unwrap().remove("function");
@@ -346,7 +346,7 @@ fn outer_result_excludes_forbidden_fields() -> Result<()> {
 
     let function = sample_function()?;
     let function_json =
-        serde_json::to_value(&JobResult::Function(function)).expect("serialize Function");
+        serde_json::to_value(JobResult::Function(function)).expect("serialize Function");
     assert_json_object_keys_exact(&function_json, &["format_version", "kind", "function"]);
     assert_outer_forbidden_keys_absent(&function_json);
 

@@ -57,7 +57,7 @@ use crate::error::{Error, Result};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
-use crate::job::Job;
+use crate::job::{Job, JobResult};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
@@ -3201,7 +3201,8 @@ impl BaseTable for NativeTable {
         let prepared = self.prepare_index(&opts).await?;
         let table = self.clone();
         Ok(Job::spawned(tokio::spawn(async move {
-            table.build_index(opts, prepared).await
+            table.build_index(opts, prepared).await?;
+            Ok(JobResult::None)
         })))
     }
 

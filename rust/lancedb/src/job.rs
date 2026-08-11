@@ -133,7 +133,7 @@ pub(crate) trait JobHandle: Send + Sync {
         None
     }
     async fn status(&self) -> Result<String>;
-    async fn wait(&self) -> Result<()>;
+    async fn wait(&self) -> Result<JobResult>;
     async fn cancel(&self) -> Result<()>;
 }
 
@@ -166,7 +166,7 @@ impl Job {
     }
 
     /// A job running as a task in this process.
-    pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
+    pub(crate) fn spawned(task: JoinHandle<Result<JobResult>>) -> Self {
         Self::new(Box::new(SpawnedJob::new(task)))
     }
 
@@ -195,11 +195,14 @@ impl Job {
 
     /// Waits until the operation reaches a terminal state.
     ///
+    /// On success, returns the job's [`JobResult`]. Operations that produce no
+    /// resource result yield [`JobResult::None`].
+    ///
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
-    pub async fn wait(&self) -> Result<()> {
+    pub async fn wait(&self) -> Result<JobResult> {
         match &self.handle {
-            None => Ok(()),
+            None => Ok(JobResult::None),
             Some(handle) => handle.wait().await,
         }
     }
@@ -219,15 +222,15 @@ impl Job {
 /// the outcome; [`Error`] is not, so failures share one behind an [`Arc`].
 #[derive(Clone)]
 enum Outcome {
-    Succeeded,
+    Succeeded(JobResult),
     Failed(Arc<Error>),
     Cancelled,
 }
 
 impl Outcome {
-    fn into_result(self) -> Result<()> {
+    fn into_result(self) -> Result<JobResult> {
         match self {
-            Self::Succeeded => Ok(()),
+            Self::Succeeded(result) => Ok(result),
             Self::Failed(source) => Err(Error::JobFailed {
                 job_id: None,
                 failure: JobFailure::from_source(source),
@@ -246,16 +249,16 @@ struct SpawnedJob {
 }
 
 impl SpawnedJob {
-    fn new(task: JoinHandle<Result<()>>) -> Self {
+    fn new(task: JoinHandle<Result<JobResult>>) -> Self {
         let abort = task.abort_handle();
         let (tx, outcome) = watch::channel(None);
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(Ok(())) => Outcome::Succeeded,
+                Ok(Ok(result)) => Outcome::Succeeded(result),
                 Ok(Err(err)) => Outcome::Failed(Arc::new(err)),
                 Err(err) if err.is_cancelled() => Outcome::Cancelled,
                 Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
-                    message: format!("index job task failed: {err}"),
+                    message: format!("job task failed: {err}"),
                 })),
             };
             let _ = tx.send(Some(outcome));
@@ -269,20 +272,20 @@ impl JobHandle for SpawnedJob {
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",
-            Some(Outcome::Succeeded) => "finished",
+            Some(Outcome::Succeeded(_)) => "finished",
             Some(Outcome::Failed(_)) => "failed",
             Some(Outcome::Cancelled) => "cancelled",
         };
         Ok(label.to_string())
     }
 
-    async fn wait(&self) -> Result<()> {
+    async fn wait(&self) -> Result<JobResult> {
         let mut outcome = self.outcome.clone();
         let settled = outcome
             .wait_for(|outcome| outcome.is_some())
             .await
             .map_err(|_| Error::Runtime {
-                message: "index job outcome was dropped before it completed".to_string(),
+                message: "job outcome was dropped before it completed".to_string(),
             })?
             .clone()
             .expect("wait_for returns once an outcome is set");
@@ -297,8 +300,110 @@ impl JobHandle for SpawnedJob {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    use arrow_schema::DataType;
+    use tokio::sync::oneshot;
+
     use super::*;
     use crate::error::FunctionErrorCode;
+    use crate::function::{
+        Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+    };
+
+    fn sample_success_function() -> Function {
+        let id = FunctionId::try_new("fn.exact.local-job-result").expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![FunctionParameter::new("x", DataType::Int32)],
+            FunctionOutput::new(DataType::Int32, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn assert_exact_function(actual: &Function, expected: &Function) {
+        assert_eq!(actual.id(), expected.id());
+        assert_eq!(actual.signature(), expected.signature());
+    }
+
+    /// A completed-before-handle local job projects success as None.
+    #[tokio::test]
+    async fn local_job_result_new_done_wait_returns_none() {
+        let job = Job::new_done();
+        let result = job.wait().await.expect("new_done must succeed");
+        assert_eq!(result, JobResult::None);
+    }
+
+    /// A local spawned unit / no-resource success projects as None.
+    #[tokio::test]
+    async fn local_job_result_spawned_unit_success_projects_none() {
+        let job = Job::spawned(tokio::spawn(async { Ok(JobResult::None) }));
+        let result = job
+            .wait()
+            .await
+            .expect("unit success must finish without error");
+        assert_eq!(result, JobResult::None);
+    }
+
+    /// Function success is cloneable and shared by concurrent + late waiters.
+    ///
+    /// Wait futures are pinned and polled once to Pending while success is still
+    /// gated, proving they observed the running state before publication.
+    #[tokio::test]
+    async fn local_job_result_spawned_function_shared_by_waiters() {
+        let expected = sample_success_function();
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let job = Job::spawned(tokio::spawn({
+            let function = expected.clone();
+            async move {
+                release_rx
+                    .await
+                    .expect("success task must be released by the test");
+                Ok(JobResult::Function(function))
+            }
+        }));
+
+        let mut wait_a = pin!(job.wait());
+        let mut wait_b = pin!(job.wait());
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        assert!(
+            matches!(wait_a.as_mut().poll(&mut cx), Poll::Pending),
+            "waiter A must poll Pending before success publication"
+        );
+        assert!(
+            matches!(wait_b.as_mut().poll(&mut cx), Poll::Pending),
+            "waiter B must poll Pending before success publication"
+        );
+
+        release_tx
+            .send(())
+            .expect("success task must still be waiting on the gate");
+
+        let result_a = wait_a
+            .await
+            .expect("concurrent waiter A must observe success");
+        let result_b = wait_b
+            .await
+            .expect("concurrent waiter B must observe success");
+        let result_late = job
+            .wait()
+            .await
+            .expect("late waiter must observe the same success");
+
+        for result in [&result_a, &result_b, &result_late] {
+            match result {
+                JobResult::Function(function) => assert_exact_function(function, &expected),
+                JobResult::None => panic!("Function success must not project as JobResult::None"),
+            }
+        }
+        assert_eq!(result_a, result_b);
+        assert_eq!(result_a, result_late);
+    }
 
     #[tokio::test]
     async fn spawned_job_function_failure_returns_job_failed_with_same_code() {

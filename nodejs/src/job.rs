@@ -42,9 +42,19 @@ impl Job {
     }
 
     /// Wait until the operation reaches a terminal state.
+    ///
+    /// Jobs that complete without a resource result resolve successfully.
+    /// Resource results are not exposed on this binding yet; unsupported
+    /// success results reject with a generic error.
     #[napi(catch_unwind)]
     pub async fn wait(&self) -> napi::Result<()> {
-        self.inner.wait().await.default_error()
+        match self.inner.wait().await.default_error()? {
+            lancedb::JobResult::None => Ok(()),
+            // JobResult is non_exhaustive; Function and future variants fail closed.
+            _ => Err(napi::Error::from_reason(
+                "unsupported job result".to_string(),
+            )),
+        }
     }
 
     /// Request cancellation. Cancelling a finished operation is a no-op.

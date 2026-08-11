@@ -11,7 +11,7 @@ use tokio::time::sleep;
 use serde::{Deserialize, Deserializer};
 
 use crate::error::{Error, FunctionErrorCode, JobFailure, Result};
-use crate::job::JobHandle;
+use crate::job::{JobHandle, JobResult};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
@@ -124,12 +124,14 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Ok(self.describe().await?.job_state.client_label())
     }
 
-    async fn wait(&self) -> Result<()> {
+    async fn wait(&self) -> Result<JobResult> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
             let description = self.describe().await?;
             match description.job_state {
-                JobState::Done => return Ok(()),
+                // Existing DONE responses have no success-result field; map to
+                // None until strict result decoding is added.
+                JobState::Done => return Ok(JobResult::None),
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
@@ -177,7 +179,22 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
 mod tests {
     use super::*;
     use crate::error::FunctionErrorCode;
+    use crate::job::JobResult;
     use crate::remote::client::test_utils::client_with_handler;
+
+    /// Terminal DONE with no result field projects as [`JobResult::None`].
+    #[tokio::test]
+    async fn local_job_result_remote_done_without_result_projects_none() {
+        let client = client_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id":"job-done","job_state":"DONE"}"#)
+                .unwrap()
+        });
+        let job = RemoteJob::new(client, "job-done".into());
+        let result = job.wait().await.expect("DONE with no result must succeed");
+        assert_eq!(result, JobResult::None);
+    }
 
     #[tokio::test]
     async fn wait_decodes_known_failure_error_code() {
