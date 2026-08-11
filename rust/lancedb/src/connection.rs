@@ -590,6 +590,33 @@ impl Connection {
         self.internal.lookup_function_by_id(function_id).await
     }
 
+    /// Conditionally remove a database-scoped Function catalog name.
+    ///
+    /// This is a direct synchronous catalog compare-and-swap (CAS), not a
+    /// [`crate::job::Job`], not physical [`Function`] deletion, and not
+    /// revocation. The caller supplies an observed immutable [`Function`]
+    /// handle; only [`Function::id`] is authority for the CAS precondition.
+    ///
+    /// Empty names return [`Error::InvalidInput`] before backend dispatch.
+    /// Nonempty names on local/default backends return [`Error::NotSupported`].
+    /// Remote backends complete only when the server reports durable CAS
+    /// success for the `(name, current.id)` pair.
+    pub async fn remove_function_name(
+        &self,
+        name: impl AsRef<str>,
+        current: &Function,
+    ) -> Result<()> {
+        let name = name.as_ref();
+        // Public nonempty invariant: validate before any Database backend sees
+        // the call so local and remote Connections agree on InvalidInput.
+        if name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "function name removal name must be non-empty".into(),
+            });
+        }
+        self.internal.remove_function_name(name, current).await
+    }
+
     /// Drop a table in the database.
     ///
     /// # Arguments

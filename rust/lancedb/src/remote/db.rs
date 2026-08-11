@@ -627,6 +627,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         super::function::lookup_function(&self.client, selector).await
     }
 
+    async fn remove_function_name(&self, name: &str, current: &Function) -> Result<()> {
+        super::function::remove_function_name(&self.client, name, current).await
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = if !request.namespace_path.is_empty() {
             let namespace_id =
@@ -4177,5 +4181,731 @@ mod tests {
             1,
             "nonretryable client/header error must not be repeated"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Conditional Function name removal
+    //
+    // Direct synchronous catalog CAS via POST /v1/functions/remove. Not a Job
+    // and not physical Function deletion. Caller supplies an observed immutable
+    // Function handle; only current.id is authority on the wire.
+    // -------------------------------------------------------------------------
+
+    const REMOVE_CATALOG_NAME: &str = "text.normalize.remove-name";
+    const REMOVE_FUNCTION_ID: &str = "fn.exact.remove-handle";
+    const REMOVE_SERVER_MESSAGE_MARKER: &str =
+        "SERVER_REMOVE_DIAGNOSTIC_MARKER name=text.normalize.remove-name id=fn.exact.remove-handle";
+
+    fn sample_remove_function() -> Function {
+        let id = FunctionId::try_new(REMOVE_FUNCTION_ID).expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn remove_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_remove_payload_free(err: &Error) {
+        let text = remove_error_chain_text(err);
+        assert!(
+            !text.contains(REMOVE_SERVER_MESSAGE_MARKER),
+            "server diagnostic marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REMOVE_CATALOG_NAME),
+            "catalog name must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REMOVE_FUNCTION_ID),
+            "FunctionId must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains("SENSITIVE_REMOVE_BODY_MARKER"),
+            "non-success/malformed body marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_remove_request(
+        request: &reqwest::Request,
+        expected_name: &str,
+        expected_function_id: &str,
+    ) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/v1/functions/remove");
+        assert!(
+            request.url().query().is_none(),
+            "remove selectors must stay out of the URL query: {}",
+            request.url()
+        );
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("remove request must carry a JSON body");
+        let actual: Value = serde_json::from_slice(body).expect("remove body must be JSON");
+        assert_eq!(
+            actual,
+            json!({
+                "name": expected_name,
+                "expected_current_function_id": expected_function_id,
+            }),
+            "remove body must be exactly {{\"name\":...,\"expected_current_function_id\":...}}"
+        );
+        let object = actual.as_object().expect("remove body must be an object");
+        assert_eq!(
+            object.len(),
+            2,
+            "remove body must not carry format_version or extra user fields: {actual}"
+        );
+        assert!(
+            object.get("format_version").is_none(),
+            "remove body must not include format_version: {actual}"
+        );
+        assert!(
+            object.get("function_id").is_none(),
+            "remove body must use expected_current_function_id, not function_id: {actual}"
+        );
+        assert!(
+            object.get("current").is_none() && object.get("function").is_none(),
+            "remove must not send a Function record: {actual}"
+        );
+        assert!(
+            object.get("job_id").is_none() && object.get("idempotency_key").is_none(),
+            "remove is not a Job and must not send user idempotency keys: {actual}"
+        );
+    }
+
+    /// Exact path/body and 204 success use only the observed Function id.
+    #[tokio::test]
+    async fn remove_function_name_posts_exact_body_and_succeeds_on_204() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+            // Illegal body on 204 must be ignored; success is status-driven only.
+            http::Response::builder()
+                .status(204)
+                .body(format!(
+                    "{{\"SENSITIVE_REMOVE_BODY_MARKER\":true,\"message\":{REMOVE_SERVER_MESSAGE_MARKER:?}}}"
+                ))
+                .unwrap()
+        });
+
+        conn.remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect("HTTP 204 must complete the CAS");
+    }
+
+    /// One configured 5xx retry then 204 keeps identical request id/body.
+    #[tokio::test]
+    async fn remove_function_name_retry_preserves_request_id_and_body() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body(format!(
+                            "{REMOVE_SERVER_MESSAGE_MARKER} SENSITIVE_REMOVE_BODY_MARKER"
+                        ))
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(204)
+                        .body(String::new())
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        conn.remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect("remove must succeed after one retry");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "one 5xx then 204 must be exactly two attempts"
+        );
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Exhausted always-retryable 5xx without explicit error_code surfaces Error::Retry.
+    ///
+    /// retries=2 is max request failures: exactly two identical attempts, then
+    /// Retry with request_failures == max_request_failures == 2, zero connect/read
+    /// failures, the retryable status retained, and a payload-free source chain.
+    #[tokio::test]
+    async fn remove_function_name_exhausted_retryable_5xx_returns_retry_with_request_counters() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = format!("{REMOVE_SERVER_MESSAGE_MARKER} SENSITIVE_REMOVE_BODY_MARKER");
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across exhausted retries"
+                );
+
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(500)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    // RetryCounter treats `retries` as max request failures, so
+                    // retries=2 yields exactly two transport attempts before Error::Retry.
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect_err("exhausted retryable 5xx must fail");
+        match &err {
+            Error::Retry {
+                request_failures,
+                max_request_failures,
+                connect_failures,
+                read_failures,
+                status_code,
+                ..
+            } => {
+                assert_eq!(*request_failures, 2);
+                assert_eq!(*max_request_failures, 2);
+                assert_eq!(
+                    request_failures, max_request_failures,
+                    "request budget must be fully exhausted"
+                );
+                assert_eq!(*connect_failures, 0, "5xx must not consume connect budget");
+                assert_eq!(*read_failures, 0, "5xx must not consume read budget");
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(500),
+                    "retryable status must be retained on Error::Retry"
+                );
+            }
+            other => panic!("exhausted 5xx must surface as Error::Retry, got {other:?}"),
+        }
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "retries=2 must make exactly two identical attempts"
+        );
+        assert!(seen_request_id.get().is_some());
+        assert_remove_payload_free(&err);
+    }
+
+    /// Explicit name_conflict on a retryable status is terminal Error::Function.
+    #[tokio::test]
+    async fn remove_function_name_explicit_name_conflict_is_terminal_on_retryable_status() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = json!({
+            "error_code": "name_conflict",
+            "message": format!(
+                "{REMOVE_SERVER_MESSAGE_MARKER} looks_like revoked_function"
+            ),
+            "SENSITIVE_REMOVE_BODY_MARKER": true,
+        })
+        .to_string();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(503)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect_err("explicit name_conflict must fail");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), "name_conflict");
+                assert!(
+                    matches!(code, FunctionErrorCode::NameConflict),
+                    "expected NameConflict, got {code:?}"
+                );
+                assert_ne!(code.as_str(), "revoked_function");
+                assert!(
+                    !message.contains(REMOVE_SERVER_MESSAGE_MARKER),
+                    "Function error message must be sanitized, got {message}"
+                );
+                assert!(
+                    !message.contains(REMOVE_CATALOG_NAME),
+                    "Function error message must not echo the catalog name, got {message}"
+                );
+                assert!(
+                    !message.contains(REMOVE_FUNCTION_ID),
+                    "Function error message must not echo the FunctionId, got {message}"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_remove_payload_free(&err);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "explicit semantic code must not consume request retries"
+        );
+    }
+
+    /// Unknown nonempty explicit code is preserved; status/message do not override.
+    #[tokio::test]
+    async fn remove_function_name_preserves_unknown_explicit_code_despite_status_and_message() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let raw = "enterprise_future_remove_category_xyz";
+        let body = json!({
+            "error_code": raw,
+            "message": format!(
+                "{REMOVE_SERVER_MESSAGE_MARKER} name_conflict revoked_function"
+            ),
+            "SENSITIVE_REMOVE_BODY_MARKER": true,
+        })
+        .to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+            http::Response::builder()
+                .status(409)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = conn
+            .remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect_err("unknown explicit code must surface");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), raw);
+                assert!(
+                    matches!(code, FunctionErrorCode::Unrecognized(_)),
+                    "unknown code must stay Unrecognized, got {code:?}"
+                );
+                assert_ne!(code.as_str(), "name_conflict");
+                assert_ne!(code.as_str(), "revoked_function");
+                assert!(
+                    !message.contains(REMOVE_SERVER_MESSAGE_MARKER),
+                    "diagnostic message must be sanitized"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_remove_payload_free(&err);
+    }
+
+    /// Missing/empty/null/wrong-type/malformed error_code stays payload-free Http.
+    #[tokio::test]
+    async fn remove_function_name_missing_or_invalid_error_code_is_payload_free_http() {
+        let cases: Vec<(&str, u16, String)> = vec![
+            (
+                "missing_code_404",
+                404,
+                json!({
+                    "message": REMOVE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REMOVE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "empty_code",
+                400,
+                json!({
+                    "error_code": "",
+                    "message": REMOVE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REMOVE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "wrong_type_code",
+                400,
+                json!({
+                    "error_code": 123,
+                    "message": REMOVE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REMOVE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                // Non-retryable status: invalid/null error_code must stay immediate Http.
+                // Exhausted retryable 5xx is covered by
+                // remove_function_name_exhausted_retryable_5xx_returns_retry_with_request_counters.
+                "null_code",
+                400,
+                json!({
+                    "error_code": null,
+                    "message": REMOVE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REMOVE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                // Non-retryable status: this case proves invalid-code -> Http only.
+                // Exhausted retryable 5xx without error_code is covered separately
+                // by remove_function_name_exhausted_retryable_5xx_returns_retry_with_request_counters.
+                "non_json",
+                400,
+                format!("not-json {REMOVE_SERVER_MESSAGE_MARKER} SENSITIVE_REMOVE_BODY_MARKER"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, status, response_body) in cases {
+            let current = sample_remove_function();
+            let expected_id = current.id().as_str().to_string();
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                http::Response::builder()
+                    .status(status)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn
+                .remove_function_name(REMOVE_CATALOG_NAME, &current)
+                .await
+            {
+                Err(err @ Error::Http { .. }) => assert_remove_payload_free(&err),
+                Err(Error::Function { .. }) => unexpected.push(format!(
+                    "{label}: must not invent Error::Function without explicit code"
+                )),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid/missing error_code must stay payload-free Http: {unexpected:?}"
+        );
+    }
+
+    /// 200/202 are payload-free protocol Http failures, never CAS success.
+    #[tokio::test]
+    async fn remove_function_name_other_2xx_are_payload_free_http_failures() {
+        let cases: Vec<(&str, u16, String)> = vec![
+            (
+                "200_with_body",
+                200,
+                json!({
+                    "ok": true,
+                    "message": REMOVE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REMOVE_BODY_MARKER": true,
+                    "job_id": "must-not-infer-job",
+                })
+                .to_string(),
+            ),
+            (
+                "202_empty",
+                202,
+                format!("{REMOVE_SERVER_MESSAGE_MARKER} SENSITIVE_REMOVE_BODY_MARKER"),
+            ),
+            ("200_empty", 200, String::new()),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, status, response_body) in cases {
+            let current = sample_remove_function();
+            let expected_id = current.id().as_str().to_string();
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                http::Response::builder()
+                    .status(status)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn
+                .remove_function_name(REMOVE_CATALOG_NAME, &current)
+                .await
+            {
+                Ok(()) => {
+                    unexpected.push(format!("{label}: must not treat non-204 2xx as success"))
+                }
+                Err(err @ Error::Http { .. }) => assert_remove_payload_free(&err),
+                Err(Error::Function { .. }) => unexpected.push(format!(
+                    "{label}: must not invent Error::Function from 2xx body"
+                )),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "200/202 must be payload-free Http failures: {unexpected:?}"
+        );
+    }
+
+    /// Non-204 success must fail from status alone without reading the body.
+    ///
+    /// A protocol-invalid HTTP 200 whose body stream fails if read must return
+    /// payload-free Error::Http with status 200 on exactly one attempt, even when
+    /// read/request retry budgets are configured above one. Body must not be
+    /// read and no retry budget may be consumed.
+    #[tokio::test]
+    async fn remove_function_name_non_204_success_does_not_read_failing_body() {
+        let current = sample_remove_function();
+        let expected_id = current.id().as_str().to_string();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_remove_request(&request, REMOVE_CATALOG_NAME, &expected_id);
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                let stream = futures::stream::once(async {
+                    Err::<bytes::Bytes, _>(std::io::Error::other(
+                        "simulated remove response body read failure SENSITIVE_REMOVE_BODY_MARKER",
+                    ))
+                });
+                http::Response::builder()
+                    .status(200)
+                    .body(reqwest::Body::wrap_stream(stream))
+                    .unwrap()
+            },
+            ClientConfig {
+                // Budgets above one must not be consumed: status 200 is terminal
+                // protocol Http before any body read/retry classification.
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    read_retries: Some(3),
+                    connect_retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect_err("non-204 success must be protocol Http");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "invalid 2xx must not read the body or consume retry budget"
+        );
+        match &err {
+            Error::Http { status_code, .. } => {
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(200),
+                    "protocol Http must retain status 200 from the response alone"
+                );
+            }
+            other => panic!("expected payload-free Error::Http, got {other:?}"),
+        }
+        assert_remove_payload_free(&err);
+    }
+
+    /// Empty name is InvalidInput before backend through Connection.
+    #[tokio::test]
+    async fn remove_function_name_empty_name_fails_before_transport() {
+        let current = sample_remove_function();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let conn = Connection::new_with_handler(move |_request| -> http::Response<String> {
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            panic!("empty name must not issue an HTTP request");
+        });
+
+        let err = conn
+            .remove_function_name("", &current)
+            .await
+            .expect_err("empty name must fail before transport");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name must be InvalidInput, got {err:?}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            0,
+            "empty name must not touch transport"
+        );
+        assert_remove_payload_free(&err);
+    }
+
+    /// Database trait seam must reject empty names as InvalidInput (not NotSupported).
+    #[tokio::test]
+    async fn remove_function_name_database_trait_empty_name_is_invalid_input_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let current = sample_remove_function();
+        let err = conn
+            .database()
+            .remove_function_name("", &current)
+            .await
+            .expect_err("empty name must fail on Database trait default");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name via Database trait must be InvalidInput, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(
+            before, after,
+            "Database-trait empty-name rejection must not mutate tables"
+        );
+    }
+
+    /// Valid local removal is NotSupported and does not mutate tables.
+    #[tokio::test]
+    async fn remove_function_name_local_database_returns_not_supported_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let current = sample_remove_function();
+        let err = conn
+            .remove_function_name(REMOVE_CATALOG_NAME, &current)
+            .await
+            .expect_err("local remove_function_name must be unsupported");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported for local remove, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "unsupported remove must not mutate tables");
+    }
+
+    /// Empty name on local Connection is InvalidInput before NotSupported.
+    #[tokio::test]
+    async fn remove_function_name_local_empty_name_is_invalid_input_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let current = sample_remove_function();
+        let err = conn
+            .remove_function_name("", &current)
+            .await
+            .expect_err("empty name must fail before backend dispatch");
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "empty name must be InvalidInput on local Connection, got {err:?}"
+        );
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "empty-name rejection must not mutate tables");
     }
 }

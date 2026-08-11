@@ -350,6 +350,24 @@ pub trait Database:
     async fn lookup_function_by_id(&self, _function_id: &FunctionId) -> Result<Function> {
         job_op_not_supported("lookup_function_by_id")
     }
+    /// Conditionally remove a database-scoped Function catalog name.
+    ///
+    /// Direct synchronous catalog CAS, not a Job and not physical Function
+    /// deletion. Empty names return [`crate::Error::InvalidInput`] before the
+    /// unsupported fallback so local and remote backends agree. Nonempty names
+    /// on databases without enterprise catalog mutation return
+    /// [`crate::Error::NotSupported`].
+    async fn remove_function_name(&self, name: &str, _current: &Function) -> Result<()> {
+        // Public nonempty invariant on the Database trait seam itself:
+        // Connection::database() exposes Arc<dyn Database>, so empty-name
+        // rejection cannot rely solely on Connection prevalidation.
+        if name.is_empty() {
+            return Err(crate::error::Error::InvalidInput {
+                message: "function name removal name must be non-empty".into(),
+            });
+        }
+        job_op_not_supported("remove_function_name")
+    }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
