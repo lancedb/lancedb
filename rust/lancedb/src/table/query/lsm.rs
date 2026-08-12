@@ -798,15 +798,40 @@ mod tests {
         // (2), so SSTable generations 3..=5 are retained until the index covers
         // them — otherwise those documents would silently vanish from FTS results.
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string(, false)]).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
             Some(&2)
         );
 
         // A caught-up index — or one untracked in index_catchup — falls back to the
         // compaction watermark.
         assert_eq!(
-            exclusion_watermarks(&details, &["caught_up_idx".to_string(, false)]).get(&shard),
+            exclusion_watermarks(&details, &["caught_up_idx".to_string()], false).get(&shard),
             Some(&5)
+        );
+
+        // The same missing entry, once the table requires catch-up: absence now
+        // means "not known to hold these rows", so nothing may be excluded and
+        // every generation stays readable from its SSTable. This is the whole
+        // point of the protocol -- an indexed query against a table whose index
+        // has not caught up must not silently lose rows.
+        assert_eq!(
+            exclusion_watermarks(&details, &["untracked_idx".to_string()], true).get(&shard),
+            Some(&0)
+        );
+
+        // A tracked index is unaffected by the mode: the recorded position is
+        // information either way, and it still caps the exclusion.
+        assert_eq!(
+            exclusion_watermarks(&details, &["fts_idx".to_string()], true).get(&shard),
+            Some(&2)
+        );
+
+        // One missing entry is enough to hold everything back, even alongside an
+        // index that has caught up.
+        let mixed = vec!["fts_idx".to_string(), "untracked_idx".to_string()];
+        assert_eq!(
+            exclusion_watermarks(&details, &mixed, true).get(&shard),
+            Some(&0)
         );
     }
 
@@ -834,11 +859,11 @@ mod tests {
 
         // Each index alone stops at its own catch-up.
         assert_eq!(
-            exclusion_watermarks(&details, &["vec_idx".to_string(, false)]).get(&shard),
+            exclusion_watermarks(&details, &["vec_idx".to_string()], false).get(&shard),
             Some(&7)
         );
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string(, false)]).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
             Some(&4)
         );
 
