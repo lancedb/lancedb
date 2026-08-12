@@ -24,7 +24,7 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::NativeTable;
+use crate::table::{NativeTable, TableStorageProbe};
 use crate::utils::validate_table_name;
 
 use lance_namespace::models::{
@@ -257,6 +257,10 @@ pub struct ListingDatabase {
 
     // Session for object stores and caching
     session: Arc<lance::session::Session>,
+
+    // Whether failed opens may inspect exact native directory metadata. This is
+    // granted only for stores resolved through Lance's built-in local providers.
+    table_storage_probe: TableStorageProbe,
 
     // Namespace-backed database for child namespace operations
     namespace_database: Arc<LanceNamespaceDatabase>,
@@ -547,6 +551,7 @@ impl ListingDatabase {
                     url.to_string()
                 };
 
+                let uses_default_registry = request.session.is_none();
                 let session = request
                     .session
                     .clone()
@@ -567,6 +572,8 @@ impl ListingDatabase {
                     &os_params,
                 )
                 .await?;
+                let table_storage_probe =
+                    TableStorageProbe::for_resolved_store(&object_store, uses_default_registry);
                 if object_store.is_local() {
                     Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
                         path: storage_base_uri.clone(),
@@ -602,6 +609,7 @@ impl ListingDatabase {
                     storage_options_provider: None,
                     new_table_config: options.new_table_config,
                     session,
+                    table_storage_probe,
                     namespace_database,
                 })
             }
@@ -625,6 +633,7 @@ impl ListingDatabase {
         namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let uses_default_registry = session.is_none();
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
@@ -632,6 +641,8 @@ impl ListingDatabase {
             &ObjectStoreParams::default(),
         )
         .await?;
+        let table_storage_probe =
+            TableStorageProbe::for_resolved_store(&object_store, uses_default_registry);
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
@@ -656,6 +667,7 @@ impl ListingDatabase {
             storage_options_provider: None,
             new_table_config,
             session,
+            table_storage_probe,
             namespace_database,
         })
     }
@@ -1213,7 +1225,7 @@ impl Database for ListingDatabase {
         read_params.session(self.session.clone());
 
         let native_table = Arc::new(
-            NativeTable::open_with_params(
+            NativeTable::open_with_params_and_storage_probe(
                 &table_uri,
                 &request.name,
                 request.namespace_path,
@@ -1223,6 +1235,7 @@ impl Database for ListingDatabase {
                 request.namespace_client,
                 HashSet::new(), // listing database doesn't support server-side queries
                 request.managed_versioning, // Pass through managed_versioning from request
+                self.table_storage_probe,
             )
             .await?,
         );
