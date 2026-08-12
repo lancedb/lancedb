@@ -4149,10 +4149,11 @@ mod tests {
             "got {err:?}"
         );
 
-        let db_uri = url::Url::from_directory_path(tmp_dir.path())
-            .unwrap()
-            .to_string();
-        let db = connect(&db_uri).session(session).execute().await.unwrap();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .session(session)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(
             db.table_names().execute().await.unwrap(),
             vec!["custom-file-scheme".to_string()]
