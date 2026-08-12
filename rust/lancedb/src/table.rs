@@ -179,25 +179,23 @@ async fn map_dataset_not_found(
 
 /// How a failed table open may distinguish an empty directory from a missing table.
 ///
-/// Object stores cannot represent empty directories, so the default is to use only
-/// exact-key and target-prefix probes. Native directory metadata is permitted only
-/// when the connection resolved the store through Lance's built-in local provider.
+/// Object stores cannot represent empty directories, so an unknown provider uses only
+/// exact-key and target-prefix probes unless its resolved store proves that it shares
+/// the native filesystem namespace. Connections that create Lance's default registry
+/// internally can trust its built-in local providers without the extra proof.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum TableStorageProbe {
     #[default]
-    ObjectStore,
-    NativeDirectory,
+    VerifyResolvedStore,
+    TrustedDefaultRegistry,
 }
 
 impl TableStorageProbe {
-    pub(crate) fn for_resolved_store(
-        object_store: &lance_io::object_store::ObjectStore,
-        uses_default_registry: bool,
-    ) -> Self {
-        if uses_default_registry && Self::supports_native_directories(object_store) {
-            Self::NativeDirectory
+    pub(crate) fn for_registry(uses_default_registry: bool) -> Self {
+        if uses_default_registry {
+            Self::TrustedDefaultRegistry
         } else {
-            Self::ObjectStore
+            Self::VerifyResolvedStore
         }
     }
 
@@ -208,6 +206,30 @@ impl TableStorageProbe {
             "file+uring" => true,
             _ => false,
         }
+    }
+
+    async fn resolved_store_supports_native_directories(
+        self,
+        object_store: &lance_io::object_store::ObjectStore,
+    ) -> bool {
+        if !Self::supports_native_directories(object_store) {
+            return false;
+        }
+        if self == Self::TrustedDefaultRegistry {
+            return true;
+        }
+
+        // `ObjectStoreProvider` does not expose concrete type identity or a directory
+        // capability. Verify the resolved store behavior with one exact, unrelated
+        // local file instead. This is bounded and prevents a custom provider that only
+        // reports a `file` scheme from being bypassed by host filesystem metadata.
+        let Ok(probe) = tempfile::NamedTempFile::new() else {
+            return false;
+        };
+        let Ok(probe_path) = object_store::path::Path::from_absolute_path(probe.path()) else {
+            return false;
+        };
+        object_store.exists(&probe_path).await.unwrap_or(false)
     }
 }
 
@@ -240,18 +262,12 @@ async fn table_storage_exists(
         return Ok(false);
     }
 
-    let storage_probe = if requires_store_probe {
-        TableStorageProbe::ObjectStore
-    } else {
-        storage_probe.unwrap_or_else(|| {
-            TableStorageProbe::for_resolved_store(&object_store, uses_default_registry)
-        })
-    };
-    // The scheme is only a necessary path-format check here. Provider provenance is
-    // carried separately in `storage_probe`, so a custom provider that reports `file`
-    // cannot cause us to bypass its ObjectStore implementation.
-    if storage_probe == TableStorageProbe::NativeDirectory
-        && TableStorageProbe::supports_native_directories(&object_store)
+    let storage_probe =
+        storage_probe.unwrap_or_else(|| TableStorageProbe::for_registry(uses_default_registry));
+    if !requires_store_probe
+        && storage_probe
+            .resolved_store_supports_native_directories(&object_store)
+            .await
     {
         let local_path = std::path::PathBuf::from(lance_io::local::to_local_path(&path));
         // A local table URI intentionally grants access to this exact path; LanceDB does
@@ -4250,6 +4266,52 @@ mod tests {
         assert!(
             matches!(&err, Error::TableCorrupted { name, .. } if name == "empty-object-store"),
             "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_recovery_detects_empty_local_dir_with_explicit_default_session() {
+        let tmp_dir = tempdir().unwrap();
+        let table_name = "explicit-default-session";
+        std::fs::create_dir(tmp_dir.path().join(format!("{table_name}.lance"))).unwrap();
+
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .session(Arc::new(lance::session::Session::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.table_names().execute().await.unwrap(),
+            vec![table_name.to_string()]
+        );
+        let err = db.open_table(table_name).execute().await.unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
+            "listed empty table must be corrupt, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_recovery_detects_empty_local_custom_location() {
+        let tmp_dir = tempdir().unwrap();
+        let table_name = "local-location";
+        let table_path = tmp_dir.path().join(format!("{table_name}.lance"));
+        std::fs::create_dir(&table_path).unwrap();
+
+        let db = connect("memory:///open-local-location-repro")
+            .execute()
+            .await
+            .unwrap();
+        let err = db
+            .open_table(table_name)
+            .location(table_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
+            "empty built-in local location must be corrupt, got {err:?}"
         );
     }
 

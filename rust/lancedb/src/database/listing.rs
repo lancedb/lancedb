@@ -258,8 +258,8 @@ pub struct ListingDatabase {
     // Session for object stores and caching
     session: Arc<lance::session::Session>,
 
-    // Whether failed opens may inspect exact native directory metadata. This is
-    // granted only for stores resolved through Lance's built-in local providers.
+    // Whether the session uses the default registry that LanceDB created. The
+    // actual table store is still resolved and checked for each open location.
     table_storage_probe: TableStorageProbe,
 
     // Namespace-backed database for child namespace operations
@@ -572,8 +572,7 @@ impl ListingDatabase {
                     &os_params,
                 )
                 .await?;
-                let table_storage_probe =
-                    TableStorageProbe::for_resolved_store(&object_store, uses_default_registry);
+                let table_storage_probe = TableStorageProbe::for_registry(uses_default_registry);
                 if object_store.is_local() {
                     Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
                         path: storage_base_uri.clone(),
@@ -641,8 +640,7 @@ impl ListingDatabase {
             &ObjectStoreParams::default(),
         )
         .await?;
-        let table_storage_probe =
-            TableStorageProbe::for_resolved_store(&object_store, uses_default_registry);
+        let table_storage_probe = TableStorageProbe::for_registry(uses_default_registry);
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
