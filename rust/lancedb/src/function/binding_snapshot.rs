@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use arrow_schema::FieldRef;
 
-use super::invalid_input;
+use super::{FunctionCall, invalid_input};
 use crate::Result;
 
 /// One top-level field identity from a single table snapshot.
@@ -114,6 +114,45 @@ impl GeneratedColumnBindingSnapshot {
             .iter()
             .find(|entry| entry.field().name() == name)
     }
+
+    /// Validate table-dependent field arguments of an already canonical call.
+    ///
+    /// For every field argument, finds the snapshot entry by stable Lance field
+    /// ID and requires exact Arrow [`arrow_schema::DataType`] equality. Literal
+    /// arguments are table-independent and ignored. Missing field ID or type
+    /// mismatch returns [`crate::Error::InvalidInput`] without modifying `call`
+    /// or this snapshot.
+    ///
+    /// This check is orthogonal to [`FunctionCall::validate_against`]: it does
+    /// not perform catalog lookup, Function identity/signature validation, or
+    /// table mutation.
+    pub fn validate_field_arguments(&self, call: &FunctionCall) -> Result<()> {
+        for (_parameter, argument) in call.arguments() {
+            let Some(field_id) = argument.field_id() else {
+                continue;
+            };
+            let Some(entry) = self.entry_by_field_id(field_id) else {
+                return Err(invalid_input(format!(
+                    "generated-column binding snapshot missing field id {field_id}"
+                )));
+            };
+            let expected = argument.data_type();
+            let current = entry.field().data_type();
+            if current != expected {
+                return Err(invalid_input(format!(
+                    "generated-column binding snapshot field id {field_id} type mismatch: \
+                     expected {expected}, found {current}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn entry_by_field_id(&self, field_id: i32) -> Option<&GeneratedColumnBindingEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.field_id() == field_id)
+    }
 }
 
 #[cfg(test)]
@@ -182,5 +221,139 @@ mod tests {
             GeneratedColumnBindingSnapshot::try_new(1, duplicate_names, vec![1, 2]),
             Err(Error::InvalidInput { .. })
         ));
+    }
+
+    fn sample_function() -> crate::function::Function {
+        use crate::function::{
+            Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+        };
+        let id = FunctionId::try_new("fn.exact.snapshot.lib").unwrap();
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("payload_arg", DataType::Utf8),
+                FunctionParameter::new("metric_arg", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Int32, true),
+        )
+        .unwrap();
+        Function::new(id, signature)
+    }
+
+    #[test]
+    fn validate_field_arguments_value_cases() {
+        use crate::function::{FunctionArgument, FunctionCall};
+        use arrow_array::{ArrayRef, Int32Array};
+
+        let snapshot = GeneratedColumnBindingSnapshot::try_new(2, fields(), vec![2, 4, 8]).unwrap();
+        let function = sample_function();
+
+        let valid = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "payload_arg".to_string(),
+                    FunctionArgument::try_field(2, DataType::Utf8).unwrap(),
+                ),
+                (
+                    "metric_arg".to_string(),
+                    FunctionArgument::try_field(4, DataType::Int32).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        snapshot.validate_field_arguments(&valid).unwrap();
+
+        let missing = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "payload_arg".to_string(),
+                    FunctionArgument::try_field(99, DataType::Utf8).unwrap(),
+                ),
+                (
+                    "metric_arg".to_string(),
+                    FunctionArgument::try_field(4, DataType::Int32).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            snapshot.validate_field_arguments(&missing),
+            Err(Error::InvalidInput { .. })
+        ));
+
+        // Same stable ID, different Arrow type: exact-type equality must reject.
+        let type_mismatch = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "payload_arg".to_string(),
+                    // ID 4 is Int32 in the snapshot.
+                    FunctionArgument::try_field(4, DataType::Utf8).unwrap(),
+                ),
+                (
+                    "metric_arg".to_string(),
+                    FunctionArgument::try_field(4, DataType::Int32).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        let err = snapshot
+            .validate_field_arguments(&type_mismatch)
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        let message = err.to_string();
+        assert!(message.contains('4'));
+        assert!(message.contains("Utf8") && message.contains("Int32"));
+        assert!(!message.contains("Score") && !message.contains("text"));
+
+        let mixed = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "payload_arg".to_string(),
+                    FunctionArgument::try_field(2, DataType::Utf8).unwrap(),
+                ),
+                (
+                    "metric_arg".to_string(),
+                    FunctionArgument::try_literal(
+                        Arc::new(Int32Array::from(vec![Some(1)])) as ArrayRef
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        snapshot.validate_field_arguments(&mixed).unwrap();
+
+        let literal_only_fn = {
+            use crate::function::{
+                Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+            };
+            Function::new(
+                FunctionId::try_new("fn.exact.snapshot.literal").unwrap(),
+                FunctionSignature::try_new(
+                    vec![FunctionParameter::new("constant_arg", DataType::Int32)],
+                    FunctionOutput::new(DataType::Int32, true),
+                )
+                .unwrap(),
+            )
+        };
+        let literal_only =
+            FunctionCall::try_new(
+                &literal_only_fn,
+                vec![(
+                    "constant_arg".to_string(),
+                    FunctionArgument::try_literal(
+                        Arc::new(Int32Array::from(vec![Some(9)])) as ArrayRef
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        // Empty snapshot still accepts literal-only calls.
+        let empty =
+            GeneratedColumnBindingSnapshot::try_new(1, Vec::<FieldRef>::new(), vec![]).unwrap();
+        empty.validate_field_arguments(&literal_only).unwrap();
     }
 }
