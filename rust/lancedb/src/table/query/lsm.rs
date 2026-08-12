@@ -31,12 +31,12 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
-use lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP;
 use lance::dataset::mem_wal::scanner::InMemoryMemTables;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
 };
 use lance_index::mem_wal::{MemWalIndexDetails, ShardManifest};
+use lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP;
 use uuid::Uuid;
 
 use super::NativeTable;
