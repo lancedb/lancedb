@@ -1935,7 +1935,7 @@ def _create_token_table(tmp_path, documents):
     return db.create_table("tokens", pa.table({"tokens": tokens}))
 
 
-def _packed_dataset(table, pack_sequences, *, pad_id=0, **kwargs):
+def _packed_dataset(table, pack_sequences, *, blocks_per_epoch, pad_id=0, **kwargs):
     return StreamingDataset(
         table,
         shuffle=False,
@@ -1943,13 +1943,14 @@ def _packed_dataset(table, pack_sequences, *, pad_id=0, **kwargs):
         pack_sequences=pack_sequences,
         eos_id=9,
         pad_id=pad_id,
+        blocks_per_epoch=blocks_per_epoch,
         **kwargs,
     )
 
 
 def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
     table = _create_token_table(tmp_path, [[1, 2], [3, 4], [5]])
-    dataset = _packed_dataset(table, 6)
+    dataset = _packed_dataset(table, 6, blocks_per_epoch=2)
 
     blocks = list(dataset)
 
@@ -1967,7 +1968,7 @@ def test_pack_sequences_pads_lagging_splits(tmp_path):
         tmp_path,
         [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
     )
-    dataset = _packed_dataset(table, 5, num_splits=2)
+    dataset = _packed_dataset(table, 5, blocks_per_epoch=6, num_splits=2)
     input_ids = [block["input_ids"].tolist() for block in dataset]
     # Split 0 has four real tokens including EOS markers, while split 1 has
     # eleven. Packing must emit three complete two-split cycles.
@@ -1980,19 +1981,67 @@ def test_pack_sequences_pads_lagging_splits(tmp_path):
         [9, 0, 0, 0, 0],
     ]
 
+    per_rank = []
+    for rank in range(2):
+        rank_dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch=6,
+            num_splits=2,
+            world_size=2,
+            rank=rank,
+        )
+        per_rank.append([block["input_ids"].tolist() for block in rank_dataset])
 
-def test_pack_sequences_checkpoint_resumes_partial_buffers(tmp_path):
+    assert [len(blocks) for blocks in per_rank] == [3, 3]
+    sharded = [block for cycle in zip(*per_rank) for block in cycle]
+    assert sharded == input_ids
+
+
+def test_pack_sequences_auto_estimates_in_bounded_batches(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2, 3, 4]] * 1_000)
+    batch_sizes = []
+    getitems = streaming.Permutation.__getitems__
+
+    def record_batch_size(permutation, indices):
+        batch_sizes.append(len(indices))
+        return getitems(permutation, indices)
+
+    with patch.object(streaming.Permutation, "__getitems__", record_batch_size):
+        with pytest.warns(UserWarning, match="materialize a token_count column"):
+            dataset = _packed_dataset(
+                table,
+                5,
+                blocks_per_epoch="auto",
+                num_splits=2,
+                read_batch_size=3,
+            )
+
+    assert dataset.state_dict()["blocks_per_epoch"] == 1_000
+    assert sum(batch_sizes) == 10
+    assert max(batch_sizes) <= 3
+
+
+def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
     table = _create_token_table(
         tmp_path,
         [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
     )
-    dataset = _packed_dataset(table, 5, num_splits=2)
-    iterator = iter(dataset)
-    first_cycle = [next(iterator), next(iterator)]
-    checkpoint = dataset.state_dict()
-    expected_remaining = list(iterator)
+    kwargs = dict(pack_sequences=5, blocks_per_epoch=6, num_splits=2)
+    reference = list(_packed_dataset(table, **kwargs))
 
-    resumed = _packed_dataset(table, 5, num_splits=2)
+    datasets = [
+        _packed_dataset(table, world_size=2, rank=rank, **kwargs) for rank in range(2)
+    ]
+    iterators = [iter(dataset) for dataset in datasets]
+    first_cycle = [next(iterator) for iterator in iterators]
+    checkpoint = StreamingDataset.merge_state_dicts(
+        [dataset.state_dict() for dataset in datasets]
+    )
+    for iterator in iterators:
+        iterator.close()
+
+    resumed = _packed_dataset(table, **kwargs)
     resumed.load_state_dict(checkpoint)
     actual_remaining = list(resumed)
 
@@ -2000,11 +2049,12 @@ def test_pack_sequences_checkpoint_resumes_partial_buffers(tmp_path):
         [1, 9, 2, 9, 0],
         [10, 11, 12, 13, 14],
     ]
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
     assert [block["input_ids"].tolist() for block in actual_remaining] == [
-        block["input_ids"].tolist() for block in expected_remaining
+        block["input_ids"].tolist() for block in reference[2:]
     ]
     assert [block["doc_ids"].tolist() for block in actual_remaining] == [
-        block["doc_ids"].tolist() for block in expected_remaining
+        block["doc_ids"].tolist() for block in reference[2:]
     ]
 
 
@@ -2020,8 +2070,24 @@ def test_pack_sequences_validates_padding_id(tmp_path):
             eos_id=9,
         )
 
-    checkpoint = _packed_dataset(table, 4).state_dict()
-    resumed = _packed_dataset(table, 4, pad_id=8)
+    with pytest.raises(ValueError, match="blocks_per_epoch is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+            pad_id=0,
+        )
+
+    with pytest.raises(ValueError, match="must be divisible"):
+        _packed_dataset(table, 4, blocks_per_epoch=3, num_splits=2)
+
+    with pytest.raises(ValueError, match="positive integer or 'auto'"):
+        _packed_dataset(table, 4, blocks_per_epoch="estimate")
+
+    checkpoint = _packed_dataset(table, 4, blocks_per_epoch=1).state_dict()
+    resumed = _packed_dataset(table, 4, blocks_per_epoch=1, pad_id=8)
     with pytest.raises(ValueError, match="pad_id mismatch"):
         resumed.load_state_dict(checkpoint)
 
