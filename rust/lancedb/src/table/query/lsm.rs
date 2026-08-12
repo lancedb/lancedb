@@ -31,6 +31,7 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
+use lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP;
 use lance::dataset::mem_wal::scanner::InMemoryMemTables;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
@@ -282,13 +283,25 @@ fn exclusion_watermarks(
 /// with a live cached `ShardWriter` (this session's in-flight writes) the
 /// writer's authoritative in-memory manifest and memtables override the
 /// on-disk view so a read sees data not yet flushed.
+/// Whether this table reads a missing `index_catchup` entry as "not caught up".
+///
+/// Both words must be set. A reader honouring the bit while a writer does not
+/// would retain SSTables the writer had already trimmed, and the reverse would
+/// serve rows from files the writer still expects to be excluded -- so a
+/// half-set manifest is treated as legacy, which is the conservative side.
+fn requires_index_catchup(dataset: &Dataset) -> bool {
+    let manifest = dataset.manifest();
+    manifest.reader_feature_flags & FLAG_MEM_WAL_INDEX_CATCHUP != 0
+        && manifest.writer_feature_flags & FLAG_MEM_WAL_INDEX_CATCHUP != 0
+}
+
 async fn build_read_context(
     table: &NativeTable,
     dataset: &Dataset,
     details: &MemWalIndexDetails,
     index_names: &[String],
 ) -> Result<(Vec<ShardSnapshot>, HashMap<Uuid, InMemoryMemTables>)> {
-    let catchup_required = dataset.requires_mem_wal_index_catchup();
+    let catchup_required = requires_index_catchup(dataset);
     let exclude = exclusion_watermarks(details, index_names, catchup_required);
 
     let shard_ids = dataset.list_mem_wal_latest_shard_ids().await?;
