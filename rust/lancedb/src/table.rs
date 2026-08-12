@@ -2377,6 +2377,22 @@ impl NativeTableExt for Arc<dyn BaseTable> {
     }
 }
 
+/// Build a [`GeneratedColumnBindingSnapshot`] from one exact Lance [`lance::Dataset`].
+///
+/// Crate-private conversion shared by the public hidden snapshot projection and
+/// Native query planning/namespace dispatch so both derive version, Arrow fields,
+/// and Lance field IDs from the same Dataset object with identical validation.
+pub(crate) fn generated_column_binding_snapshot_from_dataset(
+    dataset: &lance::Dataset,
+) -> Result<GeneratedColumnBindingSnapshot> {
+    let version = dataset.version().version;
+    let lance_schema = dataset.schema();
+    let field_ids: Vec<i32> = lance_schema.fields.iter().map(|field| field.id).collect();
+    let arrow_schema = Schema::from(lance_schema);
+    let fields = arrow_schema.fields().iter().cloned().collect::<Vec<_>>();
+    GeneratedColumnBindingSnapshot::try_new(version, fields, field_ids)
+}
+
 /// A table in a LanceDB database.
 #[derive(Clone)]
 pub struct NativeTable {
@@ -3181,12 +3197,7 @@ impl BaseTable for NativeTable {
         // One consistency-wrapper get(): version and Lance field IDs must come
         // from the same Dataset snapshot. Do not compose schema() + version().
         let dataset = self.dataset.get().await?;
-        let version = dataset.version().version;
-        let lance_schema = dataset.schema();
-        let field_ids: Vec<i32> = lance_schema.fields.iter().map(|field| field.id).collect();
-        let arrow_schema = Schema::from(lance_schema);
-        let fields = arrow_schema.fields().iter().cloned().collect::<Vec<_>>();
-        GeneratedColumnBindingSnapshot::try_new(version, fields, field_ids)
+        generated_column_binding_snapshot_from_dataset(dataset.as_ref())
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
@@ -5958,5 +5969,320 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(data_after, data_before);
+    }
+
+    fn assert_generated_column_incomplete_redacted(
+        err: &Error,
+        snapshot: &crate::function::GeneratedColumnBindingSnapshot,
+        label: &str,
+    ) {
+        use crate::error::FunctionErrorCode;
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        match err {
+            Error::Function {
+                code: FunctionErrorCode::GeneratedColumnIncomplete,
+                message,
+            } => {
+                let rendered = format!("{err}\n{err:?}\n{message}");
+                assert!(
+                    !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+                    "{label}: diagnostic leaked metadata wire key: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("function_call"),
+                    "{label}: diagnostic leaked function_call wire key / payload: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("fn.exact.status.native"),
+                    "{label}: diagnostic leaked Function ID: {rendered}"
+                );
+                for entry in snapshot.entries() {
+                    if let Some(raw) = entry.field().metadata().get(GENERATED_COLUMN_METADATA_KEY) {
+                        assert!(
+                            !rendered.contains(raw.as_str()),
+                            "{label}: diagnostic leaked raw metadata json: {rendered}"
+                        );
+                    }
+                }
+            }
+            other => panic!(
+                "{label}: expected Error::Function(GeneratedColumnIncomplete), got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_public_exits_reject_before_read() {
+        use crate::error::FunctionErrorCode;
+        use crate::function::GeneratedColumnStatus;
+        use crate::query::QueryExecutionOptions;
+
+        let (_tmp, table) = create_status_projection_table("runtime_exits").await;
+        plant_generated_column_metadata(&table, "gen_out", 5, 2).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+
+        let version_before = table.version().await.unwrap();
+        let schema_before = table.schema().await.unwrap();
+        let ordinary_before = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+
+        let query = table.query().select(Select::columns(&["gen_out"]));
+
+        let Err(execute_err) = query.execute().await else {
+            panic!("execute must reject");
+        };
+        assert_generated_column_incomplete_redacted(&execute_err, &snapshot, "execute");
+
+        let Err(plan_err) = query.create_plan(QueryExecutionOptions::default()).await else {
+            panic!("create_plan must reject");
+        };
+        assert_generated_column_incomplete_redacted(&plan_err, &snapshot, "create_plan");
+
+        let Err(schema_err) = query.output_schema().await else {
+            panic!("output_schema must reject");
+        };
+        assert_generated_column_incomplete_redacted(&schema_err, &snapshot, "output_schema");
+
+        let Err(explain_err) = query.explain_plan(false).await else {
+            panic!("explain_plan must reject");
+        };
+        assert_generated_column_incomplete_redacted(&explain_err, &snapshot, "explain_plan");
+
+        let Err(analyze_err) = query
+            .analyze_plan_with_options(QueryExecutionOptions::default())
+            .await
+        else {
+            panic!("analyze_plan must reject");
+        };
+        assert_generated_column_incomplete_redacted(&analyze_err, &snapshot, "analyze_plan");
+
+        // Rejected exits must not mutate version/schema/data; inspect only via
+        // an ordinary unreferenced selection.
+        assert_eq!(table.version().await.unwrap(), version_before);
+        assert_eq!(table.schema().await.unwrap(), schema_before);
+        let ordinary_after = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(ordinary_after, ordinary_before);
+
+        // Keep the stable code visible for filter-driven triage.
+        assert!(matches!(
+            execute_err,
+            Error::Function {
+                code: FunctionErrorCode::GeneratedColumnIncomplete,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_complete_and_unreferenced_readable() {
+        use crate::function::GeneratedColumnStatus;
+        use crate::query::ColumnOrdering;
+
+        let (_tmp, table) = create_status_projection_table("runtime_readable").await;
+        plant_generated_column_metadata(&table, "gen_out", 3, 3).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+
+        let complete_batches = table
+            .query()
+            .select(Select::columns(&["gen_out"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(complete_batches.len(), 1);
+        assert_eq!(
+            complete_batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            1
+        );
+
+        plant_generated_column_metadata(&table, "gen_out", 5, 2).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+
+        let filtered = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .only_if("ordinary = 'x'")
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "x"
+        );
+
+        let ordered = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_last(
+                "ordinary".to_string(),
+            )]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(
+            ordered[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "x"
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_predicate_and_order_reject() {
+        use crate::function::GeneratedColumnStatus;
+        use crate::query::ColumnOrdering;
+        use futures::TryStreamExt;
+
+        let (_tmp, table) = create_status_projection_table("runtime_pred_order").await;
+        plant_generated_column_metadata(&table, "gen_out", 7, 1).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+
+        let Err(filter_err) = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .only_if("gen_out > 0")
+            .execute()
+            .await
+        else {
+            panic!("predicate reference must reject before batches");
+        };
+        assert_generated_column_incomplete_redacted(&filter_err, &snapshot, "predicate");
+
+        let Err(order_err) = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .order_by(Some(vec![ColumnOrdering::asc_nulls_last(
+                "gen_out".to_string(),
+            )]))
+            .execute()
+            .await
+        else {
+            panic!("ordering reference must reject before batches");
+        };
+        assert_generated_column_incomplete_redacted(&order_err, &snapshot, "order_by");
+
+        // Prove we did not silently succeed with an empty stream: ordinary-only
+        // execution still returns the expected row after the rejections.
+        let ordinary = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(ordinary[0].num_rows(), 1);
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_escaped_plan_tied_to_snapshot() {
+        use crate::function::GeneratedColumnStatus;
+        use crate::query::QueryExecutionOptions;
+        use futures::TryStreamExt;
+        use lance_datafusion::exec::execute_plan;
+
+        let (_tmp, table) = create_status_projection_table("runtime_escaped_plan").await;
+        plant_generated_column_metadata(&table, "gen_out", 4, 4).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        let complete_version = table.version().await.unwrap();
+
+        let plan = table
+            .query()
+            .select(Select::columns(&["gen_out"]))
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+
+        // Metadata-only change: gen_out becomes incomplete on a newer snapshot.
+        plant_generated_column_metadata(&table, "gen_out", 9, 3).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+        let incomplete_version = table.version().await.unwrap();
+        assert!(incomplete_version > complete_version);
+
+        // Escaped plan must keep reading the exact older complete snapshot/value.
+        let stream = execute_plan(plan, Default::default()).unwrap();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            1,
+            "escaped plan must not rebuild against the incomplete latest snapshot"
+        );
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let Err(fresh_err) = table
+            .query()
+            .select(Select::columns(&["gen_out"]))
+            .execute()
+            .await
+        else {
+            panic!("fresh query against incomplete latest must reject");
+        };
+        assert_generated_column_incomplete_redacted(&fresh_err, &snapshot, "fresh_query");
     }
 }

@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 mod lsm;
 
-use super::NativeTable;
+use super::{NativeTable, generated_column_binding_snapshot_from_dataset};
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
+    validate_generated_column_query,
 };
 use crate::utils::{MaxBatchLengthStream, TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
@@ -22,6 +23,7 @@ use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
 use futures::future::try_join_all;
+use lance::Dataset;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -47,7 +49,7 @@ impl AnyQuery {
     }
 }
 
-//Decide between namespace or local
+// Decide between namespace or local.
 pub async fn execute_query(
     table: &NativeTable,
     query: &AnyQuery,
@@ -55,16 +57,25 @@ pub async fn execute_query(
 ) -> Result<DatasetRecordBatchStream> {
     // QueryTable pushdown runs the query server-side, but only on the main
     // branch: the namespace request carries no branch yet, so a branch handle
-    // must fall through to local execution.
-    if can_execute_namespace_query(table, query).await?
-        && let Some(ref namespace_client) = table.namespace_client
-    {
-        return execute_namespace_query(table, namespace_client.clone(), query, options).await;
+    // must fall through to local execution. Successful pushdown owns one
+    // Dataset Arc for MemWAL eligibility, generated-column guard, and version
+    // fencing. Obviously ineligible paths avoid an unused get(); MemWAL
+    // fallthrough and other local paths acquire/guard/plan independently.
+    if let Some(stream) = try_execute_namespace_query(table, query).await? {
+        return Ok(stream);
     }
     execute_generic_query(table, query, options).await
 }
 
-async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> Result<bool> {
+/// Attempt QueryTable pushdown against one exact Dataset snapshot.
+///
+/// Returns `Ok(None)` when pushdown is ineligible so the caller can fall through
+/// to the local exact-snapshot planner. Does not `dataset.get()` on paths that
+/// are obviously ineligible before the MemWAL check.
+async fn try_execute_namespace_query(
+    table: &NativeTable,
+    query: &AnyQuery,
+) -> Result<Option<DatasetRecordBatchStream>> {
     if !(table
         .pushdown_operations
         .contains(&NamespaceClientPushdownOperation::QueryTable)
@@ -72,17 +83,38 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
         && table.dataset.current_branch().is_none()
         && !requires_local_namespace_execution(query))
     {
-        return Ok(false);
+        return Ok(None);
     }
+
+    let Some(namespace_client) = table.namespace_client.clone() else {
+        return Ok(None);
+    };
+
+    // One Dataset Arc owns MemWAL eligibility, the generated-column guard, and
+    // the version fence sent on the request.
+    let dataset = table.dataset.get().await?;
     // A MemWAL write spec means reads auto-route through the LSM scanner in
     // `create_plan` even when `use_lsm` is unset. The namespace request has no
     // use_lsm field, so pushing the default query down would silently omit
     // un-compacted rows — force local execution whenever a spec is installed.
-    let dataset = table.dataset.get().await?;
+    // Do not guard here; the local planner acquires its own snapshot.
     if dataset.mem_wal_index_details().await?.is_some() {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(true)
+
+    let snapshot = generated_column_binding_snapshot_from_dataset(dataset.as_ref())?;
+    validate_generated_column_query(&snapshot, query)?;
+
+    let version = i64::try_from(dataset.version().version).map_err(|_| Error::InvalidInput {
+        message: format!(
+            "dataset version {} exceeds i64::MAX and cannot be sent on QueryTable",
+            dataset.version().version
+        ),
+    })?;
+
+    Ok(Some(
+        execute_namespace_query(table, namespace_client, query, version).await?,
+    ))
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
@@ -128,18 +160,38 @@ async fn execute_generic_query(
     Ok(DatasetRecordBatchStream::new(inner))
 }
 
+/// Public/internal Native planner entry: one Dataset get, guard, then plan.
+///
+/// Acquires exactly one [`Arc<Dataset>`], builds/validates the generated-column
+/// snapshot from that object, then plans entirely against the same Arc.
+/// Multi-vector recursion clones the owned Arc and must not call this outer
+/// entry (no additional `dataset.get()`).
 pub async fn create_plan(
     table: &NativeTable,
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    let ds_ref = table.dataset.get().await?;
+    let snapshot = generated_column_binding_snapshot_from_dataset(ds_ref.as_ref())?;
+    // Pass the original full AnyQuery before VectorQuery conversion/splitting so
+    // select/filter/order/FTS/vector references are all covered. check_filter
+    // precedence is preserved inside validate_generated_column_query.
+    validate_generated_column_query(&snapshot, query)?;
+    create_plan_with_dataset(table, query, options, ds_ref).await
+}
+
+/// Plan against an already-owned Dataset Arc. Used by the guarded outer entry
+/// and by multi-vector recursion (Arc clones only).
+async fn create_plan_with_dataset(
+    table: &NativeTable,
+    query: &AnyQuery,
+    options: QueryExecutionOptions,
+    ds_ref: Arc<Dataset>,
+) -> Result<Arc<dyn ExecutionPlan>> {
     let query = match query {
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
     };
-    query.base.check_filter()?;
-
-    let ds_ref = table.dataset.get().await?;
 
     // MemWAL read routing driven by `use_lsm`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
@@ -198,7 +250,9 @@ pub async fn create_plan(
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
         } else {
-            // Multiple query vectors: create a plan for each and union them
+            // Multiple query vectors: create a plan for each and union them.
+            // Recurse with clones of the already-owned Arc — never the outer
+            // create_plan entry (which would perform another dataset.get()).
             let query_vecs = query.query_vector.clone();
             let plan_futures = query_vecs
                 .into_iter()
@@ -206,8 +260,15 @@ pub async fn create_plan(
                     let mut sub_query = query.clone();
                     sub_query.query_vector = vec![query_vector];
                     let options_ref = options.clone();
+                    let ds_ref = ds_ref.clone();
                     async move {
-                        create_plan(table, &AnyQuery::VectorQuery(sub_query), options_ref).await
+                        create_plan_with_dataset(
+                            table,
+                            &AnyQuery::VectorQuery(sub_query),
+                            options_ref,
+                            ds_ref,
+                        )
+                        .await
                     }
                 })
                 .collect::<Vec<_>>();
@@ -381,11 +442,15 @@ pub(crate) fn create_multi_vector_plan(
 }
 
 /// Execute a query on the namespace server instead of locally.
+///
+/// Caller must already have validated the generated-column guard against the
+/// exact Dataset snapshot whose `version` is passed here. The incomplete /
+/// malformed guard runs before this dispatch.
 async fn execute_namespace_query(
     table: &NativeTable,
     namespace_client: Arc<dyn LanceNamespace>,
     query: &AnyQuery,
-    _options: QueryExecutionOptions,
+    version: i64,
 ) -> Result<DatasetRecordBatchStream> {
     // Build table_id from namespace + table name
     let mut table_id = table.namespace.clone();
@@ -393,8 +458,9 @@ async fn execute_namespace_query(
 
     // Convert AnyQuery to namespace QueryTableRequest
     let mut ns_request = convert_to_namespace_query(query)?;
-    // Set the table ID on the request
+    // Set the table ID and exact guarded Dataset version on the request.
     ns_request.id = Some(table_id);
+    ns_request.version = Some(version);
 
     // Call the namespace query_table API
     let response_bytes = namespace_client
@@ -1161,6 +1227,295 @@ mod tests {
         assert_eq!(
             find_ann_approx_mode(plan.as_ref()),
             Some(ApproxMode::Accurate)
+        );
+    }
+
+    /// Records namespace `query_table` requests and returns a valid Arrow IPC file.
+    #[derive(Debug, Default)]
+    struct RecordingNamespaceClient {
+        requests: std::sync::Mutex<Vec<NsQueryTableRequest>>,
+    }
+
+    impl RecordingNamespaceClient {
+        fn ipc_response() -> bytes::Bytes {
+            use arrow_array::{Int32Array, RecordBatch, StringArray};
+            use arrow_ipc::writer::FileWriter;
+            use arrow_schema::{DataType, Field, Schema};
+
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("gen_out", DataType::Int32, true),
+                Field::new("ordinary", DataType::Utf8, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef,
+                ],
+            )
+            .unwrap();
+            let mut buf = Vec::new();
+            {
+                let mut writer = FileWriter::try_new(&mut buf, &schema).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+            }
+            bytes::Bytes::from(buf)
+        }
+
+        fn call_count(&self) -> usize {
+            self.requests.lock().unwrap().len()
+        }
+
+        fn requests(&self) -> Vec<NsQueryTableRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for RecordingNamespaceClient {
+        fn namespace_id(&self) -> String {
+            "recording".to_string()
+        }
+
+        async fn query_table(&self, request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
+            self.requests.lock().unwrap().push(request);
+            Ok(Self::ipc_response())
+        }
+    }
+
+    async fn runtime_namespace_table(
+        name: &str,
+    ) -> (
+        crate::table::Table,
+        NativeTable,
+        Arc<RecordingNamespaceClient>,
+    ) {
+        use crate::connect;
+        use crate::connection::NamespaceClientPushdownOperation;
+        use arrow_array::{Int32Array, RecordBatch, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("gen_out", DataType::Int32, true),
+            Field::new("ordinary", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some("x")])),
+            ],
+        )
+        .unwrap();
+        let table = conn.create_table(name, batch).execute().await.unwrap();
+        let namespace_client = Arc::new(RecordingNamespaceClient::default());
+        let mut native_table = table.as_native().unwrap().clone();
+        native_table.namespace_client = Some(namespace_client.clone());
+        native_table
+            .pushdown_operations
+            .insert(NamespaceClientPushdownOperation::QueryTable);
+        (table, native_table, namespace_client)
+    }
+
+    async fn plant_runtime_generated_column_metadata(
+        table: &crate::table::Table,
+        column: &str,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, GENERATED_COLUMN_METADATA_KEY,
+            GeneratedColumnDefinition,
+        };
+        use crate::table::FieldMetadataUpdate;
+        use arrow_array::StringArray;
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let field_id = snapshot.field(column).expect(column).field_id();
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.status.native").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("label", DataType::Utf8)],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![(
+                "label".to_string(),
+                FunctionArgument::try_literal(
+                    Arc::new(StringArray::from(vec![Some("ok")])) as ArrayRef
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let json = GeneratedColumnDefinition::try_new(
+            field_id,
+            call,
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+        .to_metadata_json()
+        .unwrap();
+        table
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new(column).set(GENERATED_COLUMN_METADATA_KEY, json)
+            ])
+            .await
+            .unwrap();
+    }
+
+    fn assert_incomplete_runtime_error(err: &Error, label: &str) {
+        use crate::error::FunctionErrorCode;
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        match err {
+            Error::Function {
+                code: FunctionErrorCode::GeneratedColumnIncomplete,
+                message,
+            } => {
+                let rendered = format!("{err}\n{err:?}\n{message}");
+                assert!(
+                    !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+                    "{label}: leaked metadata key: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("function_call"),
+                    "{label}: leaked function_call: {rendered}"
+                );
+                assert!(
+                    !rendered.contains("fn.exact.status.native"),
+                    "{label}: leaked Function ID: {rendered}"
+                );
+            }
+            other => panic!(
+                "{label}: expected Error::Function(GeneratedColumnIncomplete), got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_namespace_pushdown_fenced() {
+        use crate::function::GeneratedColumnStatus;
+        use crate::query::Select;
+
+        let (table, native_table, namespace_client) =
+            runtime_namespace_table("runtime_ns_fence").await;
+
+        plant_runtime_generated_column_metadata(&table, "gen_out", 3, 3).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        let guarded_version = native_table.dataset.get().await.unwrap().version().version;
+
+        let complete_query = AnyQuery::Query(QueryRequest {
+            select: Select::Columns(vec!["gen_out".to_string()]),
+            limit: Some(10),
+            ..Default::default()
+        });
+        let stream = execute_query(
+            &native_table,
+            &complete_query,
+            QueryExecutionOptions::default(),
+        )
+        .await
+        .expect("complete generated-column query must be eligible for QueryTable pushdown");
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        assert_eq!(namespace_client.call_count(), 1);
+        let requests = namespace_client.requests();
+        assert_eq!(
+            requests[0].version,
+            Some(guarded_version as i64),
+            "pushed-down query must fence to the exact guarded Dataset version; None races to latest"
+        );
+
+        // Incomplete referenced output must reject before any namespace dispatch.
+        plant_runtime_generated_column_metadata(&table, "gen_out", 8, 2).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+        let before_incomplete = namespace_client.call_count();
+        let incomplete_query = AnyQuery::Query(QueryRequest {
+            select: Select::Columns(vec!["gen_out".to_string()]),
+            limit: Some(10),
+            ..Default::default()
+        });
+        let Err(incomplete_err) = execute_query(
+            &native_table,
+            &incomplete_query,
+            QueryExecutionOptions::default(),
+        )
+        .await
+        else {
+            panic!("incomplete generated-column query must reject before dispatch");
+        };
+        assert_incomplete_runtime_error(&incomplete_err, "namespace_incomplete");
+        assert_eq!(
+            namespace_client.call_count(),
+            before_incomplete,
+            "incomplete guard must not dispatch query_table"
+        );
+    }
+
+    #[tokio::test]
+    async fn generated_column_query_runtime_malformed_rejects_before_namespace() {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+        use crate::query::Select;
+        use crate::table::FieldMetadataUpdate;
+
+        let (table, native_table, namespace_client) =
+            runtime_namespace_table("runtime_ns_malformed").await;
+
+        const MARKER: &str = "SENSITIVE_RUNTIME_MALFORMED_b3e2a_9c1d";
+        let raw = format!(
+            r#"{{"format_version":1,"output_field_id":0,"function_call":{MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
+        );
+        table
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new("gen_out").set(GENERATED_COLUMN_METADATA_KEY, raw.clone())
+            ])
+            .await
+            .unwrap();
+
+        let query = AnyQuery::Query(QueryRequest {
+            select: Select::Columns(vec!["gen_out".to_string()]),
+            limit: Some(10),
+            ..Default::default()
+        });
+        let Err(err) = execute_query(&native_table, &query, QueryExecutionOptions::default()).await
+        else {
+            panic!("malformed referenced metadata must fail closed before dispatch");
+        };
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "expected InvalidInput, got {err:?}"
+        );
+        let rendered = format!("{err}\n{err:?}");
+        assert!(
+            !rendered.contains(MARKER),
+            "malformed diagnostics must not echo raw marker: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&raw),
+            "malformed diagnostics must not echo raw metadata: {rendered}"
+        );
+        assert!(
+            !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+            "malformed diagnostics must not echo metadata wire key: {rendered}"
+        );
+        assert_eq!(
+            namespace_client.call_count(),
+            0,
+            "malformed guard must not dispatch query_table"
         );
     }
 }

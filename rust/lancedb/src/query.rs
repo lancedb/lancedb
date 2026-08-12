@@ -1653,8 +1653,13 @@ impl ExecutableQuery for TakeQuery {
 /// [`Error::Function`]`(`[`FunctionErrorCode::GeneratedColumnIncomplete`]`)`
 /// when a referenced generated output is incomplete. Does not wait, execute
 /// UDFs, substitute NULL, consult a catalog/index, mutate state, or take a
-/// second snapshot. Not hooked into Native/Remote/`create_plan` in this slice.
-#[allow(dead_code)] // Wired into Native/Remote create_plan in the next slice.
+/// second snapshot.
+///
+/// Native query runtime wires this into the exact-snapshot planner and
+/// namespace QueryTable pushdown path: callers build the snapshot from the same
+/// Lance [`lance::Dataset`] used to plan or dispatch, then invoke this helper
+/// before reading bytes or sending `query_table`. Remote error projection is
+/// out of scope for this helper.
 pub(crate) fn validate_generated_column_query(
     snapshot: &GeneratedColumnBindingSnapshot,
     query: &AnyQuery,
@@ -1691,7 +1696,6 @@ pub(crate) fn validate_generated_column_query(
     validate_referenced_entries(snapshot, &refs)
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn snapshot_arrow_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaRef {
     Arc::new(Schema::new(
         snapshot
@@ -1702,7 +1706,6 @@ fn snapshot_arrow_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaRef
     ))
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn snapshot_planner_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaRef {
     Arc::new(Schema::new(
         snapshot
@@ -1714,7 +1717,6 @@ fn snapshot_planner_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaR
     ))
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn snapshot_has_generated_metadata(snapshot: &GeneratedColumnBindingSnapshot) -> bool {
     snapshot.entries().iter().any(|entry| {
         entry
@@ -1731,7 +1733,6 @@ fn insert_ref_if_absent(refs: &mut Vec<String>, name: String) {
     }
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn collect_select_refs(
     snapshot: &GeneratedColumnBindingSnapshot,
     select: &Select,
@@ -1763,7 +1764,6 @@ fn collect_select_refs(
     Ok(())
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn collect_filter_refs(
     filter: &Option<QueryFilter>,
     planner: &Planner,
@@ -1780,7 +1780,6 @@ fn collect_filter_refs(
     }
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn collect_order_by_refs(
     order_by: &Option<Vec<ColumnOrdering>>,
     refs: &mut Vec<String>,
@@ -1793,7 +1792,6 @@ fn collect_order_by_refs(
     Ok(())
 }
 
-#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
 fn collect_fts_refs(
     snapshot: &GeneratedColumnBindingSnapshot,
     fts: &Option<FullTextSearchQuery>,
