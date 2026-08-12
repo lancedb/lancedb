@@ -84,6 +84,10 @@ pub mod query;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
+
+#[cfg(test)]
+mod schema_metadata_updates_dependency_contract;
+
 use crate::index::waiter::wait_for_index;
 pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
