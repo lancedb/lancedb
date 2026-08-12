@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Dependency-contract test for Lance A4 / A4u schema metadata attachment (B4p).
+//! Dependency-contract test for Lance A4 / A4u / A4d schema metadata attachment (B4p).
 //!
 //! Pins the exact generic Lance API shape LanceDB B4 will consume:
 //! [`SchemaMetadataUpdates`], [`UpdateMap`], [`UpdateMapEntry`],
 //! [`Transaction::with_schema_metadata_updates`], and the public
 //! `with_schema_metadata_updates` methods on insert/update/delete builders.
 //!
-//! Also pins the A4u Update no-op invariant: an attached field metadata patch
-//! must accompany a real data change; when a predicate matches zero rows,
-//! `rows_updated == 0` and the patch must not be published.
+//! Also pins:
+//! - A4u Update no-op: an attached field metadata patch must accompany a real
+//!   data change; when a predicate matches zero rows, `rows_updated == 0` and
+//!   the patch must not be published.
+//! - A4d Delete no-op: when a predicate scans but deletes zero rows,
+//!   `num_deleted_rows == 0` and the attached patch must not be published.
 //!
 //! Neutral metadata keys only. No Function / UDF / Job semantics.
 
@@ -44,6 +47,24 @@ fn field_metadata_patch(field_id: i32) -> SchemaMetadataUpdates {
             },
         )]),
     }
+}
+
+async fn write_neutral_fixture(uri: &str) -> Dataset {
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ],
+    )
+    .unwrap();
+    Dataset::write(RecordBatchIterator::new(vec![Ok(batch)], schema), uri, None)
+        .await
+        .expect("fixture dataset must write")
 }
 
 /// Compile-time proof that InsertBuilder exposes the A4 attachment method.
@@ -118,21 +139,7 @@ async fn noop_update_does_not_publish_attached_field_metadata() {
     let uri = tmp.path().join("noop_update.lance");
     let uri = uri.to_str().unwrap();
 
-    let schema = Arc::new(ArrowSchema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec!["a", "b", "c"])),
-        ],
-    )
-    .unwrap();
-    let dataset = Dataset::write(RecordBatchIterator::new(vec![Ok(batch)], schema), uri, None)
-        .await
-        .expect("fixture dataset must write");
+    let dataset = write_neutral_fixture(uri).await;
 
     let field = dataset
         .schema()
@@ -208,6 +215,92 @@ async fn noop_update_does_not_publish_attached_field_metadata() {
     assert!(
         !reopened_field.metadata.contains_key(META_KEY),
         "no-op Update must not publish attached field metadata; got {:?}",
+        reopened_field.metadata.get(META_KEY)
+    );
+}
+
+/// A4d dependency: a no-op Delete (predicate scans but matches zero rows) must
+/// not publish an attached field metadata patch. Manifest version advancement
+/// is unconstrained.
+#[tokio::test]
+async fn noop_delete_does_not_publish_attached_field_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let uri = tmp.path().join("noop_delete.lance");
+    let uri = uri.to_str().unwrap();
+
+    let dataset = write_neutral_fixture(uri).await;
+
+    let field = dataset
+        .schema()
+        .field("value")
+        .expect("value column must exist");
+    let field_id = field.id;
+    assert!(
+        !field.metadata.contains_key(META_KEY),
+        "{META_KEY} must be initially absent, got {:?}",
+        field.metadata
+    );
+
+    let updates = field_metadata_patch(field_id);
+    assert!(
+        !updates.is_empty(),
+        "fixture must be a substantive non-empty field metadata patch"
+    );
+
+    let before_count = dataset.count_rows(None).await.unwrap();
+    assert_eq!(before_count, 3);
+
+    let result = DeleteBuilder::new(Arc::new(dataset), "id < 0")
+        .with_schema_metadata_updates(updates)
+        .expect("Delete attachment must construct")
+        .execute()
+        .await
+        .expect("no-op attached Delete must complete");
+
+    assert_eq!(result.num_deleted_rows, 0, "predicate must match zero rows");
+    assert_eq!(
+        result.new_dataset.count_rows(None).await.unwrap(),
+        before_count,
+        "row count must remain unchanged"
+    );
+    assert_eq!(
+        result
+            .new_dataset
+            .count_rows(Some("value IN ('a', 'b', 'c')".into()))
+            .await
+            .unwrap(),
+        before_count,
+        "original values must remain unchanged"
+    );
+
+    let returned_field = result
+        .new_dataset
+        .schema()
+        .field_by_id(field_id)
+        .expect("stable field id must still exist on returned dataset");
+    assert!(
+        !returned_field.metadata.contains_key(META_KEY),
+        "no-op Delete must not publish attached field metadata on returned dataset; got {:?}",
+        returned_field.metadata.get(META_KEY)
+    );
+
+    let reopened = Dataset::open(uri).await.unwrap();
+    assert_eq!(reopened.count_rows(None).await.unwrap(), before_count);
+    assert_eq!(
+        reopened
+            .count_rows(Some("value IN ('a', 'b', 'c')".into()))
+            .await
+            .unwrap(),
+        before_count,
+        "fresh open must preserve all original rows"
+    );
+    let reopened_field = reopened
+        .schema()
+        .field_by_id(field_id)
+        .expect("stable field id must still exist");
+    assert!(
+        !reopened_field.metadata.contains_key(META_KEY),
+        "no-op Delete must not publish attached field metadata; got {:?}",
         reopened_field.metadata.get(META_KEY)
     );
 }
