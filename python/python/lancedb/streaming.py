@@ -165,12 +165,10 @@ class StreamingDataset(IterableDataset):
         blocks: exhausted splits emit padding, while tokens beyond the budget
         are left out of the epoch. This fixed per-split budget keeps packed
         iteration and checkpoints independent of rank and worker topology.
-        Pass ``"auto"`` to estimate the budget by reading only the token column
-        for approximately 1% of the rows, with a target cap of 100,000 rows and
-        at least one row from every logical split. Sampling is batched and evenly
-        distributed across logical splits. This is a convenience for smaller
-        workloads. For large-scale training, materialize a ``token_count`` column,
-        calculate an explicit block budget once, and pass that integer instead.
+        Pass ``"auto"`` to calculate a corpus-level budget by scanning only the
+        token column in bounded batches. For large-scale training, materialize a
+        ``token_count`` column, calculate an explicit block budget once, and pass
+        that integer instead.
     on_transform_error:
         What to do when the transform raises an exception:
 
@@ -398,7 +396,7 @@ class StreamingDataset(IterableDataset):
         )
 
     def _estimate_blocks_per_epoch(self) -> int:
-        """Estimate a fixed packed-block budget from a bounded token sample."""
+        """Calculate a fixed packed-block budget from the complete token column."""
         if self._pack_sequences is None or not self._columns:
             raise RuntimeError(
                 "packing must be configured before estimating its budget"
@@ -406,64 +404,45 @@ class StreamingDataset(IterableDataset):
 
         pack_len = self._pack_sequences
         token_column = self._columns[0]
-        sample_cap_per_split = max(1, 100_000 // self._num_splits)
-        sampled_tokens = 0
-        total_sampled = 0
-        total_rows = 0
 
         warnings.warn(
-            "blocks_per_epoch='auto' is a convenience estimate that samples full "
-            "token lists and repeats for every process constructing the dataset. It "
-            "is recommended to materialize a token_count column, calculate an "
-            "explicit blocks_per_epoch once, and pass that integer instead.",
+            "blocks_per_epoch='auto' scans the complete token column on every "
+            "distributed rank. For large-scale training, materialize a token_count "
+            "column, calculate blocks_per_epoch once, and pass that integer instead.",
             # TODO: Link to docs example that shows how to do this
         )
 
-        for split in range(self._num_splits):
-            permutation = Permutation.from_tables(
-                self._table, self._perm_table, split=split
-            )
-            permutation = permutation.select_columns([token_column])
-            permutation = permutation.with_transform(Transforms.arrow2arrow)
-            split_rows = permutation.num_rows
-            if split_rows == 0:
-                raise ValueError(
-                    "blocks_per_epoch='auto' cannot estimate an empty dataset"
-                )
+        fragments = list(self._table.to_lance().get_fragments())
 
-            # Roughly 1% per logical split, with at least one row from each
-            # split and a global cap of approximately 100,000 rows.
-            sample_rows = min(
-                split_rows,
-                max(1, min((split_rows + 99) // 100, sample_cap_per_split)),
+        def fragment_total(fragment) -> tuple[int, int]:
+            token_count = 0
+            row_count = 0
+            scanner = fragment.scanner(
+                columns=[token_column],
+                filter=self._filter,
+                batch_size=2048,
             )
-            sample_batch_size = max(1, self._read_batch_size)
-            for start in range(0, sample_rows, sample_batch_size):
-                stop = min(start + sample_batch_size, sample_rows)
-                # approx mid of each bucket
-                batch_offsets = [
-                    ((2 * index + 1) * split_rows) // (2 * sample_rows)
-                    for index in range(start, stop)
-                ]
-                batch = permutation.__getitems__(batch_offsets)
+            for batch in scanner.to_batches():
                 lengths = pc.list_value_length(batch.column(0))
                 if lengths.null_count:
                     raise ValueError("pack_sequences does not support null token lists")
-                sampled_tokens += int(pc.sum(lengths).as_py())
+                token_count += int(pc.sum(lengths).as_py())
+                row_count += batch.num_rows
+            return token_count, row_count
 
-            total_sampled += sample_rows
-            total_rows += split_rows
+        token_count = 0
+        row_count = 0
+        with ThreadPoolExecutor(max_workers=min(16, len(fragments))) as pool:
+            for fragment_tokens, fragment_rows in pool.map(fragment_total, fragments):
+                token_count += fragment_tokens
+                row_count += fragment_rows
 
-        # Pool all samples into one global average. Each document contributes
-        # one EOS token. Round down so estimation
-        # favors leaving a short tail unused over emitting all-padding blocks.
-        estimated_tokens = (
-            (sampled_tokens + total_sampled) * total_rows // total_sampled
-        )
-        estimated_blocks = estimated_tokens // pack_len
+        # Each document contributes one EOS token. Round down to a complete
+        # split cycle, favoring a short unused tail over all-padding blocks.
+        blocks = (token_count + row_count) // pack_len
         blocks_per_epoch = max(
             self._num_splits,
-            estimated_blocks - estimated_blocks % self._num_splits,
+            blocks - blocks % self._num_splits,
         )
         return blocks_per_epoch
 

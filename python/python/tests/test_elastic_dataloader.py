@@ -1998,28 +1998,37 @@ def test_pack_sequences_pads_lagging_splits(tmp_path):
     assert sharded == input_ids
 
 
-def test_pack_sequences_auto_estimates_in_bounded_batches(tmp_path):
-    table = _create_token_table(tmp_path, [[1, 2, 3, 4]] * 1_000)
-    batch_sizes = []
-    getitems = streaming.Permutation.__getitems__
+def test_pack_sequences_auto_scans_filtered_token_column(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "tokens",
+        pa.table(
+            {
+                "tokens": pa.array([[1] * 4, [2] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        ),
+    )
+    table.add(
+        pa.table(
+            {
+                "tokens": pa.array([[3] * 4, [4] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        )
+    )
 
-    def record_batch_size(permutation, indices):
-        batch_sizes.append(len(indices))
-        return getitems(permutation, indices)
+    with pytest.warns(UserWarning, match="complete token column"):
+        dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch="auto",
+            num_splits=2,
+            filter="keep",
+        )
 
-    with patch.object(streaming.Permutation, "__getitems__", record_batch_size):
-        with pytest.warns(UserWarning, match="materialize a token_count column"):
-            dataset = _packed_dataset(
-                table,
-                5,
-                blocks_per_epoch="auto",
-                num_splits=2,
-                read_batch_size=3,
-            )
-
-    assert dataset.state_dict()["blocks_per_epoch"] == 1_000
-    assert sum(batch_sizes) == 10
-    assert max(batch_sizes) <= 3
+    # Two kept documents contain 8 tokens plus 2 EOS tokens: two blocks.
+    assert dataset.state_dict()["blocks_per_epoch"] == 2
 
 
 def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
