@@ -12,6 +12,7 @@ use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot};
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -2320,6 +2321,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
+        add.admit_input_schema()?;
         self.check_mutable().await?;
 
         let table_schema = self.schema().await?;
@@ -3188,6 +3190,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         write_params: lance::dataset::WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
+        reject_caller_authored_generated_column_schema_on_overwrite(
+            input.schema().as_ref(),
+            overwrite,
+        )?;
         Ok(Arc::new(insert::RemoteWriteExec::new(
             self.name.clone(),
             self.identifier.clone(),

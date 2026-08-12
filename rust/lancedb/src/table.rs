@@ -54,6 +54,7 @@ use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
     CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot, GeneratedColumnStatus,
 };
@@ -94,6 +95,8 @@ mod append_generated_column_invalidation_contract;
 mod delete_generated_column_invalidation_contract;
 #[cfg(test)]
 mod merge_insert_generated_column_reject_contract;
+#[cfg(test)]
+mod overwrite_generated_column_schema_admission_contract;
 #[cfg(test)]
 mod schema_metadata_updates_dependency_contract;
 #[cfg(test)]
@@ -3234,6 +3237,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
+        add.admit_input_schema()?;
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
         // One exact dataset supplies table definition, schema, binding snapshot,
@@ -3796,9 +3800,13 @@ impl BaseTable for NativeTable {
         input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        let is_overwrite = matches!(write_params.mode, WriteMode::Overwrite);
+        reject_caller_authored_generated_column_schema_on_overwrite(
+            input.schema().as_ref(),
+            is_overwrite,
+        )?;
         // One exact dataset supplies planning basis and the InsertExec basis.
         let dataset = self.dataset.get().await?;
-        let is_overwrite = matches!(write_params.mode, WriteMode::Overwrite);
         // Reject generated-table overwrite before returning an execution plan.
         let schema_metadata_updates =
             generated_column_invalidation::plan_native_append_generated_column_invalidation(

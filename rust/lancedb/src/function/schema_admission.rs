@@ -35,3 +35,19 @@ pub fn reject_caller_authored_generated_column_schema(schema: &Schema) -> Result
     }
     Ok(())
 }
+
+/// Conditionally admit an input schema for append vs overwrite.
+///
+/// Overwrite is schema replacement and must reject reserved top-level field
+/// metadata. Append is not schema replacement: caller field metadata is
+/// discarded by cast-to-table-schema, so reserved input keys remain accepted.
+pub fn reject_caller_authored_generated_column_schema_on_overwrite(
+    schema: &Schema,
+    is_overwrite: bool,
+) -> Result<()> {
+    if is_overwrite {
+        reject_caller_authored_generated_column_schema(schema)
+    } else {
+        Ok(())
+    }
+}

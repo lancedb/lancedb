@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::scannable::Scannable;
 use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
@@ -151,6 +152,27 @@ impl AddDataBuilder {
         self.parent.clone().add(self).await
     }
 
+    /// Effective overwrite for schema-replacement admission and planning.
+    ///
+    /// True when either `WriteOptions.lance_write_params.mode` is
+    /// [`WriteMode::Overwrite`] or [`AddDataMode::Overwrite`] is set.
+    pub(crate) fn is_effective_overwrite(&self) -> bool {
+        self.write_options
+            .lance_write_params
+            .as_ref()
+            .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
+            || matches!(self.mode, AddDataMode::Overwrite)
+    }
+
+    /// Borrowed preflight: reject reserved generated-column metadata on
+    /// effective overwrite before source scan or table/network work.
+    pub(crate) fn admit_input_schema(&self) -> Result<()> {
+        reject_caller_authored_generated_column_schema_on_overwrite(
+            self.data.schema().as_ref(),
+            self.is_effective_overwrite(),
+        )
+    }
+
     /// Build a DataFusion execution plan that applies embeddings, casts data to
     /// the table schema, and optionally rejects NaN vectors.
     ///
@@ -161,12 +183,7 @@ impl AddDataBuilder {
         table_schema: &Schema,
         table_def: &TableDefinition,
     ) -> Result<PreprocessingOutput> {
-        let overwrite = self
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
-            || matches!(self.mode, AddDataMode::Overwrite);
+        let overwrite = self.is_effective_overwrite();
 
         if !overwrite {
             validate_schema(&self.data.schema(), table_schema)?;
