@@ -87,6 +87,8 @@ pub mod update;
 pub mod write_progress;
 
 #[cfg(test)]
+mod add_columns_generated_column_schema_admission_contract;
+#[cfg(test)]
 mod append_generated_column_invalidation_contract;
 #[cfg(test)]
 mod delete_generated_column_invalidation_contract;

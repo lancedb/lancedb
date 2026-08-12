@@ -8,13 +8,41 @@
 //! - [`alter_columns`](execute_alter_columns): Rename columns, change types, or modify nullability
 //! - [`drop_columns`](execute_drop_columns): Remove columns from the table
 
+use arrow_array::RecordBatchReader;
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::NativeTable;
 use crate::function::GENERATED_COLUMN_METADATA_KEY;
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema;
 use crate::{Error, Result};
+
+/// Reject caller-authored schema-bearing `add_columns` transforms that carry
+/// reserved generated-column top-level field metadata.
+///
+/// Borrows without consuming the transform: Stream is not polled, Reader is
+/// not iterated, and BatchUDF mapper is not invoked. `SqlExpressions` cannot
+/// carry an Arrow output schema and is accepted.
+pub(crate) fn reject_caller_authored_generated_column_add_columns_transform(
+    transforms: &NewColumnTransform,
+) -> Result<()> {
+    match transforms {
+        NewColumnTransform::BatchUDF(udf) => {
+            reject_caller_authored_generated_column_schema(udf.output_schema.as_ref())
+        }
+        NewColumnTransform::Stream(stream) => {
+            reject_caller_authored_generated_column_schema(stream.schema().as_ref())
+        }
+        NewColumnTransform::Reader(reader) => {
+            reject_caller_authored_generated_column_schema(reader.schema().as_ref())
+        }
+        NewColumnTransform::AllNulls(schema) => {
+            reject_caller_authored_generated_column_schema(schema.as_ref())
+        }
+        NewColumnTransform::SqlExpressions(_) => Ok(()),
+    }
+}
 
 /// Shared rejection for general-purpose field-metadata updates that name the
 /// reserved generated-column definition key.
@@ -153,6 +181,7 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    reject_caller_authored_generated_column_add_columns_transform(&transforms)?;
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     dataset.add_columns(transforms, read_columns, None).await?;
