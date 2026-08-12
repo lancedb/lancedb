@@ -1027,6 +1027,15 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def refresh_generated_column(self, column_name: str) -> Job:
+        """Refresh values for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the refresh operation. Acceptance
+        of the Job does not publish new values; callers must wait and re-read
+        the table to observe refreshed results.
+        """
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
@@ -2887,6 +2896,15 @@ class LanceTable(Table):
         Does not refresh values, submit a Job, or mutate table state.
         """
         return LOOP.run(self._table.generated_column_status(column_name))
+
+    def refresh_generated_column(self, column_name: str) -> Job:
+        """Refresh values for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the refresh operation. Acceptance
+        of the Job does not publish new values; callers must wait and re-read
+        the table to observe refreshed results.
+        """
+        return Job(LOOP.run(self._table.refresh_generated_column(column_name)))
 
     def _is_legacy_create_index_call(
         self,
@@ -5126,6 +5144,16 @@ class AsyncTable:
         Does not refresh values, submit a Job, or mutate table state.
         """
         return await self._inner._generated_column_status(column_name)
+
+    async def refresh_generated_column(self, column_name: str) -> AsyncJob:
+        """Refresh values for an existing generated column.
+
+        Returns an :class:`~lancedb.job.AsyncJob` for the refresh operation.
+        Acceptance of the Job does not publish new values; callers must wait
+        and re-read the table to observe refreshed results.
+        """
+        job = await self._inner._refresh_generated_column(column_name)
+        return AsyncJob(job)
 
     async def drop_index(self, name: str) -> None:
         """

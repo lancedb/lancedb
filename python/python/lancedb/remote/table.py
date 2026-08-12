@@ -593,6 +593,15 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.generated_column_status(column_name))
 
+    def refresh_generated_column(self, column_name: str) -> Job:
+        """Refresh values for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the refresh operation. Acceptance
+        of the Job does not publish new values; callers must wait and re-read
+        the table to observe refreshed results.
+        """
+        return Job(LOOP.run(self._table.refresh_generated_column(column_name)))
+
     def _is_legacy_create_index_call(
         self,
         first_arg: str,

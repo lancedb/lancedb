@@ -992,6 +992,41 @@ impl Table {
         })
     }
 
+    /// Hidden bridge: load exact definition, resolve Function by ID, submit refresh.
+    ///
+    /// Private native path for Python ``table.refresh_generated_column``. Rejects
+    /// an empty ``column_name`` before reading the table handle. Does not expose
+    /// source version, Function, field IDs, epochs, specs, or request envelope.
+    #[doc(hidden)]
+    pub fn _refresh_generated_column<'a>(
+        self_: PyRef<'a, Self>,
+        column_name: String,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        if column_name.is_empty() {
+            return Err(PyValueError::new_err("column_name must be non-empty"));
+        }
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let (source_table_version, definition) = inner
+                .generated_column_definition_snapshot(column_name)
+                .await
+                .infer_error()?;
+            let function_id = definition.function_call().function_id().clone();
+            let function = inner
+                .resolve_function_for_generated_column(&function_id)
+                .await
+                .infer_error()?;
+            let spec =
+                lancedb::function::RefreshGeneratedColumnJobSpec::try_new(&function, definition)
+                    .infer_error()?;
+            let job = inner
+                .submit_refresh_generated_column(source_table_version, spec)
+                .await
+                .infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     pub fn drop_index(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
