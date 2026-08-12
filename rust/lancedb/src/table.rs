@@ -4545,6 +4545,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_open_recovery_direct_capability_respects_wrapper() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("direct-wrapped.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
+        let uri = url::Url::from_file_path(&dataset_path).unwrap();
+        let target = object_store::path::Path::from_url_path(uri.path()).unwrap();
+        let read_params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store: Some((
+                    Arc::new(object_store::local::LocalFileSystem::new()),
+                    uri.clone(),
+                )),
+                native_directory_path_resolver: Some(NativeDirectoryPathResolver::new(|path| {
+                    std::path::PathBuf::from(lance_io::local::to_local_path(path))
+                })),
+                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
+                    fail_exact_head: Some(target),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            uri.as_ref(),
+            "direct-wrapped",
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            !matches!(
+                &err,
+                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
+            ),
+            "direct wrapper probe errors must fail closed: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("injected exact table probe failure"),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_open_missing_does_not_trust_incidental_directory_message() {
         let target = object_store::path::Path::from("database/missing.lance");
         let read_params = ReadParams {
