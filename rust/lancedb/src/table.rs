@@ -57,7 +57,7 @@ use crate::error::{Error, Result};
 use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
     ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot,
-    GeneratedColumnStatus,
+    GeneratedColumnStatus, RefreshGeneratedColumnJobSpec,
 };
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
@@ -673,6 +673,23 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "submit_change_generated_column is not supported on this table type".into(),
         })
     }
+    /// Submit a refresh-generated-column Job from an already-bound snapshot pair.
+    ///
+    /// Consumes `(source_table_version, RefreshGeneratedColumnJobSpec)` produced
+    /// by one binding snapshot. Default returns [`Error::NotSupported`] so
+    /// existing third-party [`BaseTable`] implementations keep compiling.
+    /// Implementations must not re-read schema/version, rebind the call,
+    /// catalog-lookup, execute, stage, or mutate locally.
+    #[doc(hidden)]
+    async fn submit_refresh_generated_column(
+        &self,
+        _source_table_version: u64,
+        _spec: RefreshGeneratedColumnJobSpec,
+    ) -> Result<Job> {
+        Err(Error::NotSupported {
+            message: "submit_refresh_generated_column is not supported on this table type".into(),
+        })
+    }
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -1269,6 +1286,23 @@ impl Table {
     ) -> Result<Job> {
         self.inner
             .submit_change_generated_column(source_table_version, spec)
+            .await
+    }
+
+    /// Submit a refresh-generated-column Job from an already-bound snapshot pair.
+    ///
+    /// Hidden table submit seam for enterprise generated-column refresh. Input
+    /// must already be the `(source_table_version, RefreshGeneratedColumnJobSpec)`
+    /// pairing from one binding snapshot. Returns the unified [`Job`]; does not
+    /// expose a public request/envelope type.
+    #[doc(hidden)]
+    pub async fn submit_refresh_generated_column(
+        &self,
+        source_table_version: u64,
+        spec: RefreshGeneratedColumnJobSpec,
+    ) -> Result<Job> {
+        self.inner
+            .submit_refresh_generated_column(source_table_version, spec)
             .await
     }
 

@@ -15,6 +15,7 @@ use crate::expr::expr_to_sql_string;
 use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
     ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot,
+    RefreshGeneratedColumnJobSpec,
 };
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -2114,6 +2115,72 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             _ => {
                 return Err(Error::Http {
                     source: "change generated column response missing or invalid job_id".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+
+        // Submit acceptance is not table mutation: do not touch schema cache or
+        // read/write freshness watermarks.
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn submit_refresh_generated_column(
+        &self,
+        source_table_version: u64,
+        spec: RefreshGeneratedColumnJobSpec,
+    ) -> Result<Job> {
+        // Fixed-version handles fail before any submit request.
+        self.check_mutable().await?;
+
+        // Envelope keys are exactly source_table_version + nested FF-010 spec.
+        // Branch identity (when present) is additive table identity, not part of
+        // the operation payload. table_ref is derived server-side.
+        let mut body = serde_json::json!({
+            "source_table_version": source_table_version,
+            "spec": spec,
+        });
+        self.apply_branch_body(&mut body);
+
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/generated_columns/refresh/",
+                self.identifier
+            ))
+            .json(&body);
+
+        // Typed literals may carry business data: reuse sensitive retry/check.
+        let (request_id, response) = self
+            .client
+            .send_sensitive_with_retry(request, None, true)
+            .await?;
+        let response = self
+            .client
+            .check_sensitive_response(&request_id, response)
+            .await?;
+
+        // Payload-free protocol failure: never fold response bytes into Error::Http.
+        let bytes = response.bytes().await.err_to_http(request_id.clone())?;
+        let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(Error::Http {
+                    source: "refresh generated column response is not valid JSON".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+        let job_id = match value.get("job_id") {
+            Some(serde_json::Value::String(job_id)) if !job_id.is_empty() => job_id.clone(),
+            _ => {
+                return Err(Error::Http {
+                    source: "refresh generated column response missing or invalid job_id".into(),
                     request_id,
                     status_code: None,
                 });
@@ -9947,6 +10014,518 @@ mod tests {
             assert!(matches!(err, Error::Retry { .. }), "got {err:?}");
             assert_eq!(attempts.load(Ordering::SeqCst), 2);
             assert_change_gen_col_markers_absent(&err);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // RefreshGeneratedColumnJobSpec remote table submit transport
+    // -------------------------------------------------------------------------
+
+    const REFRESH_GEN_COL_LITERAL_MARKER: &str = "SENSITIVE_REFRESH_GEN_COL_LITERAL_MARKER";
+    const REFRESH_GEN_COL_RESPONSE_MARKER: &str = "SENSITIVE_REFRESH_GEN_COL_RESPONSE_MARKER";
+
+    /// Incomplete definition (dependency_epoch != materialized_epoch) with a
+    /// typed UTF-8 literal marker for request redaction assertions.
+    fn sample_refresh_generated_column_definition() -> crate::function::GeneratedColumnDefinition {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, GeneratedColumnDefinition,
+        };
+        use arrow_array::StringArray;
+
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.refresh-submit.remote").expect("valid FunctionId"),
+            FunctionSignature::try_new(
+                vec![
+                    FunctionParameter::new("x", DataType::Int32),
+                    FunctionParameter::new("label", DataType::Utf8),
+                ],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .expect("valid FunctionSignature"),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "x".to_string(),
+                    FunctionArgument::try_field(1, DataType::Int32).expect("field arg"),
+                ),
+                (
+                    "label".to_string(),
+                    FunctionArgument::try_literal(Arc::new(StringArray::from(vec![Some(
+                        REFRESH_GEN_COL_LITERAL_MARKER,
+                    )])) as _)
+                    .expect("literal arg"),
+                ),
+            ],
+        )
+        .expect("valid FunctionCall");
+        // Incomplete: dependency_epoch (41) != materialized_epoch (37).
+        GeneratedColumnDefinition::try_new(17, call, 41, 37).expect("valid incomplete definition")
+    }
+
+    fn sample_refresh_generated_column_job_spec() -> crate::function::RefreshGeneratedColumnJobSpec
+    {
+        use crate::function::{
+            Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+            RefreshGeneratedColumnJobSpec,
+        };
+
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.refresh-submit.remote").expect("valid FunctionId"),
+            FunctionSignature::try_new(
+                vec![
+                    FunctionParameter::new("x", DataType::Int32),
+                    FunctionParameter::new("label", DataType::Utf8),
+                ],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .expect("valid FunctionSignature"),
+        );
+        RefreshGeneratedColumnJobSpec::try_new(
+            &function,
+            sample_refresh_generated_column_definition(),
+        )
+        .expect("valid refresh spec")
+    }
+
+    fn refresh_gen_col_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_refresh_gen_col_markers_absent(err: &Error) {
+        let text = refresh_gen_col_error_chain_text(err);
+        assert!(
+            !text.contains(REFRESH_GEN_COL_LITERAL_MARKER),
+            "request literal marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REFRESH_GEN_COL_RESPONSE_MARKER),
+            "response marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_refresh_gen_col_envelope(
+        body: &serde_json::Value,
+        expected_source_version: u64,
+        expected_spec: &crate::function::RefreshGeneratedColumnJobSpec,
+        expected_branch: Option<&str>,
+    ) {
+        let object = body
+            .as_object()
+            .expect("refresh generated column body must be a JSON object");
+        let mut expected_keys = vec!["source_table_version", "spec"];
+        if expected_branch.is_some() {
+            expected_keys.push("branch");
+        }
+        expected_keys.sort_unstable();
+        let mut actual_keys: Vec<&str> = object.keys().map(|k| k.as_str()).collect();
+        actual_keys.sort_unstable();
+        assert_eq!(
+            actual_keys, expected_keys,
+            "envelope keys must be exact; got {actual_keys:?}"
+        );
+        assert_eq!(
+            body["source_table_version"],
+            serde_json::json!(expected_source_version),
+            "source_table_version must be preserved exactly"
+        );
+        assert!(
+            body.get("table_ref").is_none(),
+            "table_ref must not be sent; server derives it"
+        );
+        match expected_branch {
+            Some(branch) => assert_eq!(body["branch"], branch),
+            None => assert!(body.get("branch").is_none()),
+        }
+
+        let nested = body.get("spec").expect("nested spec");
+        let nested_object = nested.as_object().expect("spec must be object");
+        let mut nested_keys: Vec<&str> = nested_object.keys().map(|k| k.as_str()).collect();
+        nested_keys.sort_unstable();
+        assert_eq!(
+            nested_keys,
+            vec!["format_version", "generated_column_definition"],
+            "nested RefreshGeneratedColumnJobSpec keys must be exact"
+        );
+        let expected_spec_json =
+            serde_json::to_value(expected_spec).expect("serialize RefreshGeneratedColumnJobSpec");
+        assert_eq!(
+            nested, &expected_spec_json,
+            "nested spec must be the exact RefreshGeneratedColumnJobSpec wire"
+        );
+        let expected_definition_json =
+            serde_json::to_value(sample_refresh_generated_column_definition())
+                .expect("serialize GeneratedColumnDefinition");
+        assert_eq!(
+            nested["generated_column_definition"], expected_definition_json,
+            "nested generated_column_definition must match the incomplete sample definition wire"
+        );
+        for forbidden in [
+            "table_ref",
+            "source_table_version",
+            "table",
+            "version",
+            "name",
+            "column_name",
+            "handle",
+            "output",
+            "output_field_id",
+            "dependency_epoch",
+            "materialized_epoch",
+            "artifact",
+            "job_id",
+            "idempotency_key",
+            "retry",
+            "function_call",
+            "function_name",
+            "function",
+            "status",
+        ] {
+            assert!(
+                nested_object.get(forbidden).is_none(),
+                "nested spec must not contain forbidden key `{forbidden}`"
+            );
+        }
+    }
+
+    /// Remote main posts exact refresh route and two-key envelope; returns opaque Job ID.
+    #[tokio::test]
+    async fn test_submit_refresh_generated_column_main_exact_route_envelope_and_job_id() {
+        let spec = sample_refresh_generated_column_job_spec();
+        let expected_spec = sample_refresh_generated_column_job_spec();
+        let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let paths_ref = paths.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            paths_ref.lock().unwrap().push(path.clone());
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(path, "/v1/table/my_table/generated_columns/refresh/");
+            let body = request_body_json(&request);
+            assert_refresh_gen_col_envelope(&body, 42, &expected_spec, None);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id":"job-refresh-gen-col-1","server_extra":{"ok":true}}"#)
+                .unwrap()
+        });
+
+        let job = table
+            .submit_refresh_generated_column(42, spec)
+            .await
+            .expect("main submit must succeed");
+        assert_eq!(job.id(), Some("job-refresh-gen-col-1"));
+        assert_eq!(
+            *paths.lock().unwrap(),
+            vec!["/v1/table/my_table/generated_columns/refresh/".to_string()],
+            "submit must issue exactly one refresh request and no describe/read"
+        );
+    }
+
+    /// Branch identity adds exact `branch` without changing source version or nested spec.
+    #[tokio::test]
+    async fn test_submit_refresh_generated_column_branch_adds_exact_branch() {
+        use lance::dataset::refs::Ref;
+
+        let spec = sample_refresh_generated_column_job_spec();
+        let expected_spec = sample_refresh_generated_column_job_spec();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                "/v1/table/my_table/generated_columns/refresh/" => {
+                    let body = request_body_json(&request);
+                    assert_refresh_gen_col_envelope(&body, 7, &expected_spec, Some("exp"));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-refresh-gen-col-branch"}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .expect("create branch");
+        let job = branch
+            .submit_refresh_generated_column(7, spec)
+            .await
+            .expect("branch submit must succeed");
+        assert_eq!(job.id(), Some("job-refresh-gen-col-branch"));
+    }
+
+    /// Explicit-version handles fail mutation preflight before any submit request.
+    #[tokio::test]
+    async fn test_submit_refresh_generated_column_fixed_version_fails_before_submit() {
+        let describe_body =
+            describe_response(&Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let submit_hits = Arc::new(AtomicUsize::new(0));
+        let submit_hits_ref = submit_hits.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/generated_columns/refresh/" => {
+                    submit_hits_ref.fetch_add(1, Ordering::SeqCst);
+                    panic!("fixed-version handle must not reach submit");
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+        table.checkout(42).await.expect("checkout fixed version");
+        let err = table
+            .submit_refresh_generated_column(42, sample_refresh_generated_column_job_spec())
+            .await
+            .expect_err("fixed-version submit must fail preflight");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported preflight, got {err:?}"
+        );
+        assert_eq!(
+            submit_hits.load(Ordering::SeqCst),
+            0,
+            "preflight must happen before any submit request"
+        );
+    }
+
+    /// Retry reuses request ID and byte-equivalent JSON body.
+    #[tokio::test]
+    async fn test_submit_refresh_generated_column_retry_preserves_request_id_and_body() {
+        use std::sync::OnceLock;
+
+        let spec = sample_refresh_generated_column_job_spec();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let first_body = Arc::new(OnceLock::new());
+        let first_body_ref = first_body.clone();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/generated_columns/refresh/"
+                );
+                let body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .expect("submit must carry JSON body")
+                    .to_vec();
+                let actual: serde_json::Value =
+                    serde_json::from_slice(&body).expect("body must be JSON");
+                assert_refresh_gen_col_envelope(
+                    &actual,
+                    11,
+                    &sample_refresh_generated_column_job_spec(),
+                    None,
+                );
+                let seen_body = first_body_ref.get_or_init(|| body.clone());
+                assert_eq!(
+                    &body, seen_body,
+                    "retry must reuse byte-equivalent JSON body"
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty());
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body("transient refresh gen column failure")
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-refresh-gen-col-retry"}"#)
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let job = table
+            .submit_refresh_generated_column(11, spec)
+            .await
+            .expect("submit must succeed after one retry");
+        assert_eq!(job.id(), Some("job-refresh-gen-col-retry"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Malformed/missing/empty/non-string job_id and 4xx/5xx markers stay payload-free.
+    #[tokio::test]
+    async fn test_submit_refresh_generated_column_errors_omit_request_and_response_markers() {
+        let invalid_job_id_cases: Vec<(&str, String)> = vec![
+            (
+                "missing",
+                format!(r#"{{"server_extra":"{REFRESH_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "null",
+                format!(r#"{{"job_id":null,"server_extra":"{REFRESH_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "empty",
+                format!(r#"{{"job_id":"","server_extra":"{REFRESH_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "wrong_type",
+                format!(r#"{{"job_id":123,"server_extra":"{REFRESH_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "malformed",
+                format!("not-json {REFRESH_GEN_COL_RESPONSE_MARKER}"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, response_body) in invalid_job_id_cases {
+            let body_for_handler = response_body.clone();
+            let expected_request_id = Arc::new(std::sync::Mutex::new(None::<String>));
+            let expected_request_id_c = expected_request_id.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/generated_columns/refresh/"
+                );
+                let request_id = request
+                    .headers()
+                    .get("x-request-id")
+                    .expect("client must set x-request-id")
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                *expected_request_id_c.lock().unwrap() = Some(request_id);
+                http::Response::builder()
+                    .status(200)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match table
+                .submit_refresh_generated_column(1, sample_refresh_generated_column_job_spec())
+                .await
+            {
+                Err(err) => match &err {
+                    Error::Http {
+                        request_id,
+                        status_code,
+                        ..
+                    } => {
+                        let expected = expected_request_id
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("handler must observe request id");
+                        assert_eq!(
+                            request_id, &expected,
+                            "{label}: Error::Http.request_id must equal outgoing x-request-id"
+                        );
+                        assert!(
+                            !request_id.is_empty(),
+                            "{label}: Error::Http.request_id must be nonempty"
+                        );
+                        assert!(
+                            status_code.is_none(),
+                            "{label}: local protocol validation must not invent a status code"
+                        );
+                        assert_refresh_gen_col_markers_absent(&err);
+                        let text = refresh_gen_col_error_chain_text(&err);
+                        assert!(
+                            !text.contains(&response_body),
+                            "{label}: raw response body must be absent from error/debug/source chain: {text}"
+                        );
+                    }
+                    other => unexpected.push(format!("{label}: {other:?}")),
+                },
+                Ok(ok) => unexpected.push(format!("{label}: Ok({ok:?})")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid job_id shapes must fail closed as Error::Http: {unexpected:?}"
+        );
+
+        let echoed = format!(
+            "refresh failed with {REFRESH_GEN_COL_LITERAL_MARKER} and {REFRESH_GEN_COL_RESPONSE_MARKER}"
+        );
+
+        {
+            let body = echoed.clone();
+            let table = Table::new_with_handler("my_table", move |_| {
+                http::Response::builder()
+                    .status(400)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let err = table
+                .submit_refresh_generated_column(1, sample_refresh_generated_column_job_spec())
+                .await
+                .expect_err("4xx submit must fail");
+            assert!(matches!(err, Error::Http { .. }), "got {err:?}");
+            assert_refresh_gen_col_markers_absent(&err);
+        }
+
+        {
+            let body = echoed.clone();
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempts_ref = attempts.clone();
+            let table = Table::new_with_handler_and_config(
+                "my_table",
+                move |_| {
+                    attempts_ref.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(500)
+                        .body(body.clone())
+                        .unwrap()
+                },
+                ClientConfig {
+                    retry_config: RetryConfig {
+                        retries: Some(2),
+                        backoff_factor: Some(0.0),
+                        backoff_jitter: Some(0.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let err = table
+                .submit_refresh_generated_column(1, sample_refresh_generated_column_job_spec())
+                .await
+                .expect_err("exhausted 5xx submit must fail");
+            assert!(matches!(err, Error::Retry { .. }), "got {err:?}");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_refresh_gen_col_markers_absent(&err);
         }
     }
 
