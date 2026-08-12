@@ -1707,6 +1707,8 @@ impl Table {
     /// Separate from [`Self::set_lsm_write_spec`] on purpose: a table carrying
     /// the bit retains its SSTables until an index records that it holds the
     /// compacted rows, so turn it on only once something can repair coverage.
+    /// A writer that already holds the dataset can call the equivalent on
+    /// `DatasetMemWalExt` instead; this is the table-level entry point.
     ///
     /// Errors if no spec is set, or if the table already records SSTable
     /// compaction progress from before this protocol.
