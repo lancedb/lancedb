@@ -57,7 +57,8 @@ use crate::error::{Error, Result};
 use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
     ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, Function, FunctionId,
-    GeneratedColumnBindingSnapshot, GeneratedColumnStatus, RefreshGeneratedColumnJobSpec,
+    GeneratedColumnBindingSnapshot, GeneratedColumnDefinition, GeneratedColumnStatus,
+    RefreshGeneratedColumnJobSpec,
 };
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
@@ -1270,6 +1271,51 @@ impl Table {
             });
         };
         Ok(definition.status())
+    }
+
+    /// Project one generated-column definition from a binding snapshot.
+    ///
+    /// Hidden implementation projection for generated-column change/refresh
+    /// authoring. Loads exactly one
+    /// [`Self::generated_column_binding_snapshot`], looks up the exact
+    /// case-sensitive top-level name, strictly decodes through
+    /// [`GeneratedColumnBindingEntry::generated_column_definition`], then
+    /// validates stored field arguments against that same snapshot. Returns
+    /// `(snapshot.version(), definition)` for both complete and incomplete
+    /// definitions. Does not resolve a Function, construct or submit a Job,
+    /// execute, mutate, or touch caches/freshness.
+    ///
+    /// Returns [`Error::InvalidInput`] for an empty name (before any table
+    /// access), a missing top-level field, an ordinary field without a valid
+    /// generated-column definition, invalid metadata, or a field-argument
+    /// identity/type mismatch against the same snapshot.
+    #[doc(hidden)]
+    pub async fn generated_column_definition_snapshot(
+        &self,
+        column_name: impl AsRef<str>,
+    ) -> Result<(u64, GeneratedColumnDefinition)> {
+        let column_name = column_name.as_ref();
+        if column_name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "generated column name must not be empty".into(),
+            });
+        }
+
+        let snapshot = self.inner.generated_column_binding_snapshot().await?;
+        let Some(entry) = snapshot.field(column_name) else {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "generated column '{column_name}' was not found in the table schema"
+                ),
+            });
+        };
+        let Some(definition) = entry.generated_column_definition()? else {
+            return Err(Error::InvalidInput {
+                message: format!("column '{column_name}' is not a generated column"),
+            });
+        };
+        snapshot.validate_field_arguments(definition.function_call())?;
+        Ok((snapshot.version(), definition))
     }
 
     /// Submit a create-generated-column Job from an already-bound snapshot pair.
@@ -6117,6 +6163,300 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(data_after, data_before);
+    }
+
+    fn status_projection_field_definition(
+        output_field_id: i32,
+        input_field_id: i32,
+        input_type: DataType,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> crate::function::GeneratedColumnDefinition {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, GeneratedColumnDefinition,
+        };
+        // Parameter Arrow type must match the stored field argument so
+        // FunctionCall::try_new succeeds; the table's actual field type may
+        // still differ and is checked by validate_field_arguments later.
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.status.native").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("label", input_type.clone())],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![(
+                "label".to_string(),
+                FunctionArgument::try_field(input_field_id, input_type).unwrap(),
+            )],
+        )
+        .unwrap();
+        GeneratedColumnDefinition::try_new(
+            output_field_id,
+            call,
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+    }
+
+    async fn plant_generated_column_definition(
+        table: &Table,
+        column: &str,
+        definition: &crate::function::GeneratedColumnDefinition,
+    ) {
+        schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table
+                .as_native()
+                .expect("generated-column fixture planting requires a Native table"),
+            column,
+            definition.to_metadata_json().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn assert_definition_snapshot_fail_closed(err: &Error, label: &str) {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "{label}: expected InvalidInput, got {err:?}"
+        );
+        let rendered = format!("{err}\n{err:?}");
+        assert!(
+            !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+            "{label}: diagnostic leaked metadata wire key: {rendered}"
+        );
+        assert!(
+            !rendered.contains("fn.exact.status.native"),
+            "{label}: diagnostic leaked Function id: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_definition_snapshot_complete_and_incomplete() {
+        use futures::TryStreamExt;
+
+        let (_tmp, table) = create_status_projection_table("definition_snapshot_epochs").await;
+
+        let complete_id = plant_generated_column_metadata(&table, "gen_out", 3, 3).await;
+        let expected_complete = status_projection_definition(complete_id, 3, 3);
+        let version_before = table.version().await.unwrap();
+        let schema_before = table.schema().await.unwrap();
+        let data_before = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let (version, definition) = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap();
+        assert_eq!(version, version_before);
+        assert_eq!(
+            version,
+            table
+                .generated_column_binding_snapshot()
+                .await
+                .unwrap()
+                .version()
+        );
+        assert_eq!(definition, expected_complete);
+        assert_eq!(
+            definition.status(),
+            crate::function::GeneratedColumnStatus::Complete
+        );
+        assert_eq!(table.version().await.unwrap(), version_before);
+        assert_eq!(table.schema().await.unwrap(), schema_before);
+        let data_after = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(data_after, data_before);
+
+        let incomplete_id = plant_generated_column_metadata(&table, "gen_out", 5, 2).await;
+        let expected_incomplete = status_projection_definition(incomplete_id, 5, 2);
+        let (version, definition) = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap();
+        assert_eq!(version, table.version().await.unwrap());
+        assert_eq!(definition, expected_incomplete);
+        assert_eq!(
+            definition.status(),
+            crate::function::GeneratedColumnStatus::Incomplete
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_definition_snapshot_rename_preserves_identity() {
+        let (_tmp, table) = create_status_projection_table("definition_snapshot_rename").await;
+        let old_id = plant_generated_column_metadata(&table, "gen_out", 4, 4).await;
+        let expected = status_projection_definition(old_id, 4, 4);
+
+        table
+            .alter_columns(&[ColumnAlteration::new("gen_out".into()).rename("gen_renamed".into())])
+            .await
+            .unwrap();
+
+        let (version, definition) = table
+            .generated_column_definition_snapshot("gen_renamed")
+            .await
+            .unwrap();
+        assert_eq!(version, table.version().await.unwrap());
+        assert_eq!(definition, expected);
+        assert_eq!(definition.output_field_id(), old_id);
+        let after = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(after.field("gen_renamed").unwrap().field_id(), old_id);
+
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "old name after rename");
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_definition_snapshot_reject_fail_closed() {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let (_tmp, table) = create_status_projection_table("definition_snapshot_reject").await;
+        let field_id = plant_generated_column_metadata(&table, "gen_out", 1, 1).await;
+
+        for name in ["", "missing", "Gen_Out", "GEN_OUT", "ordinary", "gen.out"] {
+            let err = table
+                .generated_column_definition_snapshot(name)
+                .await
+                .unwrap_err();
+            assert_definition_snapshot_fail_closed(&err, name);
+        }
+
+        const MARKER: &str = "SENSITIVE_DEFINITION_SNAPSHOT_MARKER_a7c2";
+        let malformed = format!(
+            r#"{{"format_version":1,"output_field_id":{field_id},"function_call":{MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
+        );
+        assert!(malformed.contains(MARKER));
+        schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table.as_native().unwrap(),
+            "gen_out",
+            malformed.clone(),
+        )
+        .await
+        .unwrap();
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "malformed");
+        let rendered = format!("{err}\n{err:?}");
+        assert!(
+            !rendered.contains(MARKER) && !rendered.contains(&malformed),
+            "malformed diagnostics must not echo raw metadata: {rendered}"
+        );
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("gen_out")
+                .unwrap()
+                .metadata()
+                .contains_key(GENERATED_COLUMN_METADATA_KEY)
+        );
+
+        let mut mismatched: serde_json::Value = serde_json::from_str(
+            &status_projection_definition(field_id, 2, 2)
+                .to_metadata_json()
+                .unwrap(),
+        )
+        .unwrap();
+        mismatched["output_field_id"] = serde_json::json!(field_id + 1);
+        schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table.as_native().unwrap(),
+            "gen_out",
+            mismatched.to_string(),
+        )
+        .await
+        .unwrap();
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "output_field_id mismatch");
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_definition_snapshot_field_arg_same_snapshot_validation() {
+        let (_tmp, table) = create_status_projection_table("definition_snapshot_field_args").await;
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let output_id = snapshot.field("gen_out").unwrap().field_id();
+        let ordinary_id = snapshot.field("ordinary").unwrap().field_id();
+
+        let missing = status_projection_field_definition(
+            output_id,
+            ordinary_id + 10_000,
+            DataType::Utf8,
+            3,
+            3,
+        );
+        plant_generated_column_definition(&table, "gen_out", &missing).await;
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "missing stored input field id");
+
+        // Drop/recreate the input column so the stored field id is absent from
+        // the new snapshot while the generated-column metadata bytes remain.
+        let bound =
+            status_projection_field_definition(output_id, ordinary_id, DataType::Utf8, 4, 4);
+        plant_generated_column_definition(&table, "gen_out", &bound).await;
+        table.drop_columns(&["ordinary"]).await.unwrap();
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "ordinary".into(),
+                "cast(NULL as string)".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+        let after = table.generated_column_binding_snapshot().await.unwrap();
+        assert_ne!(after.field("ordinary").unwrap().field_id(), ordinary_id);
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "recreated input field id");
+
+        let mistyped = status_projection_field_definition(
+            after.field("gen_out").unwrap().field_id(),
+            after.field("ordinary").unwrap().field_id(),
+            DataType::Int32,
+            5,
+            5,
+        );
+        plant_generated_column_definition(&table, "gen_out", &mistyped).await;
+        let err = table
+            .generated_column_definition_snapshot("gen_out")
+            .await
+            .unwrap_err();
+        assert_definition_snapshot_fail_closed(&err, "stored input Arrow type mismatch");
     }
 
     fn assert_generated_column_incomplete_redacted(
