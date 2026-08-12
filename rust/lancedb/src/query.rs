@@ -6,7 +6,7 @@ use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
 use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
-use arrow_schema::{DataType, SchemaRef};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
@@ -15,16 +15,21 @@ use half::f16;
 pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
+use lance_core::datatypes::parse_field_path;
 use lance_datafusion::exec::execute_plan;
+use lance_datafusion::planner::Planner;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, FunctionErrorCode, Result};
+use crate::function::{
+    GENERATED_COLUMN_METADATA_KEY, GeneratedColumnBindingSnapshot, GeneratedColumnStatus,
+};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
-use crate::utils::{MaxBatchLengthStream, TimeoutStream};
+use crate::utils::{MaxBatchLengthStream, TimeoutStream, default_vector_column};
 use crate::{ApproxMode, DistanceType};
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
@@ -1641,6 +1646,269 @@ impl ExecutableQuery for TakeQuery {
     }
 }
 
+/// Pure generated-column query reference guard.
+///
+/// Consumes one [`GeneratedColumnBindingSnapshot`] and structurally inspects
+/// supported query positions. Returns
+/// [`Error::Function`]`(`[`FunctionErrorCode::GeneratedColumnIncomplete`]`)`
+/// when a referenced generated output is incomplete. Does not wait, execute
+/// UDFs, substitute NULL, consult a catalog/index, mutate state, or take a
+/// second snapshot. Not hooked into Native/Remote/`create_plan` in this slice.
+#[allow(dead_code)] // Wired into Native/Remote create_plan in the next slice.
+pub(crate) fn validate_generated_column_query(
+    snapshot: &GeneratedColumnBindingSnapshot,
+    query: &AnyQuery,
+) -> Result<()> {
+    let base = query.base();
+    base.check_filter()?;
+
+    if matches!(base.filter, Some(QueryFilter::Substrait(_)))
+        && snapshot_has_generated_metadata(snapshot)
+    {
+        return Err(Error::NotSupported {
+            message: "Substrait filters are not supported with generated columns".into(),
+        });
+    }
+
+    // Exact snapshot Arrow view for inference utilities (e.g. default vector
+    // column). Top-level names may contain `.` (literal field names).
+    let schema = snapshot_arrow_schema(snapshot);
+    // Lance Planner SQL parsing converts the Arrow schema to a Lance schema for
+    // literal coercion. Lance rejects top-level names containing `.`, so the
+    // SQL planner view omits only those illegal top-level names. Identifier
+    // case/quoting still use Planner semantics; quoted dotted names are still
+    // collected structurally via Expr::column_refs without schema membership.
+    let planner = Planner::new(snapshot_planner_schema(snapshot));
+    // First-seen reference order across select → filter → order_by → FTS → vector.
+    let mut refs = Vec::new();
+
+    collect_select_refs(snapshot, &base.select, &planner, &mut refs)?;
+    collect_filter_refs(&base.filter, &planner, &mut refs)?;
+    collect_order_by_refs(&base.order_by, &mut refs)?;
+    collect_fts_refs(snapshot, &base.full_text_search, &mut refs)?;
+    collect_vector_refs(query, schema.as_ref(), &mut refs)?;
+
+    validate_referenced_entries(snapshot, &refs)
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn snapshot_arrow_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaRef {
+    Arc::new(Schema::new(
+        snapshot
+            .entries()
+            .iter()
+            .map(|entry| entry.field().as_ref().clone())
+            .collect::<Vec<_>>(),
+    ))
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn snapshot_planner_schema(snapshot: &GeneratedColumnBindingSnapshot) -> SchemaRef {
+    Arc::new(Schema::new(
+        snapshot
+            .entries()
+            .iter()
+            .filter(|entry| !entry.field().name().contains('.'))
+            .map(|entry| entry.field().as_ref().clone())
+            .collect::<Vec<_>>(),
+    ))
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn snapshot_has_generated_metadata(snapshot: &GeneratedColumnBindingSnapshot) -> bool {
+    snapshot.entries().iter().any(|entry| {
+        entry
+            .field()
+            .metadata()
+            .contains_key(GENERATED_COLUMN_METADATA_KEY)
+    })
+}
+
+/// Insert `name` if absent, preserving first-seen order.
+fn insert_ref_if_absent(refs: &mut Vec<String>, name: String) {
+    if !refs.iter().any(|existing| existing == &name) {
+        refs.push(name);
+    }
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn collect_select_refs(
+    snapshot: &GeneratedColumnBindingSnapshot,
+    select: &Select,
+    planner: &Planner,
+    refs: &mut Vec<String>,
+) -> Result<()> {
+    match select {
+        Select::All => {
+            for entry in snapshot.entries() {
+                insert_ref_if_absent(refs, entry.field().name().clone());
+            }
+        }
+        Select::Columns(columns) => {
+            for column in columns {
+                push_field_path_root(refs, column)?;
+            }
+        }
+        Select::Dynamic(columns) => {
+            for (_alias, sql) in columns {
+                collect_sql_expr_refs(planner, sql, refs)?;
+            }
+        }
+        Select::Expr(columns) => {
+            for (_alias, expr) in columns {
+                collect_expr_column_refs(expr, refs);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn collect_filter_refs(
+    filter: &Option<QueryFilter>,
+    planner: &Planner,
+    refs: &mut Vec<String>,
+) -> Result<()> {
+    match filter {
+        Some(QueryFilter::Sql(sql)) => collect_sql_filter_refs(planner, sql, refs),
+        Some(QueryFilter::Datafusion(expr)) => {
+            collect_expr_column_refs(expr, refs);
+            Ok(())
+        }
+        // Substrait either rejected above or has no generated metadata.
+        Some(QueryFilter::Substrait(_)) | None => Ok(()),
+    }
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn collect_order_by_refs(
+    order_by: &Option<Vec<ColumnOrdering>>,
+    refs: &mut Vec<String>,
+) -> Result<()> {
+    if let Some(orderings) = order_by {
+        for ordering in orderings {
+            push_field_path_root(refs, &ordering.column_name)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // Part of validate_generated_column_query until runtime wiring.
+fn collect_fts_refs(
+    snapshot: &GeneratedColumnBindingSnapshot,
+    fts: &Option<FullTextSearchQuery>,
+    refs: &mut Vec<String>,
+) -> Result<()> {
+    let Some(fts) = fts else {
+        return Ok(());
+    };
+    let columns = fts.columns();
+    if columns.is_empty() {
+        // Index membership is not in the snapshot; fail closed on top-level
+        // generated fields whose Arrow type matches Lance implicit-FTS shapes.
+        for entry in snapshot.entries() {
+            if entry
+                .field()
+                .metadata()
+                .contains_key(GENERATED_COLUMN_METADATA_KEY)
+                && is_implicit_fts_candidate_type(entry.field().data_type())
+            {
+                insert_ref_if_absent(refs, entry.field().name().clone());
+            }
+        }
+    } else {
+        for column in columns {
+            push_field_path_root(refs, &column)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_vector_refs(query: &AnyQuery, schema: &Schema, refs: &mut Vec<String>) -> Result<()> {
+    let AnyQuery::VectorQuery(vector) = query else {
+        return Ok(());
+    };
+    if let Some(column) = &vector.column {
+        return push_field_path_root(refs, column);
+    }
+    let Some(query_vector) = vector.query_vector.first() else {
+        return Ok(());
+    };
+    // Reuse the same inference as the query path; propagate ambiguity / no-candidate.
+    let inferred = default_vector_column(schema, Some(query_vector.len() as i32))?;
+    push_field_path_root(refs, &inferred)
+}
+
+fn collect_sql_expr_refs(planner: &Planner, sql: &str, refs: &mut Vec<String>) -> Result<()> {
+    let expr = planner.parse_expr(sql)?;
+    collect_expr_column_refs(&expr, refs);
+    Ok(())
+}
+
+fn collect_sql_filter_refs(planner: &Planner, sql: &str, refs: &mut Vec<String>) -> Result<()> {
+    let expr = planner.parse_filter(sql)?;
+    collect_expr_column_refs(&expr, refs);
+    Ok(())
+}
+
+fn collect_expr_column_refs(expr: &Expr, refs: &mut Vec<String>) {
+    // Expr::column_refs returns a HashSet; normalize to lexical order before
+    // first-seen insertion so diagnostic winners stay deterministic.
+    let mut names: Vec<String> = expr
+        .column_refs()
+        .into_iter()
+        .map(|column| column.name.clone())
+        .collect();
+    names.sort();
+    for name in names {
+        insert_ref_if_absent(refs, name);
+    }
+}
+
+fn push_field_path_root(refs: &mut Vec<String>, path: &str) -> Result<()> {
+    let parts = parse_field_path(path).map_err(|e| Error::InvalidInput {
+        message: format!("Invalid field path `{}`: {}", path, e),
+    })?;
+    if let Some(root) = parts.first() {
+        insert_ref_if_absent(refs, root.clone());
+    }
+    Ok(())
+}
+
+fn is_implicit_fts_candidate_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8 | DataType::LargeUtf8 => true,
+        DataType::List(inner) | DataType::LargeList(inner) => {
+            matches!(inner.data_type(), DataType::Utf8 | DataType::LargeUtf8)
+        }
+        _ => false,
+    }
+}
+
+fn validate_referenced_entries(
+    snapshot: &GeneratedColumnBindingSnapshot,
+    refs: &[String],
+) -> Result<()> {
+    for name in refs {
+        let Some(entry) = snapshot.field(name) else {
+            continue;
+        };
+        match entry.generated_column_definition()? {
+            None => {}
+            Some(definition) => match definition.status() {
+                GeneratedColumnStatus::Complete => {}
+                GeneratedColumnStatus::Incomplete => {
+                    return Err(Error::Function {
+                        code: FunctionErrorCode::GeneratedColumnIncomplete,
+                        message: format!("generated column `{name}` is incomplete"),
+                    });
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, sync::Arc};
@@ -2685,5 +2953,1081 @@ mod tests {
         ids.sort();
 
         assert_eq!(ids, vec![1, 5, 17]);
+    }
+
+    /// RED contract for the missing pure generated-column query reference guard.
+    ///
+    /// Production seam frozen here:
+    /// `super::validate_generated_column_query(snapshot, query) -> Result<()>`
+    mod generated_column_query {
+        use std::sync::Arc;
+
+        use arrow_array::{ArrayRef, Float32Array, StringArray};
+        use arrow_schema::{DataType, Field, Fields};
+        use datafusion_expr::{col, lit};
+        use datafusion_functions::core::expr_ext::FieldAccessor;
+
+        use super::*;
+        use crate::error::FunctionErrorCode;
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, GENERATED_COLUMN_METADATA_KEY,
+            GeneratedColumnBindingSnapshot, GeneratedColumnDefinition, GeneratedColumnStatus,
+        };
+        use crate::table::AnyQuery;
+
+        const LITERAL_MARKER: &str = "SENSITIVE_QUERY_GUARD_LITERAL_b3e1_7c4a";
+        const FUNCTION_ID: &str = "fn.query.guard.b3e1";
+        const VECTOR_DIM_ORDINARY: i32 = 2;
+        const VECTOR_DIM_GENERATED: i32 = 4;
+
+        fn sample_function() -> Function {
+            Function::new(
+                FunctionId::try_new(FUNCTION_ID).unwrap(),
+                FunctionSignature::try_new(
+                    vec![FunctionParameter::new("label", DataType::Utf8)],
+                    FunctionOutput::new(DataType::Int32, true),
+                )
+                .unwrap(),
+            )
+        }
+
+        fn sample_call() -> FunctionCall {
+            FunctionCall::try_new(
+                &sample_function(),
+                vec![(
+                    "label".to_string(),
+                    FunctionArgument::try_literal(Arc::new(StringArray::from(vec![Some(
+                        LITERAL_MARKER,
+                    )])) as ArrayRef)
+                    .unwrap(),
+                )],
+            )
+            .unwrap()
+        }
+
+        fn definition(
+            output_field_id: i32,
+            dependency_epoch: u64,
+            materialized_epoch: u64,
+        ) -> GeneratedColumnDefinition {
+            GeneratedColumnDefinition::try_new(
+                output_field_id,
+                sample_call(),
+                dependency_epoch,
+                materialized_epoch,
+            )
+            .unwrap()
+        }
+
+        fn call_carries_literal_marker(call: &FunctionCall) -> bool {
+            call.arguments().iter().any(|(_, arg)| {
+                arg.literal_array()
+                    .map(|arr| {
+                        arr.as_any()
+                            .downcast_ref::<StringArray>()
+                            .map(|s| s.value(0) == LITERAL_MARKER)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+        }
+
+        fn vector_dtype(dim: i32) -> DataType {
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim)
+        }
+
+        fn struct_dtype() -> DataType {
+            DataType::Struct(Fields::from(vec![Field::new(
+                "child",
+                DataType::Int32,
+                true,
+            )]))
+        }
+
+        fn ordinary(name: &str, data_type: DataType) -> Field {
+            Field::new(name, data_type, true)
+        }
+
+        fn generated(
+            name: &str,
+            data_type: DataType,
+            field_id: i32,
+            dependency_epoch: u64,
+            materialized_epoch: u64,
+        ) -> Field {
+            // Canonical FunctionArgument::Literal is Arrow IPC/base64 in the
+            // strict metadata JSON, so raw JSON is not expected to contain the
+            // plaintext LITERAL_MARKER. Prove the typed literal via round-trip.
+            let json = definition(field_id, dependency_epoch, materialized_epoch)
+                .to_metadata_json()
+                .unwrap();
+            let decoded = GeneratedColumnDefinition::from_metadata_json(&json, field_id)
+                .expect("canonical fixture metadata must strict-decode");
+            assert!(
+                call_carries_literal_marker(decoded.function_call()),
+                "fixture metadata must round-trip typed literal marker via strict decode"
+            );
+            Field::new(name, data_type, true)
+                .with_metadata([(GENERATED_COLUMN_METADATA_KEY.to_string(), json)].into())
+        }
+
+        fn malformed(name: &str, field_id: i32) -> Field {
+            // Deliberately invalid payload may embed the marker in plaintext.
+            let raw = format!(
+                r#"{{"format_version":1,"output_field_id":{field_id},"function_call":{LITERAL_MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
+            );
+            assert!(raw.contains(LITERAL_MARKER));
+            Field::new(name, DataType::Int32, true)
+                .with_metadata([(GENERATED_COLUMN_METADATA_KEY.to_string(), raw)].into())
+        }
+
+        fn snapshot_from(fields_and_ids: Vec<(Field, i32)>) -> GeneratedColumnBindingSnapshot {
+            let (fields, ids): (Vec<_>, Vec<_>) = fields_and_ids
+                .into_iter()
+                .map(|(field, id)| (Arc::new(field) as _, id))
+                .unzip();
+            GeneratedColumnBindingSnapshot::try_new(7, fields, ids).unwrap()
+        }
+
+        /// Ordinary fields plus complete and incomplete generated outputs of
+        /// several shapes used by the compact reference matrix.
+        fn mixed_snapshot() -> GeneratedColumnBindingSnapshot {
+            snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("text", DataType::Utf8), 2),
+                (ordinary("vector", vector_dtype(VECTOR_DIM_ORDINARY)), 3),
+                (generated("gen_complete", DataType::Int32, 4, 3, 3), 4),
+                (generated("gen_incomplete", DataType::Int32, 5, 4, 2), 5),
+                (generated("gen_struct", struct_dtype(), 6, 5, 1), 6),
+                (generated("gen_text", DataType::Utf8, 7, 6, 2), 7),
+                (
+                    generated("gen_vector", vector_dtype(VECTOR_DIM_GENERATED), 8, 7, 3),
+                    8,
+                ),
+                (ordinary("Score", DataType::Int32), 9),
+                (generated("a.b", DataType::Int32, 10, 8, 1), 10),
+                (generated("Weird Name", DataType::Int32, 11, 9, 4), 11),
+            ])
+        }
+
+        fn all_complete_snapshot() -> GeneratedColumnBindingSnapshot {
+            snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("text", DataType::Utf8), 2),
+                (generated("gen_complete", DataType::Int32, 4, 3, 3), 4),
+                (generated("gen_other", DataType::Utf8, 5, 2, 2), 5),
+            ])
+        }
+
+        fn malformed_snapshot() -> GeneratedColumnBindingSnapshot {
+            snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("text", DataType::Utf8), 2),
+                (malformed("gen_bad", 12), 12),
+                (generated("gen_incomplete", DataType::Int32, 5, 4, 2), 5),
+            ])
+        }
+
+        fn list_of(inner: DataType) -> DataType {
+            DataType::List(Arc::new(Field::new("item", inner, true)))
+        }
+
+        fn large_list_of(inner: DataType) -> DataType {
+            DataType::LargeList(Arc::new(Field::new("item", inner, true)))
+        }
+
+        /// Dedicated snapshot with ordinary columns plus exactly one generated
+        /// field. Used so implicit-FTS assertions cannot pass by diagnosing a
+        /// different incomplete field.
+        fn dedicated_generated_snapshot(
+            name: &str,
+            data_type: DataType,
+            field_id: i32,
+            complete: bool,
+        ) -> GeneratedColumnBindingSnapshot {
+            let (dependency_epoch, materialized_epoch) = if complete { (3, 3) } else { (4, 2) };
+            snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("text", DataType::Utf8), 2),
+                (
+                    generated(
+                        name,
+                        data_type,
+                        field_id,
+                        dependency_epoch,
+                        materialized_epoch,
+                    ),
+                    field_id,
+                ),
+            ])
+        }
+
+        fn implicit_fts_query() -> AnyQuery {
+            plain(QueryRequest {
+                select: Select::columns(&["id"]),
+                full_text_search: Some(FullTextSearchQuery::new("hello".into())),
+                ..QueryRequest::default()
+            })
+        }
+
+        fn plain(request: QueryRequest) -> AnyQuery {
+            AnyQuery::Query(request)
+        }
+
+        fn query_with(select: Select) -> AnyQuery {
+            AnyQuery::Query(QueryRequest {
+                select,
+                ..QueryRequest::default()
+            })
+        }
+
+        fn vector_query(column: Option<&str>, dim: i32) -> AnyQuery {
+            let mut request = VectorQueryRequest::from_plain_query(QueryRequest {
+                select: Select::columns(&["id"]),
+                ..QueryRequest::default()
+            });
+            request.column = column.map(|c| c.to_string());
+            request.query_vector = vec![Arc::new(Float32Array::from(vec![0.1; dim as usize]))];
+            AnyQuery::VectorQuery(request)
+        }
+
+        /// Diagnostics must not leak definition payload: decoded literal marker,
+        /// plain Function ID, metadata wire key, or any snapshot field's full
+        /// raw metadata JSON (canonical IPC/base64 or deliberately malformed).
+        fn assert_diagnostic_redacted(
+            rendered: &str,
+            snapshot: &GeneratedColumnBindingSnapshot,
+            label: &str,
+        ) {
+            assert!(
+                !rendered.contains(LITERAL_MARKER),
+                "{label}: diagnostic leaked typed literal marker: {rendered}"
+            );
+            assert!(
+                !rendered.contains(FUNCTION_ID),
+                "{label}: diagnostic leaked function id: {rendered}"
+            );
+            assert!(
+                !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+                "{label}: diagnostic leaked metadata key: {rendered}"
+            );
+            assert!(
+                !rendered.contains("function_call"),
+                "{label}: diagnostic leaked function_call wire key / payload: {rendered}"
+            );
+            for entry in snapshot.entries() {
+                if let Some(raw) = entry.field().metadata().get(GENERATED_COLUMN_METADATA_KEY) {
+                    assert!(
+                        !rendered.contains(raw.as_str()),
+                        "{label}: diagnostic leaked raw metadata json: {rendered}"
+                    );
+                }
+            }
+        }
+
+        fn assert_incomplete(
+            snapshot: &GeneratedColumnBindingSnapshot,
+            query: &AnyQuery,
+            label: &str,
+        ) {
+            let err = super::super::validate_generated_column_query(snapshot, query)
+                .expect_err(&format!("{label}: expected generated_column_incomplete"));
+            match &err {
+                Error::Function {
+                    code: FunctionErrorCode::GeneratedColumnIncomplete,
+                    message,
+                } => {
+                    let rendered = format!("{err}\n{err:?}\n{message}");
+                    assert_diagnostic_redacted(&rendered, snapshot, label);
+                }
+                other => panic!(
+                    "{label}: expected Error::Function(GeneratedColumnIncomplete), got {other:?}"
+                ),
+            }
+        }
+
+        fn assert_ok(snapshot: &GeneratedColumnBindingSnapshot, query: &AnyQuery, label: &str) {
+            super::super::validate_generated_column_query(snapshot, query)
+                .unwrap_or_else(|err| panic!("{label}: expected Ok, got {err:?}"));
+        }
+
+        fn assert_invalid_input_redacted(
+            snapshot: &GeneratedColumnBindingSnapshot,
+            query: &AnyQuery,
+            label: &str,
+        ) {
+            let err = super::super::validate_generated_column_query(snapshot, query)
+                .expect_err(&format!("{label}: expected InvalidInput"));
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "{label}: expected InvalidInput, got {err:?}"
+            );
+            let rendered = format!("{err}\n{err:?}");
+            assert_diagnostic_redacted(&rendered, snapshot, label);
+        }
+
+        fn assert_incomplete_named(
+            snapshot: &GeneratedColumnBindingSnapshot,
+            query: &AnyQuery,
+            expected_name: &str,
+            label: &str,
+        ) {
+            let err = super::super::validate_generated_column_query(snapshot, query)
+                .expect_err(&format!("{label}: expected generated_column_incomplete"));
+            match &err {
+                Error::Function {
+                    code: FunctionErrorCode::GeneratedColumnIncomplete,
+                    message,
+                } => {
+                    assert!(
+                        message.contains(&format!("`{expected_name}`")),
+                        "{label}: expected incomplete name `{expected_name}`, got {message}"
+                    );
+                    let rendered = format!("{err}\n{err:?}\n{message}");
+                    assert_diagnostic_redacted(&rendered, snapshot, label);
+                }
+                other => panic!(
+                    "{label}: expected Error::Function(GeneratedColumnIncomplete), got {other:?}"
+                ),
+            }
+        }
+
+        fn assert_same_error(
+            snapshot: &GeneratedColumnBindingSnapshot,
+            query: &AnyQuery,
+            expected: &Error,
+            label: &str,
+        ) {
+            let err = super::super::validate_generated_column_query(snapshot, query)
+                .expect_err(&format!("{label}: expected Err"));
+            assert_eq!(
+                err.to_string(),
+                expected.to_string(),
+                "{label}: diagnostic must match the expected precedence winner"
+            );
+            let rendered = format!("{err}\n{err:?}");
+            assert_diagnostic_redacted(&rendered, snapshot, label);
+        }
+
+        /// Repeat enough times that a per-call randomized set cannot look stable.
+        const DETERMINISM_REPEATS: usize = 64;
+
+        #[test]
+        fn fixture_snapshot_exposes_complete_and_incomplete_definitions() {
+            let snapshot = mixed_snapshot();
+            let complete = snapshot
+                .field("gen_complete")
+                .unwrap()
+                .generated_column_definition()
+                .unwrap()
+                .expect("complete metadata");
+            assert_eq!(complete.output_field_id(), 4);
+            assert_eq!(complete.status(), GeneratedColumnStatus::Complete);
+            assert!(
+                call_carries_literal_marker(complete.function_call()),
+                "complete definition must carry typed literal marker"
+            );
+
+            let incomplete = snapshot
+                .field("gen_incomplete")
+                .unwrap()
+                .generated_column_definition()
+                .unwrap()
+                .expect("incomplete metadata");
+            assert_eq!(incomplete.output_field_id(), 5);
+            assert_eq!(incomplete.status(), GeneratedColumnStatus::Incomplete);
+            assert!(
+                snapshot
+                    .field("id")
+                    .unwrap()
+                    .generated_column_definition()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn select_all_rejects_incomplete_and_allows_complete() {
+            let mixed = mixed_snapshot();
+            assert_incomplete(&mixed, &query_with(Select::All), "select_all_incomplete");
+
+            let complete = all_complete_snapshot();
+            assert_ok(&complete, &query_with(Select::All), "select_all_complete");
+        }
+
+        #[test]
+        fn incomplete_rejected_in_supported_reference_positions() {
+            let snapshot = mixed_snapshot();
+            let cases: Vec<(&str, AnyQuery)> = vec![
+                (
+                    "select_columns",
+                    query_with(Select::columns(&["id", "gen_incomplete"])),
+                ),
+                (
+                    "select_nested_child_of_generated_struct",
+                    query_with(Select::columns(&["gen_struct.child"])),
+                ),
+                (
+                    "select_dynamic_sql",
+                    query_with(Select::dynamic(&[("out", "gen_incomplete + 1")])),
+                ),
+                (
+                    "select_expr_datafusion",
+                    query_with(Select::expr_projection(&[(
+                        "out",
+                        col("gen_incomplete") + lit(1),
+                    )])),
+                ),
+                (
+                    "filter_sql",
+                    plain(QueryRequest {
+                        select: Select::columns(&["id"]),
+                        filter: Some(QueryFilter::Sql("gen_incomplete > 0".into())),
+                        ..QueryRequest::default()
+                    }),
+                ),
+                (
+                    "filter_datafusion",
+                    plain(QueryRequest {
+                        select: Select::columns(&["id"]),
+                        filter: Some(QueryFilter::Datafusion(col("gen_incomplete").gt(lit(0)))),
+                        ..QueryRequest::default()
+                    }),
+                ),
+                (
+                    "order_by",
+                    plain(QueryRequest {
+                        select: Select::columns(&["id"]),
+                        order_by: Some(vec![ColumnOrdering::asc_nulls_last(
+                            "gen_incomplete".to_string(),
+                        )]),
+                        ..QueryRequest::default()
+                    }),
+                ),
+                (
+                    "fts_explicit_generated_text",
+                    plain(QueryRequest {
+                        select: Select::columns(&["id"]),
+                        full_text_search: Some(
+                            FullTextSearchQuery::new("hello".into())
+                                .with_column("gen_text".into())
+                                .unwrap(),
+                        ),
+                        ..QueryRequest::default()
+                    }),
+                ),
+                (
+                    "vector_explicit_generated",
+                    vector_query(Some("gen_vector"), VECTOR_DIM_GENERATED),
+                ),
+                (
+                    "vector_inferred_generated",
+                    // ordinary vector is dim=2; query dim=4 selects only gen_vector.
+                    vector_query(None, VECTOR_DIM_GENERATED),
+                ),
+            ];
+
+            for (label, query) in cases {
+                assert_incomplete(&snapshot, &query, label);
+            }
+        }
+
+        #[test]
+        fn unreferenced_incomplete_does_not_block_ordinary_query() {
+            let snapshot = mixed_snapshot();
+
+            assert_ok(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id", "text", "Score"]),
+                    filter: Some(QueryFilter::Sql("id > 0".into())),
+                    order_by: Some(vec![ColumnOrdering::asc_nulls_last("id".to_string())]),
+                    ..QueryRequest::default()
+                }),
+                "ordinary_projection_filter_order",
+            );
+
+            assert_ok(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    full_text_search: Some(
+                        FullTextSearchQuery::new("hello".into())
+                            .with_column("text".into())
+                            .unwrap(),
+                    ),
+                    ..QueryRequest::default()
+                }),
+                "ordinary_fts_column",
+            );
+
+            assert_ok(
+                &snapshot,
+                &vector_query(Some("vector"), VECTOR_DIM_ORDINARY),
+                "ordinary_vector_column",
+            );
+
+            // Output alias and string literal equal to the generated name are not
+            // field references.
+            assert_ok(
+                &snapshot,
+                &query_with(Select::dynamic(&[("gen_incomplete", "'gen_incomplete'")])),
+                "alias_and_string_literal_equal_generated_name",
+            );
+            assert_ok(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Sql("text = 'gen_incomplete'".into())),
+                    ..QueryRequest::default()
+                }),
+                "predicate_string_literal_equal_generated_name",
+            );
+        }
+
+        #[test]
+        fn reference_resolution_follows_query_semantics() {
+            let snapshot = mixed_snapshot();
+
+            // Lance Planner SQL identifiers resolve case-insensitively, so this
+            // is a real reference to gen_incomplete — not an invented guess.
+            assert_incomplete(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Sql("GEN_INCOMPLETE > 0".into())),
+                    ..QueryRequest::default()
+                }),
+                "sql_case_insensitive_planner_reference",
+            );
+
+            // Nested SQL/DataFusion paths collect the top-level generated struct.
+            assert_incomplete(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Sql("gen_struct.child > 0".into())),
+                    ..QueryRequest::default()
+                }),
+                "sql_nested_path",
+            );
+            assert_incomplete(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Datafusion(
+                        col("gen_struct").field("child").gt(lit(0)),
+                    )),
+                    ..QueryRequest::default()
+                }),
+                "datafusion_nested_path",
+            );
+
+            // Quoted special name is a structural identifier reference.
+            assert_incomplete(
+                &snapshot,
+                &query_with(Select::columns(&["`Weird Name`"])),
+                "quoted_special_name_columns",
+            );
+            assert_incomplete(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Sql("`Weird Name` > 0".into())),
+                    ..QueryRequest::default()
+                }),
+                "quoted_special_name_sql_filter",
+            );
+
+            // Top-level field literally named `a.b` is referenced only through a
+            // quoted path. Bare `a.b` is nested path [a, b] and must not be treated
+            // as snapshot.field("a.b") / substring matching.
+            assert_incomplete(
+                &snapshot,
+                &query_with(Select::columns(&["`a.b`"])),
+                "quoted_top_level_dotted_name",
+            );
+            assert_ok(
+                &snapshot,
+                &query_with(Select::columns(&["a.b"])),
+                "bare_dotted_path_is_not_top_level_a_dot_b",
+            );
+
+            // order_by uses exact Lance schema.field lookup (case-sensitive).
+            assert_ok(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    order_by: Some(vec![ColumnOrdering::asc_nulls_last(
+                        "GEN_INCOMPLETE".to_string(),
+                    )]),
+                    ..QueryRequest::default()
+                }),
+                "order_by_wrong_case_is_not_a_reference",
+            );
+
+            // Substring / containment must not invent references.
+            assert_ok(
+                &snapshot,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    filter: Some(QueryFilter::Sql("text LIKE '%gen_incomplete%'".into())),
+                    ..QueryRequest::default()
+                }),
+                "substring_in_string_predicate",
+            );
+        }
+
+        #[test]
+        fn malformed_metadata_fail_closed_when_visible_or_referenced() {
+            let snapshot = malformed_snapshot();
+
+            assert_invalid_input_redacted(
+                &snapshot,
+                &query_with(Select::All),
+                "select_all_malformed",
+            );
+            assert_invalid_input_redacted(
+                &snapshot,
+                &query_with(Select::columns(&["gen_bad"])),
+                "select_columns_malformed",
+            );
+
+            // Unreferenced malformed metadata must not be diagnosed merely because
+            // it exists on the snapshot.
+            assert_ok(
+                &snapshot,
+                &query_with(Select::columns(&["id", "text"])),
+                "unreferenced_malformed_ignored",
+            );
+            assert_incomplete(
+                &snapshot,
+                &query_with(Select::columns(&["gen_incomplete"])),
+                "referenced_incomplete_still_checked",
+            );
+        }
+
+        #[test]
+        fn incomplete_error_is_stable_and_redacted() {
+            let snapshot = mixed_snapshot();
+            let query = query_with(Select::columns(&["gen_incomplete"]));
+            let err = super::super::validate_generated_column_query(&snapshot, &query)
+                .expect_err("incomplete reference");
+            match &err {
+                Error::Function {
+                    code: FunctionErrorCode::GeneratedColumnIncomplete,
+                    message,
+                } => {
+                    // May identify the output column; must not leak definition payload.
+                    let rendered = format!("{message}\n{err}\n{err:?}");
+                    assert_diagnostic_redacted(&rendered, &snapshot, "incomplete_stable");
+                    assert!(
+                        !rendered.contains("SENSITIVE"),
+                        "diagnostic leaked sensitive payload fragment: {rendered}"
+                    );
+                    let metadata_json = definition(5, 4, 2).to_metadata_json().unwrap();
+                    assert!(
+                        !rendered.contains(&metadata_json),
+                        "diagnostic leaked reconstructed raw metadata json: {rendered}"
+                    );
+                }
+                other => panic!("expected GeneratedColumnIncomplete, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn substrait_filter_is_not_supported_with_generated_metadata() {
+            // Pure guard must not decode Substrait. Freeze NotSupported (never Ok)
+            // whenever generated-column metadata is present on the snapshot.
+            let snapshot = mixed_snapshot();
+            let query = plain(QueryRequest {
+                select: Select::columns(&["id"]),
+                filter: Some(QueryFilter::Substrait(Arc::from([0u8, 1, 2, 3].as_slice()))),
+                ..QueryRequest::default()
+            });
+            let err = super::super::validate_generated_column_query(&snapshot, &query)
+                .expect_err("substrait with generated metadata");
+            assert!(
+                matches!(err, Error::NotSupported { .. }),
+                "expected NotSupported for Substrait filter, got {err:?}"
+            );
+        }
+
+        #[test]
+        fn implicit_fts_without_columns_uses_text_shaped_generated_candidates() {
+            // Lance resolves empty FTS columns from index metadata later. The
+            // pure helper only has the snapshot, so empty columns must fail
+            // closed on every top-level generated field whose Arrow type is an
+            // implicit-FTS candidate shape (see lance scanner is_fts_indexable_field).
+            let query = implicit_fts_query();
+            assert!(
+                query
+                    .base()
+                    .full_text_search
+                    .as_ref()
+                    .unwrap()
+                    .columns()
+                    .is_empty(),
+                "fixture must use FTS with no explicit columns"
+            );
+
+            let incomplete_shapes: Vec<(&str, &str, DataType, i32)> = vec![
+                ("incomplete_utf8", "gen_utf8", DataType::Utf8, 21),
+                (
+                    "incomplete_large_utf8",
+                    "gen_large_utf8",
+                    DataType::LargeUtf8,
+                    22,
+                ),
+                (
+                    "incomplete_list_utf8",
+                    "gen_list_utf8",
+                    list_of(DataType::Utf8),
+                    23,
+                ),
+                (
+                    "incomplete_list_large_utf8",
+                    "gen_list_large_utf8",
+                    list_of(DataType::LargeUtf8),
+                    24,
+                ),
+                (
+                    "incomplete_large_list_utf8",
+                    "gen_large_list_utf8",
+                    large_list_of(DataType::Utf8),
+                    25,
+                ),
+                (
+                    "incomplete_large_list_large_utf8",
+                    "gen_large_list_large_utf8",
+                    large_list_of(DataType::LargeUtf8),
+                    26,
+                ),
+            ];
+            for (label, name, data_type, field_id) in incomplete_shapes {
+                let snapshot = dedicated_generated_snapshot(name, data_type, field_id, false);
+                assert_eq!(
+                    snapshot
+                        .field(name)
+                        .unwrap()
+                        .generated_column_definition()
+                        .unwrap()
+                        .expect("generated")
+                        .status(),
+                    GeneratedColumnStatus::Incomplete
+                );
+                assert_incomplete(&snapshot, &query, label);
+            }
+
+            let complete_utf8 = dedicated_generated_snapshot("gen_utf8", DataType::Utf8, 31, true);
+            assert_ok(&complete_utf8, &query, "complete_utf8_candidate_allowed");
+
+            // Incomplete non-FTS generated type alone must not invent an FTS ref.
+            let incomplete_int =
+                dedicated_generated_snapshot("gen_incomplete_int", DataType::Int32, 32, false);
+            assert_ok(
+                &incomplete_int,
+                &query,
+                "incomplete_non_fts_type_does_not_block_implicit_fts",
+            );
+
+            // Explicit FTS columns keep exact structural behavior: ordinary
+            // text is fine even when a dedicated incomplete text candidate exists.
+            let incomplete_utf8 =
+                dedicated_generated_snapshot("gen_utf8", DataType::Utf8, 33, false);
+            assert_ok(
+                &incomplete_utf8,
+                &plain(QueryRequest {
+                    select: Select::columns(&["id"]),
+                    full_text_search: Some(
+                        FullTextSearchQuery::new("hello".into())
+                            .with_column("text".into())
+                            .unwrap(),
+                    ),
+                    ..QueryRequest::default()
+                }),
+                "explicit_ordinary_fts_column_ignores_unreferenced_candidate",
+            );
+        }
+
+        #[test]
+        fn deferred_filter_composition_error_precedes_generated_incomplete() {
+            // QueryRequest::check_filter is required before every backend query.
+            // An incompatible Substrait+SQL composition records filter_error; the
+            // guard must surface that existing InvalidInput before diagnosing an
+            // incomplete generated selection.
+            let snapshot =
+                dedicated_generated_snapshot("gen_incomplete", DataType::Int32, 41, false);
+            assert_incomplete(
+                &snapshot,
+                &query_with(Select::columns(&["gen_incomplete"])),
+                "control_incomplete_selection",
+            );
+
+            let mut request = QueryRequest {
+                select: Select::columns(&["gen_incomplete"]),
+                filter: Some(QueryFilter::Substrait(Arc::from([0u8, 1, 2, 3].as_slice()))),
+                ..QueryRequest::default()
+            };
+            request.add_filter(QueryFilter::Sql("id > 0".into()));
+            assert!(
+                request.filter_error.is_some(),
+                "composition must record filter_error"
+            );
+            assert!(
+                request.filter.is_none(),
+                "failed composition leaves no executable filter"
+            );
+            let deferred = request
+                .check_filter()
+                .expect_err("check_filter must surface recorded composition error");
+            assert!(
+                matches!(deferred, Error::InvalidInput { .. }),
+                "expected InvalidInput from check_filter, got {deferred:?}"
+            );
+            let deferred_message = deferred.to_string();
+            assert!(
+                deferred_message.contains("cannot combine a Substrait filter with another filter"),
+                "unexpected deferred message: {deferred_message}"
+            );
+
+            let query = plain(request);
+            let err = super::super::validate_generated_column_query(&snapshot, &query)
+                .expect_err("expected deferred filter composition error");
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "filter_error must precede GeneratedColumnIncomplete, got {err:?}"
+            );
+            assert_eq!(
+                err.to_string(),
+                deferred_message,
+                "guard must preserve the existing check_filter diagnostic"
+            );
+            let rendered = format!("{err}\n{err:?}");
+            assert_diagnostic_redacted(&rendered, &snapshot, "filter_precedence");
+            assert!(
+                !matches!(
+                    err,
+                    Error::Function {
+                        code: FunctionErrorCode::GeneratedColumnIncomplete,
+                        ..
+                    }
+                ),
+                "must not return GeneratedColumnIncomplete when filter_error is set"
+            );
+        }
+
+        #[test]
+        fn referenced_error_precedence_follows_deterministic_query_order() {
+            // Freeze query traversal order for diagnostic selection. Reverse-
+            // alphabetic / reverse-schema request order plus both directions
+            // reject HashSet iteration (stable per process, arbitrary across
+            // processes). Repeats reject any per-call randomized set.
+
+            // Malformed: first referenced field's strict short InvalidInput wins.
+            // Short diagnostics identify field id only (no raw metadata payload).
+            let malformed = snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (malformed("zz_bad", 61), 61),
+                (malformed("aa_bad", 62), 62),
+            ]);
+            let zz_malformed_only = super::super::validate_generated_column_query(
+                &malformed,
+                &query_with(Select::columns(&["zz_bad"])),
+            )
+            .expect_err("solo zz_bad");
+            let aa_malformed_only = super::super::validate_generated_column_query(
+                &malformed,
+                &query_with(Select::columns(&["aa_bad"])),
+            )
+            .expect_err("solo aa_bad");
+            assert!(matches!(zz_malformed_only, Error::InvalidInput { .. }));
+            assert!(matches!(aa_malformed_only, Error::InvalidInput { .. }));
+            assert_ne!(
+                zz_malformed_only.to_string(),
+                aa_malformed_only.to_string(),
+                "distinct field ids must yield distinguishable InvalidInput"
+            );
+            assert!(
+                zz_malformed_only.to_string().contains("61")
+                    && aa_malformed_only.to_string().contains("62"),
+                "solo diagnostics must identify field ids; zz={} aa={}",
+                zz_malformed_only,
+                aa_malformed_only
+            );
+
+            for _ in 0..DETERMINISM_REPEATS {
+                assert_same_error(
+                    &malformed,
+                    &query_with(Select::columns(&["zz_bad", "aa_bad"])),
+                    &zz_malformed_only,
+                    "select_malformed_zz_then_aa",
+                );
+                assert_same_error(
+                    &malformed,
+                    &query_with(Select::columns(&["aa_bad", "zz_bad"])),
+                    &aa_malformed_only,
+                    "select_malformed_aa_then_zz",
+                );
+                // Duplicates keep the first position.
+                assert_same_error(
+                    &malformed,
+                    &query_with(Select::columns(&["zz_bad", "aa_bad", "zz_bad"])),
+                    &zz_malformed_only,
+                    "select_malformed_duplicate_keeps_first",
+                );
+            }
+
+            // Incomplete: first referenced output name wins in the diagnostic.
+            let incomplete = snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("text", DataType::Utf8), 2),
+                (generated("zz_inc", DataType::Int32, 71, 4, 2), 71),
+                (generated("aa_inc", DataType::Int32, 72, 4, 2), 72),
+            ]);
+            for _ in 0..DETERMINISM_REPEATS {
+                assert_incomplete_named(
+                    &incomplete,
+                    &query_with(Select::columns(&["zz_inc", "aa_inc"])),
+                    "zz_inc",
+                    "select_incomplete_zz_then_aa",
+                );
+                assert_incomplete_named(
+                    &incomplete,
+                    &query_with(Select::columns(&["aa_inc", "zz_inc"])),
+                    "aa_inc",
+                    "select_incomplete_aa_then_zz",
+                );
+                assert_incomplete_named(
+                    &incomplete,
+                    &query_with(Select::columns(&["zz_inc", "aa_inc", "zz_inc"])),
+                    "zz_inc",
+                    "select_incomplete_duplicate_keeps_first",
+                );
+
+                // Select precedes filter / order / FTS / vector in traversal.
+                assert_incomplete_named(
+                    &incomplete,
+                    &plain(QueryRequest {
+                        select: Select::columns(&["aa_inc"]),
+                        filter: Some(QueryFilter::Sql("zz_inc > 0".into())),
+                        ..QueryRequest::default()
+                    }),
+                    "aa_inc",
+                    "select_before_filter_incomplete",
+                );
+                assert_incomplete_named(
+                    &incomplete,
+                    &plain(QueryRequest {
+                        select: Select::columns(&["id"]),
+                        filter: Some(QueryFilter::Sql("zz_inc > 0".into())),
+                        order_by: Some(vec![ColumnOrdering::asc_nulls_last("aa_inc".to_string())]),
+                        ..QueryRequest::default()
+                    }),
+                    "zz_inc",
+                    "filter_before_order_by_incomplete",
+                );
+            }
+
+            // Select::All uses snapshot schema order (deliberately reverse-alpha).
+            let all_zz_first = snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (generated("zz_inc", DataType::Int32, 81, 4, 2), 81),
+                (generated("aa_inc", DataType::Int32, 82, 4, 2), 82),
+            ]);
+            let all_aa_first = snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (generated("aa_inc", DataType::Int32, 83, 4, 2), 83),
+                (generated("zz_inc", DataType::Int32, 84, 4, 2), 84),
+            ]);
+            for _ in 0..DETERMINISM_REPEATS {
+                assert_incomplete_named(
+                    &all_zz_first,
+                    &query_with(Select::All),
+                    "zz_inc",
+                    "select_all_schema_order_zz_first",
+                );
+                assert_incomplete_named(
+                    &all_aa_first,
+                    &query_with(Select::All),
+                    "aa_inc",
+                    "select_all_schema_order_aa_first",
+                );
+            }
+        }
+
+        #[test]
+        fn invalid_select_field_path_is_invalid_input() {
+            // Invalid exact field path must surface the same fail-closed
+            // InvalidInput the query path uses for parse_field_path failures.
+            let snapshot = all_complete_snapshot();
+            assert!(
+                snapshot.entries().iter().any(|entry| {
+                    entry
+                        .field()
+                        .metadata()
+                        .contains_key(GENERATED_COLUMN_METADATA_KEY)
+                }),
+                "fixture must carry generated metadata"
+            );
+            for _ in 0..DETERMINISM_REPEATS {
+                assert_invalid_input_redacted(
+                    &snapshot,
+                    &query_with(Select::columns(&["parent..child"])),
+                    "invalid_select_field_path",
+                );
+            }
+        }
+
+        #[test]
+        fn ambiguous_default_vector_column_error_is_preserved() {
+            // Ambiguous implicit vector column: propagate the existing
+            // default_vector_column diagnostic. Snapshot has generated metadata
+            // but no incomplete referenced output, so Ok would mean the guard
+            // swallowed inference failure rather than diagnosing incomplete.
+            let snapshot = snapshot_from(vec![
+                (ordinary("id", DataType::Int32), 1),
+                (ordinary("vector_a", vector_dtype(VECTOR_DIM_ORDINARY)), 2),
+                (ordinary("vector_b", vector_dtype(VECTOR_DIM_ORDINARY)), 3),
+                (generated("gen_complete", DataType::Int32, 4, 3, 3), 4),
+            ]);
+            let arrow_schema = arrow_schema::Schema::new(
+                snapshot
+                    .entries()
+                    .iter()
+                    .map(|entry| entry.field().as_ref().clone())
+                    .collect::<Vec<_>>(),
+            );
+            let expected =
+                crate::utils::default_vector_column(&arrow_schema, Some(VECTOR_DIM_ORDINARY))
+                    .expect_err("fixture must be ambiguous for default_vector_column");
+            assert!(
+                expected.to_string().contains("More than one"),
+                "unexpected default_vector_column diagnostic: {expected}"
+            );
+            let query = vector_query(None, VECTOR_DIM_ORDINARY);
+            for _ in 0..DETERMINISM_REPEATS {
+                let err = super::super::validate_generated_column_query(&snapshot, &query)
+                    .expect_err("ambiguous vector inference must not become Ok");
+                assert_eq!(
+                    err.to_string(),
+                    expected.to_string(),
+                    "guard must preserve default_vector_column ambiguity diagnostic"
+                );
+                assert!(
+                    !matches!(
+                        err,
+                        Error::Function {
+                            code: FunctionErrorCode::GeneratedColumnIncomplete,
+                            ..
+                        }
+                    ),
+                    "must not disguise inference failure as GeneratedColumnIncomplete"
+                );
+                let rendered = format!("{err}\n{err:?}");
+                assert_diagnostic_redacted(&rendered, &snapshot, "ambiguous_vector");
+            }
+        }
     }
 }
