@@ -54,7 +54,9 @@ use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::function::{CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot};
+use crate::function::{
+    CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot, GeneratedColumnStatus,
+};
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
@@ -1154,6 +1156,48 @@ impl Table {
         &self,
     ) -> Result<GeneratedColumnBindingSnapshot> {
         self.inner.generated_column_binding_snapshot().await
+    }
+
+    /// Project generated-column completeness for one top-level column name.
+    ///
+    /// Projection-only: loads one authoritative
+    /// [`Self::generated_column_binding_snapshot`], looks up the exact
+    /// case-sensitive top-level name (`.` is literal, not a nested path), and
+    /// returns that field's [`GeneratedColumnStatus::Complete`] or
+    /// [`GeneratedColumnStatus::Incomplete`]. Does not submit or wait on a Job,
+    /// validate Function catalog identity, execute a UDF, or mutate
+    /// data/schema/cache state.
+    ///
+    /// Returns [`Error::InvalidInput`] for an empty name (before any table
+    /// access), a missing top-level field, or an ordinary field without a
+    /// valid generated-column definition. Tables whose binding snapshot is
+    /// unsupported surface that as [`Error::NotSupported`] (or the snapshot's
+    /// existing protocol error) without a separate status transport.
+    pub async fn generated_column_status(
+        &self,
+        column_name: impl AsRef<str>,
+    ) -> Result<GeneratedColumnStatus> {
+        let column_name = column_name.as_ref();
+        if column_name.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "generated column name must not be empty".into(),
+            });
+        }
+
+        let snapshot = self.inner.generated_column_binding_snapshot().await?;
+        let Some(entry) = snapshot.field(column_name) else {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "generated column '{column_name}' was not found in the table schema"
+                ),
+            });
+        };
+        let Some(definition) = entry.generated_column_definition()? else {
+            return Err(Error::InvalidInput {
+                message: format!("column '{column_name}' is not a generated column"),
+            });
+        };
+        Ok(definition.status())
     }
 
     /// Submit a create-generated-column Job from an already-bound snapshot pair.
@@ -5692,5 +5736,227 @@ mod tests {
                 .metadata()
                 .contains_key("lance:field_id")
         );
+    }
+
+    fn status_projection_function() -> crate::function::Function {
+        use crate::function::{
+            Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+        };
+        Function::new(
+            FunctionId::try_new("fn.exact.status.native").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("label", DataType::Utf8)],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn status_projection_definition(
+        output_field_id: i32,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> crate::function::GeneratedColumnDefinition {
+        use crate::function::{FunctionArgument, FunctionCall, GeneratedColumnDefinition};
+        let function = status_projection_function();
+        let call = FunctionCall::try_new(
+            &function,
+            vec![(
+                "label".to_string(),
+                FunctionArgument::try_literal(
+                    Arc::new(StringArray::from(vec![Some("ok")])) as arrow_array::ArrayRef
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        GeneratedColumnDefinition::try_new(
+            output_field_id,
+            call,
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+    }
+
+    async fn plant_generated_column_metadata(
+        table: &Table,
+        column: &str,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> i32 {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let field_id = snapshot.field(column).expect(column).field_id();
+        let json = status_projection_definition(field_id, dependency_epoch, materialized_epoch)
+            .to_metadata_json()
+            .unwrap();
+        table
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new(column).set(GENERATED_COLUMN_METADATA_KEY, json)
+            ])
+            .await
+            .unwrap();
+        field_id
+    }
+
+    async fn create_status_projection_table(name: &str) -> (tempfile::TempDir, Table) {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("gen_out", DataType::Int32, true),
+            Field::new("ordinary", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec![Some("x")])),
+            ],
+        )
+        .unwrap();
+        let table = conn.create_table(name, batch).execute().await.unwrap();
+        (tmp_dir, table)
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_complete_and_incomplete() {
+        use crate::function::GeneratedColumnStatus;
+
+        let (_tmp, table) = create_status_projection_table("status_epochs").await;
+        plant_generated_column_metadata(&table, "gen_out", 3, 3).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+
+        plant_generated_column_metadata(&table, "gen_out", 5, 2).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_reject_empty_missing_case_ordinary() {
+        let (_tmp, table) = create_status_projection_table("status_reject").await;
+        plant_generated_column_metadata(&table, "gen_out", 1, 1).await;
+
+        for name in ["", "missing", "Gen_Out", "GEN_OUT", "ordinary"] {
+            let err = table.generated_column_status(name).await.unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "expected InvalidInput for `{name}`, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_rename_preserves_status_and_id() {
+        use crate::function::GeneratedColumnStatus;
+
+        let (_tmp, table) = create_status_projection_table("status_rename").await;
+        let old_id = plant_generated_column_metadata(&table, "gen_out", 4, 4).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+
+        table
+            .alter_columns(&[ColumnAlteration::new("gen_out".into()).rename("gen_renamed".into())])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            table.generated_column_status("gen_renamed").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        let after = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(after.field("gen_renamed").unwrap().field_id(), old_id);
+        let err = table.generated_column_status("gen_out").await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_drop_recreate_does_not_inherit() {
+        use crate::function::GeneratedColumnStatus;
+
+        let (_tmp, table) = create_status_projection_table("status_drop_recreate").await;
+        let old_id = plant_generated_column_metadata(&table, "gen_out", 2, 2).await;
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+
+        table.drop_columns(&["gen_out"]).await.unwrap();
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "gen_out".into(),
+                "cast(NULL as int)".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+
+        let after = table.generated_column_binding_snapshot().await.unwrap();
+        let recreated = after.field("gen_out").expect("recreated");
+        assert_ne!(recreated.field_id(), old_id);
+        assert!(
+            !recreated
+                .field()
+                .metadata()
+                .contains_key(crate::function::GENERATED_COLUMN_METADATA_KEY)
+        );
+        let err = table.generated_column_status("gen_out").await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "drop/recreate ordinary field must not inherit status, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_is_read_only() {
+        use crate::function::GeneratedColumnStatus;
+        use futures::TryStreamExt;
+
+        let (_tmp, table) = create_status_projection_table("status_readonly").await;
+        // Incomplete on purpose: later query guards must reject references to gen_out,
+        // so this read-only proof only projects the ordinary non-generated column.
+        plant_generated_column_metadata(&table, "gen_out", 6, 3).await;
+
+        let version_before = table.version().await.unwrap();
+        let schema_before = table.schema().await.unwrap();
+        let data_before = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(data_before[0].num_columns(), 1);
+        assert_eq!(data_before[0].schema().field(0).name(), "ordinary");
+
+        assert_eq!(
+            table.generated_column_status("gen_out").await.unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+
+        assert_eq!(table.version().await.unwrap(), version_before);
+        assert_eq!(table.schema().await.unwrap(), schema_before);
+        let data_after = table
+            .query()
+            .select(Select::columns(&["ordinary"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(data_after, data_before);
     }
 }

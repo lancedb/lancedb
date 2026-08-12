@@ -8175,6 +8175,498 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Generated-column status projection (table semantic read)
+    // -------------------------------------------------------------------------
+
+    fn status_remote_definition_json(
+        output_field_id: i32,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> String {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature, GeneratedColumnDefinition,
+        };
+        use arrow_array::StringArray;
+
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.status.remote").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("label", DataType::Utf8)],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![(
+                "label".to_string(),
+                FunctionArgument::try_literal(
+                    Arc::new(StringArray::from(vec![Some("ok")])) as arrow_array::ArrayRef
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        GeneratedColumnDefinition::try_new(
+            output_field_id,
+            call,
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+        .to_metadata_json()
+        .unwrap()
+    }
+
+    fn status_remote_schema_with_epochs() -> Schema {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let complete = Field::new("complete_col", DataType::Int32, true).with_metadata(
+            [(
+                GENERATED_COLUMN_METADATA_KEY.to_string(),
+                status_remote_definition_json(5, 3, 3),
+            )]
+            .into(),
+        );
+        let incomplete = Field::new("incomplete_col", DataType::Int32, true).with_metadata(
+            [(
+                GENERATED_COLUMN_METADATA_KEY.to_string(),
+                status_remote_definition_json(7, 4, 1),
+            )]
+            .into(),
+        );
+        Schema::new(vec![
+            Field::new("ordinary", DataType::Utf8, true),
+            complete,
+            incomplete,
+        ])
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_one_describe_complete_and_incomplete() {
+        use crate::function::GeneratedColumnStatus;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = status_remote_schema_with_epochs();
+        let body = describe_response_with_field_ids(11, &schema, &[1, 5, 7]);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            let req_body = request_body_json(&request);
+            assert_eq!(req_body["version"], serde_json::Value::Null);
+            assert!(req_body.get("branch").is_none());
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        assert_eq!(
+            table.generated_column_status("complete_col").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            table
+                .generated_column_status("incomplete_col")
+                .await
+                .unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+
+        for name in ["missing", "Complete_Col", "ordinary"] {
+            let before = call_count.load(Ordering::SeqCst);
+            let err = table.generated_column_status(name).await.unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "expected InvalidInput for `{name}`, got {err:?}"
+            );
+            assert_eq!(
+                call_count.load(Ordering::SeqCst),
+                before + 1,
+                "fail-closed status lookup still uses exactly one describe"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_respects_checkout_version_and_branch() {
+        use crate::function::GeneratedColumnStatus;
+        use lance::dataset::refs::Ref;
+
+        let schema = status_remote_schema_with_epochs();
+        let describe_pinned = describe_response_with_field_ids(3, &schema, &[1, 5, 7]);
+        let describe_branch = describe_response_with_field_ids(9, &schema, &[1, 5, 7]);
+
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let body = request_body_json(&request);
+                    if body.get("branch").and_then(|v| v.as_str()) == Some("exp") {
+                        assert_eq!(body["version"], serde_json::Value::Null);
+                        return http::Response::builder()
+                            .status(200)
+                            .body(describe_branch.clone())
+                            .unwrap();
+                    }
+                    match body["version"].as_u64() {
+                        Some(3) => http::Response::builder()
+                            .status(200)
+                            .body(describe_pinned.clone())
+                            .unwrap(),
+                        other => panic!("unexpected describe version: {other:?}"),
+                    }
+                }
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            });
+
+        table.checkout(3).await.unwrap();
+        assert_eq!(
+            table.generated_column_status("complete_col").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            branch
+                .generated_column_status("incomplete_col")
+                .await
+                .unwrap(),
+            GeneratedColumnStatus::Incomplete
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_preserves_freshness_headers() {
+        use crate::function::GeneratedColumnStatus;
+
+        let schema = status_remote_schema_with_epochs();
+        // Describe body version (1) is intentionally distinct from write (9) / read (7)
+        // watermarks so status must not confuse describe version with freshness state.
+        let describe_body = describe_response_with_field_ids(1, &schema, &[1, 5, 7]);
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let describe_calls_c = describe_calls.clone();
+        let describe_headers = Arc::new(std::sync::Mutex::new(None::<http::HeaderMap>));
+        let describe_headers_c = describe_headers.clone();
+        let count_calls = Arc::new(AtomicUsize::new(0));
+        let count_calls_c = count_calls.clone();
+        let post_status_headers = Arc::new(std::sync::Mutex::new(None::<http::HeaderMap>));
+        let post_status_headers_c = post_status_headers.clone();
+
+        let table = Table::new_with_handler_and_interval(
+            "my_table",
+            move |request| match request.url().path() {
+                "/v1/table/my_table/update/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"rows_updated":1,"version":9}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => {
+                    let n = count_calls_c.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "7")
+                            .body("42".to_string())
+                            .unwrap()
+                    } else {
+                        *post_status_headers_c.lock().unwrap() = Some(request.headers().clone());
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "7")
+                            .body("42".to_string())
+                            .unwrap()
+                    }
+                }
+                "/v1/table/my_table/describe/" => {
+                    describe_calls_c.fetch_add(1, Ordering::SeqCst);
+                    *describe_headers_c.lock().unwrap() = Some(request.headers().clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_body.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+            Some(Duration::ZERO),
+        );
+
+        // Distinct preexisting write (9) and read (7) watermarks.
+        table.update().column("a", "a + 1").execute().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        assert_eq!(count_calls.load(Ordering::SeqCst), 1);
+
+        let before = SystemTime::now();
+        assert_eq!(
+            table.generated_column_status("complete_col").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        let after = SystemTime::now();
+
+        assert_eq!(
+            describe_calls.load(Ordering::SeqCst),
+            1,
+            "status must issue exactly one describe"
+        );
+        let status_headers = describe_headers
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("status describe headers");
+        assert_eq!(
+            status_headers
+                .get("x-lancedb-min-version")
+                .expect("status describe must send x-lancedb-min-version")
+                .to_str()
+                .unwrap(),
+            "9"
+        );
+        assert_eq!(
+            status_headers
+                .get("x-lancedb-min-read-version")
+                .expect("status describe must send x-lancedb-min-read-version")
+                .to_str()
+                .unwrap(),
+            "7"
+        );
+        assert_ne!(
+            status_headers
+                .get("x-lancedb-min-version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1",
+            "write watermark must not become the status describe body version"
+        );
+        assert_ne!(
+            status_headers
+                .get("x-lancedb-min-read-version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1",
+            "read watermark must not become the status describe body version"
+        );
+        let sent = parse_min_timestamp(&status_headers);
+        assert!(
+            sent >= before - FRESHNESS_TOLERANCE && sent <= after + FRESHNESS_TOLERANCE,
+            "status describe must send x-lancedb-min-timestamp from consistency interval"
+        );
+
+        // Subsequent ordinary read must still carry the same preexisting watermarks.
+        table.count_rows(None).await.unwrap();
+        assert_eq!(count_calls.load(Ordering::SeqCst), 2);
+        let read_headers = post_status_headers
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("post-status count_rows headers");
+        assert_eq!(
+            read_headers
+                .get("x-lancedb-min-version")
+                .expect("post-status read must send x-lancedb-min-version")
+                .to_str()
+                .unwrap(),
+            "9"
+        );
+        assert_eq!(
+            read_headers
+                .get("x-lancedb-min-read-version")
+                .expect("post-status read must send x-lancedb-min-read-version")
+                .to_str()
+                .unwrap(),
+            "7"
+        );
+        assert_eq!(
+            describe_calls.load(Ordering::SeqCst),
+            1,
+            "ordinary post-status read must not issue another describe"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_bypasses_seeded_schema_cache() {
+        use crate::function::GeneratedColumnStatus;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = status_remote_schema_with_epochs();
+        let seeded = describe_response(&schema);
+        let with_ids = describe_response_with_field_ids(7, &schema, &[1, 5, 7]);
+
+        let remote = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(with_ids.clone())
+                    .unwrap()
+            },
+            None,
+        );
+        remote.seed_schema(&seeded);
+        let table = Table::from(Arc::new(remote) as Arc<dyn BaseTable>);
+
+        let schema_before = table.schema().await.unwrap();
+        assert_eq!(
+            schema_before
+                .field_with_name("complete_col")
+                .unwrap()
+                .name(),
+            "complete_col"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+
+        assert_eq!(
+            table.generated_column_status("complete_col").await.unwrap(),
+            GeneratedColumnStatus::Complete
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "status must issue exactly one authoritative describe for IDs"
+        );
+
+        let schema_after = table.schema().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&schema_before, &schema_after),
+            "status must leave the preexisting schema cache Arc installed"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "ordinary schema read after status must add zero requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_empty_name_zero_requests() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let table =
+            Table::new_with_handler("my_table", move |_request| -> http::Response<String> {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                panic!("empty status name must not issue HTTP requests");
+            });
+
+        let err = table.generated_column_status("").await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_missing_ids_not_supported() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = status_remote_schema_with_epochs();
+        let body = describe_response(&schema);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = table
+            .generated_column_status("complete_col")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_invalid_ids_are_protocol_errors() {
+        let schema = status_remote_schema_with_epochs();
+        for field_ids in [vec![1, 5], vec![1, 5, -7], vec![1, 5, 5]] {
+            let body = describe_response_with_field_ids(1, &schema, &field_ids);
+            let body_for_assert = body.clone();
+            let call_count = Arc::new(AtomicUsize::new(0));
+            let call_count_clone = call_count.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let err = table
+                .generated_column_status("complete_col")
+                .await
+                .unwrap_err();
+            match err {
+                Error::Http {
+                    request_id,
+                    status_code,
+                    source,
+                } => {
+                    assert!(!request_id.is_empty());
+                    assert!(status_code.is_none());
+                    assert!(!source.to_string().contains(&body_for_assert));
+                }
+                other => panic!("expected Http protocol error, got {other:?}"),
+            }
+            assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_status_malformed_metadata_fail_closed() {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let bad = Field::new("gen_bad", DataType::Int32, true).with_metadata(
+            [(
+                GENERATED_COLUMN_METADATA_KEY.to_string(),
+                r#"{"format_version":1,"output_field_id":99,"function_call":{},"dependency_epoch":1,"materialized_epoch":1}"#
+                    .to_string(),
+            )]
+            .into(),
+        );
+        let schema = Schema::new(vec![bad]);
+        let body = describe_response_with_field_ids(1, &schema, &[3]);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            assert_eq!(path, "/v1/table/my_table/describe/");
+            assert!(
+                !path.contains("job")
+                    && !path.contains("generated")
+                    && !path.contains("function")
+                    && !path.contains("submit"),
+                "status must not hit create/Job/Function endpoints: {path}"
+            );
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = table.generated_column_status("gen_bad").await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    // -------------------------------------------------------------------------
     // CreateGeneratedColumnJobSpec remote table submit transport (FF-031)
     // -------------------------------------------------------------------------
 

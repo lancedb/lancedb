@@ -11,7 +11,9 @@ use std::collections::HashSet;
 
 use arrow_schema::FieldRef;
 
-use super::{FunctionCall, invalid_input};
+use super::{
+    FunctionCall, GENERATED_COLUMN_METADATA_KEY, GeneratedColumnDefinition, invalid_input,
+};
 use crate::Result;
 
 /// One top-level field identity from a single table snapshot.
@@ -35,6 +37,32 @@ impl GeneratedColumnBindingEntry {
     /// Exact Arrow field from the same snapshot.
     pub fn field(&self) -> &FieldRef {
         &self.field
+    }
+
+    /// Strict generated-column definition from this entry's Arrow metadata.
+    ///
+    /// Reads only [`GENERATED_COLUMN_METADATA_KEY`] on the exact snapshot field
+    /// and decodes through
+    /// [`GeneratedColumnDefinition::from_metadata_json`] with
+    /// [`Self::field_id`] as the expected output identity. The same-snapshot
+    /// stable field ID is mandatory so decode rejects metadata whose embedded
+    /// `output_field_id` does not match this entry; name/ordinal/hash fallbacks
+    /// are not used.
+    ///
+    /// Returns [`Ok`]`(`[`None`]`)` when the key is absent. Present but invalid
+    /// metadata fails closed as [`crate::Error::InvalidInput`] with a short
+    /// field-ID diagnostic that does not echo the raw metadata payload.
+    pub(crate) fn generated_column_definition(&self) -> Result<Option<GeneratedColumnDefinition>> {
+        let Some(raw) = self.field.metadata().get(GENERATED_COLUMN_METADATA_KEY) else {
+            return Ok(None);
+        };
+        match GeneratedColumnDefinition::from_metadata_json(raw, self.field_id) {
+            Ok(definition) => Ok(Some(definition)),
+            Err(_) => Err(invalid_input(format!(
+                "invalid generated-column metadata for field id {}",
+                self.field_id
+            ))),
+        }
     }
 }
 
@@ -355,5 +383,178 @@ mod tests {
         let empty =
             GeneratedColumnBindingSnapshot::try_new(1, Vec::<FieldRef>::new(), vec![]).unwrap();
         empty.validate_field_arguments(&literal_only).unwrap();
+    }
+
+    fn status_sample_function() -> crate::function::Function {
+        use crate::function::{
+            Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+        };
+        Function::new(
+            FunctionId::try_new("fn.exact.status.binding").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("label", DataType::Utf8)],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn status_sample_call() -> crate::function::FunctionCall {
+        use crate::function::{FunctionArgument, FunctionCall};
+        use arrow_array::{ArrayRef, StringArray};
+        let function = status_sample_function();
+        FunctionCall::try_new(
+            &function,
+            vec![(
+                "label".to_string(),
+                FunctionArgument::try_literal(
+                    Arc::new(StringArray::from(vec![Some("ok")])) as ArrayRef
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap()
+    }
+
+    fn definition_json(
+        output_field_id: i32,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> String {
+        use crate::function::GeneratedColumnDefinition;
+        GeneratedColumnDefinition::try_new(
+            output_field_id,
+            status_sample_call(),
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+        .to_metadata_json()
+        .unwrap()
+    }
+
+    fn entry_with_metadata(
+        name: &str,
+        field_id: i32,
+        metadata_json: Option<&str>,
+    ) -> GeneratedColumnBindingEntry {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+        let field = if let Some(json) = metadata_json {
+            Field::new(name, DataType::Int32, true).with_metadata(
+                [(GENERATED_COLUMN_METADATA_KEY.to_string(), json.to_string())].into(),
+            )
+        } else {
+            Field::new(name, DataType::Int32, true)
+        };
+        let snapshot =
+            GeneratedColumnBindingSnapshot::try_new(1, vec![Arc::new(field)], vec![field_id])
+                .unwrap();
+        snapshot.entries()[0].clone()
+    }
+
+    #[test]
+    fn generated_column_definition_absent_returns_none() {
+        let entry = entry_with_metadata("ordinary", 3, None);
+        let got = entry.generated_column_definition().unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn generated_column_definition_decodes_complete_and_incomplete() {
+        use crate::function::{GeneratedColumnDefinition, GeneratedColumnStatus};
+
+        let complete_json = definition_json(5, 3, 3);
+        let complete_entry = entry_with_metadata("gen_complete", 5, Some(&complete_json));
+        let complete = complete_entry
+            .generated_column_definition()
+            .unwrap()
+            .expect("complete metadata present");
+        assert_eq!(complete.output_field_id(), 5);
+        assert_eq!(complete.dependency_epoch(), 3);
+        assert_eq!(complete.materialized_epoch(), 3);
+        assert_eq!(complete.status(), GeneratedColumnStatus::Complete);
+        assert_eq!(
+            complete,
+            GeneratedColumnDefinition::from_metadata_json(&complete_json, 5).unwrap()
+        );
+
+        let incomplete_json = definition_json(7, 4, 2);
+        let incomplete_entry = entry_with_metadata("gen_incomplete", 7, Some(&incomplete_json));
+        let incomplete = incomplete_entry
+            .generated_column_definition()
+            .unwrap()
+            .expect("incomplete metadata present");
+        assert_eq!(incomplete.output_field_id(), 7);
+        assert_eq!(incomplete.dependency_epoch(), 4);
+        assert_eq!(incomplete.materialized_epoch(), 2);
+        assert_eq!(incomplete.status(), GeneratedColumnStatus::Incomplete);
+        assert_eq!(
+            incomplete,
+            GeneratedColumnDefinition::from_metadata_json(&incomplete_json, 7).unwrap()
+        );
+    }
+
+    #[test]
+    fn generated_column_definition_fail_closed_for_invalid_metadata() {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let field_id = 9i32;
+        let valid = definition_json(field_id, 2, 2);
+        let mut mismatched: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        mismatched["output_field_id"] = serde_json::json!(field_id + 1);
+
+        let mut unsupported: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        unsupported["format_version"] = serde_json::json!(2);
+
+        let mut reversed: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        reversed["dependency_epoch"] = serde_json::json!(1);
+        reversed["materialized_epoch"] = serde_json::json!(2);
+
+        let malformed_json = "{not-json";
+        let mut malformed_call: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        malformed_call["function_call"] = serde_json::json!("not-an-object");
+
+        for raw in [
+            mismatched.to_string(),
+            unsupported.to_string(),
+            reversed.to_string(),
+            malformed_json.to_string(),
+            malformed_call.to_string(),
+        ] {
+            let entry = entry_with_metadata("gen_bad", field_id, Some(&raw));
+            assert!(
+                entry
+                    .field()
+                    .metadata()
+                    .contains_key(GENERATED_COLUMN_METADATA_KEY),
+                "fixture must carry generated-column metadata"
+            );
+            let err = entry.generated_column_definition().unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "expected InvalidInput, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_column_definition_errors_omit_raw_metadata_marker() {
+        const MARKER: &str = "SENSITIVE_STATUS_METADATA_MARKER_b3d1_9f2e";
+        let raw = format!(
+            r#"{{"format_version":1,"output_field_id":3,"function_call":{MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
+        );
+        assert!(raw.contains(MARKER));
+        let entry = entry_with_metadata("gen_redact", 3, Some(&raw));
+        let err = entry.generated_column_definition().unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        let text = format!("{err}\n{err:?}");
+        assert!(
+            !text.contains(MARKER),
+            "status definition diagnostics must not echo raw metadata marker: {text}"
+        );
+        assert!(
+            !text.contains(&raw),
+            "status definition diagnostics must not echo raw metadata payload: {text}"
+        );
     }
 }
