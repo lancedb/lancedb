@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Crate-private Native wiring for generated-column invalidation (B4b / B4c).
+//! Crate-private Native wiring for generated-column invalidation (B4b / B4c / B4d).
 //!
 //! Converts the B4a pure planner into one Lance field-metadata patch for Native
-//! append and update commits. Planning is strict-decode/validate; overwrite of a
-//! table with any generated-column definition, and direct writes of generated
-//! outputs via Update, fail closed as [`Error::NotSupported`].
+//! append, update, and delete commits. Planning is strict-decode/validate;
+//! overwrite of a table with any generated-column definition, and direct writes
+//! of generated outputs via Update, fail closed as [`Error::NotSupported`].
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -89,6 +89,27 @@ pub(super) fn plan_native_update_generated_column_invalidation(
         }
     }
 
+    if plan.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(planned_invalidation_to_schema_metadata_updates(plan)))
+}
+
+/// Plan Native delete invalidation against one exact dataset snapshot.
+///
+/// Strict-decodes and validates every present generated-column metadata value
+/// through the B4a `RowSetChanged` planner before any Delete scanner/file IO.
+/// Returns `Some(patch)` when at least one generated column would be invalidated,
+/// or `None` when the table has no generated columns. Actual zero-row Delete
+/// suppression is owned by Lance A4d, not this planner.
+pub(super) fn plan_native_delete_generated_column_invalidation(
+    dataset: &Dataset,
+) -> Result<Option<SchemaMetadataUpdates>> {
+    let snapshot = generated_column_binding_snapshot_from_dataset(dataset)?;
+    let plan = plan_generated_column_invalidation(
+        &snapshot,
+        &GeneratedColumnMutationImpact::RowSetChanged,
+    )?;
     if plan.is_empty() {
         return Ok(None);
     }

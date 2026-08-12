@@ -1,9 +1,9 @@
-use std::sync::Arc;
-
-use futures::FutureExt;
-use lance::dataset::DeleteBuilder;
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+use std::sync::Arc;
+
+use lance::dataset::DeleteBuilder;
 use serde::{Deserialize, Serialize};
 
 use super::{NativeTable, Predicate};
@@ -29,34 +29,40 @@ pub(crate) async fn execute_delete(
     predicate: Predicate<'_>,
 ) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
-    match predicate {
-        Predicate::String(s) => {
-            let mut dataset = (*table.dataset.get().await?).clone();
-            let delete_result = dataset.delete(s).boxed().await?;
-            let num_deleted_rows = delete_result.num_deleted_rows;
-            let version = dataset.version().version;
-            table.dataset.update(dataset);
-            Ok(DeleteResult {
-                num_deleted_rows,
-                version,
-            })
-        }
-        Predicate::Expr(expr) => {
-            let dataset = table.dataset.get().await?;
-            let delete_result = DeleteBuilder::from_expr(Arc::clone(&dataset), expr.clone())
-                .execute()
-                .await?;
-            let num_deleted_rows = delete_result.num_deleted_rows;
-            let version = delete_result.new_dataset.version().version;
-            table.dataset.update(
-                Arc::try_unwrap(delete_result.new_dataset).unwrap_or_else(|arc| (*arc).clone()),
-            );
-            Ok(DeleteResult {
-                num_deleted_rows,
-                version,
-            })
-        }
+
+    // One exact dataset supplies binding-snapshot planning, the DeleteBuilder,
+    // and its transaction basis. Do not call table schema()/version() or another
+    // get(). Conflicts are not caught/replanned here.
+    let dataset = table.dataset.get().await?;
+
+    // String preserves the legacy Dataset::delete zero-retry baseline; Expr
+    // retains DeleteBuilder defaults until a generated patch is attached.
+    let mut builder = match predicate {
+        Predicate::String(s) => DeleteBuilder::new(Arc::clone(&dataset), s).conflict_retries(0),
+        Predicate::Expr(expr) => DeleteBuilder::from_expr(Arc::clone(&dataset), expr.clone()),
+    };
+
+    if let Some(schema_metadata_updates) =
+        super::generated_column_invalidation::plan_native_delete_generated_column_invalidation(
+            dataset.as_ref(),
+        )?
+    {
+        // Exact-basis fence: never retry an old generated patch on latest.
+        builder = builder
+            .with_schema_metadata_updates(schema_metadata_updates)?
+            .conflict_retries(0);
     }
+
+    let delete_result = builder.execute().await?;
+    let num_deleted_rows = delete_result.num_deleted_rows;
+    let version = delete_result.new_dataset.version().version;
+    table
+        .dataset
+        .update(Arc::try_unwrap(delete_result.new_dataset).unwrap_or_else(|arc| (*arc).clone()));
+    Ok(DeleteResult {
+        num_deleted_rows,
+        version,
+    })
 }
 
 #[cfg(test)]
