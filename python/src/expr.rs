@@ -10,7 +10,7 @@
 use std::ops::{Add, Div, Mul, Not, Sub};
 
 use arrow::{datatypes::DataType, pyarrow::PyArrowType};
-use datafusion_common::ScalarValue;
+use datafusion_common::{Column, ScalarValue};
 use lancedb::expr::{
     DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
 };
@@ -26,6 +26,33 @@ use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunct
 #[pyclass(name = "PyExpr", from_py_object)]
 #[derive(Clone)]
 pub struct PyExpr(pub DfExpr);
+
+/// Crate-private inspection result for Function call authoring (FF-028).
+#[derive(Debug, Clone)]
+pub(crate) enum DirectExprView<'a> {
+    /// Direct unqualified DataFusion Column; name is case-sensitive.
+    UnqualifiedColumn(&'a str),
+    /// Direct Literal scalar; Arrow type is owned by the scalar value.
+    Literal(&'a ScalarValue),
+}
+
+impl PyExpr {
+    /// Inspect a direct Column/Literal node for Function call authoring.
+    ///
+    /// Returns `None` for every other expression shape (arithmetic, cast,
+    /// scalar function, predicate, alias, qualified column, etc.).
+    pub(crate) fn as_direct_column_or_literal(&self) -> Option<DirectExprView<'_>> {
+        match &self.0 {
+            DfExpr::Column(Column {
+                relation: None,
+                name,
+                ..
+            }) => Some(DirectExprView::UnqualifiedColumn(name.as_str())),
+            DfExpr::Literal(value, _) => Some(DirectExprView::Literal(value)),
+            _ => None,
+        }
+    }
+}
 
 #[pymethods]
 impl PyExpr {

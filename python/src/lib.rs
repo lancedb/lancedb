@@ -48,6 +48,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Table>()?;
     m.add_class::<crate::function::Function>()?;
     m.add_class::<crate::function::PyFunctionDefinition>()?;
+    m.add_class::<crate::function::AuthoredFunctionCall>()?;
     m.add_class::<crate::job::Job>()?;
     m.add_class::<crate::job::JobInfo>()?;
     m.add_class::<crate::job::JobDescription>()?;

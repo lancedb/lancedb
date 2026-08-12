@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
+use std::fmt;
+
+use arrow::array::{ArrayData, ArrayRef, make_array};
 use arrow::datatypes::DataType;
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use lancedb::function::{
-    FunctionCapability, FunctionDefinition, FunctionOutput, FunctionParameter, FunctionSignature,
-    PythonFunctionDefinition,
+    FunctionArgument, FunctionCapability, FunctionDefinition, FunctionOutput, FunctionParameter,
+    FunctionSignature, PythonFunctionDefinition,
 };
 use pyo3::{
     Bound, Py, PyAny, PyResult, Python,
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     pyclass, pyfunction, pymethods,
-    types::{PyAnyMethods, PyBool, PyList, PyListMethods, PyTuple, PyTupleMethods},
+    types::{
+        PyAnyMethods, PyBool, PyDict, PyDictMethods, PyList, PyListMethods, PyTuple, PyTupleMethods,
+    },
 };
 
 use crate::error::PythonErrorExt;
+use crate::expr::{DirectExprView, PyExpr};
 
 /// Immutable first-class Function handle backed by the exact Rust value.
 #[pyclass(frozen, skip_from_py_object)]
@@ -71,6 +78,291 @@ impl Function {
     fn __repr__(&self) -> String {
         format!("Function(id={:?})", self.inner.id().as_str())
     }
+
+    /// Author an unresolved function call expression (FF-028).
+    ///
+    /// Keyword-only. Does not execute. Returns a private frozen authoring value
+    /// that owns this exact Function and signature-ordered unresolved bindings.
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__(
+        &self,
+        py: Python<'_>,
+        args: &Bound<'_, PyTuple>,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<AuthoredFunctionCall> {
+        if !args.is_empty() {
+            return Err(PyTypeError::new_err(
+                "Function.__call__ accepts keyword arguments only",
+            ));
+        }
+        let kwargs = match kwargs {
+            Some(dict) => dict.clone(),
+            None => PyDict::new(py),
+        };
+        AuthoredFunctionCall::try_bind(py, &self.inner, &kwargs)
+    }
+}
+
+/// Signature-ordered unresolved binding for Function call authoring.
+///
+/// Field bindings keep a case-sensitive column name until a later table API
+/// resolves stable field identity in a pinned snapshot. Literal bindings are
+/// already canonical [`FunctionArgument`] literals (never field args).
+#[derive(Clone)]
+pub(crate) enum UnresolvedArgument {
+    Field {
+        column_name: String,
+    },
+    /// Canonical typed literal; read by the later table-binding slice.
+    #[allow(dead_code)]
+    Literal(FunctionArgument),
+}
+
+impl UnresolvedArgument {
+    /// Structural binding text for repr/Debug only.
+    ///
+    /// Literal bindings expose exact Arrow [`DataType`] and one-row nullness.
+    /// Never formats literal values, array Debug, IPC bytes, or payload text.
+    fn format_binding(&self, name: &str) -> String {
+        match self {
+            Self::Field { column_name } => {
+                format!("{name}=field({column_name:?})")
+            }
+            Self::Literal(argument) => {
+                format!(
+                    "{name}=literal({}, null={})",
+                    argument.data_type(),
+                    argument.is_typed_null()
+                )
+            }
+        }
+    }
+}
+
+/// Private, frozen owner of an exact Function plus unresolved call bindings.
+///
+/// Exposed to Python as `lancedb._lancedb._FunctionCall`. Not constructible
+/// from Python, not a catalog/Job/wire/resource, and not serializable.
+#[pyclass(
+    name = "_FunctionCall",
+    module = "lancedb._lancedb",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+pub struct AuthoredFunctionCall {
+    function: lancedb::function::Function,
+    bindings: Vec<(String, UnresolvedArgument)>,
+}
+
+impl AuthoredFunctionCall {
+    pub(crate) fn try_bind(
+        py: Python<'_>,
+        function: &lancedb::function::Function,
+        kwargs: &Bound<'_, PyDict>,
+    ) -> PyResult<Self> {
+        let parameters = function.signature().parameters();
+        let mut seen = HashSet::with_capacity(kwargs.len());
+        let mut by_name = std::collections::HashMap::with_capacity(kwargs.len());
+
+        for (key, value) in kwargs.iter() {
+            let name: String = key.extract().map_err(|_| {
+                PyTypeError::new_err("Function.__call__ keyword names must be strings")
+            })?;
+            if !seen.insert(name.clone()) {
+                return Err(PyTypeError::new_err(format!(
+                    "duplicate Function argument for parameter `{name}`"
+                )));
+            }
+            by_name.insert(name, value);
+        }
+
+        if by_name.len() != parameters.len() {
+            // Prefer precise missing/unknown diagnostics over a bare arity error.
+            for parameter in parameters {
+                if !by_name.contains_key(parameter.name()) {
+                    return Err(PyTypeError::new_err(format!(
+                        "missing Function argument for parameter `{}`",
+                        parameter.name()
+                    )));
+                }
+            }
+            if let Some(unknown) = by_name.keys().find(|name| {
+                !parameters
+                    .iter()
+                    .any(|parameter| parameter.name() == name.as_str())
+            }) {
+                return Err(PyTypeError::new_err(format!(
+                    "unknown Function argument `{unknown}`"
+                )));
+            }
+            return Err(PyTypeError::new_err(format!(
+                "Function.__call__ requires exactly {} arguments, got {}",
+                parameters.len(),
+                by_name.len()
+            )));
+        }
+
+        let mut bindings = Vec::with_capacity(parameters.len());
+        for parameter in parameters {
+            let Some(value) = by_name.remove(parameter.name()) else {
+                return Err(PyTypeError::new_err(format!(
+                    "missing Function argument for parameter `{}`",
+                    parameter.name()
+                )));
+            };
+            let argument = bind_argument(py, parameter, &value)?;
+            bindings.push((parameter.name().to_string(), argument));
+        }
+
+        if let Some(unknown) = by_name.keys().next() {
+            return Err(PyTypeError::new_err(format!(
+                "unknown Function argument `{unknown}`"
+            )));
+        }
+
+        Ok(Self {
+            function: function.clone(),
+            bindings,
+        })
+    }
+
+    /// Crate-private accessor for the later table-binding slice.
+    #[allow(dead_code)]
+    pub(crate) fn function(&self) -> &lancedb::function::Function {
+        &self.function
+    }
+
+    /// Crate-private accessor for signature-ordered unresolved bindings.
+    #[allow(dead_code)]
+    pub(crate) fn bindings(&self) -> &[(String, UnresolvedArgument)] {
+        &self.bindings
+    }
+}
+
+impl fmt::Debug for AuthoredFunctionCall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never format literal payloads; literals are type + nullness only.
+        f.debug_struct("_FunctionCall")
+            .field("function_id", &self.function.id().as_str())
+            .field(
+                "bindings",
+                &self
+                    .bindings
+                    .iter()
+                    .map(|(name, binding)| binding.format_binding(name))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+#[pymethods]
+impl AuthoredFunctionCall {
+    fn __repr__(&self) -> String {
+        let bindings = self
+            .bindings
+            .iter()
+            .map(|(name, binding)| binding.format_binding(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "_FunctionCall(function_id={:?}, bindings=[{bindings}])",
+            self.function.id().as_str()
+        )
+    }
+}
+
+fn bind_argument(
+    py: Python<'_>,
+    parameter: &FunctionParameter,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<UnresolvedArgument> {
+    if let Some(py_expr) = extract_public_expr_inner(py, value)? {
+        return match py_expr.as_direct_column_or_literal() {
+            Some(DirectExprView::UnqualifiedColumn(name)) => Ok(UnresolvedArgument::Field {
+                column_name: name.to_string(),
+            }),
+            Some(DirectExprView::Literal(scalar)) => {
+                let expected = parameter.data_type();
+                let actual = scalar.data_type();
+                if &actual != expected {
+                    return Err(PyTypeError::new_err(format!(
+                        "literal expression type mismatch for parameter `{}`: expected {expected}, got {actual}",
+                        parameter.name()
+                    )));
+                }
+                let array = scalar_to_one_row_array(scalar, parameter.name(), expected)?;
+                let argument = FunctionArgument::try_literal(array)
+                    .map_err(|_| conversion_error(parameter.name(), expected))?;
+                Ok(UnresolvedArgument::Literal(argument))
+            }
+            None => Err(PyTypeError::new_err(format!(
+                "parameter `{}` requires a direct column reference or literal",
+                parameter.name()
+            ))),
+        };
+    }
+
+    let argument =
+        python_value_to_literal_argument(py, value, parameter.name(), parameter.data_type())?;
+    Ok(UnresolvedArgument::Literal(argument))
+}
+
+fn extract_public_expr_inner<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<PyExpr>> {
+    let expr_cls = py.import("lancedb.expr")?.getattr("Expr")?;
+    if !value.is_instance(&expr_cls)? {
+        return Ok(None);
+    }
+    let inner = value.getattr("_inner")?;
+    let py_expr: PyExpr = inner
+        .extract()
+        .map_err(|_| PyTypeError::new_err("lancedb.expr.Expr must wrap a native PyExpr"))?;
+    Ok(Some(py_expr))
+}
+
+fn python_value_to_literal_argument(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    parameter_name: &str,
+    data_type: &DataType,
+) -> PyResult<FunctionArgument> {
+    let pa = py.import("pyarrow")?;
+    let type_obj = data_type
+        .to_pyarrow(py)
+        .map_err(|_| conversion_error(parameter_name, data_type))?;
+    let values = PyList::new(py, std::slice::from_ref(value))
+        .map_err(|_| conversion_error(parameter_name, data_type))?;
+    let kwargs = PyDict::new(py);
+    kwargs
+        .set_item("type", type_obj)
+        .map_err(|_| conversion_error(parameter_name, data_type))?;
+    let array_obj = pa
+        .call_method("array", (values,), Some(&kwargs))
+        .map_err(|_| conversion_error(parameter_name, data_type))?;
+    let array_data = ArrayData::from_pyarrow_bound(&array_obj)
+        .map_err(|_| conversion_error(parameter_name, data_type))?;
+    let array: ArrayRef = make_array(array_data);
+    FunctionArgument::try_literal(array).map_err(|_| conversion_error(parameter_name, data_type))
+}
+
+fn scalar_to_one_row_array(
+    scalar: &datafusion_common::ScalarValue,
+    parameter_name: &str,
+    data_type: &DataType,
+) -> PyResult<ArrayRef> {
+    scalar
+        .to_array_of_size(1)
+        .map_err(|_| conversion_error(parameter_name, data_type))
+}
+
+fn conversion_error(parameter_name: &str, data_type: &DataType) -> pyo3::PyErr {
+    PyValueError::new_err(format!(
+        "cannot convert argument for parameter `{parameter_name}` to type {data_type}"
+    ))
 }
 
 /// Private, frozen owner of the exact Rust [`FunctionDefinition`].
@@ -272,5 +564,134 @@ fn parse_capability_triple(item: &Bound<'_, PyAny>) -> PyResult<FunctionCapabili
         }
         // Fail closed: never echo the supplied kind, source, or secret reference.
         _ => Err(PyValueError::new_err("unsupported capability kind")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use arrow::array::Int32Array;
+    use lancedb::expr::col as ldb_col;
+    use lancedb::expr::lit as ldb_lit;
+    use lancedb::function::{FunctionId, FunctionOutput, FunctionParameter, FunctionSignature};
+
+    fn sample_function() -> lancedb::function::Function {
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("signature");
+        lancedb::function::Function::new(
+            FunctionId::try_new("fn.exact.call-handle").expect("id"),
+            signature,
+        )
+    }
+
+    #[test]
+    fn authored_call_normalizes_binding_order_and_preserves_column_case() {
+        let function = sample_function();
+        let int_lit =
+            FunctionArgument::try_literal(Arc::new(Int32Array::from(vec![8])) as ArrayRef)
+                .expect("literal");
+        let authored = AuthoredFunctionCall {
+            function: function.clone(),
+            bindings: vec![
+                (
+                    "text".to_string(),
+                    UnresolvedArgument::Field {
+                        column_name: "firstName".to_string(),
+                    },
+                ),
+                ("limit".to_string(), UnresolvedArgument::Literal(int_lit)),
+            ],
+        };
+
+        assert_eq!(authored.function().id().as_str(), "fn.exact.call-handle");
+        assert_eq!(authored.bindings().len(), 2);
+        assert_eq!(authored.bindings()[0].0, "text");
+        match &authored.bindings()[0].1 {
+            UnresolvedArgument::Field { column_name } => assert_eq!(column_name, "firstName"),
+            UnresolvedArgument::Literal(_) => panic!("expected field binding, got literal"),
+        }
+        match &authored.bindings()[1].1 {
+            UnresolvedArgument::Literal(argument) => {
+                assert_eq!(argument.data_type(), &DataType::Int32);
+                assert!(!argument.is_typed_null());
+            }
+            UnresolvedArgument::Field { .. } => panic!("expected literal binding, got field"),
+        }
+
+        let rendered = authored.__repr__();
+        assert!(rendered.starts_with("_FunctionCall(function_id="));
+        assert!(
+            rendered.find("text=field(\"firstName\")").unwrap()
+                < rendered.find("limit=literal(Int32, null=false)").unwrap()
+        );
+        assert!(!rendered.contains('8'));
+    }
+
+    #[test]
+    fn authored_call_repr_and_debug_omit_literal_payload() {
+        let function = sample_function();
+        let sentinel = FunctionArgument::try_literal(Arc::new(arrow::array::StringArray::from(
+            vec![Some("LITERAL_PAYLOAD_SENTINEL_call_xyz_42")],
+        )) as ArrayRef)
+        .expect("literal");
+        let authored = AuthoredFunctionCall {
+            function,
+            bindings: vec![
+                ("text".to_string(), UnresolvedArgument::Literal(sentinel)),
+                (
+                    "limit".to_string(),
+                    UnresolvedArgument::Literal(
+                        FunctionArgument::try_literal(Arc::new(Int32Array::from(vec![Some(
+                            2_147_000_123,
+                        )])) as ArrayRef)
+                        .expect("int literal"),
+                    ),
+                ),
+            ],
+        };
+        let rendered = format!("{authored:?}\n{}", authored.__repr__());
+        assert!(!rendered.contains("LITERAL_PAYLOAD_SENTINEL_call_xyz_42"));
+        assert!(!rendered.contains("2147000123"));
+        assert!(rendered.contains("text=literal(Utf8, null=false)"));
+        assert!(rendered.contains("limit=literal(Int32, null=false)"));
+    }
+
+    #[test]
+    fn typed_null_literal_argument_round_trips_type() {
+        let null =
+            FunctionArgument::try_literal(
+                Arc::new(Int32Array::from(vec![None as Option<i32>])) as ArrayRef
+            )
+            .expect("typed null");
+        assert!(null.is_typed_null());
+        assert_eq!(null.data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn direct_expr_view_accepts_column_and_literal_only() {
+        let column = PyExpr(ldb_col("firstName"));
+        match column.as_direct_column_or_literal() {
+            Some(DirectExprView::UnqualifiedColumn(name)) => assert_eq!(name, "firstName"),
+            _ => panic!("expected unqualified column"),
+        }
+
+        let literal = PyExpr(ldb_lit(8i64));
+        match literal.as_direct_column_or_literal() {
+            Some(DirectExprView::Literal(value)) => {
+                assert_eq!(value.data_type(), DataType::Int64);
+            }
+            _ => panic!("expected literal"),
+        }
+
+        let complex = PyExpr(ldb_col("text").eq(ldb_lit("x")));
+        assert!(complex.as_direct_column_or_literal().is_none());
     }
 }
