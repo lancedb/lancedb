@@ -1017,6 +1017,16 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def generated_column_status(
+        self, column_name: str
+    ) -> Literal["complete", "incomplete"]:
+        """Return ``"complete"`` or ``"incomplete"`` for a generated column.
+
+        Projection-only: reads the named column's stored definition status.
+        Does not refresh values, submit a Job, or mutate table state.
+        """
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
@@ -2867,6 +2877,16 @@ class LanceTable(Table):
         the table to observe the new definition and values.
         """
         return Job(LOOP.run(self._table.add_generated_column(column_name, call)))
+
+    def generated_column_status(
+        self, column_name: str
+    ) -> Literal["complete", "incomplete"]:
+        """Return ``"complete"`` or ``"incomplete"`` for a generated column.
+
+        Projection-only: reads the named column's stored definition status.
+        Does not refresh values, submit a Job, or mutate table state.
+        """
+        return LOOP.run(self._table.generated_column_status(column_name))
 
     def _is_legacy_create_index_call(
         self,
@@ -5096,6 +5116,16 @@ class AsyncTable:
         """
         job = await self._inner._add_generated_column(column_name, call)
         return AsyncJob(job)
+
+    async def generated_column_status(
+        self, column_name: str
+    ) -> Literal["complete", "incomplete"]:
+        """Return ``"complete"`` or ``"incomplete"`` for a generated column.
+
+        Projection-only: reads the named column's stored definition status.
+        Does not refresh values, submit a Job, or mutate table state.
+        """
+        return await self._inner._generated_column_status(column_name)
 
     async def drop_index(self, name: str) -> None:
         """

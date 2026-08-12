@@ -26,7 +26,7 @@ use lancedb::table::{
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
 };
@@ -960,6 +960,35 @@ impl Table {
                 .await
                 .infer_error()?;
             Ok(crate::job::Job::new(job))
+        })
+    }
+
+    /// Hidden bridge: project generated-column completeness for one column name.
+    ///
+    /// Private native path for Python ``table.generated_column_status``. Rejects
+    /// an empty ``column_name`` before reading the table handle. Maps only the
+    /// known Rust status variants to ``"complete"`` / ``"incomplete"``.
+    #[doc(hidden)]
+    pub fn _generated_column_status<'a>(
+        self_: PyRef<'a, Self>,
+        column_name: String,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        if column_name.is_empty() {
+            return Err(PyValueError::new_err("column_name must be non-empty"));
+        }
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let status = inner
+                .generated_column_status(column_name)
+                .await
+                .infer_error()?;
+            match status {
+                lancedb::function::GeneratedColumnStatus::Complete => Ok("complete"),
+                lancedb::function::GeneratedColumnStatus::Incomplete => Ok("incomplete"),
+                _ => Err(PyNotImplementedError::new_err(
+                    "unsupported generated column status",
+                )),
+            }
         })
     }
 
