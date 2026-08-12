@@ -59,6 +59,10 @@ class _SyncFunctions:
         """Conditionally remove a Function catalog name binding."""
         return self._connection._remove_function_name(name, current)
 
+    def revoke(self, function: Function) -> None:
+        """Revoke an exact immutable Function by administrator set-bit."""
+        return self._connection._revoke_function(function)
+
 
 class _AsyncFunctions:
     """Asynchronous `async_db.functions` facade."""
@@ -98,3 +102,7 @@ class _AsyncFunctions:
     async def remove(self, name: str, current: Function) -> None:
         """Conditionally remove a Function catalog name binding."""
         return await self._connection._remove_function_name(name, current)
+
+    async def revoke(self, function: Function) -> None:
+        """Revoke an exact immutable Function by administrator set-bit."""
+        return await self._connection._revoke_function(function)

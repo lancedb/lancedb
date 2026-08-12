@@ -761,6 +761,10 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn._remove_function_name(name, current))
 
     @override
+    def _revoke_function(self, function: "Function") -> None:
+        return LOOP.run(self._conn._revoke_function(function))
+
+    @override
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
 

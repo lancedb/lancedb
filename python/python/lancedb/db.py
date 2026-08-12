@@ -710,6 +710,15 @@ class DBConnection(EnforceOverrides):
             "function name removal is not supported for this connection type"
         )
 
+    def _revoke_function(self, function: "Function") -> None:
+        """Revoke an exact immutable Function via the native connection.
+
+        Connection subclasses that share the native Connection override this hook.
+        """
+        raise NotImplementedError(
+            "function revocation is not supported for this connection type"
+        )
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -1350,6 +1359,10 @@ class LanceDBConnection(DBConnection):
     @override
     def _remove_function_name(self, name: str, current: "Function") -> None:
         return LOOP.run(self._conn._remove_function_name(name, current))
+
+    @override
+    def _revoke_function(self, function: "Function") -> None:
+        return LOOP.run(self._conn._revoke_function(function))
 
     @override
     def namespace_client(self) -> LanceNamespace:
@@ -2122,6 +2135,9 @@ class AsyncConnection(object):
 
     async def _remove_function_name(self, name: str, current: "Function") -> None:
         return await self._inner._remove_function_name(name, current)
+
+    async def _revoke_function(self, function: "Function") -> None:
+        return await self._inner._revoke_function(function)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.

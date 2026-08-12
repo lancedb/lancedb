@@ -687,6 +687,24 @@ impl Connection {
             Ok(None::<()>)
         })
     }
+
+    /// Revoke an exact immutable Function by administrator set-bit.
+    ///
+    /// Clones the observed native [`crate::function::Function`] once and
+    /// delegates to Rust [`lancedb::Connection::revoke_function`].
+    pub fn _revoke_function<'py>(
+        self_: PyRef<'py, Self>,
+        function: Bound<'_, crate::function::Function>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let function = function.get().inner().clone();
+        future_into_py(self_.py(), async move {
+            inner.revoke_function(&function).await.infer_error()?;
+            // `()` maps to an empty Python tuple via IntoPyObject; return Option
+            // so the async bridge yields exact Python None.
+            Ok(None::<()>)
+        })
+    }
 }
 
 #[pyfunction]
