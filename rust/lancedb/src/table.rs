@@ -54,6 +54,7 @@ use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::GeneratedColumnBindingSnapshot;
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
@@ -604,6 +605,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Atomic generated-column binding snapshot for one table version.
+    ///
+    /// Default returns [`Error::NotSupported`] so existing third-party
+    /// [`BaseTable`] implementations keep compiling. Native and remote tables
+    /// override this with a single-snapshot projection of version, Arrow
+    /// fields, and Lance stable field IDs.
+    async fn generated_column_binding_snapshot(&self) -> Result<GeneratedColumnBindingSnapshot> {
+        Err(Error::NotSupported {
+            message: "generated_column_binding_snapshot is not supported on this table type".into(),
+        })
+    }
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -1114,6 +1126,17 @@ impl Table {
     /// Get the arrow [Schema] of the table.
     pub async fn schema(&self) -> Result<SchemaRef> {
         self.inner.schema().await
+    }
+
+    /// Atomic generated-column binding snapshot for one table version.
+    ///
+    /// Hidden implementation projection for generated-column call binding. Not
+    /// a catalog resource, Job, or replacement for [`Self::version`].
+    #[doc(hidden)]
+    pub async fn generated_column_binding_snapshot(
+        &self,
+    ) -> Result<GeneratedColumnBindingSnapshot> {
+        self.inner.generated_column_binding_snapshot().await
     }
 
     /// Count the number of rows in this dataset.
@@ -3074,6 +3097,18 @@ impl BaseTable for NativeTable {
     async fn schema(&self) -> Result<SchemaRef> {
         let lance_schema = self.dataset.get().await?.schema().clone();
         Ok(Arc::new(Schema::from(&lance_schema)))
+    }
+
+    async fn generated_column_binding_snapshot(&self) -> Result<GeneratedColumnBindingSnapshot> {
+        // One consistency-wrapper get(): version and Lance field IDs must come
+        // from the same Dataset snapshot. Do not compose schema() + version().
+        let dataset = self.dataset.get().await?;
+        let version = dataset.version().version;
+        let lance_schema = dataset.schema();
+        let field_ids: Vec<i32> = lance_schema.fields.iter().map(|field| field.id).collect();
+        let arrow_schema = Schema::from(lance_schema);
+        let fields = arrow_schema.fields().iter().cloned().collect::<Vec<_>>();
+        GeneratedColumnBindingSnapshot::try_new(version, fields, field_ids)
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
@@ -5523,6 +5558,105 @@ mod tests {
             "stats() issued {} read IOPs across {} fragments",
             read_iops,
             stats.fragment_stats.num_fragments
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_matches_manifest() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, true),
+            Field::new("score", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![Some("a")])),
+                Arc::new(Int32Array::from(vec![1])),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("binding_native", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let public_schema = table.schema().await.unwrap();
+        let version = table.version().await.unwrap();
+        let native = table.as_native().expect("native table");
+        let dataset = native.dataset.get().await.unwrap();
+        let lance_schema = dataset.schema();
+
+        assert_eq!(snapshot.version(), version);
+        assert_eq!(snapshot.version(), dataset.version().version);
+        assert_eq!(snapshot.entries().len(), lance_schema.fields.len());
+        assert_eq!(snapshot.entries().len(), public_schema.fields().len());
+
+        for (idx, entry) in snapshot.entries().iter().enumerate() {
+            let lance_field = &lance_schema.fields[idx];
+            let public_field = public_schema.field(idx);
+            assert_eq!(entry.field_id(), lance_field.id);
+            assert_eq!(entry.field().name(), lance_field.name.as_str());
+            assert_eq!(entry.field().name(), public_field.name());
+            assert_eq!(entry.field().data_type(), public_field.data_type());
+            assert!(!public_field.metadata().contains_key("lance:field_id"));
+            assert!(!entry.field().metadata().contains_key("lance:field_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_rename_preserves_id() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("old_name", DataType::Int32, false),
+            Field::new("keep", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![7])),
+                Arc::new(StringArray::from(vec![Some("x")])),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("binding_rename", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let before = table.generated_column_binding_snapshot().await.unwrap();
+        let old_entry = before.field("old_name").expect("old_name");
+        let old_id = old_entry.field_id();
+        let keep_id = before.field("keep").expect("keep").field_id();
+
+        table
+            .alter_columns(&[ColumnAlteration::new("old_name".into()).rename("new_name".into())])
+            .await
+            .unwrap();
+
+        let after = table.generated_column_binding_snapshot().await.unwrap();
+        assert!(after.field("old_name").is_none());
+        let renamed = after.field("new_name").expect("new_name");
+        assert_eq!(renamed.field_id(), old_id);
+        assert_eq!(after.field("keep").expect("keep").field_id(), keep_id);
+        assert!(
+            !table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("new_name")
+                .unwrap()
+                .metadata()
+                .contains_key("lance:field_id")
         );
     }
 }

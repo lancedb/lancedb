@@ -12,6 +12,7 @@ use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
+use crate::function::GeneratedColumnBindingSnapshot;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
@@ -563,6 +564,17 @@ impl<S: HttpSend> RemoteTable<S> {
         request: RequestBuilder,
         version: Option<u64>,
     ) -> Result<TableDescription> {
+        let (_request_id, description) = self.describe_with_request_id(request, version).await?;
+        Ok(description)
+    }
+
+    /// Same as [`Self::describe_with_request`], but preserves the real request ID
+    /// for sanitized protocol-error mapping on binding projections.
+    async fn describe_with_request_id(
+        &self,
+        request: RequestBuilder,
+        version: Option<u64>,
+    ) -> Result<(String, TableDescription)> {
         let mut body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut body);
         let request = request.json(&body);
@@ -572,11 +584,14 @@ impl<S: HttpSend> RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
 
         match response.text().await {
-            Ok(body) => serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse table description: {}", e).into(),
-                request_id,
-                status_code: None,
-            }),
+            Ok(body) => {
+                let description = serde_json::from_str(&body).map_err(|e| Error::Http {
+                    source: format!("Failed to parse table description: {}", e).into(),
+                    request_id: request_id.clone(),
+                    status_code: None,
+                })?;
+                Ok((request_id, description))
+            }
             Err(err) => {
                 let status_code = err.status();
                 Err(Error::Http {
@@ -1135,6 +1150,38 @@ struct TableDescription {
     version: u64,
     schema: JsonSchema,
     location: Option<String>,
+    /// Optional top-level Lance stable field IDs matching `schema` order.
+    ///
+    /// Absent on old servers. Ordinary schema/version/seed paths ignore it;
+    /// generated-column binding requires it and fail-closes when missing or
+    /// invalid.
+    field_ids: Option<Vec<i32>>,
+}
+
+/// Stable, payload-free Http error for binding-facing local protocol validation.
+fn binding_protocol_http(request_id: String, message: &'static str) -> Error {
+    Error::Http {
+        source: message.into(),
+        request_id,
+        status_code: None,
+    }
+}
+
+/// Sanitize describe JSON-parse failures for the binding path only.
+///
+/// Transport/`reqwest` errors and HTTP status failures are left unchanged so
+/// ordinary schema/version behavior and network diagnostics stay intact.
+fn sanitize_binding_describe_protocol_error(err: Error) -> Error {
+    match err {
+        Error::Http {
+            request_id,
+            status_code: None,
+            source,
+        } if source.downcast_ref::<reqwest::Error>().is_none() => {
+            binding_protocol_http(request_id, "invalid table description in describe response")
+        }
+        other => other,
+    }
 }
 
 /// How a response body frames its Arrow IPC payload. `/query` answers with file framing
@@ -1851,6 +1898,43 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             })
             .await
             .map_err(unwrap_shared_error)
+    }
+
+    async fn generated_column_binding_snapshot(&self) -> Result<GeneratedColumnBindingSnapshot> {
+        // Bypass the Arrow-only schema cache. Cached schema must never invent
+        // or substitute Lance field IDs. One describe request carries version,
+        // schema, and optional field_ids together.
+        let version = self.current_version().await;
+        let request = self.post_read(&format!("/v1/table/{}/describe/", self.identifier));
+        let (request_id, description) = self
+            .describe_with_request_id(request, version)
+            .await
+            .map_err(sanitize_binding_describe_protocol_error)?;
+
+        let Some(field_ids) = description.field_ids else {
+            return Err(Error::NotSupported {
+                message: "generated-column binding snapshot requires field_ids in table describe response"
+                    .into(),
+            });
+        };
+
+        let Ok(arrow_schema) = arrow_schema::Schema::try_from(description.schema) else {
+            return Err(binding_protocol_http(
+                request_id,
+                "invalid table schema in describe response",
+            ));
+        };
+        let fields = arrow_schema.fields().iter().cloned().collect::<Vec<_>>();
+
+        GeneratedColumnBindingSnapshot::try_new(description.version, fields, field_ids).map_err(
+            |err| match err {
+                Error::InvalidInput { .. } => binding_protocol_http(
+                    request_id,
+                    "invalid generated-column binding projection in describe response",
+                ),
+                other => other,
+            },
+        )
     }
 
     async fn create_branch(
@@ -3311,6 +3395,21 @@ mod tests {
         serde_json::to_string(&json!({
             "version": 1,
             "schema": json_schema,
+        }))
+        .unwrap()
+    }
+
+    /// Describe response with additive top-level `field_ids` for binding tests.
+    fn describe_response_with_field_ids(
+        version: u64,
+        schema: &Schema,
+        field_ids: &[i32],
+    ) -> String {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        serde_json::to_string(&json!({
+            "version": version,
+            "schema": json_schema,
+            "field_ids": field_ids,
         }))
         .unwrap()
     }
@@ -7620,6 +7719,393 @@ mod tests {
         let schema3 = table.schema().await.unwrap();
         assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_one_describe_with_ids() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = Schema::new(vec![
+            Field::new("text", DataType::Utf8, true),
+            Field::new("a.b", DataType::Int32, false),
+        ]);
+        let body = describe_response_with_field_ids(42, &schema, &[3, 9]);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            let req_body = request_body_json(&request);
+            assert_eq!(req_body["version"], serde_json::Value::Null);
+            assert!(req_body.get("branch").is_none());
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.version(), 42);
+        assert_eq!(snapshot.entries().len(), 2);
+        assert_eq!(snapshot.entries()[0].field_id(), 3);
+        assert_eq!(snapshot.entries()[0].field().name(), "text");
+        assert_eq!(snapshot.entries()[0].field().data_type(), &DataType::Utf8);
+        assert_eq!(snapshot.entries()[1].field_id(), 9);
+        assert_eq!(snapshot.field("a.b").unwrap().field_id(), 9);
+        assert!(
+            !snapshot
+                .entries()
+                .iter()
+                .any(|e| e.field().metadata().contains_key("lance:field_id"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_missing_ids_not_supported_schema_ok() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let body = describe_response(&schema);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = table.generated_column_binding_snapshot().await.unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        let schema = table.schema().await.unwrap();
+        assert_eq!(schema.field(0).name(), "a");
+        // Ordinary schema may use cache / a second describe; binding must not
+        // invent IDs from that path.
+        assert!(call_count.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_invalid_ids_are_protocol_errors() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Utf8, true),
+        ]);
+
+        for field_ids in [vec![1], vec![1, -2], vec![1, 1]] {
+            let body = describe_response_with_field_ids(1, &schema, &field_ids);
+            let body_for_assert = body.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                http::Response::builder()
+                    .status(200)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let err = table.generated_column_binding_snapshot().await.unwrap_err();
+            match err {
+                Error::Http {
+                    request_id,
+                    status_code,
+                    source,
+                } => {
+                    assert!(!request_id.is_empty());
+                    assert!(status_code.is_none());
+                    let message = source.to_string();
+                    assert!(!message.contains(&body_for_assert));
+                }
+                other => panic!("expected Http protocol error, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_bypasses_seeded_schema_cache() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let seeded = describe_response(&schema);
+        let with_ids = describe_response_with_field_ids(7, &schema, &[11]);
+
+        let remote = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(with_ids.clone())
+                    .unwrap()
+            },
+            None,
+        );
+        remote.seed_schema(&seeded);
+        let table = Table::from(Arc::new(remote) as Arc<dyn BaseTable>);
+
+        // Cached/seeded Arrow schema satisfies ordinary schema reads.
+        let schema = table.schema().await.unwrap();
+        assert_eq!(schema.field(0).name(), "a");
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+
+        // Binding must issue a fresh describe that carries field_ids.
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.version(), 7);
+        assert_eq!(snapshot.field("a").unwrap().field_id(), 11);
+
+        // No second fallback/lookup after a successful binding describe.
+        let _ = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_no_submit_or_mutation_endpoints() {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let body = describe_response_with_field_ids(1, &schema, &[0]);
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            assert_eq!(
+                path, "/v1/table/my_table/describe/",
+                "binding must not call submit/mutation endpoint {path}"
+            );
+            assert!(
+                !path.contains("job")
+                    && !path.contains("generated")
+                    && !path.contains("add_columns")
+                    && !path.contains("alter_columns")
+                    && !path.contains("drop_columns")
+                    && !path.contains("insert")
+                    && !path.contains("update")
+                    && !path.contains("delete")
+                    && !path.contains("merge"),
+                "unexpected mutating path: {path}"
+            );
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(snapshot.version(), 1);
+        assert_eq!(snapshot.entries()[0].field_id(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_respects_checkout_version_and_branch() {
+        use lance::dataset::refs::Ref;
+
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let describe_latest = describe_response_with_field_ids(5, &schema, &[1]);
+        let describe_pinned = describe_response_with_field_ids(3, &schema, &[1]);
+        let describe_branch = describe_response_with_field_ids(9, &schema, &[2]);
+
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let body = request_body_json(&request);
+                    if body.get("branch").and_then(|v| v.as_str()) == Some("exp") {
+                        assert_eq!(body["version"], serde_json::Value::Null);
+                        return http::Response::builder()
+                            .status(200)
+                            .body(describe_branch.clone())
+                            .unwrap();
+                    }
+                    match body["version"].as_u64() {
+                        Some(3) => http::Response::builder()
+                            .status(200)
+                            .body(describe_pinned.clone())
+                            .unwrap(),
+                        None => http::Response::builder()
+                            .status(200)
+                            .body(describe_latest.clone())
+                            .unwrap(),
+                        other => panic!("unexpected describe version: {other:?}"),
+                    }
+                }
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                path => panic!("unexpected path: {path}"),
+            });
+
+        table.checkout(3).await.unwrap();
+        let pinned = table.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(pinned.version(), 3);
+
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .unwrap();
+        let branched = branch.generated_column_binding_snapshot().await.unwrap();
+        assert_eq!(branched.version(), 9);
+        assert_eq!(branched.field("a").unwrap().field_id(), 2);
+    }
+
+    /// Binding describe must reuse the same read-freshness headers as ordinary
+    /// `post_read` describes: write watermark, read watermark, and consistency
+    /// interval timestamp — on the single describe request.
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_preserves_freshness_headers() {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let describe_body = describe_response_with_field_ids(1, &schema, &[0]);
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let describe_calls_c = describe_calls.clone();
+        let describe_headers = Arc::new(std::sync::Mutex::new(None::<http::HeaderMap>));
+        let describe_headers_c = describe_headers.clone();
+
+        let table = Table::new_with_handler_and_interval(
+            "my_table",
+            move |request| match request.url().path() {
+                "/v1/table/my_table/update/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"rows_updated":1,"version":7}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => http::Response::builder()
+                    .status(200)
+                    .header("x-lancedb-version", "100")
+                    .body("42".to_string())
+                    .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    describe_calls_c.fetch_add(1, Ordering::SeqCst);
+                    *describe_headers_c.lock().unwrap() = Some(request.headers().clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_body.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+            Some(Duration::ZERO),
+        );
+
+        // Establish the same observable freshness state ordinary reads use.
+        table.update().column("a", "a + 1").execute().await.unwrap();
+        table.count_rows(None).await.unwrap();
+
+        let before = SystemTime::now();
+        let snapshot = table.generated_column_binding_snapshot().await.unwrap();
+        let after = SystemTime::now();
+
+        assert_eq!(snapshot.version(), 1);
+        assert_eq!(
+            describe_calls.load(Ordering::SeqCst),
+            1,
+            "binding must issue exactly one describe"
+        );
+
+        let headers = describe_headers
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("binding describe headers");
+        assert_eq!(
+            headers
+                .get("x-lancedb-min-version")
+                .expect("binding describe must send x-lancedb-min-version")
+                .to_str()
+                .unwrap(),
+            "7"
+        );
+        assert_eq!(
+            headers
+                .get("x-lancedb-min-read-version")
+                .expect("binding describe must send x-lancedb-min-read-version")
+                .to_str()
+                .unwrap(),
+            "100"
+        );
+        let sent = parse_min_timestamp(&headers);
+        assert!(
+            sent >= before - FRESHNESS_TOLERANCE && sent <= after + FRESHNESS_TOLERANCE,
+            "binding describe must send x-lancedb-min-timestamp from consistency interval"
+        );
+    }
+
+    /// Malformed schema/type (and description parse) failures for binding must
+    /// be payload-free Http protocol errors with the real request ID.
+    #[tokio::test]
+    async fn test_generated_column_binding_snapshot_malformed_schema_is_sanitized_protocol_error() {
+        const MARKER: &str = "SENSITIVE_BINDING_SCHEMA_MARKER_7f3c9e2a";
+
+        let cases = [
+            // Deserializes, but Arrow/JsonSchema conversion rejects the type.
+            format!(
+                r#"{{"version":1,"schema":{{"fields":[{{"name":"a","type":{{"type":"{MARKER}"}},"nullable":false}}]}},"field_ids":[0]}}"#
+            ),
+            // Completely malformed response body.
+            format!("not-json {MARKER}"),
+            // Valid JSON, but schema is not a JsonSchema object.
+            format!(r#"{{"version":1,"schema":"{MARKER}","field_ids":[0]}}"#),
+        ];
+
+        for body in cases {
+            let expected_request_id = Arc::new(std::sync::Mutex::new(None::<String>));
+            let expected_request_id_c = expected_request_id.clone();
+            let body_for_handler = body.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+                let request_id = request
+                    .headers()
+                    .get("x-request-id")
+                    .expect("client must set x-request-id")
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                *expected_request_id_c.lock().unwrap() = Some(request_id);
+                http::Response::builder()
+                    .status(200)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+
+            let err = table
+                .generated_column_binding_snapshot()
+                .await
+                .expect_err("malformed binding describe must fail");
+            match &err {
+                Error::Http {
+                    request_id,
+                    status_code,
+                    source,
+                } => {
+                    let expected = expected_request_id
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .expect("handler must observe request id");
+                    assert_eq!(
+                        request_id, &expected,
+                        "binding protocol errors must preserve the real request id"
+                    );
+                    assert!(!request_id.is_empty());
+                    assert!(
+                        status_code.is_none(),
+                        "local protocol validation must not invent a status code"
+                    );
+
+                    let mut text = format!("{err:?}\n{err}\n{source}");
+                    let mut current = source.source();
+                    while let Some(inner) = current {
+                        text.push('\n');
+                        text.push_str(&inner.to_string());
+                        current = inner.source();
+                    }
+                    assert!(
+                        !text.contains(MARKER),
+                        "unique raw response marker must be absent from error chain: {text}"
+                    );
+                    assert!(
+                        !text.contains(&body),
+                        "raw response body/schema payload must be absent from error chain: {text}"
+                    );
+                }
+                other => panic!("expected Http protocol error, got {other:?}"),
+            }
+        }
     }
 
     /// Test that schema cache expires after 30 seconds TTL
