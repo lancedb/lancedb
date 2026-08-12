@@ -793,10 +793,10 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     /// Send one attempt with a caller-owned request id.
     ///
-    /// Used by Function catalog helpers (lookup/remove) so they can inspect
-    /// non-success bodies for an explicit `error_code` before deciding whether
-    /// to retry. Does not log request bodies or headers (selectors must stay
-    /// out of logs) and does not interpret HTTP status.
+    /// Shared by explicit-`error_code` classifiers for Function catalog and
+    /// Remote table query routes. Keeps the caller-owned request ID, uses
+    /// sensitive logging, applies dynamic headers, sends one uninterpreted
+    /// attempt, and leaves status/body classification to the caller.
     pub(crate) async fn send_attempt_with_request_id(
         &self,
         req_builder: RequestBuilder,

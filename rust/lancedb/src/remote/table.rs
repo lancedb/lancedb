@@ -86,6 +86,14 @@ const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
 
+/// Fixed client diagnostic for query-route [`Error::Function`]. Never carry
+/// server text, filter literals, or response payload bytes.
+const REMOTE_QUERY_FUNCTION_ERROR_MESSAGE: &str = "remote table query failed";
+
+/// Fixed client diagnostic for query-route protocol / HTTP / exhausted-retry
+/// sources. Never include response payload bytes or filter literals.
+const REMOTE_QUERY_HTTP_ERROR_MESSAGE: &str = "remote table query request failed";
+
 /// Per-table state driving the freshness headers (`x-lancedb-min-version`,
 /// `x-lancedb-min-timestamp`, and `x-lancedb-min-read-version`) sent on read
 /// requests.
@@ -612,6 +620,54 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(res)
     }
 
+    /// Send a `/query/`, `/explain_plan/`, or `/analyze_plan/` request with
+    /// explicit-`error_code` classification shared by every public query exit.
+    ///
+    /// Non-success bodies are inspected before status-based retry. An explicit
+    /// nonempty top-level `error_code` is terminal [`Error::Function`]. Missing
+    /// / invalid codes stay transport [`Error::Http`] or exhausted
+    /// [`Error::Retry`] with payload-free sources. Successful 2xx responses are
+    /// returned unconsumed. Schema-cache invalidation and nonexplicit 404 →
+    /// [`Error::TableNotFound`] are preserved for ordinary table semantics.
+    async fn send_query_request(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        match super::transport::send_with_explicit_error_code(
+            &self.client,
+            req,
+            REMOTE_QUERY_HTTP_ERROR_MESSAGE,
+            REMOTE_QUERY_FUNCTION_ERROR_MESSAGE,
+        )
+        .await
+        {
+            Ok(ok) => Ok(ok),
+            Err(err) => {
+                // Status-based invalidation must still run when the body was
+                // discarded for sanitization (same statuses as check_table_response).
+                self.handle_error_invalidation(&err);
+                Err(Self::map_query_transport_error(&self.name, err))
+            }
+        }
+    }
+
+    /// Map a sanitized query-transport Http 404 to [`Error::TableNotFound`].
+    /// Explicit Function failures and other transport errors pass through.
+    fn map_query_transport_error(table_name: &str, err: Error) -> Error {
+        match err {
+            Error::Http {
+                source,
+                request_id,
+                status_code: Some(StatusCode::NOT_FOUND),
+            } => Error::TableNotFound {
+                name: table_name.to_string(),
+                source: Box::new(Error::Http {
+                    source,
+                    request_id,
+                    status_code: Some(StatusCode::NOT_FOUND),
+                }),
+            },
+            other => other,
+        }
+    }
+
     pub(super) async fn handle_table_not_found(
         table_name: &str,
         response: reqwest::Response,
@@ -1084,7 +1140,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.send(req, true).await?;
+            let (request_id, response) = self.send_query_request(req).await?;
             self.track_read_version_from_headers(response.headers());
             self.read_arrow_response(&request_id, response).await
         });
@@ -2393,7 +2449,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.send(req, true).await?;
+            let (request_id, response) = self.send_query_request(req).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -2440,7 +2496,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.send(req, true).await?;
+            let (request_id, response) = self.send_query_request(req).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -12247,5 +12303,1033 @@ mod tests {
             .await
             .unwrap();
         branch.stats().await.unwrap();
+    }
+
+    // -------------------------------------------------------------------------
+    // Remote query explicit Function error projection
+    //
+    // Contract: on /query/, /explain_plan/, and /analyze_plan/, an explicit
+    // nonempty top-level error_code projects to Error::Function with the fixed
+    // client diagnostic "remote table query failed". Sophon owns the
+    // authoritative generated-column guard; missing/invalid codes stay
+    // transport Http/Retry. 2xx bodies are never Function envelopes.
+    // -------------------------------------------------------------------------
+
+    const REMOTE_QUERY_SERVER_MESSAGE_MARKER: &str =
+        "SERVER_REMOTE_QUERY_DIAGNOSTIC_MARKER looks_like_udf_execution_failure";
+    const REMOTE_QUERY_RESPONSE_MARKER: &str = "SENSITIVE_REMOTE_QUERY_BODY_MARKER";
+    const REMOTE_QUERY_LITERAL_MARKER: &str = "SENSITIVE_REMOTE_QUERY_LITERAL_MARKER";
+    const REMOTE_QUERY_FUNCTION_DIAGNOSTIC: &str = "remote table query failed";
+
+    fn remote_query_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}\n{}", snafu::Report::from_error(err));
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_remote_query_payload_free(err: &Error) {
+        let text = remote_query_error_chain_text(err);
+        assert!(
+            !text.contains(REMOTE_QUERY_SERVER_MESSAGE_MARKER),
+            "server diagnostic marker must be absent from error/debug/report/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REMOTE_QUERY_RESPONSE_MARKER),
+            "response body marker must be absent from error/debug/report/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REMOTE_QUERY_LITERAL_MARKER),
+            "query literal marker must be absent from error/debug/report/source chain: {text}"
+        );
+    }
+
+    fn assert_remote_query_function_sanitized(
+        err: &Error,
+        expected: crate::error::FunctionErrorCode,
+        label: &str,
+    ) {
+        use crate::error::FunctionErrorCode;
+        match err {
+            Error::Function { code, message } => {
+                assert_eq!(
+                    code, &expected,
+                    "{label}: Function code must match explicit wire code"
+                );
+                assert_eq!(
+                    code.as_str(),
+                    expected.as_str(),
+                    "{label}: stable code string must round-trip"
+                );
+                // Fixed sanitized diagnostic shared by every Remote query exit.
+                assert_eq!(
+                    message.as_str(),
+                    REMOTE_QUERY_FUNCTION_DIAGNOSTIC,
+                    "{label}: Function message must be the exact client diagnostic"
+                );
+                assert_ne!(
+                    message.as_str(),
+                    REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                    "{label}: Function message must not be the server diagnostic"
+                );
+                assert!(
+                    !message.contains(REMOTE_QUERY_SERVER_MESSAGE_MARKER),
+                    "{label}: Function message must be sanitized, got {message}"
+                );
+                assert!(
+                    !message.contains(REMOTE_QUERY_RESPONSE_MARKER),
+                    "{label}: Function message must not echo response markers, got {message}"
+                );
+                assert!(
+                    !message.contains(REMOTE_QUERY_LITERAL_MARKER),
+                    "{label}: Function message must not echo query literals, got {message}"
+                );
+                if !matches!(expected, FunctionErrorCode::Unrecognized(_)) {
+                    assert!(
+                        !matches!(code, FunctionErrorCode::Unrecognized(_)),
+                        "{label}: known code must not decode as Unrecognized"
+                    );
+                }
+            }
+            other => panic!("{label}: expected Error::Function({expected:?}), got {other:?}"),
+        }
+        assert_remote_query_payload_free(err);
+        let text = remote_query_error_chain_text(err);
+        assert!(
+            text.contains(expected.as_str()),
+            "{label}: stable code must appear in rendered chains: {text}"
+        );
+        assert!(
+            text.contains(REMOTE_QUERY_FUNCTION_DIAGNOSTIC),
+            "{label}: fixed diagnostic must appear in rendered chains: {text}"
+        );
+    }
+
+    fn remote_query_error_envelope(code: Option<&str>) -> String {
+        match code {
+            Some(code) => json!({
+                "error_code": code,
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "phase": "query",
+                "retryable": true,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            None => json!({
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "phase": "query",
+                "retryable": true,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+        }
+    }
+
+    fn remote_query_invalid_code_body(shape: &str) -> String {
+        match shape {
+            "missing_code" => json!({
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            "empty_code" => json!({
+                "error_code": "",
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            "null_code" => json!({
+                "error_code": null,
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            "wrong_type_code" => json!({
+                "error_code": 123,
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            "nested_only_code" => json!({
+                "details": {
+                    "error_code": "generated_column_incomplete",
+                },
+                "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+                "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+            })
+            .to_string(),
+            "malformed" => format!(
+                "not-json {REMOTE_QUERY_SERVER_MESSAGE_MARKER} {REMOTE_QUERY_RESPONSE_MARKER}"
+            ),
+            other => panic!("unknown invalid code shape: {other}"),
+        }
+    }
+
+    fn remote_query_route_for_exit(exit: &str) -> &'static str {
+        match exit {
+            "execute" | "create_plan" | "output_schema" => "/v1/table/my_table/query/",
+            "explain_plan" => "/v1/table/my_table/explain_plan/",
+            "analyze_plan_with_options" => "/v1/table/my_table/analyze_plan/",
+            other => panic!("unknown query exit: {other}"),
+        }
+    }
+
+    async fn invoke_remote_query_exit(table: &Table, exit: &str) -> Result<()> {
+        let query = table.query().only_if(REMOTE_QUERY_LITERAL_MARKER);
+        match exit {
+            "execute" => {
+                query.execute().await?;
+                Ok(())
+            }
+            "create_plan" => {
+                query.create_plan(QueryExecutionOptions::default()).await?;
+                Ok(())
+            }
+            "output_schema" => {
+                query.output_schema().await?;
+                Ok(())
+            }
+            "explain_plan" => {
+                query.explain_plan(false).await?;
+                Ok(())
+            }
+            "analyze_plan_with_options" => {
+                query
+                    .analyze_plan_with_options(QueryExecutionOptions::default())
+                    .await?;
+                Ok(())
+            }
+            other => panic!("unknown query exit: {other}"),
+        }
+    }
+
+    fn assert_remote_query_request(request: &reqwest::Request, expected_path: &str) {
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(
+            request.url().path(),
+            expected_path,
+            "unexpected query route (describe/catalog must not be called)"
+        );
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("query request must carry a JSON body");
+        let text = std::str::from_utf8(body).expect("query body must be utf8");
+        assert!(
+            text.contains(REMOTE_QUERY_LITERAL_MARKER),
+            "request must carry the query literal marker for redaction checks"
+        );
+    }
+
+    /// Explicit generated_column_incomplete on 503 is terminal for each public exit.
+    #[rstest]
+    #[case::execute("execute")]
+    #[case::create_plan("create_plan")]
+    #[case::output_schema("output_schema")]
+    #[case::explain_plan("explain_plan")]
+    #[case::analyze_plan_with_options("analyze_plan_with_options")]
+    #[tokio::test]
+    async fn generated_column_remote_query_error_explicit_incomplete_terminal_on_public_exit(
+        #[case] exit: &str,
+    ) {
+        use crate::error::FunctionErrorCode;
+
+        let expected_path = remote_query_route_for_exit(exit);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = remote_query_error_envelope(Some("generated_column_incomplete"));
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_remote_query_request(&request, expected_path);
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(503)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = invoke_remote_query_exit(&table, exit)
+            .await
+            .expect_err(&format!("{exit}: explicit incomplete must fail"));
+        assert_remote_query_function_sanitized(
+            &err,
+            FunctionErrorCode::GeneratedColumnIncomplete,
+            exit,
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "{exit}: explicit error_code on retryable 503 must be terminal (one attempt)"
+        );
+    }
+
+    /// Unknown nonempty explicit code round-trips as Unrecognized and stays terminal.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_unknown_explicit_code_is_terminal_unrecognized() {
+        use crate::error::FunctionErrorCode;
+
+        let raw = "future_query_failure";
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = remote_query_error_envelope(Some(raw));
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_remote_query_request(&request, "/v1/table/my_table/query/");
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(503)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let Err(err) = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+        else {
+            panic!("unknown explicit code must surface")
+        };
+        match &err {
+            Error::Function { code, .. } => {
+                assert_eq!(code.as_str(), raw);
+                assert!(
+                    matches!(code, FunctionErrorCode::Unrecognized(inner) if inner == raw),
+                    "unknown code must stay exact Unrecognized, got {code:?}"
+                );
+                assert_ne!(code.as_str(), "generated_column_incomplete");
+                assert_ne!(code.as_str(), "udf_execution_failure");
+            }
+            other => panic!("expected Error::Function(Unrecognized), got {other:?}"),
+        }
+        assert_remote_query_function_sanitized(
+            &err,
+            FunctionErrorCode::Unrecognized(raw.to_string()),
+            "unknown_explicit",
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "unknown explicit code on retryable status must be terminal"
+        );
+    }
+
+    /// Missing/empty/null/wrong-type/nested-only/malformed codes stay table Http.
+    #[rstest]
+    #[case::missing_code("missing_code")]
+    #[case::empty_code("empty_code")]
+    #[case::null_code("null_code")]
+    #[case::wrong_type_code("wrong_type_code")]
+    #[case::nested_only_code("nested_only_code")]
+    #[case::malformed("malformed")]
+    #[tokio::test]
+    async fn generated_column_remote_query_error_invalid_code_shape_is_payload_free_http(
+        #[case] shape: &str,
+    ) {
+        let response_body = remote_query_invalid_code_body(shape);
+        let expected_request_id = Arc::new(std::sync::Mutex::new(None::<String>));
+        let expected_request_id_c = expected_request_id.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_remote_query_request(&request, "/v1/table/my_table/query/");
+            let request_id = request
+                .headers()
+                .get("x-request-id")
+                .expect("client must set x-request-id")
+                .to_str()
+                .unwrap()
+                .to_string();
+            *expected_request_id_c.lock().unwrap() = Some(request_id);
+            http::Response::builder()
+                .status(400)
+                .body(response_body.clone())
+                .unwrap()
+        });
+
+        let Err(err) = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+        else {
+            panic!("{shape}: invalid/missing error_code must fail")
+        };
+        match &err {
+            Error::Http {
+                request_id,
+                status_code,
+                ..
+            } => {
+                let expected = expected_request_id
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("handler must observe request id");
+                assert_eq!(
+                    request_id, &expected,
+                    "{shape}: Error::Http.request_id must equal outgoing x-request-id"
+                );
+                assert!(
+                    !request_id.is_empty(),
+                    "{shape}: Error::Http.request_id must be nonempty"
+                );
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(400),
+                    "{shape}: non-retryable status must be retained"
+                );
+            }
+            Error::Function { .. } => {
+                panic!("{shape}: must not invent Error::Function without top-level explicit code")
+            }
+            other => panic!("{shape}: expected Error::Http, got {other:?}"),
+        }
+        assert_remote_query_payload_free(&err);
+    }
+
+    /// Exhausted always-503 without valid explicit code preserves Retry counters.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_exhausted_retryable_5xx_returns_retry_counters() {
+        use std::sync::OnceLock;
+
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let first_body = Arc::new(OnceLock::new());
+        let first_body_ref = first_body.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = remote_query_error_envelope(None);
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_remote_query_request(&request, "/v1/table/my_table/query/");
+                let raw_body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .expect("query must carry JSON body")
+                    .to_vec();
+                let seen_body = first_body_ref.get_or_init(|| raw_body.clone());
+                assert_eq!(
+                    &raw_body, seen_body,
+                    "retry must reuse byte-equivalent JSON body"
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty());
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across exhausted retries"
+                );
+
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(503)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let Err(err) = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+        else {
+            panic!("exhausted retryable 5xx must fail")
+        };
+        match &err {
+            Error::Retry {
+                request_failures,
+                max_request_failures,
+                connect_failures,
+                read_failures,
+                status_code,
+                request_id,
+                ..
+            } => {
+                assert_eq!(*request_failures, 2);
+                assert_eq!(*max_request_failures, 2);
+                assert_eq!(
+                    request_failures, max_request_failures,
+                    "request budget must be fully exhausted"
+                );
+                assert_eq!(*connect_failures, 0, "5xx must not consume connect budget");
+                assert_eq!(*read_failures, 0, "5xx must not consume read budget");
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(503),
+                    "retryable status must be retained on Error::Retry"
+                );
+                assert_eq!(
+                    Some(request_id.as_str()),
+                    seen_request_id.get().map(|s| s.as_str()),
+                    "Retry.request_id must equal the reused x-request-id"
+                );
+            }
+            other => panic!("exhausted 5xx must surface as Error::Retry, got {other:?}"),
+        }
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "retries=2 must make exactly two identical attempts"
+        );
+        assert!(seen_request_id.get().is_some());
+        assert_remote_query_payload_free(&err);
+    }
+
+    /// One retryable missing-code response then success keeps request id/body.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_retry_then_success_preserves_request_id_and_body()
+    {
+        use std::sync::OnceLock;
+
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let first_body = Arc::new(OnceLock::new());
+        let first_body_ref = first_body.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let fail_body = remote_query_error_envelope(None);
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_remote_query_request(&request, "/v1/table/my_table/query/");
+                let raw_body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .expect("query must carry JSON body")
+                    .to_vec();
+                let seen_body = first_body_ref.get_or_init(|| raw_body.clone());
+                assert_eq!(
+                    &raw_body, seen_body,
+                    "retry must reuse byte-equivalent JSON body"
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty());
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(503)
+                        .body(fail_body.clone().into_bytes())
+                        .unwrap()
+                } else {
+                    let response_body = write_ipc_file(&expected_data_ref);
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(response_body)
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let data = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+            .expect("query must succeed after one retry")
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// A 200 JSON body with error_code is not an error envelope for /query/.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_success_json_error_code_is_not_function() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = json!({
+            "error_code": "generated_column_incomplete",
+            "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+            "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+        })
+        .to_string();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_remote_query_request(&request, "/v1/table/my_table/query/");
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let Err(err) = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+        else {
+            panic!("200 JSON body must follow Arrow decode failure path")
+        };
+        assert!(
+            !matches!(err, Error::Function { .. }),
+            "2xx body with error_code must not become Error::Function, got {err:?}"
+        );
+        match &err {
+            Error::Http {
+                status_code,
+                request_id,
+                ..
+            } => {
+                assert!(
+                    status_code.is_none(),
+                    "Arrow success decoder Http must not invent a status, got {status_code:?}"
+                );
+                assert!(
+                    !request_id.is_empty(),
+                    "Arrow success decoder Http must retain request id"
+                );
+            }
+            other => panic!("expected Arrow success-decoder Error::Http, got {other:?}"),
+        }
+        assert_remote_query_payload_free(&err);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    /// A 200 JSON object with error_code follows plan success decoders, not Function.
+    #[rstest]
+    #[case::explain_plan("explain_plan")]
+    #[case::analyze_plan_with_options("analyze_plan_with_options")]
+    #[tokio::test]
+    async fn generated_column_remote_query_error_success_json_error_code_is_not_function_on_plan_exit(
+        #[case] exit: &str,
+    ) {
+        let expected_path = remote_query_route_for_exit(exit);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = json!({
+            "error_code": "generated_column_incomplete",
+            "message": REMOTE_QUERY_SERVER_MESSAGE_MARKER,
+            "SENSITIVE_REMOTE_QUERY_BODY_MARKER": true,
+        })
+        .to_string();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_remote_query_request(&request, expected_path);
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = invoke_remote_query_exit(&table, exit)
+            .await
+            .expect_err(&format!(
+                "{exit}: 2xx JSON object must follow success decoder"
+            ));
+        assert!(
+            !matches!(err, Error::Function { .. }),
+            "{exit}: 2xx body with error_code must not become Error::Function, got {err:?}"
+        );
+        match &err {
+            Error::Http {
+                status_code,
+                request_id,
+                ..
+            } => {
+                assert!(
+                    status_code.is_none(),
+                    "{exit}: plan success decoder Http must not invent a status, got {status_code:?}"
+                );
+                assert!(
+                    !request_id.is_empty(),
+                    "{exit}: plan success decoder Http must retain request id"
+                );
+            }
+            other => panic!("{exit}: expected plan success-decoder Error::Http, got {other:?}"),
+        }
+        let text = remote_query_error_chain_text(&err);
+        match exit {
+            "explain_plan" => assert!(
+                text.contains("Failed to parse explain plan"),
+                "{exit}: must keep explain-plan success decoder diagnostics: {text}"
+            ),
+            "analyze_plan_with_options" => assert!(
+                text.contains("Failed to execute analyze plan"),
+                "{exit}: must keep analyze-plan success decoder diagnostics: {text}"
+            ),
+            other => panic!("unexpected plan exit: {other}"),
+        }
+        assert_remote_query_payload_free(&err);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    /// Named control: normal Arrow success + read-version watermark, no describe.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_normal_arrow_success_control_and_read_version() {
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![7, 8, 9]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+        let call = Arc::new(AtomicUsize::new(0));
+        let call_ref = call.clone();
+        let min_read_versions = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let min_read_versions_ref = min_read_versions.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_remote_query_request(&request, "/v1/table/my_table/query/");
+            let min_read = request
+                .headers()
+                .get("x-lancedb-min-read-version")
+                .map(|v| v.to_str().unwrap().to_string());
+            min_read_versions_ref.lock().unwrap().push(min_read);
+
+            let n = call_ref.fetch_add(1, Ordering::SeqCst);
+            let response_body = write_ipc_file(&expected_data_ref);
+            let mut builder = http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE);
+            if n == 0 {
+                builder = builder.header("x-lancedb-version", "42");
+            }
+            builder.body(response_body).unwrap()
+        });
+
+        let first = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+            .expect("control query must succeed before implementation")
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].as_ref().unwrap(), &expected_data);
+
+        let second = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+            .expect("second control query must succeed")
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].as_ref().unwrap(), &expected_data);
+
+        let seen = min_read_versions.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], None, "first query has no read watermark yet");
+        assert_eq!(
+            seen[1].as_deref(),
+            Some("42"),
+            "x-lancedb-version from first response must drive next x-lancedb-min-read-version"
+        );
+        assert_eq!(call.load(Ordering::SeqCst), 2);
+    }
+
+    /// Ordinary 400 query errors still invalidate the schema cache.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_ordinary_400_invalidates_schema_cache() {
+        let describe_count = Arc::new(AtomicUsize::new(0));
+        let describe_count_ref = describe_count.clone();
+
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    describe_count_ref.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 1, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                            ]}}"#
+                                .to_string(),
+                        )
+                        .unwrap()
+                }
+                "/v1/table/my_table/query/" => http::Response::builder()
+                    .status(400)
+                    .body(format!(
+                        "schema mismatch {REMOTE_QUERY_SERVER_MESSAGE_MARKER}"
+                    ))
+                    .unwrap(),
+                path => panic!("unexpected request path: {path}"),
+            });
+
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(describe_count.load(Ordering::SeqCst), 1);
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(describe_count.load(Ordering::SeqCst), 1);
+
+        let Err(err) = table.query().execute().await else {
+            panic!("ordinary 400 query must fail")
+        };
+        assert!(
+            matches!(err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 400),
+            "ordinary 400 must remain Error::Http, got {err:?}"
+        );
+
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(
+            describe_count.load(Ordering::SeqCst),
+            2,
+            "400 query must invalidate schema cache"
+        );
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+    }
+
+    /// Nonexplicit 404 stays TableNotFound with sanitized nested Http (no retry).
+    #[tokio::test]
+    async fn generated_column_remote_query_error_nonexplicit_404_preserves_table_not_found_and_redacts()
+     {
+        let expected_request_id = Arc::new(std::sync::Mutex::new(None::<String>));
+        let expected_request_id_c = expected_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        // No valid top-level error_code; carry distinct server/body markers.
+        let body = remote_query_error_envelope(None);
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_remote_query_request(&request, "/v1/table/my_table/query/");
+            let request_id = request
+                .headers()
+                .get("x-request-id")
+                .expect("client must set x-request-id")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                !request_id.is_empty(),
+                "outgoing x-request-id must be nonempty"
+            );
+            *expected_request_id_c.lock().unwrap() = Some(request_id);
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(404)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let Err(err) = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+        else {
+            panic!("nonexplicit 404 must surface as TableNotFound")
+        };
+        match &err {
+            Error::TableNotFound { name, source } => {
+                assert_eq!(name, "my_table");
+                let nested = source.downcast_ref::<Error>().unwrap_or_else(|| {
+                    panic!("TableNotFound source must be nested Error, got {source:?}")
+                });
+                match nested {
+                    Error::Http {
+                        request_id,
+                        status_code,
+                        ..
+                    } => {
+                        let expected = expected_request_id
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("handler must observe request id");
+                        assert_eq!(
+                            request_id, &expected,
+                            "nested Error::Http.request_id must equal outgoing x-request-id"
+                        );
+                        assert!(
+                            !request_id.is_empty(),
+                            "nested Error::Http.request_id must be nonempty"
+                        );
+                        assert_eq!(
+                            status_code.map(|s| s.as_u16()),
+                            Some(404),
+                            "nested Error::Http must retain status 404"
+                        );
+                    }
+                    other => panic!("expected nested sanitized Error::Http, got {other:?}"),
+                }
+            }
+            Error::Function { .. } => {
+                panic!("nonexplicit 404 must not invent Error::Function")
+            }
+            other => panic!("expected Error::TableNotFound, got {other:?}"),
+        }
+        assert_remote_query_payload_free(&err);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "404 is nonretryable by default (exactly one query attempt; no describe/catalog)"
+        );
+    }
+
+    /// Non-success body-read I/O failures consume the read budget, then succeed.
+    #[tokio::test]
+    async fn generated_column_remote_query_error_nonsuccess_body_read_failure_uses_read_budget() {
+        use std::sync::OnceLock;
+
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let first_body = Arc::new(OnceLock::new());
+        let first_body_ref = first_body.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_remote_query_request(&request, "/v1/table/my_table/query/");
+                let raw_body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .expect("query must carry JSON body")
+                    .to_vec();
+                let seen_body = first_body_ref.get_or_init(|| raw_body.clone());
+                assert_eq!(
+                    &raw_body, seen_body,
+                    "retry must reuse byte-equivalent JSON body"
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty(), "SDK must generate a request id");
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Non-success, non-configured-retryable status; body read fails
+                    // before error_code classification and must use the read budget.
+                    let stream = futures::stream::once(async {
+                        Err::<bytes::Bytes, _>(std::io::Error::other(
+                            "simulated query response body read failure",
+                        ))
+                    });
+                    http::Response::builder()
+                        .status(400)
+                        .body(reqwest::Body::wrap_stream(stream))
+                        .unwrap()
+                } else {
+                    let response_body = write_ipc_file(&expected_data_ref);
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(reqwest::Body::from(response_body))
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                // retries=1 would exhaust immediately if body-read were misclassified
+                // as a request failure; read_retries=2 allows one read failure then success.
+                retry_config: RetryConfig {
+                    retries: Some(1),
+                    read_retries: Some(2),
+                    connect_retries: Some(1),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let data = table
+            .query()
+            .only_if(REMOTE_QUERY_LITERAL_MARKER)
+            .execute()
+            .await
+            .expect("query must succeed after one non-success body-read retry")
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "body-read failure must consume read budget and retry once (no describe)"
+        );
+        assert!(seen_request_id.get().is_some());
     }
 }

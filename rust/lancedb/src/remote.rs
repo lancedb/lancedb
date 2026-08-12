@@ -13,6 +13,7 @@ pub(crate) mod job;
 pub mod oauth;
 mod retry;
 pub(crate) mod table;
+mod transport;
 pub(crate) mod util;
 
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
