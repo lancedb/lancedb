@@ -531,18 +531,18 @@ pub(crate) enum LsmDispatch {
 }
 
 /// Decide whether a `merge_insert` should be routed through the MemWAL write
-/// path, validating the builder against the installed spec.
+/// path, validating the builder against the installed spec on the exact
+/// caller-supplied dataset snapshot.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn lsm_dispatch_decision(
-    table: &NativeTable,
     params: &MergeInsertBuilder,
+    dataset: &Dataset,
 ) -> Result<LsmDispatch> {
     // Explicit opt-out: use the standard path regardless of any installed spec.
     if params.use_lsm == Some(false) {
         return Ok(LsmDispatch::Standard);
     }
 
-    let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
         // No write spec installed. `use_lsm(true)` demanded MemWAL routing, so
         // that is an error; otherwise fall back to the standard path.
@@ -646,14 +646,17 @@ fn resolve_lsm_mode(details: &MemWalIndexDetails) -> Result<LsmMode> {
 /// a validation failure (e.g. input spanning shards) never leaves a partial
 /// write behind. When `validate_single_shard` is set, every row is checked to
 /// route to one shard; when disabled, only the first row of the whole input is.
+///
+/// `dataset` must be the same exact snapshot used for the generated-column
+/// guard and [`lsm_dispatch_decision`].
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn execute_lsm_merge_insert(
     table: &NativeTable,
     plan: LsmPlan,
     validate_single_shard: bool,
     new_data: Box<dyn RecordBatchReader + Send>,
+    dataset: Arc<Dataset>,
 ) -> Result<MergeResult> {
-    let dataset = table.dataset.get().await?;
     let target_schema: SchemaRef = Arc::new(ArrowSchema::from(dataset.schema()));
 
     // Collect, align and shard-validate the whole input before writing

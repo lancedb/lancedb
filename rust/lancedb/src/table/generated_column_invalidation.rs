@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Crate-private Native wiring for generated-column invalidation (B4b / B4c / B4d).
+//! Crate-private Native wiring for generated-column invalidation (B4b / B4c / B4d / B4e).
 //!
 //! Converts the B4a pure planner into one Lance field-metadata patch for Native
 //! append, update, and delete commits. Planning is strict-decode/validate;
-//! overwrite of a table with any generated-column definition, and direct writes
-//! of generated outputs via Update, fail closed as [`Error::NotSupported`].
+//! overwrite of a table with any generated-column definition, direct writes of
+//! generated outputs via Update, and Native merge-insert (standard and LSM)
+//! fail closed as [`Error::NotSupported`].
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -114,6 +115,30 @@ pub(super) fn plan_native_delete_generated_column_invalidation(
         return Ok(None);
     }
     Ok(Some(planned_invalidation_to_schema_metadata_updates(plan)))
+}
+
+/// Fail closed before Native `merge_insert` when any generated column is present.
+///
+/// Strict-decodes and validates every present generated-column metadata value
+/// through the B4a `RowSetChanged` planner against one exact dataset snapshot.
+/// Malformed metadata returns the existing [`Error::InvalidInput`] validation
+/// category. When at least one valid generated column is present, returns
+/// [`Error::NotSupported`] before LSM dispatch or source iteration. Ordinary
+/// tables (no generated metadata) return `Ok(())`.
+pub(super) fn reject_native_merge_insert_if_generated_columns_present(
+    dataset: &Dataset,
+) -> Result<()> {
+    let snapshot = generated_column_binding_snapshot_from_dataset(dataset)?;
+    let plan = plan_generated_column_invalidation(
+        &snapshot,
+        &GeneratedColumnMutationImpact::RowSetChanged,
+    )?;
+    if plan.is_empty() {
+        return Ok(());
+    }
+    Err(Error::NotSupported {
+        message: "Merge insert is not supported on tables with generated columns".to_string(),
+    })
 }
 
 /// Convert planner replacements into one non-empty Lance field-metadata patch.

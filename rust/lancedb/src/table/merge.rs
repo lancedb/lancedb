@@ -233,10 +233,22 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
-    match lsm::lsm_dispatch_decision(table, &params).await? {
+    // One exact dataset supplies the generated-column fail-closed guard and
+    // downstream standard/LSM routing/execution. Do not refetch after the guard.
+    let dataset = table.dataset.get().await?;
+    super::generated_column_invalidation::reject_native_merge_insert_if_generated_columns_present(
+        dataset.as_ref(),
+    )?;
+
+    match lsm::lsm_dispatch_decision(&params, dataset.as_ref()).await? {
         lsm::LsmDispatch::Lsm(plan) => {
-            let future =
-                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
+            let future = lsm::execute_lsm_merge_insert(
+                table,
+                plan,
+                params.validate_single_shard,
+                new_data,
+                dataset,
+            );
             return match params.timeout {
                 Some(timeout) => match tokio::time::timeout(timeout, future).await {
                     Ok(result) => result,
@@ -250,7 +262,6 @@ pub(crate) async fn execute_merge_insert(
         lsm::LsmDispatch::Standard => {}
     }
 
-    let dataset = table.dataset.get().await?;
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
