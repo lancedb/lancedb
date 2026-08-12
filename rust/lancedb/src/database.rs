@@ -368,6 +368,14 @@ pub trait Database:
         }
         job_op_not_supported("remove_function_name")
     }
+    /// Revoke an exact immutable [`Function`] by opaque id.
+    ///
+    /// Direct synchronous administrator catalog set-bit, not a Job, not name
+    /// removal, and not physical Function deletion. Databases without
+    /// enterprise catalog mutation return [`crate::Error::NotSupported`].
+    async fn revoke_function(&self, _function: &Function) -> Result<()> {
+        job_op_not_supported("revoke_function")
+    }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database

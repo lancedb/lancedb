@@ -617,6 +617,22 @@ impl Connection {
         self.internal.remove_function_name(name, current).await
     }
 
+    /// Revoke an exact immutable [`Function`] by opaque id.
+    ///
+    /// This is a direct synchronous administrator catalog set-bit, not a
+    /// [`crate::job::Job`], not catalog name removal, not physical deletion,
+    /// and not [`Function`] or generated-column mutation. The caller supplies
+    /// an already-validated exact [`Function`] handle; only [`Function::id`]
+    /// is sent on the wire.
+    ///
+    /// Local/default backends return [`Error::NotSupported`]. Remote backends
+    /// complete only when the server reports durable success for that exact
+    /// id. Repeated logical calls that each receive success succeed; there is
+    /// no client-side already-revoked branch.
+    pub async fn revoke_function(&self, function: &Function) -> Result<()> {
+        self.internal.revoke_function(function).await
+    }
+
     /// Drop a table in the database.
     ///
     /// # Arguments

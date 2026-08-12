@@ -631,6 +631,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         super::function::remove_function_name(&self.client, name, current).await
     }
 
+    async fn revoke_function(&self, function: &Function) -> Result<()> {
+        super::function::revoke_function(&self.client, function).await
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = if !request.namespace_path.is_empty() {
             let namespace_id =
@@ -4907,5 +4911,726 @@ mod tests {
             .await
             .expect("table_names after");
         assert_eq!(before, after, "empty-name rejection must not mutate tables");
+    }
+
+    // -------------------------------------------------------------------------
+    // Exact Function revocation
+    //
+    // Direct administrator catalog set-bit via POST /v1/functions/revoke.
+    // Targets an exact Function ID. Not name removal, physical deletion,
+    // Function mutation, Job, or generated-column mutation.
+    // -------------------------------------------------------------------------
+
+    const REVOKE_FUNCTION_ID: &str = "fn.exact.revoke-handle";
+    const REVOKE_SERVER_MESSAGE_MARKER: &str =
+        "SERVER_REVOKE_DIAGNOSTIC_MARKER id=fn.exact.revoke-handle name=text.normalize.revoke-name";
+    const REVOKE_CATALOG_NAME_MARKER: &str = "text.normalize.revoke-name";
+
+    fn sample_revoke_function() -> Function {
+        let id = FunctionId::try_new(REVOKE_FUNCTION_ID).expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn revoke_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_revoke_payload_free(err: &Error) {
+        let text = revoke_error_chain_text(err);
+        assert!(
+            !text.contains(REVOKE_SERVER_MESSAGE_MARKER),
+            "server diagnostic marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REVOKE_CATALOG_NAME_MARKER),
+            "catalog name marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(REVOKE_FUNCTION_ID),
+            "FunctionId must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains("SENSITIVE_REVOKE_BODY_MARKER"),
+            "non-success/malformed body marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_revoke_request(request: &reqwest::Request, expected_function_id: &str) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/v1/functions/revoke");
+        assert!(
+            request.url().query().is_none(),
+            "revoke selectors must stay out of the URL query: {}",
+            request.url()
+        );
+        let request_id = request.headers()["x-request-id"]
+            .to_str()
+            .expect("x-request-id must be present");
+        assert!(
+            !request_id.is_empty(),
+            "SDK must generate a nonempty request id"
+        );
+        let body = request
+            .body()
+            .and_then(|b| b.as_bytes())
+            .expect("revoke request must carry a JSON body");
+        let actual: Value = serde_json::from_slice(body).expect("revoke body must be JSON");
+        assert_eq!(
+            actual,
+            json!({
+                "function_id": expected_function_id,
+            }),
+            "revoke body must be exactly {{\"function_id\":...}}"
+        );
+        let object = actual.as_object().expect("revoke body must be an object");
+        assert_eq!(
+            object.len(),
+            1,
+            "revoke body must not carry extra fields: {actual}"
+        );
+        assert!(
+            object.get("name").is_none(),
+            "revoke must not send a catalog name: {actual}"
+        );
+        assert!(
+            object.get("expected_current_function_id").is_none(),
+            "revoke is not CAS remove and must not send expected_current_function_id: {actual}"
+        );
+        assert!(
+            object.get("current").is_none() && object.get("function").is_none(),
+            "revoke must not send a Function record: {actual}"
+        );
+        assert!(
+            object.get("signature").is_none() && object.get("format_version").is_none(),
+            "revoke must not send signature or format_version: {actual}"
+        );
+        assert!(
+            object.get("job_id").is_none() && object.get("idempotency_key").is_none(),
+            "revoke is not a Job and must not send user idempotency keys: {actual}"
+        );
+        assert!(
+            object.get("user_version").is_none()
+                && object.get("reason").is_none()
+                && object.get("expiry").is_none()
+                && object.get("force").is_none(),
+            "revoke must not send reason/expiry/force/user-version fields: {actual}"
+        );
+        assert!(
+            !request.url().path().contains("remove"),
+            "revoke must not use the remove path: {}",
+            request.url().path()
+        );
+    }
+
+    /// Exact path/body/request id and 204 success ignore an illegal body.
+    #[tokio::test]
+    async fn revoke_function_posts_exact_body_and_succeeds_on_204() {
+        let function = sample_revoke_function();
+        let before = function.clone();
+        let expected_id = function.id().as_str().to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_revoke_request(&request, &expected_id);
+            // Illegal body on 204 must be ignored; success is status-driven only.
+            http::Response::builder()
+                .status(204)
+                .body(format!(
+                    "{{\"SENSITIVE_REVOKE_BODY_MARKER\":true,\"message\":{REVOKE_SERVER_MESSAGE_MARKER:?},\"name\":{REVOKE_CATALOG_NAME_MARKER:?}}}"
+                ))
+                .unwrap()
+        });
+
+        conn.revoke_function(&function)
+            .await
+            .expect("HTTP 204 must complete revocation");
+        assert_exact_function(&function, &before);
+    }
+
+    /// Repeated logical revoke calls that each receive 204 both succeed.
+    ///
+    /// Idempotent public outcome only: each logical call may generate its own
+    /// internal request id; tests must not assert cross-call id equality.
+    #[tokio::test]
+    async fn revoke_function_repeated_204_is_idempotent() {
+        let function = sample_revoke_function();
+        let before = function.clone();
+        let expected_id = function.id().as_str().to_string();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler(move |request| {
+            assert_revoke_request(&request, &expected_id);
+            attempts_ref.fetch_add(1, Ordering::SeqCst);
+            http::Response::builder()
+                .status(204)
+                .body(String::new())
+                .unwrap()
+        });
+
+        conn.revoke_function(&function)
+            .await
+            .expect("first revoke must succeed on 204");
+        conn.revoke_function(&function)
+            .await
+            .expect("second revoke of an already-revoked Function must also succeed on 204");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "two logical revoke calls must issue two exact requests"
+        );
+        assert_exact_function(&function, &before);
+    }
+
+    /// One configured 5xx retry then 204 keeps identical request id/body.
+    #[tokio::test]
+    async fn revoke_function_retry_preserves_request_id_and_body() {
+        let function = sample_revoke_function();
+        let before = function.clone();
+        let expected_id = function.id().as_str().to_string();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_revoke_request(&request, &expected_id);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries within one logical call"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body(format!(
+                            "{REVOKE_SERVER_MESSAGE_MARKER} SENSITIVE_REVOKE_BODY_MARKER"
+                        ))
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(204)
+                        .body(String::new())
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        conn.revoke_function(&function)
+            .await
+            .expect("revoke must succeed after one retry");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "one 5xx then 204 must be exactly two attempts"
+        );
+        assert!(seen_request_id.get().is_some());
+        assert_exact_function(&function, &before);
+    }
+
+    /// Exhausted always-retryable 5xx without explicit error_code surfaces Error::Retry.
+    ///
+    /// retries=2 is max request failures: exactly two identical attempts, then
+    /// Retry with request_failures == max_request_failures == 2, zero connect/read
+    /// failures, the retryable status retained, and a payload-free source chain.
+    #[tokio::test]
+    async fn revoke_function_exhausted_retryable_5xx_returns_retry_with_request_counters() {
+        let function = sample_revoke_function();
+        let expected_id = function.id().as_str().to_string();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = format!("{REVOKE_SERVER_MESSAGE_MARKER} SENSITIVE_REVOKE_BODY_MARKER");
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_revoke_request(&request, &expected_id);
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across exhausted retries"
+                );
+
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(500)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    // RetryCounter treats `retries` as max request failures, so
+                    // retries=2 yields exactly two transport attempts before Error::Retry.
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .revoke_function(&function)
+            .await
+            .expect_err("exhausted retryable 5xx must fail");
+        match &err {
+            Error::Retry {
+                request_failures,
+                max_request_failures,
+                connect_failures,
+                read_failures,
+                status_code,
+                ..
+            } => {
+                assert_eq!(*request_failures, 2);
+                assert_eq!(*max_request_failures, 2);
+                assert_eq!(
+                    request_failures, max_request_failures,
+                    "request budget must be fully exhausted"
+                );
+                assert_eq!(*connect_failures, 0, "5xx must not consume connect budget");
+                assert_eq!(*read_failures, 0, "5xx must not consume read budget");
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(500),
+                    "retryable status must be retained on Error::Retry"
+                );
+            }
+            other => panic!("exhausted 5xx must surface as Error::Retry, got {other:?}"),
+        }
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "retries=2 must make exactly two identical attempts"
+        );
+        assert!(seen_request_id.get().is_some());
+        assert_revoke_payload_free(&err);
+    }
+
+    /// Explicit name_or_function_not_found on a retryable status is terminal.
+    #[tokio::test]
+    async fn revoke_function_explicit_name_or_function_not_found_is_terminal_on_retryable_status() {
+        let function = sample_revoke_function();
+        let expected_id = function.id().as_str().to_string();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let body = json!({
+            "error_code": "name_or_function_not_found",
+            "message": format!(
+                "{REVOKE_SERVER_MESSAGE_MARKER} looks_like revoked_function name_conflict"
+            ),
+            "SENSITIVE_REVOKE_BODY_MARKER": true,
+        })
+        .to_string();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_revoke_request(&request, &expected_id);
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(503)
+                    .body(body.clone())
+                    .unwrap()
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .revoke_function(&function)
+            .await
+            .expect_err("explicit name_or_function_not_found must fail");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), "name_or_function_not_found");
+                assert!(
+                    matches!(code, FunctionErrorCode::NameOrFunctionNotFound),
+                    "expected NameOrFunctionNotFound, got {code:?}"
+                );
+                assert_ne!(code.as_str(), "revoked_function");
+                assert_ne!(code.as_str(), "name_conflict");
+                assert!(
+                    !message.contains(REVOKE_SERVER_MESSAGE_MARKER),
+                    "Function error message must be sanitized, got {message}"
+                );
+                assert!(
+                    !message.contains(REVOKE_FUNCTION_ID),
+                    "Function error message must not echo the FunctionId, got {message}"
+                );
+                assert!(
+                    !message.contains(REVOKE_CATALOG_NAME_MARKER),
+                    "Function error message must not echo a catalog name, got {message}"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_revoke_payload_free(&err);
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "explicit semantic code must not consume request retries"
+        );
+    }
+
+    /// Unknown nonempty explicit code is preserved; status/message do not override.
+    #[tokio::test]
+    async fn revoke_function_preserves_unknown_explicit_code_despite_status_and_message() {
+        let function = sample_revoke_function();
+        let expected_id = function.id().as_str().to_string();
+        let raw = "enterprise_future_revoke_category_xyz";
+        let body = json!({
+            "error_code": raw,
+            "message": format!(
+                "{REVOKE_SERVER_MESSAGE_MARKER} name_or_function_not_found revoked_function"
+            ),
+            "SENSITIVE_REVOKE_BODY_MARKER": true,
+        })
+        .to_string();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_revoke_request(&request, &expected_id);
+            http::Response::builder()
+                .status(409)
+                .body(body.clone())
+                .unwrap()
+        });
+
+        let err = conn
+            .revoke_function(&function)
+            .await
+            .expect_err("unknown explicit code must surface");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), raw);
+                assert!(
+                    matches!(code, FunctionErrorCode::Unrecognized(_)),
+                    "unknown code must stay Unrecognized, got {code:?}"
+                );
+                assert_ne!(code.as_str(), "name_or_function_not_found");
+                assert_ne!(code.as_str(), "revoked_function");
+                assert!(
+                    !message.contains(REVOKE_SERVER_MESSAGE_MARKER),
+                    "diagnostic message must be sanitized"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_revoke_payload_free(&err);
+    }
+
+    /// Missing/empty/null/wrong-type/malformed error_code stays payload-free Http.
+    #[tokio::test]
+    async fn revoke_function_missing_or_invalid_error_code_is_payload_free_http() {
+        let cases: Vec<(&str, u16, String)> = vec![
+            (
+                "missing_code_404",
+                404,
+                json!({
+                    "message": REVOKE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REVOKE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "empty_code",
+                400,
+                json!({
+                    "error_code": "",
+                    "message": REVOKE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REVOKE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                "wrong_type_code",
+                400,
+                json!({
+                    "error_code": 123,
+                    "message": REVOKE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REVOKE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                // Non-retryable status: invalid/null error_code must stay immediate Http.
+                // Exhausted retryable 5xx is covered by
+                // revoke_function_exhausted_retryable_5xx_returns_retry_with_request_counters.
+                "null_code",
+                400,
+                json!({
+                    "error_code": null,
+                    "message": REVOKE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REVOKE_BODY_MARKER": true,
+                })
+                .to_string(),
+            ),
+            (
+                // Non-retryable status: this case proves invalid-code -> Http only.
+                // Exhausted retryable 5xx without error_code is covered separately
+                // by revoke_function_exhausted_retryable_5xx_returns_retry_with_request_counters.
+                "non_json",
+                400,
+                format!("not-json {REVOKE_SERVER_MESSAGE_MARKER} SENSITIVE_REVOKE_BODY_MARKER"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, status, response_body) in cases {
+            let function = sample_revoke_function();
+            let expected_id = function.id().as_str().to_string();
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_revoke_request(&request, &expected_id);
+                http::Response::builder()
+                    .status(status)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn.revoke_function(&function).await {
+                Err(err @ Error::Http { .. }) => assert_revoke_payload_free(&err),
+                Err(Error::Function { .. }) => unexpected.push(format!(
+                    "{label}: must not invent Error::Function without explicit code"
+                )),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid/missing error_code must stay payload-free Http: {unexpected:?}"
+        );
+    }
+
+    /// 200/202 are payload-free protocol Http failures, never revoke success.
+    #[tokio::test]
+    async fn revoke_function_other_2xx_are_payload_free_http_failures() {
+        let cases: Vec<(&str, u16, String)> = vec![
+            (
+                "200_with_body",
+                200,
+                json!({
+                    "ok": true,
+                    "message": REVOKE_SERVER_MESSAGE_MARKER,
+                    "SENSITIVE_REVOKE_BODY_MARKER": true,
+                    "job_id": "must-not-infer-job",
+                    "name": REVOKE_CATALOG_NAME_MARKER,
+                })
+                .to_string(),
+            ),
+            (
+                "202_empty",
+                202,
+                format!("{REVOKE_SERVER_MESSAGE_MARKER} SENSITIVE_REVOKE_BODY_MARKER"),
+            ),
+            ("200_empty", 200, String::new()),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, status, response_body) in cases {
+            let function = sample_revoke_function();
+            let expected_id = function.id().as_str().to_string();
+            let body_for_handler = response_body.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_revoke_request(&request, &expected_id);
+                http::Response::builder()
+                    .status(status)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match conn.revoke_function(&function).await {
+                Ok(()) => {
+                    unexpected.push(format!("{label}: must not treat non-204 2xx as success"))
+                }
+                Err(err @ Error::Http { .. }) => assert_revoke_payload_free(&err),
+                Err(Error::Function { .. }) => unexpected.push(format!(
+                    "{label}: must not invent Error::Function from 2xx body"
+                )),
+                other => unexpected.push(format!("{label}: {other:?}")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "200/202 must be payload-free Http failures: {unexpected:?}"
+        );
+    }
+
+    /// Non-204 success must fail from status alone without reading the body.
+    ///
+    /// A protocol-invalid HTTP 200 whose body stream fails if read must return
+    /// payload-free Error::Http with status 200 on exactly one attempt, even when
+    /// read/request retry budgets are configured above one. Body must not be
+    /// read and no retry budget may be consumed.
+    #[tokio::test]
+    async fn revoke_function_non_204_success_does_not_read_failing_body() {
+        let function = sample_revoke_function();
+        let expected_id = function.id().as_str().to_string();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                assert_revoke_request(&request, &expected_id);
+                attempts_ref.fetch_add(1, Ordering::SeqCst);
+                let stream = futures::stream::once(async {
+                    Err::<bytes::Bytes, _>(std::io::Error::other(
+                        "simulated revoke response body read failure SENSITIVE_REVOKE_BODY_MARKER",
+                    ))
+                });
+                http::Response::builder()
+                    .status(200)
+                    .body(reqwest::Body::wrap_stream(stream))
+                    .unwrap()
+            },
+            ClientConfig {
+                // Budgets above one must not be consumed: status 200 is terminal
+                // protocol Http before any body read/retry classification.
+                retry_config: RetryConfig {
+                    retries: Some(3),
+                    read_retries: Some(3),
+                    connect_retries: Some(3),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let err = conn
+            .revoke_function(&function)
+            .await
+            .expect_err("non-204 success must be protocol Http");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "invalid 2xx must not read the body or consume retry budget"
+        );
+        match &err {
+            Error::Http { status_code, .. } => {
+                assert_eq!(
+                    status_code.map(|s| s.as_u16()),
+                    Some(200),
+                    "protocol Http must retain status 200 from the response alone"
+                );
+            }
+            other => panic!("expected payload-free Error::Http, got {other:?}"),
+        }
+        assert_revoke_payload_free(&err);
+    }
+
+    /// Valid local Connection revocation is NotSupported and does not mutate tables.
+    #[tokio::test]
+    async fn revoke_function_local_connection_returns_not_supported_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let function = sample_revoke_function();
+        let handle_before = function.clone();
+        let err = conn
+            .revoke_function(&function)
+            .await
+            .expect_err("local revoke_function must be unsupported");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported for local revoke, got {err:?}"
+        );
+        assert_exact_function(&function, &handle_before);
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(before, after, "unsupported revoke must not mutate tables");
+    }
+
+    /// Database trait seam must return NotSupported without table mutation.
+    #[tokio::test]
+    async fn revoke_function_database_trait_local_returns_not_supported_without_mutation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = ConnectBuilder::new(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .expect("local connect");
+        let before = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names before");
+        assert!(before.is_empty());
+
+        let function = sample_revoke_function();
+        let handle_before = function.clone();
+        let err = conn
+            .database()
+            .revoke_function(&function)
+            .await
+            .expect_err("local Database::revoke_function must be unsupported");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported for Database trait revoke, got {err:?}"
+        );
+        assert_exact_function(&function, &handle_before);
+
+        let after = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table_names after");
+        assert_eq!(
+            before, after,
+            "Database-trait unsupported revoke must not mutate tables"
+        );
     }
 }
