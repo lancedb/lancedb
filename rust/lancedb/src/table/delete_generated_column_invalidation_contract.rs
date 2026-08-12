@@ -27,7 +27,6 @@ use crate::function::{
 };
 use crate::query::{ExecutableQuery, QueryBase, Select};
 use crate::table::Table;
-use crate::table::schema_evolution::FieldMetadataUpdate;
 
 const ID: &str = "id";
 const INPUT_A: &str = "input_a";
@@ -212,27 +211,23 @@ async fn create_row_set_generated_fixture(name: &str) -> Fixture {
     let literal = literal_only_definition(gen_literal_field_id);
     let literal_argument = literal_only_argument();
 
-    table
-        .update_field_metadata(&[
-            FieldMetadataUpdate::new(GEN_DIRECT).set(
-                GENERATED_COLUMN_METADATA_KEY,
-                direct.to_metadata_json().unwrap(),
-            ),
-            FieldMetadataUpdate::new(GEN_TRANSITIVE).set(
-                GENERATED_COLUMN_METADATA_KEY,
-                transitive.to_metadata_json().unwrap(),
-            ),
-            FieldMetadataUpdate::new(GEN_INDEPENDENT).set(
-                GENERATED_COLUMN_METADATA_KEY,
-                independent.to_metadata_json().unwrap(),
-            ),
-            FieldMetadataUpdate::new(GEN_LITERAL).set(
-                GENERATED_COLUMN_METADATA_KEY,
-                literal.to_metadata_json().unwrap(),
-            ),
-        ])
+    let native = table
+        .as_native()
+        .expect("generated-column fixture planting requires a Native table");
+    for (column, definition) in [
+        (GEN_DIRECT, &direct),
+        (GEN_TRANSITIVE, &transitive),
+        (GEN_INDEPENDENT, &independent),
+        (GEN_LITERAL, &literal),
+    ] {
+        crate::table::schema_evolution::install_raw_generated_column_metadata_for_tests(
+            native,
+            column,
+            definition.to_metadata_json().unwrap(),
+        )
         .await
         .unwrap();
+    }
 
     let planted_direct = read_generated_definition(&table, GEN_DIRECT).await;
     let planted_transitive = read_generated_definition(&table, GEN_TRANSITIVE).await;
@@ -944,12 +939,16 @@ async fn string_malformed_generated_metadata_rejects_before_mutation() {
         fixture.gen_independent_field_id, MALFORMED_MARKER
     );
     assert!(planted_raw.contains(MALFORMED_MARKER));
-    fixture
-        .table
-        .update_field_metadata(&[FieldMetadataUpdate::new(GEN_INDEPENDENT)
-            .set(GENERATED_COLUMN_METADATA_KEY, planted_raw.clone())])
-        .await
-        .unwrap();
+    crate::table::schema_evolution::install_raw_generated_column_metadata_for_tests(
+        fixture
+            .table
+            .as_native()
+            .expect("generated-column fixture planting requires a Native table"),
+        GEN_INDEPENDENT,
+        planted_raw.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         read_raw_generated_metadata(&fixture.table, GEN_INDEPENDENT).await,
         planted_raw,
@@ -1007,12 +1006,16 @@ async fn expr_malformed_generated_metadata_rejects_before_mutation() {
         fixture.gen_literal_field_id, MALFORMED_MARKER
     );
     assert!(planted_raw.contains(MALFORMED_MARKER));
-    fixture
-        .table
-        .update_field_metadata(&[FieldMetadataUpdate::new(GEN_LITERAL)
-            .set(GENERATED_COLUMN_METADATA_KEY, planted_raw.clone())])
-        .await
-        .unwrap();
+    crate::table::schema_evolution::install_raw_generated_column_metadata_for_tests(
+        fixture
+            .table
+            .as_native()
+            .expect("generated-column fixture planting requires a Native table"),
+        GEN_LITERAL,
+        planted_raw.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         read_raw_generated_metadata(&fixture.table, GEN_LITERAL).await,
         planted_raw,

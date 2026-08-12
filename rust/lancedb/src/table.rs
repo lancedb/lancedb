@@ -95,6 +95,8 @@ mod merge_insert_generated_column_reject_contract;
 #[cfg(test)]
 mod schema_metadata_updates_dependency_contract;
 #[cfg(test)]
+mod update_field_metadata_generated_column_guard_contract;
+#[cfg(test)]
 mod update_generated_column_invalidation_contract;
 
 use crate::index::waiter::wait_for_index;
@@ -5828,19 +5830,20 @@ mod tests {
         dependency_epoch: u64,
         materialized_epoch: u64,
     ) -> i32 {
-        use crate::function::GENERATED_COLUMN_METADATA_KEY;
-
         let snapshot = table.generated_column_binding_snapshot().await.unwrap();
         let field_id = snapshot.field(column).expect(column).field_id();
         let json = status_projection_definition(field_id, dependency_epoch, materialized_epoch)
             .to_metadata_json()
             .unwrap();
-        table
-            .update_field_metadata(&[
-                FieldMetadataUpdate::new(column).set(GENERATED_COLUMN_METADATA_KEY, json)
-            ])
-            .await
-            .unwrap();
+        schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table
+                .as_native()
+                .expect("generated-column fixture planting requires a Native table"),
+            column,
+            json,
+        )
+        .await
+        .unwrap();
         field_id
     }
 

@@ -2973,6 +2973,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         updates: &[FieldMetadataUpdate],
     ) -> Result<UpdateFieldMetadataResult> {
+        // Reject reserved generated-column key updates before mutability checks,
+        // request construction, header-provider invocation, retry, or HTTP.
+        crate::table::schema_evolution::reject_reserved_generated_column_metadata_key_updates(
+            updates,
+        )?;
         self.check_mutable().await?;
         let mut body = serde_json::json!({ "updates": updates });
         self.apply_branch_body(&mut body);

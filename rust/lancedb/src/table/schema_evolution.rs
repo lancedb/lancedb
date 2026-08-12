@@ -13,7 +13,61 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::NativeTable;
-use crate::Result;
+use crate::function::GENERATED_COLUMN_METADATA_KEY;
+use crate::{Error, Result};
+
+/// Shared rejection for general-purpose field-metadata updates that name the
+/// reserved generated-column definition key.
+///
+/// Generated-column definitions are table-schema state owned by
+/// create/change/refresh Jobs. The public `update_field_metadata` API must not
+/// create, replace, or remove that reserved key. Both Native and Remote
+/// `BaseTable` implementations call this helper so direct trait calls cannot
+/// bypass the syntax guard.
+pub(crate) fn reject_reserved_generated_column_metadata_key_updates(
+    updates: &[FieldMetadataUpdate],
+) -> Result<()> {
+    for update in updates {
+        if update.metadata.contains_key(GENERATED_COLUMN_METADATA_KEY) {
+            return Err(reserved_generated_column_metadata_not_supported());
+        }
+    }
+    Ok(())
+}
+
+fn reserved_generated_column_metadata_not_supported() -> Error {
+    Error::NotSupported {
+        message: "generated column definitions are owned by create/change/refresh Jobs \
+                  and cannot be created, replaced, or removed through update_field_metadata"
+            .into(),
+    }
+}
+
+/// Native-only state-aware guard: whole-map `replace()` on a field whose exact
+/// Dataset snapshot metadata already contains the reserved generated-column key
+/// would wipe that Job-owned definition even when the replacement map omits the
+/// key. Detects raw key presence without decoding the payload.
+fn reject_replace_that_would_remove_generated_column_metadata(
+    dataset: &lance::Dataset,
+    updates: &[FieldMetadataUpdate],
+) -> Result<()> {
+    let schema = dataset.schema();
+    for update in updates {
+        if !update.replace {
+            continue;
+        }
+        let Some(fields) = schema.resolve_case_insensitive(&update.path) else {
+            continue;
+        };
+        let field = fields
+            .last()
+            .expect("resolve_case_insensitive returns a non-empty path");
+        if field.metadata.contains_key(GENERATED_COLUMN_METADATA_KEY) {
+            return Err(reserved_generated_column_metadata_not_supported());
+        }
+    }
+    Ok(())
+}
 
 /// The result of an add columns operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -144,8 +198,10 @@ pub(crate) async fn execute_update_field_metadata(
     table: &NativeTable,
     updates: &[FieldMetadataUpdate],
 ) -> Result<UpdateFieldMetadataResult> {
+    reject_reserved_generated_column_metadata_key_updates(updates)?;
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    reject_replace_that_would_remove_generated_column_metadata(&dataset, updates)?;
 
     let mut builder = dataset.update_field_metadata();
     for update in updates {
@@ -158,6 +214,33 @@ pub(crate) async fn execute_update_field_metadata(
     }
     builder.await?;
 
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(UpdateFieldMetadataResult { version })
+}
+
+/// Test-only raw installer for generated-column field metadata on Native tables.
+///
+/// Uses the Lance metadata commit path directly so contract fixtures can plant
+/// reserved-key bytes without going through the public `update_field_metadata`
+/// guard. Absent from non-test builds.
+#[cfg(test)]
+pub(crate) async fn install_raw_generated_column_metadata_for_tests(
+    table: &NativeTable,
+    path: impl AsRef<str>,
+    raw: impl Into<String>,
+) -> Result<UpdateFieldMetadataResult> {
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+    let path = path.as_ref();
+    let raw = raw.into();
+    dataset
+        .update_field_metadata()
+        .update(
+            path,
+            [(GENERATED_COLUMN_METADATA_KEY.to_string(), Some(raw))],
+        )?
+        .await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(UpdateFieldMetadataResult { version })

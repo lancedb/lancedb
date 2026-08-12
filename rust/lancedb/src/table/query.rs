@@ -1327,10 +1327,8 @@ mod tests {
     ) {
         use crate::function::{
             Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
-            FunctionParameter, FunctionSignature, GENERATED_COLUMN_METADATA_KEY,
-            GeneratedColumnDefinition,
+            FunctionParameter, FunctionSignature, GeneratedColumnDefinition,
         };
-        use crate::table::FieldMetadataUpdate;
         use arrow_array::StringArray;
 
         let snapshot = table.generated_column_binding_snapshot().await.unwrap();
@@ -1363,12 +1361,15 @@ mod tests {
         .unwrap()
         .to_metadata_json()
         .unwrap();
-        table
-            .update_field_metadata(&[
-                FieldMetadataUpdate::new(column).set(GENERATED_COLUMN_METADATA_KEY, json)
-            ])
-            .await
-            .unwrap();
+        crate::table::schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table
+                .as_native()
+                .expect("generated-column fixture planting requires a Native table"),
+            column,
+            json,
+        )
+        .await
+        .unwrap();
     }
 
     fn assert_incomplete_runtime_error(err: &Error, label: &str) {
@@ -1470,7 +1471,6 @@ mod tests {
     async fn generated_column_query_runtime_malformed_rejects_before_namespace() {
         use crate::function::GENERATED_COLUMN_METADATA_KEY;
         use crate::query::Select;
-        use crate::table::FieldMetadataUpdate;
 
         let (table, native_table, namespace_client) =
             runtime_namespace_table("runtime_ns_malformed").await;
@@ -1479,12 +1479,15 @@ mod tests {
         let raw = format!(
             r#"{{"format_version":1,"output_field_id":0,"function_call":{MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
         );
-        table
-            .update_field_metadata(&[
-                FieldMetadataUpdate::new("gen_out").set(GENERATED_COLUMN_METADATA_KEY, raw.clone())
-            ])
-            .await
-            .unwrap();
+        crate::table::schema_evolution::install_raw_generated_column_metadata_for_tests(
+            table
+                .as_native()
+                .expect("generated-column fixture planting requires a Native table"),
+            "gen_out",
+            raw.clone(),
+        )
+        .await
+        .unwrap();
 
         let query = AnyQuery::Query(QueryRequest {
             select: Select::Columns(vec!["gen_out".to_string()]),
