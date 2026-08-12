@@ -176,29 +176,6 @@ async fn map_dataset_not_found(
     }
 }
 
-/// Resolve a native local URI to its filesystem path.
-fn native_local_path(uri: &str) -> Result<Option<std::path::PathBuf>> {
-    let url = lance_io::object_store::uri_to_url(uri)?;
-    match url.scheme() {
-        "file" => url.to_file_path().map(Some).map_err(|_| Error::Runtime {
-            message: format!("Failed to convert local table URI to a path: {uri}"),
-        }),
-        "file+uring" | "file-object-store" => {
-            let path = object_store::path::Path::from_url_path(url.path()).map_err(|err| {
-                Error::Runtime {
-                    message: format!("Failed to convert local table URI to a path: {uri}: {err}"),
-                }
-            })?;
-            #[cfg(windows)]
-            let path = std::path::PathBuf::from(path.as_ref());
-            #[cfg(not(windows))]
-            let path = std::path::Path::new("/").join(path.as_ref());
-            Ok(Some(path))
-        }
-        _ => Ok(None),
-    }
-}
-
 /// Whether storage contains an entry for `uri`, even though no dataset could be loaded.
 ///
 /// Local filesystems can represent an empty table directory, so inspect that exact path.
@@ -206,15 +183,30 @@ fn native_local_path(uri: &str) -> Result<Option<std::path::PathBuf>> {
 /// at most the first object under the table prefix. Neither path inspects sibling tables.
 async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
     #[allow(deprecated)]
-    let uses_custom_object_store = params
-        .store_options
-        .as_ref()
-        .is_some_and(|options| options.object_store.is_some());
+    let requires_store_probe = params.store_options.as_ref().is_some_and(|options| {
+        options.object_store.is_some() || options.object_store_wrapper.is_some()
+    });
 
-    if !uses_custom_object_store && let Some(local_path) = native_local_path(uri)? {
-        if local_path.extension().and_then(|ext| ext.to_str()) != Some(LANCE_FILE_EXTENSION) {
-            return Ok(false);
-        }
+    // Resolve the effective provider before selecting a probe. A session can replace the
+    // provider for a local-looking URI, and a wrapper can own state or inject failures that
+    // must not be bypassed by inspecting the host filesystem directly.
+    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
+        .with_read_params(params)
+        .build_object_store()
+        .await?;
+    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
+    // the list-then-open mismatch this guards against.
+    if path.extension() != Some(LANCE_FILE_EXTENSION) {
+        return Ok(false);
+    }
+
+    let is_native_local = !requires_store_probe
+        && matches!(
+            object_store.scheme(),
+            "file" | "file+uring" | "file-object-store"
+        );
+    if is_native_local {
+        let local_path = std::path::PathBuf::from(lance_io::local::to_local_path(&path));
         // A local table URI intentionally grants access to this exact path; LanceDB does
         // not confine local databases beneath a separate filesystem root. nosemgrep
         return match std::fs::symlink_metadata(&local_path) {
@@ -224,16 +216,6 @@ async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
                 message: format!("Failed to inspect table path {local_path:?}: {err}"),
             }),
         };
-    }
-
-    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
-        .with_read_params(params)
-        .build_object_store()
-        .await?;
-    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
-    // the list-then-open mismatch this guards against.
-    if path.extension() != Some(LANCE_FILE_EXTENSION) {
-        return Ok(false);
     }
 
     if object_store.exists(&path).await? {
@@ -3937,6 +3919,72 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct FileSchemeMemoryProvider {
+        store: lance_io::object_store::ObjectStore,
+    }
+
+    #[async_trait::async_trait]
+    impl lance_io::object_store::ObjectStoreProvider for FileSchemeMemoryProvider {
+        async fn new_store(
+            &self,
+            _base_path: url::Url,
+            _params: &ObjectStoreParams,
+        ) -> lance_core::Result<lance_io::object_store::ObjectStore> {
+            Ok(self.store.clone())
+        }
+    }
+
+    /// Recovery must inspect the same provider that the failed dataset load used,
+    /// even when the table URI itself looks like a native filesystem path.
+    #[tokio::test]
+    async fn test_open_recovery_uses_custom_file_provider() {
+        use object_store::ObjectStoreExt as _;
+
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("custom.lance");
+        let uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
+        assert!(!dataset_path.exists());
+
+        let store = lance_io::object_store::ObjectStore::memory();
+        let table_path =
+            object_store::path::Path::from_url_path(url::Url::parse(&uri).unwrap().path()).unwrap();
+        store
+            .inner
+            .put(
+                &table_path.clone().join("_marker"),
+                bytes::Bytes::new().into(),
+            )
+            .await
+            .unwrap();
+
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        registry.insert("file", Arc::new(FileSchemeMemoryProvider { store }));
+        let read_params = ReadParams {
+            session: Some(Arc::new(lance::session::Session::new(0, 0, registry))),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            &uri,
+            "custom",
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom"),
+            "got {err:?}"
+        );
+    }
+
+    #[derive(Debug)]
     struct OpenRecoveryTestStore {
         inner: Arc<dyn object_store::ObjectStore>,
         parent: object_store::path::Path,
@@ -4153,6 +4201,54 @@ mod tests {
                 target_entries_yielded: self.target_entries_yielded.clone(),
             })
         }
+    }
+
+    /// A wrapper is part of the effective store even for a local-looking URI.
+    /// Recovery must not bypass it by inspecting the host path directly.
+    #[tokio::test]
+    async fn test_open_recovery_uses_wrapper_for_file_uri() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("wrapped.lance");
+        let uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
+        let target =
+            object_store::path::Path::from_url_path(url::Url::parse(&uri).unwrap().path()).unwrap();
+        let read_params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
+                    fail_exact_head: Some(target),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            &uri,
+            "wrapped",
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            !matches!(
+                &err,
+                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
+            ),
+            "wrapper probe errors must fail closed: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("injected exact table probe failure"),
+            "got {err}"
+        );
     }
 
     /// Opening one missing table must not enumerate unrelated table prefixes.
