@@ -10,8 +10,12 @@ mod binding_snapshot;
 mod change_generated_column;
 mod create_generated_column;
 mod definition;
+pub(crate) mod plan_generated_column_invalidation;
 mod refresh_generated_column;
 mod registration;
+
+#[cfg(test)]
+mod plan_generated_column_invalidation_contract;
 
 pub use binding_snapshot::{GeneratedColumnBindingEntry, GeneratedColumnBindingSnapshot};
 pub use change_generated_column::ChangeGeneratedColumnJobSpec;
