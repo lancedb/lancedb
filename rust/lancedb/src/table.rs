@@ -5339,7 +5339,7 @@ mod tests {
     pub async fn test_stats_includes_index_and_overlay_files() {
         use lance::dataset::WriteDestination;
         use lance::dataset::transaction::{DataOverlayGroup, Operation};
-        use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+        use lance_file::version::stable_file_version;
         use lance_file::writer::FileWriterOptions;
         use lance_io::utils::CachedFileSize;
         use lance_table::format::DataFile;
@@ -5405,7 +5405,7 @@ mod tests {
         let fragment_id = dataset.get_fragments()[0].id() as u64;
         let foo_field_id = dataset.schema().field("foo").unwrap().id;
         let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
-        let file_version = ConcreteFileVersion::from(LanceFileVersion::Stable);
+        let file_version = stable_file_version();
 
         let filename = "overlay.lance".to_string();
         let store = dataset.object_store(None).await.unwrap();
