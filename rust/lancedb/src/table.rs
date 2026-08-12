@@ -70,13 +70,13 @@ use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-mod append_generated_column_invalidation;
 pub mod branch_merge;
 pub mod checkpoint;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+mod generated_column_invalidation;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
@@ -90,6 +90,8 @@ pub mod write_progress;
 mod append_generated_column_invalidation_contract;
 #[cfg(test)]
 mod schema_metadata_updates_dependency_contract;
+#[cfg(test)]
+mod update_generated_column_invalidation_contract;
 
 use crate::index::waiter::wait_for_index;
 pub use add_columns::AddColumnsBuilder;
@@ -3270,7 +3272,7 @@ impl BaseTable for NativeTable {
         // Plan after in-memory preprocessing, before any InsertExec file write.
         // Canonical overwrite is PreprocessingOutput.overwrite, not final lance_params.mode.
         let schema_metadata_updates =
-            append_generated_column_invalidation::plan_native_append_generated_column_invalidation(
+            generated_column_invalidation::plan_native_append_generated_column_invalidation(
                 ds.as_ref(),
                 output.overwrite,
             )?;
@@ -3791,7 +3793,7 @@ impl BaseTable for NativeTable {
         let is_overwrite = matches!(write_params.mode, WriteMode::Overwrite);
         // Reject generated-table overwrite before returning an execution plan.
         let schema_metadata_updates =
-            append_generated_column_invalidation::plan_native_append_generated_column_invalidation(
+            generated_column_invalidation::plan_native_append_generated_column_invalidation(
                 dataset.as_ref(),
                 is_overwrite,
             )?;

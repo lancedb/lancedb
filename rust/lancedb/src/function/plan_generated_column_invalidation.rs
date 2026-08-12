@@ -5,8 +5,8 @@
 //!
 //! Plans column-wide dependency-epoch advances from a binding snapshot and a
 //! mutation impact. This module does not mutate tables, write metadata, or
-//! execute append/update/delete/merge paths. Native append consumes the plan
-//! through the B4b runtime wiring.
+//! execute append/update/delete/merge paths. Native append and update consume
+//! the plan through the B4b / B4c runtime wiring.
 
 use std::collections::BTreeSet;
 
@@ -20,9 +20,8 @@ pub enum GeneratedColumnMutationImpact {
     RowSetChanged,
     /// Update of the listed stable field IDs (direct and transitive dependents).
     ///
-    /// Reserved for future update/delete/merge invalidation consumers; Native
-    /// append (B4b) only constructs [`Self::RowSetChanged`].
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Native update (B4c) constructs this impact. Native append (B4b) only
+    /// constructs [`Self::RowSetChanged`].
     UpdatedFields(BTreeSet<i32>),
 }
 

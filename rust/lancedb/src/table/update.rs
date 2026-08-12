@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use lance::Dataset;
 use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -80,33 +82,61 @@ pub(crate) async fn execute_update(
 ) -> Result<UpdateResult> {
     table.dataset.ensure_mutable()?;
 
-    // 1. Snapshot the current dataset
+    // One exact dataset supplies SET/filter planning, stable target field IDs,
+    // generated-column invalidation planning, the Lance UpdateBuilder, and its
+    // transaction basis. Do not call table schema()/version() or another get().
     let dataset = table.dataset.get().await?;
 
-    // 2. Initialize the Lance Core builder
-    let mut builder = LanceUpdateBuilder::new(dataset);
+    let mut builder = LanceUpdateBuilder::new(dataset.clone());
 
-    // 3. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
         builder = builder.update_where(&predicate)?;
     }
 
-    // 4. Apply the columns (SET clause)
-    for (column, value) in update.columns {
-        builder = builder.set(column, &value)?;
+    let columns = update.columns;
+    for (column, value) in &columns {
+        builder = builder.set(column, value)?;
     }
 
-    // 5. Execute the operation (Write new files)
+    // After Lance SET validation, resolve stable field IDs from the same
+    // snapshot and plan invalidation before UpdateJob writes files.
+    let updated_field_ids = updated_stable_field_ids(dataset.as_ref(), &columns)?;
+    if let Some(schema_metadata_updates) =
+        super::generated_column_invalidation::plan_native_update_generated_column_invalidation(
+            dataset.as_ref(),
+            updated_field_ids,
+        )?
+    {
+        builder = builder.with_schema_metadata_updates(schema_metadata_updates)?;
+    }
+
     let operation = builder.build()?;
     let res = operation.execute().await?;
 
-    // 6. Update the table's view of the latest version
     table.dataset.update(res.new_dataset.as_ref().clone());
 
     Ok(UpdateResult {
         rows_updated: res.rows_updated,
         version: res.new_dataset.version().version,
     })
+}
+
+/// Resolve exact top-level SET targets to a deterministic set of stable field IDs.
+fn updated_stable_field_ids(
+    dataset: &Dataset,
+    columns: &[(String, String)],
+) -> Result<BTreeSet<i32>> {
+    let mut ids = BTreeSet::new();
+    for (column, _) in columns {
+        let field = dataset
+            .schema()
+            .field(column)
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!("Column '{column}' does not exist in dataset schema"),
+            })?;
+        ids.insert(field.id);
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]

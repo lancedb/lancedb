@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Crate-private Native append wiring for generated-column invalidation (B4b).
+//! Crate-private Native wiring for generated-column invalidation (B4b / B4c).
 //!
 //! Converts the B4a pure planner into one Lance field-metadata patch for Native
-//! append commits. Planning is strict-decode/validate; overwrite of a table with
-//! any generated-column definition fails closed as [`Error::NotSupported`].
+//! append and update commits. Planning is strict-decode/validate; overwrite of a
+//! table with any generated-column definition, and direct writes of generated
+//! outputs via Update, fail closed as [`Error::NotSupported`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use lance::Dataset;
 use lance::dataset::transaction::{SchemaMetadataUpdates, UpdateMap, UpdateMapEntry};
@@ -45,6 +46,51 @@ pub(super) fn plan_native_append_generated_column_invalidation(
         return Err(Error::NotSupported {
             message: "Overwrite is not supported on tables with generated columns".to_string(),
         });
+    }
+    Ok(Some(planned_invalidation_to_schema_metadata_updates(plan)))
+}
+
+/// Plan Native update invalidation against one exact dataset snapshot.
+///
+/// Strict-decodes and validates every present generated-column definition before
+/// impact calculation, even when `updated_field_ids` does not affect any
+/// generated output. After the global planner succeeds, a target whose snapshot
+/// entry contains generated metadata is rejected as a direct generated-output
+/// write ([`Error::NotSupported`]) before any Update file write. Returns
+/// `Some(patch)` when the impact closure is non-empty, otherwise `None`.
+pub(super) fn plan_native_update_generated_column_invalidation(
+    dataset: &Dataset,
+    updated_field_ids: BTreeSet<i32>,
+) -> Result<Option<SchemaMetadataUpdates>> {
+    let snapshot = generated_column_binding_snapshot_from_dataset(dataset)?;
+    let plan = plan_generated_column_invalidation(
+        &snapshot,
+        &GeneratedColumnMutationImpact::UpdatedFields(updated_field_ids.clone()),
+    )?;
+
+    for field_id in &updated_field_ids {
+        let Some(entry) = snapshot
+            .entries()
+            .iter()
+            .find(|entry| entry.field_id() == *field_id)
+        else {
+            return Err(Error::InvalidInput {
+                message: format!("updated field id {field_id} was not found in the table schema"),
+            });
+        };
+        if entry
+            .field()
+            .metadata()
+            .contains_key(GENERATED_COLUMN_METADATA_KEY)
+        {
+            return Err(Error::NotSupported {
+                message: "Updating generated columns is not supported".to_string(),
+            });
+        }
+    }
+
+    if plan.is_empty() {
+        return Ok(None);
     }
     Ok(Some(planned_invalidation_to_schema_metadata_updates(plan)))
 }
