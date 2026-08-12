@@ -10,7 +10,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
 use lance::Dataset;
-use lance_file::version::LanceFileVersion;
+use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lancedb::{
     Connection, Error, Result, Table,
     blob::{BlobRangeRequest, blob},
@@ -61,7 +61,7 @@ async fn create_inline_blob_table(
     Ok(table)
 }
 
-async fn storage_format_version(table: &Table) -> LanceFileVersion {
+async fn storage_format_version(table: &Table) -> ConcreteFileVersion {
     table
         .as_native()
         .unwrap()
@@ -69,9 +69,14 @@ async fn storage_format_version(table: &Table) -> LanceFileVersion {
         .await
         .unwrap()
         .data_storage_format
-        .lance_file_version()
-        .unwrap()
-        .resolve()
+        .lance_file_format()
+}
+
+fn supports_blob_v2(version: ConcreteFileVersion) -> bool {
+    matches!(
+        version,
+        ConcreteFileVersion::V2_2 | ConcreteFileVersion::V2_3
+    )
 }
 
 async fn uses_stable_row_ids(table: &Table) -> bool {
@@ -112,7 +117,7 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -127,7 +132,7 @@ async fn explicit_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -139,7 +144,7 @@ async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> 
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let table = db.create_empty_table("t", schema).execute().await?;
 
-    assert!(storage_format_version(&table).await < LanceFileVersion::V2_2);
+    assert!(!supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -171,7 +176,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     .unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
@@ -281,7 +286,7 @@ async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -297,7 +302,7 @@ async fn namespace_create_applies_blob_defaults() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -474,7 +479,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let batch = RecordBatch::try_new(schema, vec![Arc::new(info_array) as ArrayRef]).unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
@@ -1305,7 +1310,7 @@ async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
         .await?;
     table.add(null_empty_input_batch()).execute().await?;
     assert!(
-        storage_format_version(&table).await >= LanceFileVersion::V2_2,
+        supports_blob_v2(storage_format_version(&table).await),
         "blob v2 columns require storage >= 2.2"
     );
 
