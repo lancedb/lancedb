@@ -3763,6 +3763,7 @@ mod tests {
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
+    use lance_io::object_store::NativeDirectoryPathResolver;
     use tempfile::tempdir;
 
     use super::*;
@@ -4777,6 +4778,47 @@ mod tests {
         assert!(
             matches!(&err, Error::TableCorrupted { name, .. } if name == "direct"),
             "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_recovery_detects_empty_direct_local_directory() {
+        let tmp_dir = tempdir().unwrap();
+        let table_name = "direct-local";
+        let table_path = tmp_dir.path().join(format!("{table_name}.lance"));
+        std::fs::create_dir(&table_path).unwrap();
+        let uri = url::Url::from_file_path(&table_path).unwrap();
+        let read_params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store: Some((
+                    Arc::new(object_store::local::LocalFileSystem::new()),
+                    uri.clone(),
+                )),
+                native_directory_path_resolver: Some(NativeDirectoryPathResolver::new(|path| {
+                    std::path::PathBuf::from(lance_io::local::to_local_path(path))
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            uri.as_ref(),
+            table_name,
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
+            "empty direct local directory must remain corrupt, got {err:?}"
         );
     }
 
