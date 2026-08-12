@@ -7,6 +7,7 @@ import logging
 from functools import cached_property
 import os
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -66,6 +67,9 @@ from ..query import (
 )
 from ..table import AsyncTable, BlobMode, Branches, IndexStatistics, Query, Table, Tags
 from ..types import BaseTokenizerType
+
+if TYPE_CHECKING:
+    from lancedb._lancedb import _FunctionCall
 
 
 class RemoteTable(Table):
@@ -569,6 +573,15 @@ class RemoteTable(Table):
                 )
             )
         )
+
+    def add_generated_column(self, column_name: str, call: "_FunctionCall") -> Job:
+        """Add a generated column from an authored Function call.
+
+        Returns a :class:`~lancedb.job.Job` for the create operation. Acceptance
+        of the Job does not publish the column; callers must wait and re-read
+        the table to observe the new definition and values.
+        """
+        return Job(LOOP.run(self._table.add_generated_column(column_name, call)))
 
     def _is_legacy_create_index_call(
         self,

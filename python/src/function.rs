@@ -227,8 +227,7 @@ impl AuthoredFunctionCall {
         })
     }
 
-    /// Crate-private accessor for the later table-binding slice.
-    #[allow(dead_code)]
+    /// Crate-private accessor for the exact Function owned by this authored call.
     pub(crate) fn function(&self) -> &lancedb::function::Function {
         &self.function
     }
@@ -243,9 +242,8 @@ impl AuthoredFunctionCall {
     ///
     /// Calls [`lancedb::Table::generated_column_binding_snapshot`] once so the
     /// returned `source_table_version` and canonical [`FunctionCall`] share the
-    /// same field identities and Arrow types. Source version stays outside the
-    /// call for later Job envelope submit. Not yet wired to create/change submit.
-    #[allow(dead_code)] // Bound by the immediately following create/change submit slice.
+    /// same field identities and Arrow types. Source version remains outside the
+    /// call for the create/change Job envelope.
     pub(crate) async fn bind_to_table(
         &self,
         table: &lancedb::Table,

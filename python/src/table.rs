@@ -930,6 +930,39 @@ impl Table {
         })
     }
 
+    /// Hidden bridge: bind an authored Function call once and submit create.
+    ///
+    /// Private native path for Python ``table.add_generated_column``. Rejects an
+    /// empty ``column_name`` before reading the table handle. Does not expose
+    /// source version, stable field IDs, the operation spec, or request envelope.
+    #[doc(hidden)]
+    pub fn _add_generated_column<'a>(
+        self_: PyRef<'a, Self>,
+        column_name: String,
+        call: Bound<'_, crate::function::AuthoredFunctionCall>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        if column_name.is_empty() {
+            return Err(PyValueError::new_err("column_name must be non-empty"));
+        }
+        let inner = self_.inner_ref()?.clone();
+        let authored = call.get().clone();
+        future_into_py(self_.py(), async move {
+            let (source_table_version, bound_call) =
+                authored.bind_to_table(&inner).await.infer_error()?;
+            let spec = lancedb::function::CreateGeneratedColumnJobSpec::try_new(
+                column_name,
+                authored.function(),
+                bound_call,
+            )
+            .infer_error()?;
+            let job = inner
+                .submit_create_generated_column(source_table_version, spec)
+                .await
+                .infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     pub fn drop_index(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {

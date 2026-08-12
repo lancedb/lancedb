@@ -185,6 +185,7 @@ if TYPE_CHECKING:
         LsmWriteSpec,
         MergeResult,
         UpdateResult,
+        _FunctionCall,
     )
     from .index import IndexConfig
     import pandas
@@ -1004,6 +1005,15 @@ class Table(ABC):
         Takes the same arguments as :meth:`create_index`. The job may already
         be complete when returned; callers must not assume the index exists
         until :meth:`Job.wait` returns.
+        """
+        raise NotImplementedError
+
+    def add_generated_column(self, column_name: str, call: _FunctionCall) -> Job:
+        """Add a generated column from an authored Function call.
+
+        Returns a :class:`~lancedb.job.Job` for the create operation. Acceptance
+        of the Job does not publish the column; callers must wait and re-read
+        the table to observe the new definition and values.
         """
         raise NotImplementedError
 
@@ -2848,6 +2858,15 @@ class LanceTable(Table):
                 )
             )
         )
+
+    def add_generated_column(self, column_name: str, call: _FunctionCall) -> Job:
+        """Add a generated column from an authored Function call.
+
+        Returns a :class:`~lancedb.job.Job` for the create operation. Acceptance
+        of the Job does not publish the column; callers must wait and re-read
+        the table to observe the new definition and values.
+        """
+        return Job(LOOP.run(self._table.add_generated_column(column_name, call)))
 
     def _is_legacy_create_index_call(
         self,
@@ -5064,6 +5083,18 @@ class AsyncTable:
             name=name,
             train=train,
         )
+        return AsyncJob(job)
+
+    async def add_generated_column(
+        self, column_name: str, call: _FunctionCall
+    ) -> AsyncJob:
+        """Add a generated column from an authored Function call.
+
+        Returns an :class:`~lancedb.job.AsyncJob` for the create operation.
+        Acceptance of the Job does not publish the column; callers must wait
+        and re-read the table to observe the new definition and values.
+        """
+        job = await self._inner._add_generated_column(column_name, call)
         return AsyncJob(job)
 
     async def drop_index(self, name: str) -> None:
