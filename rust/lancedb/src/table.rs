@@ -38,6 +38,7 @@ use lance_table::format::Manifest;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
+use object_store::ObjectStoreExt as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::format;
@@ -166,71 +167,32 @@ async fn map_dataset_not_found(
     name: &str,
     params: ReadParams,
     err: lance::Error,
-    storage_probe: Option<TableStorageProbe>,
 ) -> Result<Error> {
     let name = name.to_string();
     let source = Box::new(err);
-    if table_storage_exists(uri, params, storage_probe).await? {
+    if table_storage_exists(uri, params).await? {
         Ok(Error::TableCorrupted { name, source })
     } else {
         Ok(Error::TableNotFound { name, source })
     }
 }
 
-/// How a failed table open may distinguish an empty directory from a missing table.
-///
-/// Object stores cannot represent empty directories, so an unknown provider uses only
-/// exact-key and target-prefix probes unless its resolved store proves that it shares
-/// the native filesystem namespace. Connections that create Lance's default registry
-/// internally can trust its built-in local providers without the extra proof.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum TableStorageProbe {
-    #[default]
-    VerifyResolvedStore,
-    TrustedDefaultRegistry,
-}
+/// `object_store::local::LocalFileSystem` represents a directory as a distinguished
+/// `NotFound` from an exact HEAD. Preserve that signal without listing the parent or
+/// inspecting an unrelated host path.
+fn exact_head_reports_directory(error: &object_store::Error) -> bool {
+    const DIRECTORY_SENTINEL: &str = "is directory";
 
-impl TableStorageProbe {
-    pub(crate) fn for_registry(uses_default_registry: bool) -> Self {
-        if uses_default_registry {
-            Self::TrustedDefaultRegistry
-        } else {
-            Self::VerifyResolvedStore
-        }
-    }
-
-    fn supports_native_directories(object_store: &lance_io::object_store::ObjectStore) -> bool {
-        match object_store.scheme() {
-            "file" | "file-object-store" => true,
-            #[cfg(target_os = "linux")]
-            "file+uring" => true,
-            _ => false,
-        }
-    }
-
-    async fn resolved_store_supports_native_directories(
-        self,
-        object_store: &lance_io::object_store::ObjectStore,
-    ) -> bool {
-        if !Self::supports_native_directories(object_store) {
-            return false;
-        }
-        if self == Self::TrustedDefaultRegistry {
-            return true;
-        }
-
-        // `ObjectStoreProvider` does not expose concrete type identity or a directory
-        // capability. Verify the resolved store behavior with one exact, unrelated
-        // local file instead. This is bounded and prevents a custom provider that only
-        // reports a `file` scheme from being bypassed by host filesystem metadata.
-        let Ok(probe) = tempfile::NamedTempFile::new() else {
-            return false;
-        };
-        let Ok(probe_path) = object_store::path::Path::from_absolute_path(probe.path()) else {
-            return false;
-        };
-        object_store.exists(&probe_path).await.unwrap_or(false)
-    }
+    let object_store::Error::NotFound { source, .. } = error else {
+        return false;
+    };
+    source
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|source| {
+            source.kind() == std::io::ErrorKind::NotFound
+                && source.raw_os_error().is_none()
+                && source.to_string() == DIRECTORY_SENTINEL
+        })
 }
 
 /// Whether storage contains an entry for `uri`, even though no dataset could be loaded.
@@ -238,20 +200,9 @@ impl TableStorageProbe {
 /// Local filesystems can represent an empty table directory, so inspect that exact path.
 /// Object stores cannot represent empty directories: probe an exact key and then consume
 /// at most the first object under the table prefix. Neither path inspects sibling tables.
-async fn table_storage_exists(
-    uri: &str,
-    params: ReadParams,
-    storage_probe: Option<TableStorageProbe>,
-) -> Result<bool> {
-    #[allow(deprecated)]
-    let requires_store_probe = params.store_options.as_ref().is_some_and(|options| {
-        options.object_store.is_some() || options.object_store_wrapper.is_some()
-    });
-    let uses_default_registry = params.session.is_none();
-
-    // Resolve the effective provider before selecting a probe. A session can replace the
-    // provider for a local-looking URI, and a wrapper can own state or inject failures that
-    // must not be bypassed by inspecting the host filesystem directly.
+async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
+    // Resolve the effective provider and wrapper for this exact table URI. The resolved
+    // store remains authoritative even when a custom provider preserves a `file` scheme.
     let (object_store, path, _) = DatasetBuilder::from_uri(uri)
         .with_read_params(params)
         .build_object_store()
@@ -262,28 +213,38 @@ async fn table_storage_exists(
         return Ok(false);
     }
 
-    let storage_probe =
-        storage_probe.unwrap_or_else(|| TableStorageProbe::for_registry(uses_default_registry));
-    if !requires_store_probe
-        && storage_probe
-            .resolved_store_supports_native_directories(&object_store)
-            .await
+    let head_error = match object_store.inner.head(&path).await {
+        Ok(_) => return Ok(true),
+        Err(error) if exact_head_reports_directory(&error) => return Ok(true),
+        Err(error) => error,
+    };
+
+    // Opening a directory through LocalFileSystem surfaces as `PermissionDenied` on
+    // Windows instead of the portable directory sentinel above. Only after the resolved
+    // store explicitly identifies that backend do we consult metadata for the exact path.
+    #[cfg(windows)]
+    if matches!(
+        &head_error,
+        object_store::Error::Generic {
+            store: "LocalFileSystem",
+            ..
+        }
+    ) && matches!(object_store.scheme(), "file" | "file-object-store")
     {
         let local_path = std::path::PathBuf::from(lance_io::local::to_local_path(&path));
         // A local table URI intentionally grants access to this exact path; LanceDB does
         // not confine local databases beneath a separate filesystem root. nosemgrep
-        return match std::fs::symlink_metadata(&local_path) {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(Error::Runtime {
-                message: format!("Failed to inspect table path {local_path:?}: {err}"),
-            }),
-        };
+        match std::fs::symlink_metadata(&local_path) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(head_error.into()),
+        }
     }
 
-    if object_store.exists(&path).await? {
-        return Ok(true);
+    if !matches!(head_error, object_store::Error::NotFound { .. }) {
+        return Err(head_error.into());
     }
+
     Ok(object_store
         .list(Some(path))
         .next()
@@ -2475,62 +2436,6 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
-        Self::open_with_params_internal(
-            uri,
-            name,
-            namespace,
-            write_store_wrapper,
-            params,
-            read_consistency_interval,
-            namespace_client,
-            pushdown_operations,
-            managed_versioning,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn open_with_params_and_storage_probe(
-        uri: &str,
-        name: &str,
-        namespace: Vec<String>,
-        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: Option<ReadParams>,
-        read_consistency_interval: Option<std::time::Duration>,
-        namespace_client: Option<Arc<dyn LanceNamespace>>,
-        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
-        managed_versioning: Option<bool>,
-        storage_probe: TableStorageProbe,
-    ) -> Result<Self> {
-        Self::open_with_params_internal(
-            uri,
-            name,
-            namespace,
-            write_store_wrapper,
-            params,
-            read_consistency_interval,
-            namespace_client,
-            pushdown_operations,
-            managed_versioning,
-            Some(storage_probe),
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn open_with_params_internal(
-        uri: &str,
-        name: &str,
-        namespace: Vec<String>,
-        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: Option<ReadParams>,
-        read_consistency_interval: Option<std::time::Duration>,
-        namespace_client: Option<Arc<dyn LanceNamespace>>,
-        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
-        managed_versioning: Option<bool>,
-        storage_probe: Option<TableStorageProbe>,
-    ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
@@ -2593,8 +2498,7 @@ impl NativeTable {
         let dataset = match make_builder().load().await {
             Ok(dataset) => dataset,
             Err(e @ lance::Error::DatasetNotFound { .. }) => {
-                let mapped =
-                    map_dataset_not_found(uri, name, params.clone(), e, storage_probe).await?;
+                let mapped = map_dataset_not_found(uri, name, params.clone(), e).await?;
                 if !matches!(mapped, Error::TableCorrupted { .. }) {
                     return Err(mapped);
                 }
@@ -4289,6 +4193,55 @@ mod tests {
         assert!(
             matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
             "listed empty table must be corrupt, got {err:?}"
+        );
+    }
+
+    /// Recovery must not depend on writable process scratch space. Run the
+    /// assertion in a child process so changing `TMPDIR` cannot affect other tests.
+    #[test]
+    #[cfg(unix)]
+    fn test_open_recovery_explicit_session_without_temp_directory() {
+        const FIXTURE_ENV: &str = "LANCEDB_OPEN_RECOVERY_NO_TMP_FIXTURE";
+        const MISSING_TMP_ENV: &str = "LANCEDB_OPEN_RECOVERY_MISSING_TMPDIR";
+        const TABLE_NAME: &str = "explicit-session-no-tempfile";
+
+        if let Some(fixture) = std::env::var_os(FIXTURE_ENV) {
+            let session = Arc::new(lance::session::Session::default());
+            let missing_tmpdir = std::env::var_os(MISSING_TMP_ENV).unwrap();
+            // The child process isolates this environment mutation from other tests.
+            unsafe { std::env::set_var("TMPDIR", missing_tmpdir) };
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let db = connect(std::path::Path::new(&fixture).to_str().unwrap())
+                    .session(session)
+                    .execute()
+                    .await
+                    .unwrap();
+                let err = db.open_table(TABLE_NAME).execute().await.unwrap_err();
+                assert!(
+                    matches!(&err, Error::TableCorrupted { name, .. } if name == TABLE_NAME),
+                    "listed empty table must be corrupt, got {err:?}"
+                );
+            });
+            return;
+        }
+
+        let fixture = tempdir().unwrap();
+        std::fs::create_dir(fixture.path().join(format!("{TABLE_NAME}.lance"))).unwrap();
+        let missing_tmpdir = fixture.path().join("missing-tmpdir");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("table::tests::test_open_recovery_explicit_session_without_temp_directory")
+            .arg("--nocapture")
+            .env(FIXTURE_ENV, fixture.path())
+            .env(MISSING_TMP_ENV, missing_tmpdir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
