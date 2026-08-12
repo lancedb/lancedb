@@ -70,6 +70,7 @@ use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
+mod append_generated_column_invalidation;
 pub mod branch_merge;
 pub mod checkpoint;
 mod create_index;
@@ -85,6 +86,8 @@ pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
 
+#[cfg(test)]
+mod append_generated_column_invalidation_contract;
 #[cfg(test)]
 mod schema_metadata_updates_dependency_contract;
 
@@ -3221,13 +3224,14 @@ impl BaseTable for NativeTable {
     }
 
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
-        let table_def = self.table_definition().await?;
-
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
+        // One exact dataset supplies table definition, schema, binding snapshot,
+        // planning basis, and the InsertExec transaction basis.
         let ds = self.dataset.get().await?;
 
-        let table_schema = Schema::from(&ds.schema().clone());
+        let table_schema = Schema::from(ds.schema());
+        let table_def = TableDefinition::try_from_rich_schema(Arc::new(table_schema.clone()))?;
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
             parallelism
@@ -3263,6 +3267,14 @@ impl BaseTable for NativeTable {
                 ..Default::default()
             });
 
+        // Plan after in-memory preprocessing, before any InsertExec file write.
+        // Canonical overwrite is PreprocessingOutput.overwrite, not final lance_params.mode.
+        let schema_metadata_updates =
+            append_generated_column_invalidation::plan_native_append_generated_column_invalidation(
+                ds.as_ref(),
+                output.overwrite,
+            )?;
+
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
             Arc::new(
@@ -3281,6 +3293,7 @@ impl BaseTable for NativeTable {
             plan,
             lance_params,
             output.tracker.clone(),
+            schema_metadata_updates,
         ));
 
         let tracker_for_tasks = output.tracker.clone();
@@ -3773,13 +3786,22 @@ impl BaseTable for NativeTable {
         input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-        let ds = self.dataset.get().await?;
-        let dataset = Arc::new((*ds).clone());
-        Ok(Arc::new(datafusion::insert::InsertExec::new(
+        // One exact dataset supplies planning basis and the InsertExec basis.
+        let dataset = self.dataset.get().await?;
+        let is_overwrite = matches!(write_params.mode, WriteMode::Overwrite);
+        // Reject generated-table overwrite before returning an execution plan.
+        let schema_metadata_updates =
+            append_generated_column_invalidation::plan_native_append_generated_column_invalidation(
+                dataset.as_ref(),
+                is_overwrite,
+            )?;
+        Ok(Arc::new(datafusion::insert::InsertExec::new_with_tracker(
             self.dataset.clone(),
             dataset,
             input,
             write_params,
+            None,
+            schema_metadata_updates,
         )))
     }
 }

@@ -19,7 +19,7 @@ use datafusion_physical_plan::{
 };
 use futures::TryStreamExt;
 use lance::Dataset;
-use lance::dataset::transaction::{Operation, Transaction};
+use lance::dataset::transaction::{Operation, SchemaMetadataUpdates, Transaction};
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams, WriteProgressFn};
 use lance::io::exec::utils::InstrumentedRecordBatchStreamAdapter;
 use lance_table::format::Fragment;
@@ -74,7 +74,9 @@ fn merge_transactions(mut transactions: Vec<Transaction>) -> Option<Transaction>
 ///
 /// This plan executes inserts by:
 /// 1. Each partition writes data independently using InsertBuilder::execute_uncommitted_stream
-/// 2. The last partition to complete commits all transactions atomically
+/// 2. The last partition to complete merges transactions, optionally attaches one
+///    precomputed generated-column metadata patch when the merged write has rows,
+///    then commits once
 /// 3. Returns the count of inserted rows per partition
 #[derive(Debug)]
 pub struct InsertExec {
@@ -83,6 +85,10 @@ pub struct InsertExec {
     input: Arc<dyn ExecutionPlan>,
     write_params: WriteParams,
     tracker: Option<Arc<WriteProgressTracker>>,
+    /// Optional whole-transaction field-metadata patch for generated-column
+    /// invalidation. Attached once after partition merge, and only when the
+    /// merged operation contains at least one written row.
+    schema_metadata_updates: Option<SchemaMetadataUpdates>,
     properties: Arc<PlanProperties>,
     partial_transactions: Arc<Mutex<Vec<Transaction>>>,
     metrics: ExecutionPlanMetricsSet,
@@ -95,7 +101,7 @@ impl InsertExec {
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
     ) -> Self {
-        Self::new_with_tracker(ds_wrapper, dataset, input, write_params, None)
+        Self::new_with_tracker(ds_wrapper, dataset, input, write_params, None, None)
     }
 
     pub(crate) fn new_with_tracker(
@@ -104,6 +110,7 @@ impl InsertExec {
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
         tracker: Option<Arc<WriteProgressTracker>>,
+        schema_metadata_updates: Option<SchemaMetadataUpdates>,
     ) -> Self {
         let schema = COUNT_SCHEMA.clone();
         let num_partitions = input.output_partitioning().partition_count();
@@ -120,6 +127,7 @@ impl InsertExec {
             input,
             write_params,
             tracker,
+            schema_metadata_updates,
             properties: Arc::new(properties),
             partial_transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
             metrics: ExecutionPlanMetricsSet::new(),
@@ -176,6 +184,7 @@ impl ExecutionPlan for InsertExec {
             children[0].clone(),
             self.write_params.clone(),
             self.tracker.clone(),
+            self.schema_metadata_updates.clone(),
         )))
     }
 
@@ -191,6 +200,7 @@ impl ExecutionPlan for InsertExec {
         let total_partitions = self.input.output_partitioning().partition_count();
         let ds_wrapper = self.ds_wrapper.clone();
         let tracker = self.tracker.clone();
+        let schema_metadata_updates = self.schema_metadata_updates.clone();
 
         let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let input_schema = input_stream.schema();
@@ -220,6 +230,8 @@ impl ExecutionPlan for InsertExec {
                 }));
             }
 
+            // Each partition stages an uncommitted data-only transaction.
+            // Metadata invalidation is attached once on the merged commit.
             let transaction = InsertBuilder::new(dataset.clone())
                 .with_params(&write_params)
                 .execute_uncommitted_stream(input_stream)
@@ -241,8 +253,15 @@ impl ExecutionPlan for InsertExec {
             };
 
             if let Some(transactions) = to_commit
-                && let Some(merged_txn) = merge_transactions(transactions)
+                && let Some(mut merged_txn) = merge_transactions(transactions)
             {
+                // Attach the precomputed patch only for non-empty writes, and
+                // only once for the whole multi-partition transaction.
+                if count_rows_from_operation(&merged_txn.operation) > 0
+                    && let Some(updates) = schema_metadata_updates
+                {
+                    merged_txn = merged_txn.with_schema_metadata_updates(updates)?;
+                }
                 let new_dataset = CommitBuilder::new(dataset.clone())
                     .execute(merged_txn)
                     .await?;
