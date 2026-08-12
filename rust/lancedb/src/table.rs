@@ -200,11 +200,8 @@ async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
         return Ok(false);
     }
 
-    let is_native_local = !requires_store_probe
-        && matches!(
-            object_store.scheme(),
-            "file" | "file+uring" | "file-object-store"
-        );
+    let is_native_local =
+        !requires_store_probe && matches!(object_store.scheme(), "file" | "file+uring");
     if is_native_local {
         let local_path = std::path::PathBuf::from(lance_io::local::to_local_path(&path));
         // A local table URI intentionally grants access to this exact path; LanceDB does
@@ -3980,6 +3977,63 @@ mod tests {
 
         assert!(
             matches!(&err, Error::TableCorrupted { name, .. } if name == "custom"),
+            "got {err:?}"
+        );
+    }
+
+    /// `file-object-store` deliberately routes through the ObjectStore API, so its
+    /// provider remains authoritative even though its URI names a local path.
+    #[tokio::test]
+    async fn test_open_recovery_uses_custom_file_object_store_provider() {
+        use object_store::ObjectStoreExt as _;
+
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("custom-object-store.lance");
+        let path = dataset_path.to_str().unwrap().replace('\\', "/");
+        let path_prefix = if path.starts_with('/') { "" } else { "/" };
+        let url = url::Url::parse(&format!("file-object-store://{path_prefix}{path}")).unwrap();
+        let uri = url.to_string();
+        assert!(!dataset_path.exists());
+
+        let inner = Arc::new(object_store::memory::InMemory::new());
+        let table_path = object_store::path::Path::from_url_path(url.path()).unwrap();
+        inner
+            .put(
+                &table_path.clone().join("_marker"),
+                bytes::Bytes::new().into(),
+            )
+            .await
+            .unwrap();
+        let store = lance_io::object_store::ObjectStore::new(
+            inner, url, None, None, false, false, 1, 0, None,
+        );
+
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        registry.insert(
+            "file-object-store",
+            Arc::new(FileSchemeMemoryProvider { store }),
+        );
+        let read_params = ReadParams {
+            session: Some(Arc::new(lance::session::Session::new(0, 0, registry))),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            &uri,
+            "custom-object-store",
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom-object-store"),
             "got {err:?}"
         );
     }
