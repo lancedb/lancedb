@@ -183,6 +183,11 @@ async fn map_dataset_not_found(
 /// Object stores cannot represent empty directories: probe an exact key and then consume
 /// at most the first object under the table prefix. Neither path inspects sibling tables.
 async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
+    #[allow(deprecated)]
+    let uses_legacy_direct_store = params.store_options.as_ref().is_some_and(|options| {
+        options.object_store.is_some() && options.native_directory_path_resolver.is_none()
+    });
+
     // Resolve the effective provider and wrapper for this exact table URI. The resolved
     // store remains authoritative even when a custom provider preserves a `file` scheme.
     let (object_store, path, _) = DatasetBuilder::from_uri(uri)
@@ -193,6 +198,17 @@ async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
     // the list-then-open mismatch this guards against.
     if path.extension() != Some(LANCE_FILE_EXTENSION) {
         return Ok(false);
+    }
+
+    // The deprecated direct binding cannot identify native directory semantics unless its
+    // caller supplies a resolver. Preserve its established list/open agreement without
+    // widening this sibling-enumerating fallback to provider-resolved stores.
+    if uses_legacy_direct_store {
+        let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
+            return Ok(false);
+        };
+        let entries = object_store.read_dir(parent).await?;
+        return Ok(entries.iter().any(|entry| entry.as_str() == dir_name));
     }
 
     if let Some(native_path) = object_store.native_directory_path(&path) {
@@ -4788,38 +4804,48 @@ mod tests {
         let table_path = tmp_dir.path().join(format!("{table_name}.lance"));
         std::fs::create_dir(&table_path).unwrap();
         let uri = url::Url::from_file_path(&table_path).unwrap();
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store: Some((
-                    Arc::new(object_store::local::LocalFileSystem::new()),
-                    uri.clone(),
-                )),
-                native_directory_path_resolver: Some(NativeDirectoryPathResolver::new(|path| {
+        let cases = [
+            ("legacy", None),
+            (
+                "capable",
+                Some(NativeDirectoryPathResolver::new(|path| {
                     std::path::PathBuf::from(lance_io::local::to_local_path(path))
                 })),
+            ),
+        ];
+
+        for (case, native_directory_path_resolver) in cases {
+            let read_params = ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store: Some((
+                        Arc::new(object_store::local::LocalFileSystem::new()),
+                        uri.clone(),
+                    )),
+                    native_directory_path_resolver,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
+            };
 
-        let err = NativeTable::open_with_params(
-            uri.as_ref(),
-            table_name,
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
+            let err = NativeTable::open_with_params(
+                uri.as_ref(),
+                table_name,
+                Vec::new(),
+                None,
+                Some(read_params),
+                None,
+                None,
+                HashSet::new(),
+                None,
+            )
+            .await
+            .unwrap_err();
 
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
-            "empty direct local directory must remain corrupt, got {err:?}"
-        );
+            assert!(
+                matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
+                "{case} empty direct local directory must remain corrupt, got {err:?}"
+            );
+        }
     }
 
     /// If a concurrent create commits after the first manifest lookup misses,
