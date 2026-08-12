@@ -1027,6 +1027,49 @@ impl Table {
         })
     }
 
+    /// Hidden bridge: one binding snapshot, bind new call, submit change.
+    ///
+    /// Private native path for Python ``table.alter_generated_column``. Rejects
+    /// an empty ``column_name`` before reading the table handle. Fetches exactly
+    /// one binding snapshot, loads the expected definition from that same
+    /// object, binds the authored call against it, and submits change. Does not
+    /// expose source version, Function handles, field IDs, epochs, specs, or
+    /// request envelope.
+    #[doc(hidden)]
+    pub fn _alter_generated_column<'a>(
+        self_: PyRef<'a, Self>,
+        column_name: String,
+        new_call: Bound<'_, crate::function::AuthoredFunctionCall>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        if column_name.is_empty() {
+            return Err(PyValueError::new_err("column_name must be non-empty"));
+        }
+        let inner = self_.inner_ref()?.clone();
+        let authored = new_call.get().clone();
+        future_into_py(self_.py(), async move {
+            let snapshot = inner
+                .generated_column_binding_snapshot()
+                .await
+                .infer_error()?;
+            let expected_definition = snapshot
+                .generated_column_definition(&column_name)
+                .infer_error()?;
+            let (source_table_version, bound_new_call) =
+                authored.bind_against_snapshot(&snapshot).infer_error()?;
+            let spec = lancedb::function::ChangeGeneratedColumnJobSpec::try_new(
+                expected_definition,
+                authored.function(),
+                bound_new_call,
+            )
+            .infer_error()?;
+            let job = inner
+                .submit_change_generated_column(source_table_version, spec)
+                .await
+                .infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     pub fn drop_index(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {

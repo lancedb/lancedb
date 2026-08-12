@@ -1036,6 +1036,15 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def alter_generated_column(self, column_name: str, new_call: _FunctionCall) -> Job:
+        """Alter the Function call for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the change operation. Acceptance
+        of the Job does not publish the new definition; callers must wait and
+        re-read the table to observe the updated column.
+        """
+        raise NotImplementedError
+
     def drop_index(self, name: str) -> None:
         """
         Drop an index from the table.
@@ -2905,6 +2914,15 @@ class LanceTable(Table):
         the table to observe refreshed results.
         """
         return Job(LOOP.run(self._table.refresh_generated_column(column_name)))
+
+    def alter_generated_column(self, column_name: str, new_call: _FunctionCall) -> Job:
+        """Alter the Function call for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the change operation. Acceptance
+        of the Job does not publish the new definition; callers must wait and
+        re-read the table to observe the updated column.
+        """
+        return Job(LOOP.run(self._table.alter_generated_column(column_name, new_call)))
 
     def _is_legacy_create_index_call(
         self,
@@ -5153,6 +5171,18 @@ class AsyncTable:
         and re-read the table to observe refreshed results.
         """
         job = await self._inner._refresh_generated_column(column_name)
+        return AsyncJob(job)
+
+    async def alter_generated_column(
+        self, column_name: str, new_call: _FunctionCall
+    ) -> AsyncJob:
+        """Alter the Function call for an existing generated column.
+
+        Returns an :class:`~lancedb.job.AsyncJob` for the change operation.
+        Acceptance of the Job does not publish the new definition; callers must
+        wait and re-read the table to observe the updated column.
+        """
+        job = await self._inner._alter_generated_column(column_name, new_call)
         return AsyncJob(job)
 
     async def drop_index(self, name: str) -> None:

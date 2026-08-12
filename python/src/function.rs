@@ -255,10 +255,13 @@ impl AuthoredFunctionCall {
     /// Resolve authoring bindings against an already-fetched binding snapshot.
     ///
     /// Field names use exact case-sensitive top-level lookup; a name containing
-    /// `.` is literal, not a nested path. Used only by [`Self::bind_to_table`]
-    /// and narrowly scoped Rust tests that need a dotted top-level name Native
-    /// Lance cannot create on a real table.
-    fn bind_against_snapshot(
+    /// `.` is literal, not a nested path. Returns that same snapshot's version
+    /// plus the validated canonical [`FunctionCall`]. Used by
+    /// [`Self::bind_to_table`], the alter generated-column PyO3 bridge (one
+    /// shared snapshot with definition load), and narrowly scoped Rust tests
+    /// that need a dotted top-level name Native Lance cannot create on a real
+    /// table.
+    pub(crate) fn bind_against_snapshot(
         &self,
         snapshot: &lancedb::function::GeneratedColumnBindingSnapshot,
     ) -> lancedb::Result<(u64, FunctionCall)> {

@@ -602,6 +602,17 @@ class RemoteTable(Table):
         """
         return Job(LOOP.run(self._table.refresh_generated_column(column_name)))
 
+    def alter_generated_column(
+        self, column_name: str, new_call: "_FunctionCall"
+    ) -> Job:
+        """Alter the Function call for an existing generated column.
+
+        Returns a :class:`~lancedb.job.Job` for the change operation. Acceptance
+        of the Job does not publish the new definition; callers must wait and
+        re-read the table to observe the updated column.
+        """
+        return Job(LOOP.run(self._table.alter_generated_column(column_name, new_call)))
+
     def _is_legacy_create_index_call(
         self,
         first_arg: str,
