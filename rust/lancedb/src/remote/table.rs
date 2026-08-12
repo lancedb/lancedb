@@ -14,8 +14,8 @@ use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitio
 use crate::expr::expr_to_sql_string;
 use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
-    ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot,
-    RefreshGeneratedColumnJobSpec,
+    ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, Function, FunctionId,
+    GeneratedColumnBindingSnapshot, RefreshGeneratedColumnJobSpec,
 };
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -2193,6 +2193,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             job_id,
         ))))
+    }
+
+    async fn resolve_function_for_generated_column(
+        &self,
+        function_id: &FunctionId,
+    ) -> Result<Function> {
+        // Database-scoped exact-ID catalog lookup: delegate to the canonical
+        // helper. Do not apply branch, table, version, freshness, schema cache,
+        // or mutable-handle logic.
+        super::function::lookup_function(
+            &self.client,
+            super::function::FunctionLookupSelector::by_function_id(function_id),
+        )
+        .await
     }
 
     async fn create_branch(
@@ -10527,6 +10541,240 @@ mod tests {
             assert_eq!(attempts.load(Ordering::SeqCst), 2);
             assert_refresh_gen_col_markers_absent(&err);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // resolve_function_for_generated_column table-side exact-ID lookup (RED)
+    // -------------------------------------------------------------------------
+
+    const TABLE_RESOLVE_FUNCTION_ID: &str = "fn.exact.table-resolve.handle";
+    const TABLE_RESOLVE_SERVER_MESSAGE_MARKER: &str = "SERVER_TABLE_RESOLVE_DIAGNOSTIC_MARKER id=fn.exact.table-resolve.handle table=my_table branch=exp";
+
+    fn sample_table_resolve_function() -> crate::function::Function {
+        use crate::function::{
+            Function, FunctionId, FunctionOutput, FunctionParameter, FunctionSignature,
+        };
+
+        let id = FunctionId::try_new(TABLE_RESOLVE_FUNCTION_ID).expect("valid FunctionId");
+        let signature = FunctionSignature::try_new(
+            vec![
+                FunctionParameter::new("text", DataType::Utf8),
+                FunctionParameter::new("limit", DataType::Int32),
+            ],
+            FunctionOutput::new(DataType::Utf8, true),
+        )
+        .expect("valid FunctionSignature");
+        Function::new(id, signature)
+    }
+
+    fn table_resolve_success_body(function: &crate::function::Function) -> String {
+        json!({
+            "function": serde_json::to_value(function).expect("serialize Function wire"),
+        })
+        .to_string()
+    }
+
+    fn assert_table_resolve_id_lookup_request(request: &reqwest::Request, expected_id: &str) {
+        assert_eq!(request.method(), &reqwest::Method::POST);
+        assert_eq!(
+            request.url().path(),
+            "/v1/functions/lookup",
+            "exact catalog lookup must use the canonical database-scoped route"
+        );
+        let actual = request_body_json(request);
+        assert_eq!(
+            actual,
+            json!({ "function_id": expected_id }),
+            "table-side exact lookup body must be exactly {{\"function_id\":...}}"
+        );
+        for forbidden in [
+            "name",
+            "branch",
+            "table",
+            "table_ref",
+            "version",
+            "source_table_version",
+            "identifier",
+        ] {
+            assert!(
+                actual.get(forbidden).is_none(),
+                "catalog lookup must not send `{forbidden}`: {actual}"
+            );
+        }
+    }
+
+    fn assert_exact_resolved_function(
+        actual: &crate::function::Function,
+        expected: &crate::function::Function,
+    ) {
+        assert_eq!(actual.id(), expected.id());
+        assert_eq!(actual.signature(), expected.signature());
+    }
+
+    fn table_resolve_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_table_resolve_payload_free(err: &Error) {
+        let text = table_resolve_error_chain_text(err);
+        assert!(
+            !text.contains(TABLE_RESOLVE_SERVER_MESSAGE_MARKER),
+            "server diagnostic marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(TABLE_RESOLVE_FUNCTION_ID),
+            "FunctionId must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains("my_table"),
+            "table identifier must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains("branch=exp"),
+            "branch identity marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    /// Remote table exact-ID resolve posts the canonical route/body and returns
+    /// the immutable Function value.
+    #[tokio::test]
+    async fn resolve_function_for_generated_column_posts_exact_id_body_and_returns_function() {
+        use crate::function::FunctionId;
+
+        let expected = sample_table_resolve_function();
+        let body = table_resolve_success_body(&expected);
+        let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let paths_ref = paths.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            paths_ref.lock().unwrap().push(path.clone());
+            assert_table_resolve_id_lookup_request(&request, TABLE_RESOLVE_FUNCTION_ID);
+            http::Response::builder()
+                .status(200)
+                .body(body.clone())
+                .unwrap()
+        });
+        let id = FunctionId::try_new(TABLE_RESOLVE_FUNCTION_ID).expect("valid FunctionId");
+
+        let function = table
+            .resolve_function_for_generated_column(&id)
+            .await
+            .expect("table-side exact-ID resolve must succeed");
+        assert_exact_resolved_function(&function, &expected);
+        assert_eq!(function.id().as_str(), TABLE_RESOLVE_FUNCTION_ID);
+        let wire = serde_json::to_value(&function).expect("Function serializes");
+        assert!(
+            wire.get("name").is_none(),
+            "returned Function wire must not invent a catalog name: {wire}"
+        );
+        assert_eq!(
+            *paths.lock().unwrap(),
+            vec!["/v1/functions/lookup".to_string()],
+            "resolve must issue exactly one canonical lookup and no table route"
+        );
+    }
+
+    /// Branch-scoped table handles keep catalog lookup database-scoped: no
+    /// branch/table identity enters the canonical lookup body or route.
+    #[tokio::test]
+    async fn resolve_function_for_generated_column_branch_stays_database_scoped() {
+        use crate::function::FunctionId;
+        use lance::dataset::refs::Ref;
+
+        let expected = sample_table_resolve_function();
+        let body = table_resolve_success_body(&expected);
+        let lookup_hits = Arc::new(AtomicUsize::new(0));
+        let lookup_hits_ref = lookup_hits.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                "/v1/functions/lookup" => {
+                    lookup_hits_ref.fetch_add(1, Ordering::SeqCst);
+                    assert_table_resolve_id_lookup_request(&request, TABLE_RESOLVE_FUNCTION_ID);
+                    http::Response::builder()
+                        .status(200)
+                        .body(body.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected path for branch-scoped resolve: {path}"),
+            });
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .expect("create branch");
+        assert_eq!(branch.current_branch(), Some("exp".to_string()));
+        let id = FunctionId::try_new(TABLE_RESOLVE_FUNCTION_ID).expect("valid FunctionId");
+
+        let function = branch
+            .resolve_function_for_generated_column(&id)
+            .await
+            .expect("branch table resolve must stay database-scoped");
+        assert_exact_resolved_function(&function, &expected);
+        assert_eq!(
+            lookup_hits.load(Ordering::SeqCst),
+            1,
+            "branch resolve must hit the canonical lookup once"
+        );
+    }
+
+    /// Explicit stable error_code surfaces sanitized Error::Function; no payload
+    /// or selector values may leak through the table-side delegation.
+    #[tokio::test]
+    async fn resolve_function_for_generated_column_explicit_not_found_is_sanitized_function_error()
+    {
+        use crate::function::FunctionId;
+
+        let body = json!({
+            "error_code": "name_or_function_not_found",
+            "message": TABLE_RESOLVE_SERVER_MESSAGE_MARKER,
+            "looks_like": "definition_validation_failure",
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_table_resolve_id_lookup_request(&request, TABLE_RESOLVE_FUNCTION_ID);
+            http::Response::builder()
+                .status(404)
+                .body(body.clone())
+                .unwrap()
+        });
+        let id = FunctionId::try_new(TABLE_RESOLVE_FUNCTION_ID).expect("valid FunctionId");
+
+        let err = table
+            .resolve_function_for_generated_column(&id)
+            .await
+            .expect_err("missing Function must fail");
+        match &err {
+            Error::Function { code, message } => {
+                assert_eq!(code.as_str(), "name_or_function_not_found");
+                assert_ne!(code.as_str(), "definition_validation_failure");
+                assert!(
+                    !message.contains(TABLE_RESOLVE_SERVER_MESSAGE_MARKER),
+                    "Function error message must be sanitized, got {message}"
+                );
+                assert!(
+                    !message.contains(TABLE_RESOLVE_FUNCTION_ID),
+                    "Function error message must not echo FunctionId, got {message}"
+                );
+                assert_eq!(
+                    message, "function lookup failed",
+                    "table-side delegation must preserve the canonical sanitized lookup message"
+                );
+            }
+            other => panic!("expected Error::Function, got {other:?}"),
+        }
+        assert_table_resolve_payload_free(&err);
     }
 
     /// Test that schema cache expires after 30 seconds TTL

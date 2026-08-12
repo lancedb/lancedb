@@ -56,8 +56,8 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::function::schema_admission::reject_caller_authored_generated_column_schema_on_overwrite;
 use crate::function::{
-    ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot,
-    GeneratedColumnStatus, RefreshGeneratedColumnJobSpec,
+    ChangeGeneratedColumnJobSpec, CreateGeneratedColumnJobSpec, Function, FunctionId,
+    GeneratedColumnBindingSnapshot, GeneratedColumnStatus, RefreshGeneratedColumnJobSpec,
 };
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
@@ -690,6 +690,23 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "submit_refresh_generated_column is not supported on this table type".into(),
         })
     }
+    /// Resolve an immutable [`Function`] by exact opaque [`FunctionId`] for
+    /// generated-column SDK authoring.
+    ///
+    /// Hidden table-side exact-ID catalog seam. Database-scoped even on branch
+    /// table handles. Default returns [`Error::NotSupported`] so existing
+    /// third-party [`BaseTable`] implementations keep compiling and Native/local
+    /// tables have no catalog fallback.
+    #[doc(hidden)]
+    async fn resolve_function_for_generated_column(
+        &self,
+        _function_id: &FunctionId,
+    ) -> Result<Function> {
+        Err(Error::NotSupported {
+            message: "resolve_function_for_generated_column is not supported on this table type"
+                .into(),
+        })
+    }
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -1303,6 +1320,23 @@ impl Table {
     ) -> Result<Job> {
         self.inner
             .submit_refresh_generated_column(source_table_version, spec)
+            .await
+    }
+
+    /// Resolve an immutable [`Function`] by exact opaque [`FunctionId`] for
+    /// generated-column SDK authoring.
+    ///
+    /// Hidden table-side exact-ID catalog seam used by FF-010/FF-011 constructors
+    /// to validate Function identity and signature before submit. Database-scoped
+    /// even when invoked on a branch table handle. Not name lookup, not a Job,
+    /// and not a public catalog inventory API.
+    #[doc(hidden)]
+    pub async fn resolve_function_for_generated_column(
+        &self,
+        function_id: &FunctionId,
+    ) -> Result<Function> {
+        self.inner
+            .resolve_function_for_generated_column(function_id)
             .await
     }
 
