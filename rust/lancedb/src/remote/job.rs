@@ -84,6 +84,7 @@ pub(super) fn job_state_to_client(state: &str) -> String {
 /// Closed current no-result job_type vocabulary.
 const KNOWN_NO_RESULT_JOB_TYPES: &[&str] = &[
     "create_index",
+    "create_gen_column",
     "reindex_ivf_pq",
     "reindex_ivf_flat",
     "reindex_ivf_rq",
@@ -550,6 +551,7 @@ mod tests {
     /// Closed current no-result job_type vocabulary.
     const KNOWN_NO_RESULT_JOB_TYPES: &[&str] = &[
         "create_index",
+        "create_gen_column",
         "reindex_ivf_pq",
         "reindex_ivf_flat",
         "reindex_ivf_rq",
@@ -765,6 +767,59 @@ mod tests {
         );
         let job = remote_job_with_describe_body("job-create-index-function", body);
         wait_expect_http(&job).await;
+    }
+
+    /// create_gen_column DONE with omitted or explicit None projects JobResult::None.
+    #[tokio::test]
+    async fn remote_job_result_create_gen_column_done_omitted_or_explicit_none_projects_none() {
+        for result_field in [
+            JsonField::Absent,
+            JsonField::Present(job_result_none_wire()),
+        ] {
+            let body = describe_body(
+                "job-create-gen-column",
+                "DONE",
+                JsonField::Present(Value::String("create_gen_column".into())),
+                result_field,
+            );
+            let job = remote_job_with_describe_body("job-create-gen-column", body);
+            wait_expect_none(&job).await;
+        }
+    }
+
+    /// create_gen_column DONE with Function or unknown result kind is protocol Http.
+    #[tokio::test]
+    async fn remote_job_result_create_gen_column_function_or_unknown_result_is_http() {
+        let function = sample_remote_function();
+        let mut unknown_kind = job_result_none_wire();
+        unknown_kind["kind"] = Value::String("artifact".into());
+
+        let cases = [
+            (
+                "function",
+                JsonField::Present(job_result_function_wire(&function)),
+            ),
+            ("unknown_kind", JsonField::Present(unknown_kind)),
+        ];
+        let mut unexpected = Vec::new();
+        for (label, result_field) in cases {
+            let body = describe_body(
+                "job-create-gen-column-bad",
+                "DONE",
+                JsonField::Present(Value::String("create_gen_column".into())),
+                result_field,
+            );
+            let job = remote_job_with_describe_body("job-create-gen-column-bad", body);
+            match job.wait().await {
+                Err(Error::Http { .. }) => {}
+                Ok(value) => unexpected.push(format!("{label}: Ok({value:?})")),
+                Err(other) => unexpected.push(format!("{label}: Err({other:?})")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "create_gen_column Function/unknown result must be Error::Http: {unexpected:?}"
+        );
     }
 
     /// Unknown job_type fails wait; empty historical job_type succeeds only without an explicit result.

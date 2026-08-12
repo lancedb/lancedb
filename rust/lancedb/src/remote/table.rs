@@ -12,7 +12,7 @@ use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
-use crate::function::GeneratedColumnBindingSnapshot;
+use crate::function::{CreateGeneratedColumnJobSpec, GeneratedColumnBindingSnapshot};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
@@ -1935,6 +1935,72 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 other => other,
             },
         )
+    }
+
+    async fn submit_create_generated_column(
+        &self,
+        source_table_version: u64,
+        spec: CreateGeneratedColumnJobSpec,
+    ) -> Result<Job> {
+        // Fixed-version handles fail before any submit request.
+        self.check_mutable().await?;
+
+        // Envelope keys are exactly source_table_version + nested FF-009 spec.
+        // Branch identity (when present) is additive table identity, not part of
+        // the operation payload. table_ref is derived server-side.
+        let mut body = serde_json::json!({
+            "source_table_version": source_table_version,
+            "spec": spec,
+        });
+        self.apply_branch_body(&mut body);
+
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/generated_columns/create/",
+                self.identifier
+            ))
+            .json(&body);
+
+        // Typed literals may carry business data: reuse sensitive retry/check.
+        let (request_id, response) = self
+            .client
+            .send_sensitive_with_retry(request, None, true)
+            .await?;
+        let response = self
+            .client
+            .check_sensitive_response(&request_id, response)
+            .await?;
+
+        // Payload-free protocol failure: never fold response bytes into Error::Http.
+        let bytes = response.bytes().await.err_to_http(request_id.clone())?;
+        let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err(Error::Http {
+                    source: "create generated column response is not valid JSON".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+        let job_id = match value.get("job_id") {
+            Some(serde_json::Value::String(job_id)) if !job_id.is_empty() => job_id.clone(),
+            _ => {
+                return Err(Error::Http {
+                    source: "create generated column response missing or invalid job_id".into(),
+                    request_id,
+                    status_code: None,
+                });
+            }
+        };
+
+        // Submit acceptance is not table mutation: do not touch schema cache or
+        // read/write freshness watermarks.
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
     }
 
     async fn create_branch(
@@ -8106,6 +8172,623 @@ mod tests {
                 other => panic!("expected Http protocol error, got {other:?}"),
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // CreateGeneratedColumnJobSpec remote table submit transport (FF-031)
+    // -------------------------------------------------------------------------
+
+    const CREATE_GEN_COL_LITERAL_MARKER: &str = "SENSITIVE_CREATE_GEN_COL_LITERAL_MARKER";
+    const CREATE_GEN_COL_RESPONSE_MARKER: &str = "SENSITIVE_CREATE_GEN_COL_RESPONSE_MARKER";
+
+    fn sample_create_generated_column_job_spec() -> CreateGeneratedColumnJobSpec {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature,
+        };
+        use arrow_array::StringArray;
+
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.create-submit.remote").expect("valid FunctionId"),
+            FunctionSignature::try_new(
+                vec![
+                    FunctionParameter::new("x", DataType::Int32),
+                    FunctionParameter::new("label", DataType::Utf8),
+                ],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .expect("valid FunctionSignature"),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![
+                (
+                    "x".to_string(),
+                    FunctionArgument::try_field(1, DataType::Int32).expect("field arg"),
+                ),
+                (
+                    "label".to_string(),
+                    FunctionArgument::try_literal(Arc::new(StringArray::from(vec![Some(
+                        CREATE_GEN_COL_LITERAL_MARKER,
+                    )])) as _)
+                    .expect("literal arg"),
+                ),
+            ],
+        )
+        .expect("valid FunctionCall");
+        CreateGeneratedColumnJobSpec::try_new("normalized", &function, call).expect("valid spec")
+    }
+
+    fn create_gen_col_error_chain_text(err: &Error) -> String {
+        let mut text = format!("{err}\n{err:?}");
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = current {
+            text.push('\n');
+            text.push_str(&e.to_string());
+            text.push('\n');
+            text.push_str(&format!("{e:?}"));
+            current = e.source();
+        }
+        text
+    }
+
+    fn assert_create_gen_col_markers_absent(err: &Error) {
+        let text = create_gen_col_error_chain_text(err);
+        assert!(
+            !text.contains(CREATE_GEN_COL_LITERAL_MARKER),
+            "request literal marker must be absent from error/debug/source chain: {text}"
+        );
+        assert!(
+            !text.contains(CREATE_GEN_COL_RESPONSE_MARKER),
+            "response marker must be absent from error/debug/source chain: {text}"
+        );
+    }
+
+    fn assert_create_gen_col_envelope(
+        body: &serde_json::Value,
+        expected_source_version: u64,
+        expected_spec: &CreateGeneratedColumnJobSpec,
+        expected_branch: Option<&str>,
+    ) {
+        let object = body
+            .as_object()
+            .expect("create generated column body must be a JSON object");
+        let mut expected_keys = vec!["source_table_version", "spec"];
+        if expected_branch.is_some() {
+            expected_keys.push("branch");
+        }
+        expected_keys.sort_unstable();
+        let mut actual_keys: Vec<&str> = object.keys().map(|k| k.as_str()).collect();
+        actual_keys.sort_unstable();
+        assert_eq!(
+            actual_keys, expected_keys,
+            "envelope keys must be exact; got {actual_keys:?}"
+        );
+        assert_eq!(
+            body["source_table_version"],
+            serde_json::json!(expected_source_version),
+            "source_table_version must be preserved exactly"
+        );
+        assert!(
+            body.get("table_ref").is_none(),
+            "table_ref must not be sent; server derives it"
+        );
+        match expected_branch {
+            Some(branch) => assert_eq!(body["branch"], branch),
+            None => assert!(body.get("branch").is_none()),
+        }
+
+        let nested = body.get("spec").expect("nested spec");
+        let nested_object = nested.as_object().expect("spec must be object");
+        let mut nested_keys: Vec<&str> = nested_object.keys().map(|k| k.as_str()).collect();
+        nested_keys.sort_unstable();
+        assert_eq!(
+            nested_keys,
+            vec!["column_name", "format_version", "function_call"],
+            "nested FF-009 spec keys must be exact"
+        );
+        let expected_spec_json =
+            serde_json::to_value(expected_spec).expect("serialize CreateGeneratedColumnJobSpec");
+        assert_eq!(
+            nested, &expected_spec_json,
+            "nested spec must be the exact FF-009 CreateGeneratedColumnJobSpec wire"
+        );
+        for forbidden in [
+            "table_ref",
+            "source_table_version",
+            "table",
+            "version",
+            "name",
+            "handle",
+            "output",
+            "output_field_id",
+            "dependency_epoch",
+            "materialized_epoch",
+            "artifact",
+            "job_id",
+            "idempotency_key",
+            "retry",
+        ] {
+            assert!(
+                nested_object.get(forbidden).is_none(),
+                "nested spec must not contain forbidden key `{forbidden}`"
+            );
+        }
+    }
+
+    /// Remote main posts exact route and two-key envelope; returns opaque Job ID.
+    #[tokio::test]
+    async fn test_submit_create_generated_column_main_exact_route_envelope_and_job_id() {
+        let spec = sample_create_generated_column_job_spec();
+        let expected_spec = sample_create_generated_column_job_spec();
+        let paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let paths_ref = paths.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            paths_ref.lock().unwrap().push(path.clone());
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(path, "/v1/table/my_table/generated_columns/create/");
+            let body = request_body_json(&request);
+            assert_create_gen_col_envelope(&body, 42, &expected_spec, None);
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"job_id":"job-create-gen-col-1","server_extra":{"ok":true}}"#)
+                .unwrap()
+        });
+
+        let job = table
+            .submit_create_generated_column(42, spec)
+            .await
+            .expect("main submit must succeed");
+        assert_eq!(job.id(), Some("job-create-gen-col-1"));
+        assert_eq!(
+            *paths.lock().unwrap(),
+            vec!["/v1/table/my_table/generated_columns/create/".to_string()],
+            "submit must issue exactly one create request and no describe/read"
+        );
+    }
+
+    /// Branch identity adds exact `branch` without changing source version or nested spec.
+    #[tokio::test]
+    async fn test_submit_create_generated_column_branch_adds_exact_branch() {
+        use lance::dataset::refs::Ref;
+
+        let spec = sample_create_generated_column_job_spec();
+        let expected_spec = sample_create_generated_column_job_spec();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/branches/create/" => http::Response::builder()
+                    .status(200)
+                    .body("{}".to_string())
+                    .unwrap(),
+                "/v1/table/my_table/generated_columns/create/" => {
+                    let body = request_body_json(&request);
+                    assert_create_gen_col_envelope(&body, 7, &expected_spec, Some("exp"));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-create-gen-col-branch"}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+        let branch = table
+            .create_branch("exp", Ref::Version(None, None))
+            .await
+            .expect("create branch");
+        let job = branch
+            .submit_create_generated_column(7, spec)
+            .await
+            .expect("branch submit must succeed");
+        assert_eq!(job.id(), Some("job-create-gen-col-branch"));
+    }
+
+    /// Explicit-version handles fail mutation preflight before any submit request.
+    #[tokio::test]
+    async fn test_submit_create_generated_column_fixed_version_fails_before_submit() {
+        let describe_body =
+            describe_response(&Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let submit_hits = Arc::new(AtomicUsize::new(0));
+        let submit_hits_ref = submit_hits.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/generated_columns/create/" => {
+                    submit_hits_ref.fetch_add(1, Ordering::SeqCst);
+                    panic!("fixed-version handle must not reach submit");
+                }
+                path => panic!("unexpected path: {path}"),
+            });
+        table.checkout(42).await.expect("checkout fixed version");
+        let err = table
+            .submit_create_generated_column(42, sample_create_generated_column_job_spec())
+            .await
+            .expect_err("fixed-version submit must fail preflight");
+        assert!(
+            matches!(err, Error::NotSupported { .. }),
+            "expected NotSupported preflight, got {err:?}"
+        );
+        assert_eq!(
+            submit_hits.load(Ordering::SeqCst),
+            0,
+            "preflight must happen before any submit request"
+        );
+    }
+
+    /// Retry reuses request ID and byte-equivalent JSON body.
+    #[tokio::test]
+    async fn test_submit_create_generated_column_retry_preserves_request_id_and_body() {
+        use std::sync::OnceLock;
+
+        let spec = sample_create_generated_column_job_spec();
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_ref = attempts.clone();
+        let first_body = Arc::new(OnceLock::new());
+        let first_body_ref = first_body.clone();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/generated_columns/create/"
+                );
+                let body = request
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .expect("submit must carry JSON body")
+                    .to_vec();
+                let actual: serde_json::Value =
+                    serde_json::from_slice(&body).expect("body must be JSON");
+                assert_create_gen_col_envelope(
+                    &actual,
+                    11,
+                    &sample_create_generated_column_job_spec(),
+                    None,
+                );
+                let seen_body = first_body_ref.get_or_init(|| body.clone());
+                assert_eq!(
+                    &body, seen_body,
+                    "retry must reuse byte-equivalent JSON body"
+                );
+
+                let request_id = request.headers()["x-request-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                assert!(!request_id.is_empty());
+                let seen = seen_request_id_ref.get_or_init(|| request_id.clone());
+                assert_eq!(
+                    &request_id, seen,
+                    "request id must be identical across retries"
+                );
+
+                let n = attempts_ref.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    http::Response::builder()
+                        .status(500)
+                        .body("transient create gen column failure")
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-create-gen-col-retry"}"#)
+                        .unwrap()
+                }
+            },
+            ClientConfig {
+                retry_config: RetryConfig {
+                    retries: Some(2),
+                    backoff_factor: Some(0.0),
+                    backoff_jitter: Some(0.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let job = table
+            .submit_create_generated_column(11, spec)
+            .await
+            .expect("submit must succeed after one retry");
+        assert_eq!(job.id(), Some("job-create-gen-col-retry"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(seen_request_id.get().is_some());
+    }
+
+    /// Malformed/missing/empty/non-string job_id and 4xx/5xx markers stay payload-free.
+    #[tokio::test]
+    async fn test_submit_create_generated_column_errors_omit_request_and_response_markers() {
+        // Every 200 shape that fails closed includes the unique response marker
+        // wherever JSON permits, so absence from the error chain is meaningful.
+        let invalid_job_id_cases: Vec<(&str, String)> = vec![
+            (
+                "missing",
+                format!(r#"{{"server_extra":"{CREATE_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "null",
+                format!(r#"{{"job_id":null,"server_extra":"{CREATE_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "empty",
+                format!(r#"{{"job_id":"","server_extra":"{CREATE_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "wrong_type",
+                format!(r#"{{"job_id":123,"server_extra":"{CREATE_GEN_COL_RESPONSE_MARKER}"}}"#),
+            ),
+            (
+                "malformed",
+                format!("not-json {CREATE_GEN_COL_RESPONSE_MARKER}"),
+            ),
+        ];
+
+        let mut unexpected = Vec::new();
+        for (label, response_body) in invalid_job_id_cases {
+            let body_for_handler = response_body.clone();
+            let expected_request_id = Arc::new(std::sync::Mutex::new(None::<String>));
+            let expected_request_id_c = expected_request_id.clone();
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(
+                    request.url().path(),
+                    "/v1/table/my_table/generated_columns/create/"
+                );
+                let request_id = request
+                    .headers()
+                    .get("x-request-id")
+                    .expect("client must set x-request-id")
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                *expected_request_id_c.lock().unwrap() = Some(request_id);
+                http::Response::builder()
+                    .status(200)
+                    .body(body_for_handler.clone())
+                    .unwrap()
+            });
+            match table
+                .submit_create_generated_column(1, sample_create_generated_column_job_spec())
+                .await
+            {
+                Err(err) => match &err {
+                    Error::Http {
+                        request_id,
+                        status_code,
+                        ..
+                    } => {
+                        let expected = expected_request_id
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("handler must observe request id");
+                        assert_eq!(
+                            request_id, &expected,
+                            "{label}: Error::Http.request_id must equal outgoing x-request-id"
+                        );
+                        assert!(
+                            !request_id.is_empty(),
+                            "{label}: Error::Http.request_id must be nonempty"
+                        );
+                        assert!(
+                            status_code.is_none(),
+                            "{label}: local protocol validation must not invent a status code"
+                        );
+                        assert_create_gen_col_markers_absent(&err);
+                        let text = create_gen_col_error_chain_text(&err);
+                        assert!(
+                            !text.contains(&response_body),
+                            "{label}: raw response body must be absent from error/debug/source chain: {text}"
+                        );
+                    }
+                    other => unexpected.push(format!("{label}: {other:?}")),
+                },
+                Ok(ok) => unexpected.push(format!("{label}: Ok({ok:?})")),
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid job_id shapes must fail closed as Error::Http: {unexpected:?}"
+        );
+
+        let echoed = format!(
+            "create failed with {CREATE_GEN_COL_LITERAL_MARKER} and {CREATE_GEN_COL_RESPONSE_MARKER}"
+        );
+
+        {
+            let body = echoed.clone();
+            let table = Table::new_with_handler("my_table", move |_| {
+                http::Response::builder()
+                    .status(400)
+                    .body(body.clone())
+                    .unwrap()
+            });
+            let err = table
+                .submit_create_generated_column(1, sample_create_generated_column_job_spec())
+                .await
+                .expect_err("4xx submit must fail");
+            assert!(matches!(err, Error::Http { .. }), "got {err:?}");
+            assert_create_gen_col_markers_absent(&err);
+        }
+
+        {
+            let body = echoed.clone();
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let attempts_ref = attempts.clone();
+            let table = Table::new_with_handler_and_config(
+                "my_table",
+                move |_| {
+                    attempts_ref.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(500)
+                        .body(body.clone())
+                        .unwrap()
+                },
+                ClientConfig {
+                    retry_config: RetryConfig {
+                        retries: Some(2),
+                        backoff_factor: Some(0.0),
+                        backoff_jitter: Some(0.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let err = table
+                .submit_create_generated_column(1, sample_create_generated_column_job_spec())
+                .await
+                .expect_err("exhausted 5xx submit must fail");
+            assert!(matches!(err, Error::Retry { .. }), "got {err:?}");
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert_create_gen_col_markers_absent(&err);
+        }
+    }
+
+    /// Successful submit alone does not invalidate schema cache or advance freshness.
+    ///
+    /// Write watermark (9), read watermark (7), and submit `source_table_version`
+    /// (42) are three distinct values so an erroneous
+    /// `track_write_version(source_table_version)` /
+    /// `track_read_version(source_table_version)` cannot hide behind a no-op
+    /// max(same, same).
+    #[tokio::test]
+    async fn test_submit_create_generated_column_preserves_schema_cache_and_freshness() {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+        let seeded = describe_response(&schema);
+        let seeded_for_handler = seeded.clone();
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let describe_calls_ref = describe_calls.clone();
+        let count_calls = Arc::new(AtomicUsize::new(0));
+        let count_calls_ref = count_calls.clone();
+        let post_submit_headers = Arc::new(std::sync::Mutex::new(None::<http::HeaderMap>));
+        let post_submit_headers_ref = post_submit_headers.clone();
+
+        let remote = RemoteTable::new_mock(
+            "my_table".into(),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/update/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"rows_updated":1,"version":9}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/generated_columns/create/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(
+                        body["source_table_version"], 42,
+                        "submit must carry the distinct higher source_table_version"
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"job-create-gen-col-cache"}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/table/my_table/describe/" => {
+                    describe_calls_ref.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body(seeded_for_handler.clone())
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    let n = count_calls_ref.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        // Real read response establishes read watermark 7.
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "7")
+                            .body("1".to_string())
+                            .unwrap()
+                    } else {
+                        *post_submit_headers_ref.lock().unwrap() = Some(request.headers().clone());
+                        http::Response::builder()
+                            .status(200)
+                            .header("x-lancedb-version", "7")
+                            .body("1".to_string())
+                            .unwrap()
+                    }
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+            None,
+        );
+        remote.seed_schema(&seeded);
+        let table = Table::from(Arc::new(remote) as Arc<dyn BaseTable>);
+
+        // Distinct prior write watermark (9) via a real write response.
+        table.update().column("a", "a + 1").execute().await.unwrap();
+        // Distinct prior read watermark (7) via a real read response.
+        table.count_rows(None).await.unwrap();
+        assert_eq!(
+            count_calls.load(Ordering::SeqCst),
+            1,
+            "pre-submit read must establish the read watermark"
+        );
+
+        let schema_before = table.schema().await.unwrap();
+        assert_eq!(
+            describe_calls.load(Ordering::SeqCst),
+            0,
+            "seeded schema must satisfy schema() before submit"
+        );
+
+        let job = table
+            .submit_create_generated_column(42, sample_create_generated_column_job_spec())
+            .await
+            .expect("submit must succeed");
+        assert_eq!(job.id(), Some("job-create-gen-col-cache"));
+
+        let schema_after = table.schema().await.unwrap();
+        assert_eq!(
+            Arc::as_ptr(&schema_before),
+            Arc::as_ptr(&schema_after),
+            "submit must not invalidate the schema cache"
+        );
+        assert_eq!(
+            describe_calls.load(Ordering::SeqCst),
+            0,
+            "submit must not force a describe/schema refetch"
+        );
+
+        table.count_rows(None).await.unwrap();
+        assert_eq!(
+            count_calls.load(Ordering::SeqCst),
+            2,
+            "post-submit read must observe freshness headers"
+        );
+        let headers = post_submit_headers
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("post-submit count_rows headers");
+        let write_wm = headers
+            .get("x-lancedb-min-version")
+            .expect("write watermark must remain")
+            .to_str()
+            .unwrap();
+        let read_wm = headers
+            .get("x-lancedb-min-read-version")
+            .expect("read watermark must remain")
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            write_wm, "9",
+            "submit must not clear or advance write freshness beyond prior writes"
+        );
+        assert_eq!(
+            read_wm, "7",
+            "submit must not clear or advance read freshness beyond prior reads"
+        );
+        assert_ne!(
+            write_wm, "42",
+            "write watermark must not become the submit source_table_version"
+        );
+        assert_ne!(
+            read_wm, "42",
+            "read watermark must not become the submit source_table_version"
+        );
     }
 
     /// Test that schema cache expires after 30 seconds TTL
