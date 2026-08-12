@@ -1,33 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Dependency-contract test for Lance A4 schema metadata attachment (B4p).
+//! Dependency-contract test for Lance A4 / A4u schema metadata attachment (B4p).
 //!
 //! Pins the exact generic Lance API shape LanceDB B4 will consume:
 //! [`SchemaMetadataUpdates`], [`UpdateMap`], [`UpdateMapEntry`],
 //! [`Transaction::with_schema_metadata_updates`], and the public
 //! `with_schema_metadata_updates` methods on insert/update/delete builders.
 //!
+//! Also pins the A4u Update no-op invariant: an attached field metadata patch
+//! must accompany a real data change; when a predicate matches zero rows,
+//! `rows_updated == 0` and the patch must not be published.
+//!
 //! Neutral metadata keys only. No Function / UDF / Job semantics.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use lance::Result;
 use lance::dataset::transaction::{
     Operation, SchemaMetadataUpdates, Transaction, UpdateMap, UpdateMapEntry,
 };
-use lance::dataset::{DeleteBuilder, InsertBuilder, UpdateBuilder};
+use lance::dataset::{Dataset, DeleteBuilder, InsertBuilder, UpdateBuilder};
 use lance_table::format::Fragment;
 
 const FIELD_ID: i32 = 7;
 const META_KEY: &str = "b4p.dependency.meta";
 const META_VALUE: &str = "neutral-value";
 
-fn field_metadata_patch() -> SchemaMetadataUpdates {
+fn field_metadata_patch(field_id: i32) -> SchemaMetadataUpdates {
     SchemaMetadataUpdates {
         schema_metadata_updates: None,
         field_metadata_updates: HashMap::from([(
-            FIELD_ID,
+            field_id,
             UpdateMap {
                 update_entries: vec![UpdateMapEntry {
                     key: META_KEY.to_string(),
@@ -68,7 +75,7 @@ fn typecheck_delete_builder_attachment(
 
 #[test]
 fn append_transaction_retains_schema_metadata_updates_patch() {
-    let updates = field_metadata_patch();
+    let updates = field_metadata_patch(FIELD_ID);
     assert!(
         !updates.is_empty(),
         "fixture must be a substantive non-empty field metadata patch"
@@ -99,5 +106,108 @@ fn append_transaction_retains_schema_metadata_updates_patch() {
     assert_eq!(
         field_map.update_entries[0].value.as_deref(),
         Some(META_VALUE)
+    );
+}
+
+/// A4u dependency: a no-op Update (predicate matches zero rows) must not
+/// publish an attached field metadata patch. Manifest version advancement is
+/// unconstrained.
+#[tokio::test]
+async fn noop_update_does_not_publish_attached_field_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let uri = tmp.path().join("noop_update.lance");
+    let uri = uri.to_str().unwrap();
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ],
+    )
+    .unwrap();
+    let dataset = Dataset::write(RecordBatchIterator::new(vec![Ok(batch)], schema), uri, None)
+        .await
+        .expect("fixture dataset must write");
+
+    let field = dataset
+        .schema()
+        .field("value")
+        .expect("value column must exist");
+    let field_id = field.id;
+    assert!(
+        !field.metadata.contains_key(META_KEY),
+        "{META_KEY} must be initially absent, got {:?}",
+        field.metadata
+    );
+
+    let updates = field_metadata_patch(field_id);
+    assert!(
+        !updates.is_empty(),
+        "fixture must be a substantive non-empty field metadata patch"
+    );
+
+    let before_count = dataset.count_rows(None).await.unwrap();
+    assert_eq!(before_count, 3);
+
+    let result = UpdateBuilder::new(Arc::new(dataset))
+        .update_where("id < 0")
+        .unwrap()
+        .set("value", "'changed'")
+        .unwrap()
+        .with_schema_metadata_updates(updates)
+        .expect("Update attachment must construct")
+        .build()
+        .unwrap()
+        .execute()
+        .await
+        .expect("no-op attached Update must complete");
+
+    assert_eq!(result.rows_updated, 0, "predicate must match zero rows");
+    assert_eq!(
+        result.new_dataset.count_rows(None).await.unwrap(),
+        before_count,
+        "row count must remain unchanged"
+    );
+    assert_eq!(
+        result
+            .new_dataset
+            .count_rows(Some("value = 'changed'".into()))
+            .await
+            .unwrap(),
+        0,
+        "SET expression must not rewrite any rows"
+    );
+    assert_eq!(
+        result
+            .new_dataset
+            .count_rows(Some("value IN ('a', 'b', 'c')".into()))
+            .await
+            .unwrap(),
+        before_count,
+        "original values must remain unchanged"
+    );
+
+    let reopened = Dataset::open(uri).await.unwrap();
+    assert_eq!(reopened.count_rows(None).await.unwrap(), before_count);
+    assert_eq!(
+        reopened
+            .count_rows(Some("value = 'changed'".into()))
+            .await
+            .unwrap(),
+        0
+    );
+    let reopened_field = reopened
+        .schema()
+        .field_by_id(field_id)
+        .expect("stable field id must still exist");
+    assert!(
+        !reopened_field.metadata.contains_key(META_KEY),
+        "no-op Update must not publish attached field metadata; got {:?}",
+        reopened_field.metadata.get(META_KEY)
     );
 }
