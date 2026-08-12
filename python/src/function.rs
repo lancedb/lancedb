@@ -8,8 +8,8 @@ use arrow::array::{ArrayData, ArrayRef, make_array};
 use arrow::datatypes::DataType;
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use lancedb::function::{
-    FunctionArgument, FunctionCapability, FunctionDefinition, FunctionOutput, FunctionParameter,
-    FunctionSignature, PythonFunctionDefinition,
+    FunctionArgument, FunctionCall, FunctionCapability, FunctionDefinition, FunctionOutput,
+    FunctionParameter, FunctionSignature, PythonFunctionDefinition,
 };
 use pyo3::{
     Bound, Py, PyAny, PyResult, Python,
@@ -237,6 +237,57 @@ impl AuthoredFunctionCall {
     #[allow(dead_code)]
     pub(crate) fn bindings(&self) -> &[(String, UnresolvedArgument)] {
         &self.bindings
+    }
+
+    /// Bind unresolved authoring arguments against exactly one table snapshot.
+    ///
+    /// Calls [`lancedb::Table::generated_column_binding_snapshot`] once so the
+    /// returned `source_table_version` and canonical [`FunctionCall`] share the
+    /// same field identities and Arrow types. Source version stays outside the
+    /// call for later Job envelope submit. Not yet wired to create/change submit.
+    #[allow(dead_code)] // Bound by the immediately following create/change submit slice.
+    pub(crate) async fn bind_to_table(
+        &self,
+        table: &lancedb::Table,
+    ) -> lancedb::Result<(u64, FunctionCall)> {
+        let snapshot = table.generated_column_binding_snapshot().await?;
+        self.bind_against_snapshot(&snapshot)
+    }
+
+    /// Resolve authoring bindings against an already-fetched binding snapshot.
+    ///
+    /// Field names use exact case-sensitive top-level lookup; a name containing
+    /// `.` is literal, not a nested path. Used only by [`Self::bind_to_table`]
+    /// and narrowly scoped Rust tests that need a dotted top-level name Native
+    /// Lance cannot create on a real table.
+    fn bind_against_snapshot(
+        &self,
+        snapshot: &lancedb::function::GeneratedColumnBindingSnapshot,
+    ) -> lancedb::Result<(u64, FunctionCall)> {
+        let mut bindings = Vec::with_capacity(self.bindings.len());
+        for (parameter_name, unresolved) in &self.bindings {
+            let argument = match unresolved {
+                UnresolvedArgument::Field { column_name } => {
+                    let Some(entry) = snapshot.field(column_name) else {
+                        return Err(lancedb::Error::InvalidInput {
+                            message: format!(
+                                "missing table field `{column_name}` for Function parameter `{parameter_name}`"
+                            ),
+                        });
+                    };
+                    FunctionArgument::try_field(
+                        entry.field_id(),
+                        entry.field().data_type().clone(),
+                    )?
+                }
+                UnresolvedArgument::Literal(argument) => argument.clone(),
+            };
+            bindings.push((parameter_name.clone(), argument));
+        }
+
+        let call = FunctionCall::try_new(&self.function, bindings)?;
+        snapshot.validate_field_arguments(&call)?;
+        Ok((snapshot.version(), call))
     }
 }
 
@@ -572,7 +623,11 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use lancedb::connect;
+    use lancedb::error::Error as LanceDbError;
     use lancedb::expr::col as ldb_col;
     use lancedb::expr::lit as ldb_lit;
     use lancedb::function::{FunctionId, FunctionOutput, FunctionParameter, FunctionSignature};
@@ -590,6 +645,26 @@ mod tests {
             FunctionId::try_new("fn.exact.call-handle").expect("id"),
             signature,
         )
+    }
+
+    fn block_on_test<F: std::future::Future>(fut: F) -> F::Output {
+        crate::runtime::block_on(fut)
+    }
+
+    async fn memory_table(name: &str, schema: Schema, columns: Vec<ArrayRef>) -> lancedb::Table {
+        let db = connect("memory://").execute().await.expect("connect");
+        let batch = RecordBatch::try_new(Arc::new(schema), columns).expect("batch");
+        db.create_table(name, batch).execute().await.expect("table")
+    }
+
+    fn int_literal(value: Option<i32>) -> FunctionArgument {
+        FunctionArgument::try_literal(Arc::new(Int32Array::from(vec![value])) as ArrayRef)
+            .expect("int literal")
+    }
+
+    fn utf8_literal(value: Option<&str>) -> FunctionArgument {
+        FunctionArgument::try_literal(Arc::new(StringArray::from(vec![value])) as ArrayRef)
+            .expect("utf8 literal")
     }
 
     #[test]
@@ -693,5 +768,370 @@ mod tests {
 
         let complex = PyExpr(ldb_col("text").eq(ldb_lit("x")));
         assert!(complex.as_direct_column_or_literal().is_none());
+    }
+
+    #[test]
+    fn bind_to_table_field_and_literal_uses_one_snapshot_version_and_signature_order() {
+        block_on_test(async {
+            let table = memory_table(
+                "bind_happy",
+                Schema::new(vec![
+                    Field::new("source_text", DataType::Utf8, true),
+                    Field::new("ignored_score", DataType::Int32, false),
+                ]),
+                vec![
+                    Arc::new(StringArray::from(vec![Some("hello")])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+                ],
+            )
+            .await;
+            let snapshot = table
+                .generated_column_binding_snapshot()
+                .await
+                .expect("snapshot");
+            let text_entry = snapshot.field("source_text").expect("source_text");
+
+            let function = sample_function();
+            // Intentionally reverse parameter order versus Function signature.
+            let authored = AuthoredFunctionCall {
+                function: function.clone(),
+                bindings: vec![
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Literal(int_literal(Some(8))),
+                    ),
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Field {
+                            column_name: "source_text".to_string(),
+                        },
+                    ),
+                ],
+            };
+
+            let (source_version, call) =
+                authored.bind_to_table(&table).await.expect("bind_to_table");
+            assert_eq!(source_version, snapshot.version());
+            assert_eq!(source_version, table.version().await.expect("version"));
+            assert_eq!(call.function_id().as_str(), function.id().as_str());
+
+            let arguments = call.arguments();
+            assert_eq!(arguments.len(), 2);
+            assert_eq!(arguments[0].0, "text");
+            assert_eq!(arguments[1].0, "limit");
+            assert_eq!(arguments[0].1.field_id(), Some(text_entry.field_id()));
+            assert_eq!(arguments[0].1.data_type(), text_entry.field().data_type());
+            assert_eq!(arguments[1].1.data_type(), &DataType::Int32);
+            assert!(!arguments[1].1.is_typed_null());
+
+            let wire = serde_json::to_value(&call).expect("serde FunctionCall");
+            let encoded = wire.to_string();
+            assert!(encoded.contains("\"field_id\""));
+            assert!(encoded.contains("\"parameter\":\"text\""));
+            assert!(encoded.contains("\"parameter\":\"limit\""));
+            assert!(!encoded.contains("source_text"));
+            assert!(!encoded.contains("source_table_version"));
+            assert!(!encoded.contains("bind_happy"));
+            assert!(!encoded.contains("table_version"));
+            assert_eq!(wire.get("source_table_version"), None);
+            assert_eq!(wire.get("version"), None);
+        });
+    }
+
+    #[test]
+    fn bind_to_table_preserves_typed_null_and_redacts_sentinel_literal() {
+        block_on_test(async {
+            let table = memory_table(
+                "bind_null",
+                Schema::new(vec![Field::new("source_text", DataType::Utf8, true)]),
+                vec![Arc::new(StringArray::from(vec![Some("row")])) as ArrayRef],
+            )
+            .await;
+            const SENTINEL: &str = "LITERAL_PAYLOAD_SENTINEL_bind_xyz_99";
+            let function = sample_function();
+            let authored = AuthoredFunctionCall {
+                function,
+                bindings: vec![
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Field {
+                            column_name: "source_text".to_string(),
+                        },
+                    ),
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Literal(int_literal(None)),
+                    ),
+                ],
+            };
+            // Keep a sibling authored value whose literal carries the sentinel for redaction.
+            let sentinel_authored = AuthoredFunctionCall {
+                function: sample_function(),
+                bindings: vec![
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Literal(utf8_literal(Some(SENTINEL))),
+                    ),
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Literal(int_literal(None)),
+                    ),
+                ],
+            };
+            let rendered = format!("{sentinel_authored:?}\n{}", sentinel_authored.__repr__());
+            assert!(!rendered.contains(SENTINEL));
+
+            let (_version, call) = authored.bind_to_table(&table).await.expect("bind");
+            assert!(call.arguments()[1].1.is_typed_null());
+            assert_eq!(call.arguments()[1].1.data_type(), &DataType::Int32);
+
+            let missing = AuthoredFunctionCall {
+                function: sample_function(),
+                bindings: vec![
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Literal(utf8_literal(Some(SENTINEL))),
+                    ),
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Field {
+                            column_name: "missing_col".to_string(),
+                        },
+                    ),
+                ],
+            };
+            let err = missing
+                .bind_to_table(&table)
+                .await
+                .expect_err("missing field");
+            let message = format!("{err:?}\n{err}");
+            assert!(!message.contains(SENTINEL));
+            assert!(matches!(err, LanceDbError::InvalidInput { .. }));
+        });
+    }
+
+    #[test]
+    fn bind_to_table_missing_and_case_mismatch_are_invalid_input() {
+        block_on_test(async {
+            let table = memory_table(
+                "bind_missing",
+                Schema::new(vec![Field::new("source_text", DataType::Utf8, true)]),
+                vec![Arc::new(StringArray::from(vec![Some("row")])) as ArrayRef],
+            )
+            .await;
+            let version_before = table.version().await.expect("version");
+
+            for column_name in ["absent_column", "Source_Text", "SOURCE_TEXT"] {
+                let authored = AuthoredFunctionCall {
+                    function: sample_function(),
+                    bindings: vec![
+                        (
+                            "text".to_string(),
+                            UnresolvedArgument::Field {
+                                column_name: column_name.to_string(),
+                            },
+                        ),
+                        (
+                            "limit".to_string(),
+                            UnresolvedArgument::Literal(int_literal(Some(1))),
+                        ),
+                    ],
+                };
+                let err = authored
+                    .bind_to_table(&table)
+                    .await
+                    .expect_err("exact name required");
+                match err {
+                    LanceDbError::InvalidInput { message } => {
+                        assert!(message.contains(column_name));
+                        assert!(message.contains("text"));
+                    }
+                    other => panic!("expected InvalidInput, got {other:?}"),
+                }
+            }
+
+            assert_eq!(table.version().await.expect("version"), version_before);
+        });
+    }
+
+    #[test]
+    fn bind_to_table_field_type_mismatch_fails_through_try_new() {
+        block_on_test(async {
+            let table = memory_table(
+                "bind_type_mismatch",
+                Schema::new(vec![
+                    Field::new("source_text", DataType::Int32, true),
+                    Field::new("unused", DataType::Utf8, true),
+                ]),
+                vec![
+                    Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef,
+                ],
+            )
+            .await;
+            let authored = AuthoredFunctionCall {
+                function: sample_function(),
+                bindings: vec![
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Field {
+                            column_name: "source_text".to_string(),
+                        },
+                    ),
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Literal(int_literal(Some(3))),
+                    ),
+                ],
+            };
+            let err = authored
+                .bind_to_table(&table)
+                .await
+                .expect_err("Utf8 parameter vs Int32 field");
+            match err {
+                LanceDbError::InvalidInput { message } => {
+                    assert!(message.contains("type mismatch") || message.contains("text"));
+                    assert!(!message.contains("hello"));
+                }
+                other => panic!("expected InvalidInput, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn bind_to_table_literal_only_ignores_table_columns() {
+        block_on_test(async {
+            let table = memory_table(
+                "bind_literal_only",
+                Schema::new(vec![Field::new("unrelated", DataType::Float64, true)]),
+                vec![Arc::new(arrow::array::Float64Array::from(vec![1.5])) as ArrayRef],
+            )
+            .await;
+            let function = lancedb::function::Function::new(
+                FunctionId::try_new("fn.exact.literal-only").expect("id"),
+                FunctionSignature::try_new(
+                    vec![
+                        FunctionParameter::new("left", DataType::Int32),
+                        FunctionParameter::new("right", DataType::Int32),
+                    ],
+                    FunctionOutput::new(DataType::Int32, true),
+                )
+                .expect("signature"),
+            );
+            let authored = AuthoredFunctionCall {
+                function: function.clone(),
+                bindings: vec![
+                    (
+                        "left".to_string(),
+                        UnresolvedArgument::Literal(int_literal(None)),
+                    ),
+                    (
+                        "right".to_string(),
+                        UnresolvedArgument::Literal(int_literal(Some(4))),
+                    ),
+                ],
+            };
+            let (version, call) = authored.bind_to_table(&table).await.expect("literal-only");
+            assert_eq!(version, table.version().await.expect("version"));
+            assert_eq!(call.function_id().as_str(), function.id().as_str());
+            assert!(call.arguments()[0].1.is_typed_null());
+            assert_eq!(call.arguments()[0].1.field_id(), None);
+            assert_eq!(call.arguments()[1].1.field_id(), None);
+        });
+    }
+
+    #[test]
+    fn bind_to_table_dotted_name_is_literal_not_nested_path() {
+        block_on_test(async {
+            // Native Lance rejects creating a top-level field whose name contains
+            // `.`. On a real table, prove a dotted authoring name does not resolve
+            // through a nested struct path.
+            let nested_fields =
+                arrow::datatypes::Fields::from(vec![Field::new("b", DataType::Utf8, true)]);
+            let table = memory_table(
+                "bind_dotted_reject_path",
+                Schema::new(vec![
+                    Field::new("a", DataType::Struct(nested_fields.clone()), true),
+                    Field::new("source_text", DataType::Utf8, true),
+                ]),
+                vec![
+                    Arc::new(arrow::array::StructArray::new(
+                        nested_fields,
+                        vec![Arc::new(StringArray::from(vec![Some("nested")])) as ArrayRef],
+                        None,
+                    )) as ArrayRef,
+                    Arc::new(StringArray::from(vec![Some("top")])) as ArrayRef,
+                ],
+            )
+            .await;
+            assert!(
+                table
+                    .generated_column_binding_snapshot()
+                    .await
+                    .expect("snapshot")
+                    .field("a.b")
+                    .is_none()
+            );
+
+            let nested_path = AuthoredFunctionCall {
+                function: sample_function(),
+                bindings: vec![
+                    (
+                        "text".to_string(),
+                        UnresolvedArgument::Field {
+                            column_name: "a.b".to_string(),
+                        },
+                    ),
+                    (
+                        "limit".to_string(),
+                        UnresolvedArgument::Literal(int_literal(Some(2))),
+                    ),
+                ],
+            };
+            let err = nested_path
+                .bind_to_table(&table)
+                .await
+                .expect_err("dotted name is not a nested path");
+            match err {
+                LanceDbError::InvalidInput { message } => {
+                    assert!(message.contains("a.b"));
+                    assert!(message.contains("text"));
+                }
+                other => panic!("expected InvalidInput, got {other:?}"),
+            }
+        });
+
+        // Same binder code path: a snapshot entry whose top-level name literally
+        // contains `.` binds by exact name (Remote/FF-029 projection shape).
+        let snapshot = lancedb::function::GeneratedColumnBindingSnapshot::try_new(
+            17,
+            vec![
+                Arc::new(Field::new("a.b", DataType::Utf8, true)),
+                Arc::new(Field::new("a", DataType::Utf8, true)),
+            ],
+            vec![11, 12],
+        )
+        .expect("snapshot");
+        let authored = AuthoredFunctionCall {
+            function: sample_function(),
+            bindings: vec![
+                (
+                    "text".to_string(),
+                    UnresolvedArgument::Field {
+                        column_name: "a.b".to_string(),
+                    },
+                ),
+                (
+                    "limit".to_string(),
+                    UnresolvedArgument::Literal(int_literal(Some(2))),
+                ),
+            ],
+        };
+        let (version, call) = authored
+            .bind_against_snapshot(&snapshot)
+            .expect("literal dotted top-level");
+        assert_eq!(version, 17);
+        assert_eq!(call.arguments()[0].1.field_id(), Some(11));
+        assert_ne!(call.arguments()[0].1.field_id(), Some(12));
     }
 }
