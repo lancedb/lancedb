@@ -143,6 +143,44 @@ impl GeneratedColumnBindingSnapshot {
             .find(|entry| entry.field().name() == name)
     }
 
+    /// Strict generated-column definition for one top-level column name.
+    ///
+    /// Looks up the exact case-sensitive top-level name (`.` is literal, not a
+    /// nested path), decodes through
+    /// [`GeneratedColumnBindingEntry::generated_column_definition`] (preserving
+    /// output stable-ID checking and raw-metadata redaction), then validates
+    /// stored field arguments against this same snapshot via
+    /// [`Self::validate_field_arguments`]. Returns the complete or incomplete
+    /// definition unchanged. Does not perform table, catalog, network, or Job
+    /// work and does not resolve a Function.
+    ///
+    /// Returns [`crate::Error::InvalidInput`] for an empty name, a missing
+    /// top-level field, an ordinary field without a valid generated-column
+    /// definition, invalid metadata, or a field-argument identity/type
+    /// mismatch against this snapshot.
+    #[doc(hidden)]
+    pub fn generated_column_definition(
+        &self,
+        column_name: impl AsRef<str>,
+    ) -> Result<GeneratedColumnDefinition> {
+        let column_name = column_name.as_ref();
+        if column_name.is_empty() {
+            return Err(invalid_input("generated column name must not be empty"));
+        }
+        let Some(entry) = self.field(column_name) else {
+            return Err(invalid_input(format!(
+                "generated column '{column_name}' was not found in the table schema"
+            )));
+        };
+        let Some(definition) = entry.generated_column_definition()? else {
+            return Err(invalid_input(format!(
+                "column '{column_name}' is not a generated column"
+            )));
+        };
+        self.validate_field_arguments(definition.function_call())?;
+        Ok(definition)
+    }
+
     /// Validate table-dependent field arguments of an already canonical call.
     ///
     /// For every field argument, finds the snapshot entry by stable Lance field
@@ -556,5 +594,183 @@ mod tests {
             !text.contains(&raw),
             "status definition diagnostics must not echo raw metadata payload: {text}"
         );
+    }
+
+    /// Build a definition whose stored field argument matches `input_type`.
+    /// Construction succeeds even when the snapshot field at `input_field_id`
+    /// later has a different Arrow type; same-snapshot validation catches that.
+    fn field_arg_definition(
+        output_field_id: i32,
+        input_field_id: i32,
+        input_type: DataType,
+        dependency_epoch: u64,
+        materialized_epoch: u64,
+    ) -> GeneratedColumnDefinition {
+        use crate::function::{
+            Function, FunctionArgument, FunctionCall, FunctionId, FunctionOutput,
+            FunctionParameter, FunctionSignature,
+        };
+        let function = Function::new(
+            FunctionId::try_new("fn.exact.snapshot.field_arg").unwrap(),
+            FunctionSignature::try_new(
+                vec![FunctionParameter::new("payload", input_type.clone())],
+                FunctionOutput::new(DataType::Int32, true),
+            )
+            .unwrap(),
+        );
+        let call = FunctionCall::try_new(
+            &function,
+            vec![(
+                "payload".to_string(),
+                FunctionArgument::try_field(input_field_id, input_type).unwrap(),
+            )],
+        )
+        .unwrap();
+        GeneratedColumnDefinition::try_new(
+            output_field_id,
+            call,
+            dependency_epoch,
+            materialized_epoch,
+        )
+        .unwrap()
+    }
+
+    fn snapshot_with_definition(
+        version: u64,
+        ordinary_name: &str,
+        ordinary_id: i32,
+        ordinary_type: DataType,
+        gen_name: &str,
+        gen_id: i32,
+        definition: &GeneratedColumnDefinition,
+    ) -> GeneratedColumnBindingSnapshot {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+        let gen_field = Field::new(gen_name, DataType::Int32, true).with_metadata(
+            [(
+                GENERATED_COLUMN_METADATA_KEY.to_string(),
+                definition.to_metadata_json().unwrap(),
+            )]
+            .into(),
+        );
+        GeneratedColumnBindingSnapshot::try_new(
+            version,
+            vec![
+                Arc::new(Field::new(ordinary_name, ordinary_type, true)),
+                Arc::new(gen_field),
+            ],
+            vec![ordinary_id, gen_id],
+        )
+        .unwrap()
+    }
+
+    fn assert_snapshot_definition_invalid_input(err: &Error, label: &str) {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+        assert!(
+            matches!(err, Error::InvalidInput { .. }),
+            "{label}: expected InvalidInput, got {err:?}"
+        );
+        let rendered = format!("{err}\n{err:?}");
+        assert!(
+            !rendered.contains(GENERATED_COLUMN_METADATA_KEY),
+            "{label}: diagnostic leaked metadata wire key: {rendered}"
+        );
+    }
+
+    #[test]
+    fn snapshot_generated_column_definition_returns_complete_and_incomplete() {
+        use crate::function::GeneratedColumnStatus;
+
+        let complete = field_arg_definition(11, 3, DataType::Utf8, 4, 4);
+        let snapshot =
+            snapshot_with_definition(9, "text", 3, DataType::Utf8, "gen_out", 11, &complete);
+        // High-level seam: name lookup + decode + same-snapshot field-arg check.
+        // Callers keep using snapshot.version() for the FF-011 source pin.
+        let got = snapshot.generated_column_definition("gen_out").unwrap();
+        assert_eq!(got, complete);
+        assert_eq!(got.status(), GeneratedColumnStatus::Complete);
+        assert_eq!(snapshot.version(), 9);
+
+        let incomplete = field_arg_definition(11, 3, DataType::Utf8, 5, 2);
+        let snapshot =
+            snapshot_with_definition(10, "text", 3, DataType::Utf8, "gen_out", 11, &incomplete);
+        let got = snapshot.generated_column_definition("gen_out").unwrap();
+        assert_eq!(got, incomplete);
+        assert_eq!(got.status(), GeneratedColumnStatus::Incomplete);
+
+        // Literal-only definitions remain valid (no field args to re-check).
+        let literal = GeneratedColumnDefinition::try_new(13, status_sample_call(), 2, 2).unwrap();
+        let snapshot = snapshot_with_definition(1, "text", 3, DataType::Utf8, "a.b", 13, &literal);
+        assert_eq!(
+            snapshot.generated_column_definition("a.b").unwrap(),
+            literal
+        );
+    }
+
+    #[test]
+    fn snapshot_generated_column_definition_rejects_empty_missing_ordinary_and_case() {
+        let definition = field_arg_definition(11, 3, DataType::Utf8, 1, 1);
+        let snapshot =
+            snapshot_with_definition(1, "ordinary", 3, DataType::Utf8, "gen_out", 11, &definition);
+
+        for name in ["", "missing", "Gen_Out", "GEN_OUT", "ordinary", "gen.out"] {
+            let err = snapshot.generated_column_definition(name).unwrap_err();
+            assert_snapshot_definition_invalid_input(&err, name);
+        }
+    }
+
+    #[test]
+    fn snapshot_generated_column_definition_fail_closed_for_invalid_metadata() {
+        use crate::function::GENERATED_COLUMN_METADATA_KEY;
+
+        let field_id = 11i32;
+        let valid = definition_json(field_id, 2, 2);
+        let mut mismatched: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        mismatched["output_field_id"] = serde_json::json!(field_id + 1);
+
+        const MARKER: &str = "SENSITIVE_SNAPSHOT_DEF_MARKER_c8e4_1a90";
+        let malformed = format!(
+            r#"{{"format_version":1,"output_field_id":{field_id},"function_call":{MARKER},"dependency_epoch":1,"materialized_epoch":1}}"#
+        );
+        assert!(malformed.contains(MARKER));
+
+        for (label, raw) in [
+            ("output_field_id mismatch", mismatched.to_string()),
+            ("malformed function_call", malformed.clone()),
+        ] {
+            let field = Field::new("gen_out", DataType::Int32, true)
+                .with_metadata([(GENERATED_COLUMN_METADATA_KEY.to_string(), raw.clone())].into());
+            let snapshot =
+                GeneratedColumnBindingSnapshot::try_new(1, vec![Arc::new(field)], vec![field_id])
+                    .unwrap();
+            let err = snapshot.generated_column_definition("gen_out").unwrap_err();
+            assert_snapshot_definition_invalid_input(&err, label);
+            let rendered = format!("{err}\n{err:?}");
+            assert!(
+                !rendered.contains(MARKER) && !rendered.contains(&raw),
+                "{label}: must not echo raw metadata: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_generated_column_definition_validates_field_args_against_same_snapshot() {
+        // Missing stable input identity: fixture constructs cleanly; projection fails.
+        let missing = field_arg_definition(11, 99_999, DataType::Utf8, 3, 3);
+        let snapshot =
+            snapshot_with_definition(2, "text", 3, DataType::Utf8, "gen_out", 11, &missing);
+        let err = snapshot.generated_column_definition("gen_out").unwrap_err();
+        assert_snapshot_definition_invalid_input(&err, "missing stored input field id");
+
+        // Type drift: stored argument type matches FunctionCall construction, not
+        // the snapshot field at that id.
+        let mistyped = field_arg_definition(11, 3, DataType::Int32, 4, 4);
+        let snapshot =
+            snapshot_with_definition(3, "text", 3, DataType::Utf8, "gen_out", 11, &mistyped);
+        assert_eq!(
+            snapshot.field("text").unwrap().field().data_type(),
+            &DataType::Utf8
+        );
+        let err = snapshot.generated_column_definition("gen_out").unwrap_err();
+        assert_snapshot_definition_invalid_input(&err, "stored input Arrow type mismatch");
     }
 }

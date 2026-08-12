@@ -1277,13 +1277,11 @@ impl Table {
     ///
     /// Hidden implementation projection for generated-column change/refresh
     /// authoring. Loads exactly one
-    /// [`Self::generated_column_binding_snapshot`], looks up the exact
-    /// case-sensitive top-level name, strictly decodes through
-    /// [`GeneratedColumnBindingEntry::generated_column_definition`], then
-    /// validates stored field arguments against that same snapshot. Returns
-    /// `(snapshot.version(), definition)` for both complete and incomplete
-    /// definitions. Does not resolve a Function, construct or submit a Job,
-    /// execute, mutate, or touch caches/freshness.
+    /// [`Self::generated_column_binding_snapshot`], then projects through
+    /// [`GeneratedColumnBindingSnapshot::generated_column_definition`].
+    /// Returns `(snapshot.version(), definition)` for both complete and
+    /// incomplete definitions. Does not resolve a Function, construct or
+    /// submit a Job, execute, mutate, or touch caches/freshness.
     ///
     /// Returns [`Error::InvalidInput`] for an empty name (before any table
     /// access), a missing top-level field, an ordinary field without a valid
@@ -1302,19 +1300,7 @@ impl Table {
         }
 
         let snapshot = self.inner.generated_column_binding_snapshot().await?;
-        let Some(entry) = snapshot.field(column_name) else {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "generated column '{column_name}' was not found in the table schema"
-                ),
-            });
-        };
-        let Some(definition) = entry.generated_column_definition()? else {
-            return Err(Error::InvalidInput {
-                message: format!("column '{column_name}' is not a generated column"),
-            });
-        };
-        snapshot.validate_field_arguments(definition.function_call())?;
+        let definition = snapshot.generated_column_definition(column_name)?;
         Ok((snapshot.version(), definition))
     }
 
