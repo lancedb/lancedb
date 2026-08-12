@@ -177,24 +177,6 @@ async fn map_dataset_not_found(
     }
 }
 
-/// `object_store::local::LocalFileSystem` represents a directory as a distinguished
-/// `NotFound` from an exact HEAD. Preserve that signal without listing the parent or
-/// inspecting an unrelated host path.
-fn exact_head_reports_directory(error: &object_store::Error) -> bool {
-    const DIRECTORY_SENTINEL: &str = "is directory";
-
-    let object_store::Error::NotFound { source, .. } = error else {
-        return false;
-    };
-    source
-        .downcast_ref::<std::io::Error>()
-        .is_some_and(|source| {
-            source.kind() == std::io::ErrorKind::NotFound
-                && source.raw_os_error().is_none()
-                && source.to_string() == DIRECTORY_SENTINEL
-        })
-}
-
 /// Whether storage contains an entry for `uri`, even though no dataset could be loaded.
 ///
 /// Local filesystems can represent an empty table directory, so inspect that exact path.
@@ -213,33 +195,26 @@ async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
         return Ok(false);
     }
 
+    if let Some(native_path) = object_store.native_directory_path(&path) {
+        // A native table URI intentionally grants access to this exact path; LanceDB does
+        // not confine local databases beneath a separate filesystem root. nosemgrep
+        return match std::fs::symlink_metadata(&native_path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(Error::Other {
+                message: format!(
+                    "Failed to inspect native table path '{}'",
+                    native_path.display()
+                ),
+                source: Some(Box::new(error)),
+            }),
+        };
+    }
+
     let head_error = match object_store.inner.head(&path).await {
         Ok(_) => return Ok(true),
-        Err(error) if exact_head_reports_directory(&error) => return Ok(true),
         Err(error) => error,
     };
-
-    // Opening a directory through LocalFileSystem surfaces as `PermissionDenied` on
-    // Windows instead of the portable directory sentinel above. Only after the resolved
-    // store explicitly identifies that backend do we consult metadata for the exact path.
-    #[cfg(windows)]
-    if matches!(
-        &head_error,
-        object_store::Error::Generic {
-            store: "LocalFileSystem",
-            ..
-        }
-    ) && matches!(object_store.scheme(), "file" | "file-object-store")
-    {
-        let local_path = std::path::PathBuf::from(lance_io::local::to_local_path(&path));
-        // A local table URI intentionally grants access to this exact path; LanceDB does
-        // not confine local databases beneath a separate filesystem root. nosemgrep
-        match std::fs::symlink_metadata(&local_path) {
-            Ok(_) => return Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(head_error.into()),
-        }
-    }
 
     if !matches!(head_error, object_store::Error::NotFound { .. }) {
         return Err(head_error.into());
@@ -4276,6 +4251,7 @@ mod tests {
         parent_list_calls: Arc<AtomicUsize>,
         hide_first_list: Option<Arc<AtomicBool>>,
         fail_exact_head: Option<object_store::path::Path>,
+        missing_exact_head_with_directory_message: Option<object_store::path::Path>,
         fail_target_list: Option<object_store::path::Path>,
         target_prefix: Option<object_store::path::Path>,
         target_object_count: usize,
@@ -4321,6 +4297,17 @@ mod tests {
             location: &object_store::path::Path,
             options: object_store::GetOptions,
         ) -> object_store::Result<object_store::GetResult> {
+            if options.head
+                && self.missing_exact_head_with_directory_message.as_ref() == Some(location)
+            {
+                return Err(object_store::Error::NotFound {
+                    path: location.to_string(),
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "is directory",
+                    )),
+                });
+            }
             if self.fail_exact_head.as_ref() == Some(location) {
                 return Err(object_store::Error::Generic {
                     store: "open-recovery-test",
@@ -4445,6 +4432,7 @@ mod tests {
         sibling_count: usize,
         hide_first_list: Option<Arc<AtomicBool>>,
         fail_exact_head: Option<object_store::path::Path>,
+        missing_exact_head_with_directory_message: Option<object_store::path::Path>,
         fail_target_list: Option<object_store::path::Path>,
         target_prefix: Option<object_store::path::Path>,
         target_object_count: usize,
@@ -4458,6 +4446,7 @@ mod tests {
                 sibling_count: 0,
                 hide_first_list: None,
                 fail_exact_head: None,
+                missing_exact_head_with_directory_message: None,
                 fail_target_list: None,
                 target_prefix: None,
                 target_object_count: 0,
@@ -4479,6 +4468,9 @@ mod tests {
                 parent_list_calls: self.parent_list_calls.clone(),
                 hide_first_list: self.hide_first_list.clone(),
                 fail_exact_head: self.fail_exact_head.clone(),
+                missing_exact_head_with_directory_message: self
+                    .missing_exact_head_with_directory_message
+                    .clone(),
                 fail_target_list: self.fail_target_list.clone(),
                 target_prefix: self.target_prefix.clone(),
                 target_object_count: self.target_object_count,
@@ -4532,6 +4524,40 @@ mod tests {
             err.to_string()
                 .contains("injected exact table probe failure"),
             "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_missing_does_not_trust_incidental_directory_message() {
+        let target = object_store::path::Path::from("database/missing.lance");
+        let read_params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
+                    missing_exact_head_with_directory_message: Some(target),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            "memory:///database/missing.lance",
+            "missing",
+            Vec::new(),
+            None,
+            Some(read_params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
+            "missing provider object must remain missing, got {err:?}"
         );
     }
 
@@ -4788,6 +4814,7 @@ mod tests {
             parent_list_calls: Arc::new(AtomicUsize::new(0)),
             hide_first_list: Some(hide_first_list.clone()),
             fail_exact_head: None,
+            missing_exact_head_with_directory_message: None,
             fail_target_list: None,
             target_prefix: None,
             target_object_count: 0,

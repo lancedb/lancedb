@@ -68,12 +68,6 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
-    # smartstring: unmaintained. Transitive through the optional Polars
-    # integration. There is no patched release; replacing it requires Polars
-    # to migrate to compact_str, smol_str, or another maintained alternative.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0249
-    { id = "RUSTSEC-2026-0249", reason = "transitive via optional polars integration; no patched release" },
-
     # rustls-webpki 0.101.7 (old major line): name-constraint checks for
     # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
     # from aws-smithy-http-client. The 0.103 line we actively use is patched.
