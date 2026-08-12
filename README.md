@@ -55,7 +55,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 - **Seamless Integration**: Python, Node.js, Rust, and REST APIs for easy integration. Native Python and Javascript/Typescript support.
 - **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [**LlamaIndex** 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
-> **Tip:** When generating embeddings with the OpenAI client, the same `base_url` pattern works with multi-model gateways such as [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=lancedb&utm_content=pr) at `https://api.daoxe.com/v1`.
+> **Tip:** When generating embeddings with the OpenAI client, the same `base_url` pattern works with multi-model gateways such as [DaoXE](https://daoxe.com/) at `https://api.daoxe.com/v1`.
 
 ## **How to Install**:
 
