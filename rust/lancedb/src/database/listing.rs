@@ -23,6 +23,7 @@ use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema;
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
@@ -1038,6 +1039,10 @@ impl Database for ListingDatabase {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Admit schema before namespace forwarding, URI/config work, or NativeTable::create.
+        // Scannable::schema is free; must not call scan_as_stream yet.
+        reject_caller_authored_generated_column_schema(request.data.schema().as_ref())?;
+
         if !request.namespace_path.is_empty() {
             return self.namespace_database().create_table(request).await;
         }

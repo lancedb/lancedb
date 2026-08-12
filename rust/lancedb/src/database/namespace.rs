@@ -34,6 +34,7 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema;
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
@@ -349,6 +350,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Admit schema before any mode branch, describe, declare, or storage work.
+        // Scannable::schema is free; must not call scan_as_stream yet.
+        reject_caller_authored_generated_column_schema(request.data.schema().as_ref())?;
+
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;

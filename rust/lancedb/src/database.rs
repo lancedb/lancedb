@@ -37,6 +37,9 @@ pub mod listing;
 pub mod namespace;
 pub(crate) mod read_freshness;
 
+#[cfg(test)]
+mod create_table_generated_column_schema_admission_contract;
+
 pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }

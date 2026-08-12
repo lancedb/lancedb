@@ -23,6 +23,7 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::function::schema_admission::reject_caller_authored_generated_column_schema;
 use crate::function::{Function, FunctionId, RegisterFunctionJobSpec};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
@@ -714,6 +715,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Admit schema before scan_as_stream, request/body/header construction, or HTTP.
+        reject_caller_authored_generated_column_schema(request.data.schema().as_ref())?;
+
         let body = stream_as_body(request.data.scan_as_stream())?;
 
         let identifier = build_table_identifier(

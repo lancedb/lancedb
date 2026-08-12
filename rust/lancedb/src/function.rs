@@ -13,6 +13,7 @@ mod definition;
 pub(crate) mod plan_generated_column_invalidation;
 mod refresh_generated_column;
 mod registration;
+pub(crate) mod schema_admission;
 
 #[cfg(test)]
 mod plan_generated_column_invalidation_contract;
