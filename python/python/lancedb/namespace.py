@@ -633,9 +633,7 @@ class LanceNamespaceDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         return Job(
-            LOOP.run(
-                self._inner.drop_table_async(name, namespace_path=namespace_path)
-            )
+            LOOP.run(self._inner.drop_table_async(name, namespace_path=namespace_path))
         )
 
     @override
