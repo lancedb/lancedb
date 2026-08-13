@@ -339,10 +339,12 @@ impl<S: HttpSend> RemoteDatabase<S> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
-        let body = resp.text().await.err_to_http(request_id)?;
         self.table_cache.remove(&cache_key).await;
-        Ok(serde_json::from_str::<serde_json::Value>(&body)
+        Ok(resp
+            .text()
+            .await
             .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
             .and_then(|value| {
                 value
                     .get("job_id")
