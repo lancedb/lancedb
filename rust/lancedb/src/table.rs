@@ -38,7 +38,6 @@ use lance_table::format::Manifest;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
-use object_store::ObjectStoreExt as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::format;
@@ -51,7 +50,6 @@ use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
-use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -151,97 +149,6 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
-}
-
-/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
-///
-/// Lance reports "there is nothing at this location" and "there is a table directory
-/// here but nothing loadable inside it" with the same error. Only the first is a
-/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
-/// re-create is still reported by `Connection::table_names`, so callers need to be able
-/// to tell "never existed" from "exists but is broken".
-///
-/// See <https://github.com/lancedb/lancedb/issues/3127>.
-async fn map_dataset_not_found(
-    uri: &str,
-    name: &str,
-    params: ReadParams,
-    err: lance::Error,
-) -> Result<Error> {
-    let name = name.to_string();
-    let source = Box::new(err);
-    if table_storage_exists(uri, params).await? {
-        Ok(Error::TableCorrupted { name, source })
-    } else {
-        Ok(Error::TableNotFound { name, source })
-    }
-}
-
-/// Whether storage contains an entry for `uri`, even though no dataset could be loaded.
-///
-/// Local filesystems can represent an empty table directory, so inspect that exact path.
-/// Object stores cannot represent empty directories: probe an exact key and then consume
-/// at most the first object under the table prefix. Neither path inspects sibling tables.
-async fn table_storage_exists(uri: &str, params: ReadParams) -> Result<bool> {
-    #[allow(deprecated)]
-    let uses_legacy_direct_store = params.store_options.as_ref().is_some_and(|options| {
-        options.object_store.is_some() && options.native_directory_path_resolver.is_none()
-    });
-
-    // Resolve the effective provider and wrapper for this exact table URI. The resolved
-    // store remains authoritative even when a custom provider preserves a `file` scheme.
-    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
-        .with_read_params(params)
-        .build_object_store()
-        .await?;
-    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
-    // the list-then-open mismatch this guards against.
-    if path.extension() != Some(LANCE_FILE_EXTENSION) {
-        return Ok(false);
-    }
-
-    // The deprecated direct binding cannot identify native directory semantics unless its
-    // caller supplies a resolver. Preserve its established list/open agreement without
-    // widening this sibling-enumerating fallback to provider-resolved stores.
-    if uses_legacy_direct_store {
-        let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
-            return Ok(false);
-        };
-        let entries = object_store.read_dir(parent).await?;
-        return Ok(entries.iter().any(|entry| entry.as_str() == dir_name));
-    }
-
-    if let Some(native_path) = object_store.native_directory_path(&path) {
-        // A native table URI intentionally grants access to this exact path; LanceDB does
-        // not confine local databases beneath a separate filesystem root. nosemgrep
-        return match std::fs::symlink_metadata(&native_path) {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(Error::Other {
-                message: format!(
-                    "Failed to inspect native table path '{}'",
-                    native_path.display()
-                ),
-                source: Some(Box::new(error)),
-            }),
-        };
-    }
-
-    let head_error = match object_store.inner.head(&path).await {
-        Ok(_) => return Ok(true),
-        Err(error) => error,
-    };
-
-    if !matches!(head_error, object_store::Error::NotFound { .. }) {
-        return Err(head_error.into());
-    }
-
-    Ok(object_store
-        .list(Some(path))
-        .next()
-        .await
-        .transpose()?
-        .is_some())
 }
 
 /// Defines the type of column
@@ -2463,44 +2370,30 @@ impl NativeTable {
             None => false,
         };
 
+        let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+
         // Set up commit handler when managed_versioning is enabled
-        let commit_handler: Option<Arc<dyn CommitHandler>> =
-            if managed_versioning && let Some(ref ns_client) = namespace_client {
-                let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
-                    ns_client.clone(),
-                    table_id.clone(),
-                    uri,
-                )?;
-                Some(Arc::new(ExternalManifestCommitHandler {
-                    external_manifest_store: Arc::new(external_store),
-                }))
-            } else {
-                None
-            };
+        if managed_versioning && let Some(ref ns_client) = namespace_client {
+            let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
+                ns_client.clone(),
+                table_id.clone(),
+                uri,
+            )?;
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            builder = builder.with_commit_handler(commit_handler);
+        }
 
-        let make_builder = || {
-            let builder = DatasetBuilder::from_uri(uri).with_read_params(params.clone());
-            match &commit_handler {
-                Some(commit_handler) => builder.with_commit_handler(commit_handler.clone()),
-                None => builder,
-            }
-        };
-
-        let dataset = match make_builder().load().await {
+        let dataset = match builder.load().await {
             Ok(dataset) => dataset,
             Err(e @ lance::Error::DatasetNotFound { .. }) => {
-                let mapped = map_dataset_not_found(uri, name, params.clone(), e).await?;
-                if !matches!(mapped, Error::TableCorrupted { .. }) {
-                    return Err(mapped);
-                }
-
-                // The first manifest may have committed between the failed load and the
-                // storage probe. Re-open once before reporting a stale corruption result.
-                match make_builder().load().await {
-                    Ok(dataset) => dataset,
-                    Err(lance::Error::DatasetNotFound { .. }) => return Err(mapped),
-                    Err(e) => return Err(e.into()),
-                }
+                // The manifest load is the existence check. A physical prefix may be
+                // from a concurrent or abandoned create, so it cannot refine this error.
+                return Err(Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                });
             }
             Err(e) => return Err(e.into()),
         };
@@ -3779,7 +3672,6 @@ mod tests {
     use lance::Dataset;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_core::datatypes::LANCE_UNENFORCED_PRIMARY_KEY_POSITION;
-    use lance_io::object_store::NativeDirectoryPathResolver;
     use tempfile::tempdir;
 
     use super::*;
@@ -3851,73 +3743,50 @@ mod tests {
         );
     }
 
-    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
-    ///
-    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
-    /// empty); otherwise only the manifests are removed, leaving the data files behind.
-    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
-        let dataset_path = dir.join("test.lance");
-        let uri = dataset_path.to_str().unwrap().to_string();
-
-        let batch = make_test_batches();
-        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(reader, &uri, None).await.unwrap();
-
-        if remove_all {
-            for entry in std::fs::read_dir(&dataset_path).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    std::fs::remove_dir_all(entry.path()).unwrap();
-                } else {
-                    std::fs::remove_file(entry.path()).unwrap();
-                }
-            }
-            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
-        } else {
-            let versions = dataset_path.join("_versions");
-            assert!(versions.is_dir(), "expected manifests under {versions:?}");
-            std::fs::remove_dir_all(&versions).unwrap();
-            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
-        }
-
-        uri
-    }
-
     #[tokio::test]
-    async fn test_open_corrupt_empty_dir() {
+    async fn test_open_not_found_when_empty_directory_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn test_open_corrupt_missing_manifest() {
+    async fn test_open_not_found_when_only_uncommitted_storage_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let data_dir = dataset_path.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
-    /// A table listed by `table_names()` must not be reported as missing by
-    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    /// Listing databases discover physical `*.lance` entries. That snapshot is not an
+    /// authoritative table-existence check: only a committed manifest makes a table
+    /// openable, and the entry could also be concurrently created or dropped.
     #[tokio::test]
-    async fn test_open_table_corrupt_is_still_listed() {
+    async fn test_table_names_may_include_uncommitted_storage() {
         let tmp_dir = tempdir().unwrap();
         let db = connect(tmp_dir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
 
-        write_then_corrupt_table(tmp_dir.path(), true).await;
+        std::fs::create_dir(tmp_dir.path().join("test.lance")).unwrap();
 
         assert_eq!(
             db.table_names().execute().await.unwrap(),
@@ -3925,373 +3794,27 @@ mod tests {
         );
         let err = db.open_table("test").execute().await.unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
-            "got {err:?}"
-        );
-        assert!(
-            err.to_string().contains("exists but could not be loaded"),
-            "got {err}"
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "physical storage without a committed manifest is not a table: {err:?}"
         );
     }
 
     #[derive(Debug)]
-    struct FileSchemeMemoryProvider {
-        store: lance_io::object_store::ObjectStore,
-    }
-
-    #[async_trait::async_trait]
-    impl lance_io::object_store::ObjectStoreProvider for FileSchemeMemoryProvider {
-        async fn new_store(
-            &self,
-            _base_path: url::Url,
-            _params: &ObjectStoreParams,
-        ) -> lance_core::Result<lance_io::object_store::ObjectStore> {
-            Ok(self.store.clone())
-        }
-    }
-
-    /// Recovery must inspect the same provider that the failed dataset load used,
-    /// even when the table URI itself looks like a native filesystem path.
-    #[tokio::test]
-    async fn test_open_recovery_uses_custom_file_provider() {
-        use object_store::ObjectStoreExt as _;
-
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("custom.lance");
-        let uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
-        assert!(!dataset_path.exists());
-
-        let store = lance_io::object_store::ObjectStore::memory();
-        let table_path =
-            object_store::path::Path::from_url_path(url::Url::parse(&uri).unwrap().path()).unwrap();
-        store
-            .inner
-            .put(
-                &table_path.clone().join("_marker"),
-                bytes::Bytes::new().into(),
-            )
-            .await
-            .unwrap();
-
-        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
-        registry.insert("file", Arc::new(FileSchemeMemoryProvider { store }));
-        let read_params = ReadParams {
-            session: Some(Arc::new(lance::session::Session::new(0, 0, registry))),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            &uri,
-            "custom",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom"),
-            "got {err:?}"
-        );
-    }
-
-    /// Provider provenance, not the store's reported scheme, determines whether
-    /// recovery may bypass the ObjectStore API for native filesystem metadata.
-    #[tokio::test]
-    async fn test_open_recovery_uses_custom_file_provider_preserving_file_scheme() {
-        use object_store::ObjectStoreExt as _;
-
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("custom-file-scheme.lance");
-        let uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
-        assert!(!dataset_path.exists());
-
-        let inner = Arc::new(object_store::memory::InMemory::new());
-        let table_path =
-            object_store::path::Path::from_url_path(url::Url::parse(&uri).unwrap().path()).unwrap();
-        inner
-            .put(
-                &table_path.clone().join("_marker"),
-                bytes::Bytes::new().into(),
-            )
-            .await
-            .unwrap();
-        let store = lance_io::object_store::ObjectStore::new(
-            inner,
-            url::Url::parse(&uri).unwrap(),
-            None,
-            None,
-            false,
-            false,
-            1,
-            0,
-            None,
-        );
-        assert_eq!(store.scheme(), "file");
-
-        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
-        registry.insert("file", Arc::new(FileSchemeMemoryProvider { store }));
-        let session = Arc::new(lance::session::Session::new(0, 0, registry));
-        let read_params = ReadParams {
-            session: Some(session.clone()),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            &uri,
-            "custom-file-scheme",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom-file-scheme"),
-            "got {err:?}"
-        );
-
-        let db = connect(tmp_dir.path().to_str().unwrap())
-            .session(session)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            db.table_names().execute().await.unwrap(),
-            vec!["custom-file-scheme".to_string()]
-        );
-        let err = db
-            .open_table("custom-file-scheme")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom-file-scheme"),
-            "got {err:?}"
-        );
-    }
-
-    /// `file-object-store` deliberately routes through the ObjectStore API, so its
-    /// provider remains authoritative even though its URI names a local path.
-    #[tokio::test]
-    async fn test_open_recovery_uses_custom_file_object_store_provider() {
-        use object_store::ObjectStoreExt as _;
-
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("custom-object-store.lance");
-        let path = dataset_path.to_str().unwrap().replace('\\', "/");
-        let path_prefix = if path.starts_with('/') { "" } else { "/" };
-        let url = url::Url::parse(&format!("file-object-store://{path_prefix}{path}")).unwrap();
-        let uri = url.to_string();
-        assert!(!dataset_path.exists());
-
-        let inner = Arc::new(object_store::memory::InMemory::new());
-        let table_path = object_store::path::Path::from_url_path(url.path()).unwrap();
-        inner
-            .put(
-                &table_path.clone().join("_marker"),
-                bytes::Bytes::new().into(),
-            )
-            .await
-            .unwrap();
-        let store = lance_io::object_store::ObjectStore::new(
-            inner, url, None, None, false, false, 1, 0, None,
-        );
-
-        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
-        registry.insert(
-            "file-object-store",
-            Arc::new(FileSchemeMemoryProvider { store }),
-        );
-        let read_params = ReadParams {
-            session: Some(Arc::new(lance::session::Session::new(0, 0, registry))),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            &uri,
-            "custom-object-store",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "custom-object-store"),
-            "got {err:?}"
-        );
-    }
-
-    /// The built-in file-object-store provider lists an empty `.lance` directory,
-    /// so opening that listed entry must preserve the corrupt-table classification.
-    #[tokio::test]
-    async fn test_open_recovery_detects_empty_file_object_store_directory() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("empty-object-store.lance");
-        std::fs::create_dir(&dataset_path).unwrap();
-        let path = tmp_dir.path().to_str().unwrap().replace('\\', "/");
-        let path_prefix = if path.starts_with('/') { "" } else { "/" };
-        let uri = format!("file-object-store://{path_prefix}{path}");
-        let db = connect(&uri).execute().await.unwrap();
-
-        assert_eq!(
-            db.table_names().execute().await.unwrap(),
-            vec!["empty-object-store".to_string()]
-        );
-        let err = db
-            .open_table("empty-object-store")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "empty-object-store"),
-            "got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_recovery_detects_empty_local_dir_with_explicit_default_session() {
-        let tmp_dir = tempdir().unwrap();
-        let table_name = "explicit-default-session";
-        std::fs::create_dir(tmp_dir.path().join(format!("{table_name}.lance"))).unwrap();
-
-        let db = connect(tmp_dir.path().to_str().unwrap())
-            .session(Arc::new(lance::session::Session::default()))
-            .execute()
-            .await
-            .unwrap();
-
-        assert_eq!(
-            db.table_names().execute().await.unwrap(),
-            vec![table_name.to_string()]
-        );
-        let err = db.open_table(table_name).execute().await.unwrap_err();
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
-            "listed empty table must be corrupt, got {err:?}"
-        );
-    }
-
-    /// Recovery must not depend on writable process scratch space. Run the
-    /// assertion in a child process so changing `TMPDIR` cannot affect other tests.
-    #[test]
-    #[cfg(unix)]
-    fn test_open_recovery_explicit_session_without_temp_directory() {
-        const FIXTURE_ENV: &str = "LANCEDB_OPEN_RECOVERY_NO_TMP_FIXTURE";
-        const MISSING_TMP_ENV: &str = "LANCEDB_OPEN_RECOVERY_MISSING_TMPDIR";
-        const TABLE_NAME: &str = "explicit-session-no-tempfile";
-
-        if let Some(fixture) = std::env::var_os(FIXTURE_ENV) {
-            let session = Arc::new(lance::session::Session::default());
-            let missing_tmpdir = std::env::var_os(MISSING_TMP_ENV).unwrap();
-            // The child process isolates this environment mutation from other tests.
-            unsafe { std::env::set_var("TMPDIR", missing_tmpdir) };
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            runtime.block_on(async {
-                let db = connect(std::path::Path::new(&fixture).to_str().unwrap())
-                    .session(session)
-                    .execute()
-                    .await
-                    .unwrap();
-                let err = db.open_table(TABLE_NAME).execute().await.unwrap_err();
-                assert!(
-                    matches!(&err, Error::TableCorrupted { name, .. } if name == TABLE_NAME),
-                    "listed empty table must be corrupt, got {err:?}"
-                );
-            });
-            return;
-        }
-
-        let fixture = tempdir().unwrap();
-        std::fs::create_dir(fixture.path().join(format!("{TABLE_NAME}.lance"))).unwrap();
-        let missing_tmpdir = fixture.path().join("missing-tmpdir");
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg("table::tests::test_open_recovery_explicit_session_without_temp_directory")
-            .arg("--nocapture")
-            .env(FIXTURE_ENV, fixture.path())
-            .env(MISSING_TMP_ENV, missing_tmpdir)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "child test failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_recovery_detects_empty_local_custom_location() {
-        let tmp_dir = tempdir().unwrap();
-        let table_name = "local-location";
-        let table_path = tmp_dir.path().join(format!("{table_name}.lance"));
-        std::fs::create_dir(&table_path).unwrap();
-
-        let db = connect("memory:///open-local-location-repro")
-            .execute()
-            .await
-            .unwrap();
-        let err = db
-            .open_table(table_name)
-            .location(table_path.to_str().unwrap())
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
-            "empty built-in local location must be corrupt, got {err:?}"
-        );
-    }
-
-    #[derive(Debug)]
-    struct OpenRecoveryTestStore {
+    struct ParentListGuardStore {
         inner: Arc<dyn object_store::ObjectStore>,
         parent: object_store::path::Path,
-        sibling_count: usize,
         parent_list_calls: Arc<AtomicUsize>,
-        hide_first_list: Option<Arc<AtomicBool>>,
-        fail_exact_head: Option<object_store::path::Path>,
-        missing_exact_head_with_directory_message: Option<object_store::path::Path>,
-        fail_target_list: Option<object_store::path::Path>,
-        target_prefix: Option<object_store::path::Path>,
-        target_object_count: usize,
-        target_entries_yielded: Arc<AtomicUsize>,
     }
 
-    impl OpenRecoveryTestStore {
-        fn should_hide_list(&self) -> bool {
-            self.hide_first_list
-                .as_ref()
-                .is_some_and(|hide| hide.swap(false, Ordering::Relaxed))
-        }
-    }
-
-    impl std::fmt::Display for OpenRecoveryTestStore {
+    impl std::fmt::Display for ParentListGuardStore {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "OpenRecoveryTestStore")
+            f.write_str("ParentListGuardStore")
         }
     }
 
     #[async_trait::async_trait]
     #[deny(clippy::missing_trait_methods)]
-    impl object_store::ObjectStore for OpenRecoveryTestStore {
+    impl object_store::ObjectStore for ParentListGuardStore {
         async fn put_opts(
             &self,
             location: &object_store::path::Path,
@@ -4314,23 +3837,6 @@ mod tests {
             location: &object_store::path::Path,
             options: object_store::GetOptions,
         ) -> object_store::Result<object_store::GetResult> {
-            if options.head
-                && self.missing_exact_head_with_directory_message.as_ref() == Some(location)
-            {
-                return Err(object_store::Error::NotFound {
-                    path: location.to_string(),
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "is directory",
-                    )),
-                });
-            }
-            if self.fail_exact_head.as_ref() == Some(location) {
-                return Err(object_store::Error::Generic {
-                    store: "open-recovery-test",
-                    source: Box::new(std::io::Error::other("injected exact table probe failure")),
-                });
-            }
             self.inner.get_opts(location, options).await
         }
 
@@ -4358,36 +3864,8 @@ mod tests {
             prefix: Option<&object_store::path::Path>,
         ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
         {
-            if self.should_hide_list() {
-                return Box::pin(futures::stream::empty());
-            }
             if prefix == Some(&self.parent) {
                 self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
-            }
-            if prefix == self.fail_target_list.as_ref() {
-                return Box::pin(futures::stream::once(async {
-                    Err(object_store::Error::Generic {
-                        store: "open-recovery-test",
-                        source: Box::new(std::io::Error::other(
-                            "injected target table list failure",
-                        )),
-                    })
-                }));
-            }
-            if prefix == self.target_prefix.as_ref() {
-                let target = self.target_prefix.clone().unwrap();
-                let target_entries_yielded = self.target_entries_yielded.clone();
-                let objects = (0..self.target_object_count).map(move |index| {
-                    target_entries_yielded.fetch_add(1, Ordering::Relaxed);
-                    Ok(object_store::ObjectMeta {
-                        location: target.clone().join(format!("data/object_{index:06}.lance")),
-                        last_modified: chrono::Utc::now(),
-                        size: 0,
-                        e_tag: None,
-                        version: None,
-                    })
-                });
-                return Box::pin(futures::stream::iter(objects));
             }
             self.inner.list(prefix)
         }
@@ -4398,8 +3876,8 @@ mod tests {
             offset: &object_store::path::Path,
         ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
         {
-            if self.should_hide_list() {
-                return Box::pin(futures::stream::empty());
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
             }
             self.inner.list_with_offset(prefix, offset)
         }
@@ -4410,16 +3888,6 @@ mod tests {
         ) -> object_store::Result<object_store::ListResult> {
             if prefix == Some(&self.parent) {
                 self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
-                return Ok(object_store::ListResult {
-                    common_prefixes: (0..self.sibling_count)
-                        .map(|index| {
-                            self.parent
-                                .clone()
-                                .join(format!("sibling_{index:06}.lance"))
-                        })
-                        .collect(),
-                    objects: Vec::new(),
-                });
             }
             self.inner.list_with_delimiter(prefix).await
         }
@@ -4444,211 +3912,32 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct OpenRecoveryTestStoreWrapper {
+    struct ParentListGuardWrapper {
         parent_list_calls: Arc<AtomicUsize>,
-        sibling_count: usize,
-        hide_first_list: Option<Arc<AtomicBool>>,
-        fail_exact_head: Option<object_store::path::Path>,
-        missing_exact_head_with_directory_message: Option<object_store::path::Path>,
-        fail_target_list: Option<object_store::path::Path>,
-        target_prefix: Option<object_store::path::Path>,
-        target_object_count: usize,
-        target_entries_yielded: Arc<AtomicUsize>,
     }
 
-    impl Default for OpenRecoveryTestStoreWrapper {
-        fn default() -> Self {
-            Self {
-                parent_list_calls: Arc::new(AtomicUsize::new(0)),
-                sibling_count: 0,
-                hide_first_list: None,
-                fail_exact_head: None,
-                missing_exact_head_with_directory_message: None,
-                fail_target_list: None,
-                target_prefix: None,
-                target_object_count: 0,
-                target_entries_yielded: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    impl WrappingObjectStore for OpenRecoveryTestStoreWrapper {
+    impl WrappingObjectStore for ParentListGuardWrapper {
         fn wrap(
             &self,
             _store_prefix: &str,
             inner: Arc<dyn object_store::ObjectStore>,
         ) -> Arc<dyn object_store::ObjectStore> {
-            Arc::new(OpenRecoveryTestStore {
+            Arc::new(ParentListGuardStore {
                 inner,
                 parent: object_store::path::Path::from("database"),
-                sibling_count: self.sibling_count,
                 parent_list_calls: self.parent_list_calls.clone(),
-                hide_first_list: self.hide_first_list.clone(),
-                fail_exact_head: self.fail_exact_head.clone(),
-                missing_exact_head_with_directory_message: self
-                    .missing_exact_head_with_directory_message
-                    .clone(),
-                fail_target_list: self.fail_target_list.clone(),
-                target_prefix: self.target_prefix.clone(),
-                target_object_count: self.target_object_count,
-                target_entries_yielded: self.target_entries_yielded.clone(),
             })
         }
     }
 
-    /// A wrapper is part of the effective store even for a local-looking URI.
-    /// Recovery must not bypass it by inspecting the host path directly.
     #[tokio::test]
-    async fn test_open_recovery_uses_wrapper_for_file_uri() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("wrapped.lance");
-        let uri = url::Url::from_file_path(&dataset_path).unwrap().to_string();
-        let target =
-            object_store::path::Path::from_url_path(url::Url::parse(&uri).unwrap().path()).unwrap();
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    fail_exact_head: Some(target),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            &uri,
-            "wrapped",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            !matches!(
-                &err,
-                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
-            ),
-            "wrapper probe errors must fail closed: {err:?}"
-        );
-        assert!(
-            err.to_string()
-                .contains("injected exact table probe failure"),
-            "got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_recovery_direct_capability_respects_wrapper() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("direct-wrapped.lance");
-        std::fs::create_dir(&dataset_path).unwrap();
-        let uri = url::Url::from_file_path(&dataset_path).unwrap();
-        let target = object_store::path::Path::from_url_path(uri.path()).unwrap();
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store: Some((
-                    Arc::new(object_store::local::LocalFileSystem::new()),
-                    uri.clone(),
-                )),
-                native_directory_path_resolver: Some(NativeDirectoryPathResolver::new(|path| {
-                    std::path::PathBuf::from(lance_io::local::to_local_path(path))
-                })),
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    fail_exact_head: Some(target),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            uri.as_ref(),
-            "direct-wrapped",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            !matches!(
-                &err,
-                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
-            ),
-            "direct wrapper probe errors must fail closed: {err:?}"
-        );
-        assert!(
-            err.to_string()
-                .contains("injected exact table probe failure"),
-            "got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_missing_does_not_trust_incidental_directory_message() {
-        let target = object_store::path::Path::from("database/missing.lance");
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    missing_exact_head_with_directory_message: Some(target),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            "memory:///database/missing.lance",
-            "missing",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
-            "missing provider object must remain missing, got {err:?}"
-        );
-    }
-
-    /// Opening one missing table must not enumerate unrelated table prefixes.
-    ///
-    /// The synthetic 100,000-prefix result models production-scale result
-    /// cardinality. The assertion is on the I/O scope, not wall-clock timing,
-    /// so it is deterministic on local and CI machines.
-    #[tokio::test]
-    async fn test_open_missing_is_independent_of_sibling_count() {
-        const SIBLING_COUNT: usize = 100_000;
-
+    async fn test_open_missing_never_lists_database_parent() {
         let parent_list_calls = Arc::new(AtomicUsize::new(0));
-        let wrapper = Arc::new(OpenRecoveryTestStoreWrapper {
-            parent_list_calls: parent_list_calls.clone(),
-            sibling_count: SIBLING_COUNT,
-            ..Default::default()
-        });
-        let read_params = ReadParams {
+        let params = ReadParams {
             store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(wrapper),
+                object_store_wrapper: Some(Arc::new(ParentListGuardWrapper {
+                    parent_list_calls: parent_list_calls.clone(),
+                })),
                 ..Default::default()
             }),
             ..Default::default()
@@ -4659,7 +3948,7 @@ mod tests {
             "missing",
             Vec::new(),
             None,
-            Some(read_params),
+            Some(params),
             None,
             None,
             HashSet::new(),
@@ -4675,296 +3964,8 @@ mod tests {
         assert_eq!(
             parent_list_calls.load(Ordering::Relaxed),
             0,
-            "opening one missing table must not list the database parent"
+            "opening one missing table must not enumerate sibling tables"
         );
-    }
-
-    #[tokio::test]
-    async fn test_open_probe_failure_is_not_reported_as_missing() {
-        let target = object_store::path::Path::from("database/failing.lance");
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    fail_exact_head: Some(target),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            "memory:///database/failing.lance",
-            "failing",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            !matches!(
-                &err,
-                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
-            ),
-            "storage probe errors must fail closed: {err:?}"
-        );
-        assert!(
-            err.to_string()
-                .contains("injected exact table probe failure"),
-            "got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_list_failure_is_not_reported_as_missing() {
-        let target = object_store::path::Path::from("database/failing-list.lance");
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    fail_target_list: Some(target),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            "memory:///database/failing-list.lance",
-            "failing-list",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            !matches!(
-                &err,
-                Error::TableNotFound { .. } | Error::TableCorrupted { .. }
-            ),
-            "storage probe errors must fail closed: {err:?}"
-        );
-        assert!(
-            err.to_string()
-                .contains("injected target table list failure"),
-            "got {err}"
-        );
-    }
-
-    /// A corrupt table may contain many artifacts, but presence classification
-    /// needs only one target-scoped item.
-    #[tokio::test]
-    async fn test_open_corrupt_consumes_one_target_object() {
-        const TARGET_OBJECT_COUNT: usize = 100_000;
-
-        let target = object_store::path::Path::from("database/corrupt.lance");
-        let target_entries_yielded = Arc::new(AtomicUsize::new(0));
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store_wrapper: Some(Arc::new(OpenRecoveryTestStoreWrapper {
-                    target_prefix: Some(target),
-                    target_object_count: TARGET_OBJECT_COUNT,
-                    target_entries_yielded: target_entries_yielded.clone(),
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            "memory:///database/corrupt.lance",
-            "corrupt",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "corrupt"),
-            "got {err:?}"
-        );
-        assert_eq!(
-            target_entries_yielded.load(Ordering::Relaxed),
-            1,
-            "presence classification must stop after the first target object"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_corrupt_exact_table_object() {
-        use object_store::ObjectStoreExt as _;
-
-        let target = object_store::path::Path::from("database/direct.lance");
-        let object_store = Arc::new(object_store::memory::InMemory::new());
-        object_store
-            .put(&target, bytes::Bytes::new().into())
-            .await
-            .unwrap();
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store: Some((
-                    object_store,
-                    url::Url::parse("memory:///database/direct.lance").unwrap(),
-                )),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let err = NativeTable::open_with_params(
-            "memory:///database/direct.lance",
-            "direct",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "direct"),
-            "got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_open_recovery_detects_empty_direct_local_directory() {
-        let tmp_dir = tempdir().unwrap();
-        let table_name = "direct-local";
-        let table_path = tmp_dir.path().join(format!("{table_name}.lance"));
-        std::fs::create_dir(&table_path).unwrap();
-        let uri = url::Url::from_file_path(&table_path).unwrap();
-        let cases = [
-            ("legacy", None),
-            (
-                "capable",
-                Some(NativeDirectoryPathResolver::new(|path| {
-                    std::path::PathBuf::from(lance_io::local::to_local_path(path))
-                })),
-            ),
-        ];
-
-        for (case, native_directory_path_resolver) in cases {
-            let read_params = ReadParams {
-                store_options: Some(ObjectStoreParams {
-                    object_store: Some((
-                        Arc::new(object_store::local::LocalFileSystem::new()),
-                        uri.clone(),
-                    )),
-                    native_directory_path_resolver,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-
-            let err = NativeTable::open_with_params(
-                uri.as_ref(),
-                table_name,
-                Vec::new(),
-                None,
-                Some(read_params),
-                None,
-                None,
-                HashSet::new(),
-                None,
-            )
-            .await
-            .unwrap_err();
-
-            assert!(
-                matches!(&err, Error::TableCorrupted { name, .. } if name == table_name),
-                "{case} empty direct local directory must remain corrupt, got {err:?}"
-            );
-        }
-    }
-
-    /// If a concurrent create commits after the first manifest lookup misses,
-    /// opening should return the completed table instead of stale corruption.
-    #[tokio::test]
-    async fn test_open_recovers_from_concurrent_create_commit() {
-        use lance_table::io::commit::RenameCommitHandler;
-
-        let uri = "memory:///database/test.lance";
-        let inner = Arc::new(object_store::memory::InMemory::new());
-
-        let batch = make_test_batches();
-        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(
-            reader,
-            uri,
-            Some(WriteParams {
-                store_params: Some(ObjectStoreParams {
-                    object_store: Some((inner.clone(), url::Url::parse(uri).unwrap())),
-                    ..Default::default()
-                }),
-                commit_handler: Some(Arc::new(RenameCommitHandler)),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
-
-        let hide_first_list = Arc::new(AtomicBool::new(true));
-        let object_store = Arc::new(OpenRecoveryTestStore {
-            inner,
-            parent: object_store::path::Path::from("does-not-match"),
-            sibling_count: 0,
-            parent_list_calls: Arc::new(AtomicUsize::new(0)),
-            hide_first_list: Some(hide_first_list.clone()),
-            fail_exact_head: None,
-            missing_exact_head_with_directory_message: None,
-            fail_target_list: None,
-            target_prefix: None,
-            target_object_count: 0,
-            target_entries_yielded: Arc::new(AtomicUsize::new(0)),
-        });
-        let read_params = ReadParams {
-            store_options: Some(ObjectStoreParams {
-                object_store: Some((object_store, url::Url::parse(uri).unwrap())),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let table = NativeTable::open_with_params(
-            uri,
-            "test",
-            Vec::new(),
-            None,
-            Some(read_params),
-            None,
-            None,
-            HashSet::new(),
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert!(!hide_first_list.load(Ordering::Relaxed));
-        assert_eq!(table.version().await.unwrap(), 1);
     }
 
     #[test]
