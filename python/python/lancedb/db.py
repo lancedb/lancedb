@@ -1203,9 +1203,8 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        return Job(
-            LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
-        )
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
