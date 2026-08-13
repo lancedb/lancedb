@@ -6,6 +6,7 @@ import inspect
 import re
 import sys
 from datetime import timedelta
+from importlib import resources
 import os
 from types import SimpleNamespace
 
@@ -16,6 +17,10 @@ import pyarrow as pa
 import pytest
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.pydantic import LanceModel, Vector
+
+
+def test_package_includes_pep_561_marker():
+    assert resources.files(lancedb).joinpath("py.typed").is_file()
 
 
 def test_basic(tmp_path):

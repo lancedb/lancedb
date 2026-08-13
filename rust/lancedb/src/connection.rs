@@ -34,7 +34,7 @@ use crate::remote::{
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
 use lance::io::ObjectStoreParams;
-pub use lance_encoding::version::LanceFileVersion;
+pub use lance_file::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
@@ -409,6 +409,11 @@ impl Connection {
     ///
     /// The names will be returned in lexicographical order (ascending)
     ///
+    /// Listing databases discover physical `*.lance` entries without opening every
+    /// dataset. The result is a point-in-time discovery snapshot: an entry may still be
+    /// under creation, may contain only uncommitted storage, or may be concurrently
+    /// dropped before it is opened.
+    ///
     /// The parameters `page_token` and `limit` can be used to paginate the results
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
@@ -456,10 +461,9 @@ impl Connection {
     ///
     /// # Returns
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
-    /// If the table's storage is present but holds no readable dataset (for example a
-    /// `<name>.lance` directory left behind by an interrupted drop and re-create, which
-    /// [`Self::table_names`] still lists) this returns [`Error::TableCorrupted`]
-    /// instead.
+    /// On listing databases, a committed Lance manifest is authoritative for table
+    /// existence. Uncommitted files or a physical `<name>.lance` directory alone do not
+    /// make a table openable.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),

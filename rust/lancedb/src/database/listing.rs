@@ -14,7 +14,7 @@ use lance::dataset::{
 };
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::{
     format::{IndexMetadata, Manifest, Transaction as LanceTableTransaction},
@@ -1336,7 +1336,8 @@ impl Database for ListingDatabase {
                 source_dataset
                     .manifest
                     .data_storage_format
-                    .lance_file_version()?,
+                    .lance_file_format()
+                    .to_selector(),
             )
             .execute(transaction)
             .await
@@ -1497,14 +1498,21 @@ impl Database for ListingDatabase {
 mod tests {
     use super::*;
     use crate::Table;
+    use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
     use crate::connection::ConnectRequest;
     use crate::data::scannable::Scannable;
     use crate::database::{CreateTableMode, CreateTableRequest};
-    use crate::table::WriteOptions;
+    use crate::query::QueryRequest;
+    use crate::table::{AnyQuery, WriteOptions};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Schema, SchemaRef};
+    use futures::{TryStreamExt, stream::once};
     use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::sync::Barrier;
+    use tokio::time::timeout;
 
     #[derive(Debug)]
     struct TargetOnlyCommitHandler;
@@ -1761,6 +1769,114 @@ mod tests {
         assert_eq!(reopened.count_rows(None).await.unwrap(), 3);
     }
 
+    struct BarrierScannable {
+        batch: RecordBatch,
+        barrier: Arc<Barrier>,
+    }
+
+    impl Scannable for BarrierScannable {
+        fn schema(&self) -> SchemaRef {
+            self.batch.schema()
+        }
+
+        fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+            let batch = self.batch.clone();
+            let schema = batch.schema();
+            let barrier = self.barrier.clone();
+            Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: once(async move {
+                    barrier.wait().await;
+                    Ok(batch)
+                }),
+            })
+        }
+    }
+
+    fn create_request(name: &str, data: Box<dyn Scannable>) -> CreateTableRequest {
+        CreateTableRequest {
+            name: name.to_string(),
+            namespace_path: vec![],
+            data,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_ignores_uncommitted_storage_without_manifest() {
+        let (tmp_dir, db) = setup_database().await;
+        let data_dir = tmp_dir.path().join("test.lance/data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+
+        let table = db
+            .create_table(create_request("test", Box::new(batch)))
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_create_is_arbitrated_by_manifest_commit() {
+        let uri = format!("memory:///concurrent-create-{}", uuid::Uuid::new_v4());
+        let db = crate::connect(&uri).execute().await.unwrap();
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let table_url = url::Url::parse("memory:///database/test.lance").unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+
+        #[allow(deprecated)]
+        let request = |batch, barrier| {
+            let mut request = create_request("test", Box::new(BarrierScannable { batch, barrier }));
+            request.write_options = WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(ObjectStoreParams {
+                        object_store: Some((store.clone(), table_url.clone())),
+                        ..Default::default()
+                    }),
+                    commit_handler: Some(Arc::new(
+                        lance_table::io::commit::ConditionalPutCommitHandler,
+                    )),
+                    ..Default::default()
+                }),
+            };
+            request
+        };
+
+        let left = db
+            .database()
+            .create_table(request(batch.clone(), barrier.clone()));
+        let right = db.database().create_table(request(batch, barrier));
+        let (left, right) = timeout(Duration::from_secs(30), async { tokio::join!(left, right) })
+            .await
+            .expect("concurrent creates deadlocked");
+
+        let results = [left, right];
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "expected one successful create, got {results:?}"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(Error::TableAlreadyExists { .. })))
+                .count(),
+            1,
+            "expected one manifest conflict, got {results:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_listing_database_root_ops_do_not_create_manifest() {
         let tempdir = tempdir().unwrap();
@@ -1875,6 +1991,94 @@ mod tests {
         let after_open = registry.stats();
         assert_eq!(after_open.misses, before_open.misses);
         assert!(after_open.hits >= before_open.hits + 3);
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/3197.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_open_table_follows_hugging_face_symlinks() {
+        let (tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(
+                RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+                    .unwrap(),
+            ) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let table_dir = tempdir.path().join("test.lance");
+        let versions_dir = table_dir.join("_versions");
+        let manifest_path = std::fs::read_dir(&versions_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "manifest"))
+            .unwrap();
+        let data_path = std::fs::read_dir(table_dir.join("data"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "lance"))
+            .unwrap();
+
+        // Hugging Face snapshots keep dataset objects in a separate blob directory and
+        // expose them through relative symlinks.
+        let blobs_dir = tempdir.path().join("blobs");
+        std::fs::create_dir(&blobs_dir).unwrap();
+        let manifest_blob = "9b603c63d0e692e05d58be25605f2f2064cc781e5ff94fe983a405059547b816";
+        let data_blob = "be64f20e5723bd0a27cfdbdb41cf7d6fad94cd572a71973b717fb8340f4310c5";
+        std::fs::rename(&manifest_path, blobs_dir.join(manifest_blob)).unwrap();
+        std::fs::rename(&data_path, blobs_dir.join(data_blob)).unwrap();
+        std::os::unix::fs::symlink(Path::new("../../blobs").join(manifest_blob), &manifest_path)
+            .unwrap();
+        std::os::unix::fs::symlink(Path::new("../../blobs").join(data_blob), &data_path).unwrap();
+        let symlink_len = std::fs::symlink_metadata(&manifest_path).unwrap().len();
+        let target_len = std::fs::metadata(&manifest_path).unwrap().len();
+        assert_ne!(symlink_len, target_len);
+
+        drop(db);
+        let db = ListingDatabase::connect_with_options(&ConnectRequest {
+            uri: tempdir.path().to_str().unwrap().to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        })
+        .await
+        .unwrap();
+
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        let batches = table
+            .query(
+                &AnyQuery::Query(QueryRequest::default()),
+                Default::default(),
+            )
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
     }
 
     #[tokio::test]
@@ -2142,8 +2346,8 @@ mod tests {
                 source_dataset
                     .manifest
                     .data_storage_format
-                    .lance_file_version()
-                    .unwrap(),
+                    .lance_file_format()
+                    .to_selector(),
             )
             .execute(transaction)
             .await
@@ -2948,7 +3152,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_table_uri() {
-        let (_tempdir, db) = setup_database().await;
+        let (_tempdir, mut db) = setup_database().await;
 
         let mut pb = PathBuf::new();
         pb.push(db.uri.clone());
@@ -2957,6 +3161,18 @@ mod tests {
         let expected = pb.to_str().unwrap();
         let uri = db.table_uri("test").ok().unwrap();
         assert_eq!(uri, expected);
+
+        // URI paths always use forward slashes, even on Windows. Using
+        // `Path::join` here used to produce `az://container/prefix\\test.lance`,
+        // which Azure treated as a different object from the table returned by
+        // `table_names` (https://github.com/lancedb/lancedb/issues/1072).
+        for base_uri in ["az://container/prefix", "az://container/prefix/"] {
+            db.uri = base_uri.to_string();
+            assert_eq!(
+                db.table_uri("test").unwrap(),
+                "az://container/prefix/test.lance"
+            );
+        }
     }
 
     /// Regression: connecting via a URL-style URI (which goes through

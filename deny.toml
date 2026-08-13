@@ -101,6 +101,13 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2026-0195
     { id = "RUSTSEC-2026-0194", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
     { id = "RUSTSEC-2026-0195", reason = "transitive via inferno/lance/opendal; XML from trusted cloud endpoints, not attacker-controlled" },
+    # smartstring: unmaintained — the repository was archived by its author on
+    # 2026-05-03. Not a vulnerability. Reached only transitively through polars
+    # (polars-core/-io/-ops/-time/-utils); nothing in LanceDB depends on it directly.
+    # The advisory states no safe upgrade is available: upstream recommends
+    # compact_str/smol_str, so clearing this requires polars to migrate.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0249
+    { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
 ]
 
 # ---------------------------------------------------------------------------

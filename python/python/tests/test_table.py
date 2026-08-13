@@ -929,6 +929,7 @@ def test_polars(mem_db: DBConnection):
 
     # enter table to polars dataframe
     result = table.to_polars()
+    assert isinstance(result, pl.LazyFrame)
     assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
 
     # make sure filtering isn't broken
@@ -1845,6 +1846,27 @@ def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
 
 
+def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
+    """Regression test for issue #2340."""
+    table = mem_db.create_table(
+        "test_nullable_fixed_size_list",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("feature", pa.list_(pa.float32(), 256)),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+
+    table.add([{"id": "1", "feature": None, "tags": ["tag1", "tag2"]}])
+
+    result = table.to_arrow()
+    assert result.to_pylist() == [
+        {"id": "1", "feature": None, "tags": ["tag1", "tag2"]}
+    ]
+
+
 def test_add_nullable_struct_with_none(mem_db: DBConnection):
     """Regression test for issue #2654: a nullable struct column whose
     first batch contains only None values must not crash in
@@ -2194,6 +2216,45 @@ def test_merge(tmp_db: DBConnection, tmp_path):
     other_dataset = lance.write_dataset(other_table, tmp_path / "other_table.lance")
     table.restore(1)
     table.merge(other_dataset, left_on="id")
+
+
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_search_after_merge(tmp_path, storage_version):
+    pytest.importorskip("lance")
+    pd = pytest.importorskip("pandas")
+
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": storage_version},
+    )
+    rng = np.random.default_rng(42)
+    row_count = 512
+    vectors = rng.standard_normal((row_count, 8)).astype(np.float32)
+    table = db.create_table(
+        "search_after_merge",
+        data=pd.DataFrame(
+            {
+                "id": [str(i) for i in range(row_count)],
+                "vector": list(vectors),
+            }
+        ),
+    )
+    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+
+    links = pd.DataFrame(
+        {
+            "id": [str(i) for i in range(row_count // 2)],
+            "link": [f"https://example.com/{i}" for i in range(row_count // 2)],
+        }
+    )
+    table.merge(links, left_on="id")
+
+    query = table.search(vectors[-1]).refine_factor(50).limit(10)
+    assert "ANN" in query.explain_plan(verbose=True)
+
+    result = query.to_arrow()
+    links_by_id = dict(zip(result["id"].to_pylist(), result["link"].to_pylist()))
+    assert links_by_id[str(row_count - 1)] is None
 
 
 def test_delete(mem_db: DBConnection):
@@ -2738,15 +2799,40 @@ def test_create_with_embedding_function(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
+    dimension = 32
+    num_rows = 512
+    values = pa.array(
+        np.random.default_rng(42)
+        .standard_normal(num_rows * dimension)
+        .astype(np.float16)
+    )
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(num_rows)],
+            "vector": pa.FixedSizeListArray.from_arrays(values, dimension),
+        }
+    )
+    table = mem_db.create_table("f16_tbl", data=df)
+    assert table.schema.field("vector").type == pa.list_(pa.float16(), dimension)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_create_f16_table(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
+    rng = np.random.default_rng(42)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [np.random.randn(32).astype(np.float16) for _ in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
         }
     )
     table = mem_db.create_table(
@@ -3627,7 +3713,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3644,6 +3731,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
