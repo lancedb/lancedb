@@ -2003,6 +2003,18 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def refresh_column_async(self, column: str) -> Job:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`Job.wait` returns. Invalid input --
+        an unknown column, or one that is not computed -- raises here rather
+        than failing the job.
+        """
+
+    @abstractmethod
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
@@ -4020,6 +4032,13 @@ class LanceTable(Table):
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
+    def refresh_column_async(self, column: str) -> Job:
+        """Fill a computed column's unfilled rows, returning a handle to the
+        refresh job. See
+        [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
+        """
+        return Job(LOOP.run(self._table.refresh_column_async(column)))
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:
@@ -6017,6 +6036,18 @@ class AsyncTable:
             The number of rows filled and the new version of the table.
         """
         return await self._inner.refresh_column(column)
+
+    async def refresh_column_async(self, column: str) -> AsyncJob:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
+        input -- an unknown column, or one that is not computed -- raises here
+        rather than failing the job.
+        """
+        return AsyncJob(await self._inner.refresh_column_async(column))
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

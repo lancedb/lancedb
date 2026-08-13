@@ -746,6 +746,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are supported only on local tables".into(),
         })
     }
+    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
+    /// the operation.
+    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -1659,6 +1666,17 @@ impl Table {
     /// ```
     pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
         self.inner.refresh_column(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
+    /// operation instead of blocking until it completes.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// -- an unknown column, or one that is not computed -- is reported by
+    /// this call rather than by the job.
+    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+        self.inner.refresh_column_async(column.as_ref()).await
     }
 
     /// Change a column's name or nullability.
@@ -3335,6 +3353,10 @@ impl BaseTable for NativeTable {
         let result = refresh::execute_refresh_column(self, column).await?;
         self.bump_freshness();
         Ok(result)
+    }
+
+    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+        refresh::execute_refresh_column_async(self, column).await
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {

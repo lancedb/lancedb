@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::NativeTable;
 use super::computed_columns::{ComputedColumnKind, computed_column_from_field};
+use crate::job::Job;
 use crate::{Error, Result};
 
 /// Alias the expression is projected under, so its result and the column's
@@ -107,6 +108,24 @@ pub(crate) async fn execute_refresh_column(
         rows_filled,
         version,
     })
+}
+
+/// Run the refresh as a [`Job`] in this process.
+pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &str) -> Result<Job> {
+    // Validate before spawning so bad input is reported by this call rather
+    // than only by the job.
+    table.dataset.ensure_mutable()?;
+    let dataset = table.dataset.get().await?;
+    declared_expression(&dataset, column)?;
+    drop(dataset);
+
+    let table = table.clone();
+    let column = column.to_string();
+    Ok(Job::spawned(tokio::spawn(async move {
+        execute_refresh_column(&table, &column).await?;
+        table.bump_freshness();
+        Ok(())
+    })))
 }
 
 /// The SQL expression `column` is declared with.
@@ -494,6 +513,47 @@ mod tests {
             read(&table, "double value").await,
             vec![Some(2), Some(4), Some(6)]
         );
+    }
+
+    /// The async form's job settles with the fill visible, like
+    /// create_index's execute_async.
+    #[tokio::test]
+    async fn test_refresh_async_job_waits_for_the_fill() {
+        let table = table_with("refresh_async", vec![1, 2, 3]).await;
+        declare_doubled(&table).await.unwrap();
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        assert!(job.id().is_none(), "in-process jobs have no server id");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(6)]
+        );
+    }
+
+    /// Bad input is reported by the call, not by the job.
+    #[tokio::test]
+    async fn test_refresh_async_rejects_bad_input_before_spawning() {
+        let table = table_with("refresh_async_bad", vec![1, 2, 3]).await;
+
+        let err = table.refresh_column_async("x").await.unwrap_err();
+        assert!(matches!(err, Error::NotAComputedColumn { name } if name == "x"));
+
+        let err = table.refresh_column_async("nope").await.unwrap_err();
+        assert!(matches!(err, Error::ColumnNotFound { name } if name == "nope"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_async_job_reports_success_to_every_waiter() {
+        let table = table_with("refresh_async_waiters", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        job.wait().await.unwrap();
+        // A second wait after completion observes the same outcome.
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
     }
 
     #[tokio::test]

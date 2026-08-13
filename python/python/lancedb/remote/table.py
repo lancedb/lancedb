@@ -973,6 +973,9 @@ class RemoteTable(Table):
     def refresh_column(self, column: str):
         raise NotImplementedError("computed columns are supported only on local tables")
 
+    def refresh_column_async(self, column: str) -> Job:
+        raise NotImplementedError("computed columns are supported only on local tables")
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:

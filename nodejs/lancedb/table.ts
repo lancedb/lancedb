@@ -575,6 +575,18 @@ export abstract class Table {
   abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
 
   /**
+   * Like {@link Table#refreshColumn}, but returns a handle to the refresh
+   * job instead of blocking until it completes.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the column is filled until {@link Job.wait} resolves. Invalid input --
+   * an unknown column, or one that is not computed -- rejects here rather
+   * than failing the job.
+   * @param {string} column The name of the computed column to fill.
+   */
+  abstract refreshColumnAsync(column: string): Promise<Job>;
+
+  /**
    * Alter the name or nullability of columns.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
@@ -1177,6 +1189,10 @@ export class LocalTable extends Table {
 
   async refreshColumn(column: string): Promise<RefreshColumnResult> {
     return await this.inner.refreshColumn(column);
+  }
+
+  async refreshColumnAsync(column: string): Promise<Job> {
+    return await this.inner.refreshColumnAsync(column);
   }
 
   async alterColumns(
