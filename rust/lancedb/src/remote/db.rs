@@ -9,6 +9,7 @@ use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
 use moka::future::Cache;
+use reqwest::Response;
 use reqwest::header::CONTENT_TYPE;
 
 use lance_namespace::models::{
@@ -28,12 +29,12 @@ use crate::remote::job::RemoteJob;
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
-use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
 use super::table::RemoteTable;
 use super::util::parse_server_version;
+use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -333,25 +334,14 @@ impl<S: HttpSend> RemoteDatabase<S> {
         &self,
         name: &str,
         namespace_path: &[String],
-    ) -> Result<(String, StatusCode, Option<String>)> {
+    ) -> Result<(String, Response)> {
         let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
         let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
-        let status = resp.status();
         self.table_cache.remove(&cache_key).await;
-        let body = resp.text().await.err_to_http(request_id.clone())?;
-        let job_id = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("job_id")
-                    .and_then(|id| id.as_str())
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-            });
-        Ok((request_id, status, job_id))
+        Ok((request_id, resp))
     }
 }
 
@@ -929,7 +919,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_table_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
-        let (request_id, status, job_id) = self.submit_drop_table(name, namespace_path).await?;
+        let (request_id, response) = self.submit_drop_table(name, namespace_path).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body);
         Ok(match job_id {
             Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
             None if status == StatusCode::ACCEPTED => {
@@ -1531,6 +1524,18 @@ mod tests {
         });
         conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_does_not_read_response_body() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(vec![0xff])
+                .unwrap()
+        });
+
+        conn.drop_table("table1", &[]).await.unwrap();
     }
 
     #[tokio::test]
