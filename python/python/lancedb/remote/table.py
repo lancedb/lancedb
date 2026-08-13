@@ -964,10 +964,14 @@ class RemoteTable(Table):
         *,
         computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        if computed:
+            raise NotImplementedError(
+                "computed columns are supported only on local tables"
+            )
+        return LOOP.run(self._table.add_columns(transforms))
 
     def refresh_column(self, column: str):
-        return LOOP.run(self._table.refresh_column(column))
+        raise NotImplementedError("computed columns are supported only on local tables")
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]

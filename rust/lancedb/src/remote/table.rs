@@ -2706,6 +2706,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
                 Ok(result)
             }
+            // A declaration reaches here as AllNulls, which the remote protocol
+            // has no representation for.
+            NewColumnTransform::AllNulls(_) => {
+                return Err(Error::NotSupported {
+                    message: "computed columns are supported only on local tables".into(),
+                });
+            }
             _ => {
                 return Err(Error::NotSupported {
                     message: "Only SQL expressions are supported for adding columns".into(),
@@ -6453,6 +6460,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    /// Computed columns are local-only. Both halves say so here rather than
+    /// reaching the wire and failing somewhere less legible.
+    #[tokio::test]
+    async fn test_computed_columns_are_refused() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+
+        let declared = Arc::new(Schema::new(vec![Field::new(
+            "doubled",
+            DataType::Int32,
+            true,
+        )]));
+        let err = table
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(declared))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
+            "{err:?}"
+        );
+
+        let err = table.refresh_column("doubled").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
