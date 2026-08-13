@@ -1674,7 +1674,18 @@ impl Table {
     /// The job may already be complete when returned, and callers must not
     /// assume the column is filled until [`Job::wait`] returns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
-    /// this call rather than by the job.
+    /// this call rather than by the job. Local tables only: LanceDB Cloud and
+    /// Enterprise reject with `NotSupported`.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async("doubled").await?;
+    /// println!("refresh running: {:?}", job.status().await?);
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
         self.inner.refresh_column_async(column.as_ref()).await
     }

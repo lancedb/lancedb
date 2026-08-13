@@ -2011,7 +2011,20 @@ class Table(ABC):
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job.
+        than failing the job. Local tables only; LanceDB Cloud and Enterprise
+        raise ``NotImplementedError``.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_job_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> job = table.refresh_column_async("doubled")
+        >>> job.wait()
+        >>> job.status()
+        'finished'
         """
 
     @abstractmethod
@@ -6045,7 +6058,22 @@ class AsyncTable:
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job.
+        rather than failing the job. Local tables only; LanceDB Cloud and
+        Enterprise raise ``NotImplementedError``.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def refresh_in_background():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
+        ...     await table.add_columns(computed={"doubled": "x * 2"})
+        ...     job = await table.refresh_column_async("doubled")
+        ...     await job.wait()
+        ...     return await job.status()
+        >>> asyncio.run(refresh_in_background())
+        'finished'
         """
         return AsyncJob(await self._inner.refresh_column_async(column))
 

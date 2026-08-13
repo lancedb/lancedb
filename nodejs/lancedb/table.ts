@@ -581,8 +581,14 @@ export abstract class Table {
    * The job may already be complete when returned; callers must not assume
    * the column is filled until {@link Job.wait} resolves. Invalid input --
    * an unknown column, or one that is not computed -- rejects here rather
-   * than failing the job.
+   * than failing the job. Local tables only.
    * @param {string} column The name of the computed column to fill.
+   * @example
+   * ```ts
+   * const job = await table.refreshColumnAsync("doubled");
+   * await job.wait();
+   * console.log(await job.status()); // "finished"
+   * ```
    */
   abstract refreshColumnAsync(column: string): Promise<Job>;
 

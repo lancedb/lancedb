@@ -7,17 +7,24 @@
 //! therefore idempotent and does not observe input mutation -- once a row is
 //! filled, changing what the expression reads leaves the stored result alone.
 //!
-//! Convergence comes from staging nothing when nothing would change, so an
-//! expression yielding null settles after one pass rather than re-selecting
-//! the same rows forever. Fragments that already cover the column and hold no
-//! nulls are skipped without evaluating it at all.
+//! Two passes per fragment. The first scans only the unfilled live rows and
+//! evaluates the expression over them, which yields the exact fill count and
+//! decides whether the fragment is staged at all -- a fragment where nothing
+//! would change stages nothing, which is what lets an expression yielding
+//! null settle instead of restaging forever. The second streams the
+//! fragment's physical rows into `write_column` a batch at a time, so peak
+//! memory is bounded by a scan batch. The expression is evaluated by this
+//! module, never through a projection alias, and only over rows being
+//! filled: every other row -- deleted, or already holding a value -- has its
+//! inputs masked to null first, so a poison value in a row nobody is filling
+//! cannot fail the refresh.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions};
 use arrow_schema::Schema as ArrowSchema;
-use futures::{Stream, StreamExt, TryStreamExt, stream};
+use datafusion_expr::ColumnarValue;
+use futures::{Stream, StreamExt, TryStreamExt};
 use lance::Dataset;
 use lance::dataset::WriteDestination;
 use lance::dataset::fragment::FileFragment;
@@ -27,13 +34,9 @@ use lance_core::datatypes::Schema as LanceSchema;
 use serde::{Deserialize, Serialize};
 
 use super::NativeTable;
-use super::computed_columns::{ComputedColumnKind, computed_column_from_field};
+use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
 use crate::job::Job;
 use crate::{Error, Result};
-
-/// Alias the expression is projected under, so its result and the column's
-/// current values can be read side by side.
-const COMPUTED_ALIAS: &str = "__lancedb_computed";
 
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -55,6 +58,8 @@ pub(crate) async fn execute_refresh_column(
     let dataset = table.dataset.get().await?;
 
     let expression = declared_expression(&dataset, column)?;
+    let schema = Arc::new(ArrowSchema::from(dataset.schema()));
+    let bound = Arc::new(super::computed_columns::bind(schema, column, &expression)?);
     let field = dataset
         .schema()
         .field(column)
@@ -70,16 +75,14 @@ pub(crate) async fn execute_refresh_column(
 
     let mut rows_filled = 0u64;
     let mut replacements = Vec::new();
-    for fragment in fragments_to_consider(&dataset, column, field.id).await? {
-        let Some((filled, values)) =
-            fill_fragment(&dataset, &fragment, column, &expression).await?
-        else {
+    for fragment in dataset.get_fragments() {
+        let gained = count_fragment_gains(&dataset, &fragment, &bound, column).await?;
+        if gained == 0 {
             continue;
-        };
+        }
+        rows_filled += gained;
+        let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
         replacements.push(fragment.write_column(values, &column_schema).await?);
-        // The stream is fully consumed once write_column returns, so the
-        // counter holds the fragment's total.
-        rows_filled += filled.load(Ordering::Relaxed);
     }
 
     if replacements.is_empty() {
@@ -158,102 +161,97 @@ fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
-/// Fragments that could hold a row needing a value.
-///
-/// A fragment whose data files do not carry the field cannot hold one that
-/// does. One that carries it is asked, since a row rewrite -- an update, or a
-/// compaction folding an unfilled fragment into a filled one -- can leave
-/// nulls behind a covering file.
-async fn fragments_to_consider(
-    dataset: &Dataset,
-    column: &str,
-    field_id: i32,
-) -> Result<Vec<FileFragment>> {
-    let unfilled = format!("{} IS NULL", quote_identifier(column));
-    let mut considered = Vec::new();
-    for fragment in dataset.get_fragments() {
-        let covered = fragment
-            .metadata()
-            .files
-            .iter()
-            .any(|file| file.fields.contains(&field_id));
-        if !covered || fragment.count_rows(Some(unfilled.clone())).await? > 0 {
-            considered.push(fragment);
-        }
-    }
-    Ok(considered)
-}
-
-/// Merge one scanned batch: computed values fill the nulls, existing values
-/// are kept, and `filled` advances by the live rows that gained one.
-fn merge_batch(
+/// Assemble the batch evaluation runs against: the bound roots, in read-schema
+/// order. Built by name so scan-side column order never matters.
+fn evaluation_batch(
     batch: &RecordBatch,
-    column: &str,
-    projected: &Arc<ArrowSchema>,
-    filled: &AtomicU64,
+    bound: &BoundExpression,
+    mask_out: Option<&BooleanArray>,
 ) -> lance_core::Result<RecordBatch> {
-    let missing = |name: &str| {
-        lance_core::Error::invalid_input(format!(
-            "refreshing a computed column produced no {name} column"
-        ))
-    };
-    let existing = batch
-        .column_by_name(column)
-        .ok_or_else(|| missing(column))?;
-    let computed = batch
-        .column_by_name(COMPUTED_ALIAS)
-        .ok_or_else(|| missing("expression"))?;
-    let row_ids = batch
-        .column_by_name(ROW_ID)
-        .ok_or_else(|| missing(ROW_ID))?;
-
-    // A row is filled only if it gains a value: an expression yielding null
-    // leaves it as unfilled as it was, which is what lets a refresh settle.
-    // A deleted row has a null row id; its value is written but not counted.
-    let unfilled = arrow::compute::is_null(existing.as_ref())?;
-    let gained = (0..unfilled.len())
-        .filter(|i| unfilled.value(*i) && row_ids.is_valid(*i) && computed.is_valid(*i))
-        .count() as u64;
-    filled.fetch_add(gained, Ordering::Relaxed);
-
-    let merged = arrow_select::zip::zip(&unfilled, computed, existing)?;
-    Ok(RecordBatch::try_new(projected.clone(), vec![merged])?)
+    let mut columns = Vec::with_capacity(bound.roots.len());
+    for name in &bound.roots {
+        let column = batch.column_by_name(name).ok_or_else(|| {
+            lance_core::Error::invalid_input(format!(
+                "refreshing a computed column read no {name} column"
+            ))
+        })?;
+        // Rows outside the mask must not reach the expression: a value in a
+        // deleted or already-filled row can be one it would choke on.
+        columns.push(match mask_out {
+            Some(mask) => arrow::compute::nullif(column, mask)?,
+            None => column.clone(),
+        });
+    }
+    Ok(RecordBatch::try_new_with_options(
+        bound.read_schema.clone(),
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )?)
 }
 
-/// Compute one fragment's column as a stream, keeping every value it already
-/// holds.
+/// Evaluate the expression over `batch`, materializing a constant result to
+/// the batch's length.
+fn evaluate(bound: &BoundExpression, batch: &RecordBatch) -> lance_core::Result<ArrayRef> {
+    let value = bound
+        .physical
+        .evaluate(batch)
+        .map_err(lance_core::Error::from)?;
+    match value {
+        ColumnarValue::Array(array) => Ok(array),
+        scalar => scalar
+            .into_array(batch.num_rows())
+            .map_err(lance_core::Error::from),
+    }
+}
+
+/// How many rows of one fragment would gain a value.
 ///
-/// Batches buffer only until the first row gains a value; from there the
-/// stream feeds `write_column` a batch at a time, so peak memory is bounded
-/// by a batch rather than the fragment's column. `Ok(None)` when no live row
-/// gained one -- the whole scan buffered nothing durable and nothing is
-/// staged, which is what keeps a refresh from restaging a fragment whose
-/// expression yields null. Deleted rows are carried through so the values
-/// line up positionally with the fragment's data files; they are never read
-/// back, but the column file has to cover them.
-///
-/// The counter reports the fragment's total only once the returned stream has
-/// been fully consumed.
-async fn fill_fragment(
+/// Scans only the unfilled live rows -- deleted rows never reach the
+/// expression here, the filter having already excluded them -- and counts the
+/// non-null results. Exact, so it is both the staging decision and the
+/// fragment's contribution to `rows_filled`.
+async fn count_fragment_gains(
     dataset: &Dataset,
     fragment: &FileFragment,
+    bound: &BoundExpression,
     column: &str,
-    expression: &str,
-) -> Result<
-    Option<(
-        Arc<AtomicU64>,
-        impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>,
-    )>,
-> {
+) -> Result<u64> {
+    let mut scanner = dataset.scan();
+    scanner
+        .with_fragments(vec![fragment.metadata().clone()])
+        .with_row_id()
+        .filter(&format!("{} IS NULL", quote_identifier(column)))?
+        .project(&bound.roots)?;
+
+    let mut gained = 0u64;
+    let mut batches = scanner.try_into_stream().await?;
+    while let Some(batch) = batches.try_next().await? {
+        let evaluated = evaluate(bound, &evaluation_batch(&batch, bound, None)?)?;
+        gained += (batch.num_rows() - evaluated.null_count()) as u64;
+    }
+    Ok(gained)
+}
+
+/// Stream one fragment's column in physical order, filling the unfilled live
+/// rows and keeping every other value.
+///
+/// Deleted rows are carried through so the values line up positionally with
+/// the fragment's data files; they are never read back, but the column file
+/// has to cover them.
+async fn fill_stream(
+    dataset: &Dataset,
+    fragment: &FileFragment,
+    bound: Arc<BoundExpression>,
+    column: &str,
+) -> Result<impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>> {
+    let mut projection: Vec<String> = bound.roots.clone();
+    projection.push(column.to_string());
     let mut scanner = dataset.scan();
     scanner
         .with_fragments(vec![fragment.metadata().clone()])
         .with_row_id()
         .include_deleted_rows()
-        .project_with_transform(&[
-            (column, quote_identifier(column).as_str()),
-            (COMPUTED_ALIAS, expression),
-        ])?;
+        .project(&projection)?;
 
     let projected = Arc::new(ArrowSchema::new(vec![
         ArrowSchema::from(dataset.schema())
@@ -264,27 +262,39 @@ async fn fill_fragment(
             .clone(),
     ]));
 
-    let filled = Arc::new(AtomicU64::new(0));
-    let mut buffered = Vec::new();
-    let mut batches = scanner.try_into_stream().await?;
-    while filled.load(Ordering::Relaxed) == 0 {
-        match batches.try_next().await? {
-            Some(batch) => buffered.push(merge_batch(&batch, column, &projected, &filled)?),
-            None => return Ok(None),
-        }
-    }
-
     let column = column.to_string();
-    let counter = filled.clone();
-    let rest = batches.map(move |batch| {
-        batch.and_then(|batch| merge_batch(&batch, &column, &projected, &counter))
-    });
-    let values = stream::iter(buffered.into_iter().map(Ok)).chain(rest);
-    Ok(Some((filled, values)))
+    let batches = scanner.try_into_stream().await?;
+    Ok(batches.map(move |batch| {
+        let batch = batch?;
+        let missing = |name: &str| {
+            lance_core::Error::invalid_input(format!(
+                "refreshing a computed column read no {name} column"
+            ))
+        };
+        let existing = batch
+            .column_by_name(&column)
+            .ok_or_else(|| missing(&column))?;
+        let row_ids = batch
+            .column_by_name(ROW_ID)
+            .ok_or_else(|| missing(ROW_ID))?;
+
+        // Only an unfilled live row gains a value; a deleted row has a null
+        // row id and keeps its (null) slot.
+        let unfilled = arrow::compute::is_null(existing.as_ref())?;
+        let live = arrow::compute::is_not_null(row_ids.as_ref())?;
+        let fill = arrow::compute::and(&unfilled, &live)?;
+        let keep = arrow::compute::not(&fill)?;
+
+        let computed = evaluate(&bound, &evaluation_batch(&batch, &bound, Some(&keep))?)?;
+        let merged = arrow_select::zip::zip(&fill, &computed, existing)?;
+        Ok(RecordBatch::try_new(projected.clone(), vec![merged])?)
+    }))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use arrow_array::{Int32Array, record_batch};
     use futures::TryStreamExt;
 
@@ -621,6 +631,175 @@ mod tests {
         let table = table_with("refresh_missing", vec![1, 2, 3]).await;
         let err = table.refresh_column("nope").await.unwrap_err();
         assert!(matches!(err, Error::ColumnNotFound { name } if name == "nope"));
+    }
+
+    /// The gate's reproducer: a poison value in a deleted row must not
+    /// abort filling the live rows, since nobody can read it.
+    #[tokio::test]
+    async fn test_a_deleted_rows_value_is_never_evaluated() {
+        let table = table_with("refresh_deleted_poison", vec![1, 0]).await;
+        table
+            .add_columns()
+            .computed("quotient", "10 / x")
+            .execute()
+            .await
+            .unwrap();
+        table.delete("x = 0").await.unwrap();
+
+        let result = table.refresh_column("quotient").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(read(&table, "quotient").await, vec![Some(10)]);
+    }
+
+    /// The gate's reproducer: an already-filled row's value must not be
+    /// re-evaluated either -- its input may have mutated into one the
+    /// expression chokes on.
+    #[tokio::test]
+    async fn test_a_filled_rows_value_is_never_evaluated() {
+        let table = table_with("refresh_filled_poison", vec![1, 2]).await;
+        table
+            .add_columns()
+            .computed("quotient", "10 / x")
+            .execute()
+            .await
+            .unwrap();
+        table.refresh_column("quotient").await.unwrap();
+
+        table
+            .update()
+            .column("x", "0")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+        append(&table, vec![5]).await;
+
+        let result = table.refresh_column("quotient").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(
+            read(&table, "quotient").await,
+            vec![Some(2), Some(5), Some(10)]
+        );
+    }
+
+    /// The gate's reproducer: the old internal projection alias is an
+    /// ordinary column name; a computed column may use it.
+    #[tokio::test]
+    async fn test_refresh_a_column_named_like_the_old_alias() {
+        let table = table_with("refresh_alias_name", vec![1, 2]).await;
+        table
+            .add_columns()
+            .computed("__lancedb_computed", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("__lancedb_computed").await.unwrap();
+        assert_eq!(result.rows_filled, 2);
+        assert_eq!(
+            read(&table, "__lancedb_computed").await,
+            vec![Some(2), Some(4)]
+        );
+    }
+
+    /// The gate's reproducer: a late-gain fragment (filled, then one null row
+    /// compacted onto the end) fills without the old probe's buffering, which
+    /// this pins behaviorally; the memory bound is structural -- the fill
+    /// stream retains no batches at all.
+    #[tokio::test]
+    async fn test_refresh_fills_a_late_gain_fragment() {
+        let values: Vec<i32> = (0..20_000).collect();
+        let table = table_with("refresh_late_gain", values).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+
+        append(&table, vec![2_000_000]).await;
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        let read_back = read(&table, "doubled").await;
+        assert_eq!(read_back.len(), 20_001);
+        assert_eq!(read_back.last().unwrap(), &Some(4_000_000));
+    }
+
+    /// The gate's reproducer: a nested input declares, refreshes, and guards
+    /// its root against invalidating schema changes.
+    #[tokio::test]
+    async fn test_a_nested_input_declares_and_refreshes() {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let age = Arc::new(Int32Array::from(vec![30, 40]));
+        let fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let metadata = StructArray::new(fields.clone(), vec![age as _], None);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "metadata",
+            DataType::Struct(fields),
+            true,
+        )]));
+        let batch =
+            arrow_array::RecordBatch::try_new(schema, vec![Arc::new(metadata) as _]).unwrap();
+        let table = conn
+            .create_table("refresh_nested", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .add_columns()
+            .computed("next_age", "metadata.age + 1")
+            .execute()
+            .await
+            .unwrap();
+        let declaration =
+            &crate::table::computed_columns(table.schema().await.unwrap().as_ref())[0];
+        assert_eq!(declaration.inputs, vec!["metadata.age".to_string()]);
+
+        let result = table.refresh_column("next_age").await.unwrap();
+        assert_eq!(result.rows_filled, 2);
+        assert_eq!(read(&table, "next_age").await, vec![Some(31), Some(41)]);
+
+        // The dotted input guards its root.
+        let err = table.drop_columns(&["metadata"]).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("next_age")),
+            "{err:?}"
+        );
+
+        // Masking a struct input for a deleted row goes through the same
+        // nullif path as a primitive; a nested input plus deletions must not
+        // be the combination that breaks it.
+        table.delete("next_age = 31").await.unwrap();
+        append_struct_row(&table, 50).await;
+        let result = table.refresh_column("next_age").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(read(&table, "next_age").await, vec![Some(41), Some(51)]);
+    }
+
+    /// Append one `metadata: {age}` row to the nested-input table.
+    async fn append_struct_row(table: &Table, age: i32) {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let ages = Arc::new(Int32Array::from(vec![age]));
+        let fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let metadata = StructArray::new(fields.clone(), vec![ages as _], None);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "metadata",
+            DataType::Struct(fields),
+            true,
+        )]));
+        let batch =
+            arrow_array::RecordBatch::try_new(schema, vec![Arc::new(metadata) as _]).unwrap();
+        table.add(batch).execute().await.unwrap();
     }
 
     /// A declaration of a kind this version cannot evaluate is refused by
