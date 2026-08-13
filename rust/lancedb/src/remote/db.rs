@@ -341,15 +341,14 @@ impl<S: HttpSend> RemoteDatabase<S> {
         let resp = self.client.check_response(&request_id, resp).await?;
         let status = resp.status();
         self.table_cache.remove(&cache_key).await;
-        let job_id = resp
-            .text()
-            .await
+        let body = resp.text().await.err_to_http(request_id.clone())?;
+        let job_id = serde_json::from_str::<serde_json::Value>(&body)
             .ok()
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
             .and_then(|value| {
                 value
                     .get("job_id")
                     .and_then(|id| id.as_str())
+                    .filter(|id| !id.is_empty())
                     .map(str::to_string)
             });
         Ok((status, job_id))
@@ -1562,6 +1561,19 @@ mod tests {
     async fn test_drop_table_async_rejects_accepted_response_without_job_id() {
         let conn = Connection::new_with_handler(|_| {
             http::Response::builder().status(202).body("{}").unwrap()
+        });
+
+        let error = conn.drop_table_async("table1", &[]).await.err().unwrap();
+        assert!(error.to_string().contains("valid job_id"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_rejects_empty_job_id() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":""}"#)
+                .unwrap()
         });
 
         let error = conn.drop_table_async("table1", &[]).await.err().unwrap();
