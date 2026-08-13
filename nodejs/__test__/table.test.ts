@@ -3340,3 +3340,22 @@ describe("LSM merge insert", () => {
     await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
   });
 });
+
+describe("computed columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("declares a column with no values", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled)).toEqual([null, null]);
+  });
+});

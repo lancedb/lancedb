@@ -3854,3 +3854,22 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
         f"embedding ran off the dedicated executor: {captured_threads}"
     )
+
+
+def test_computed_column_declares_all_null(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed", [{"x": 1}, {"x": 2}])
+
+    table.add_columns(computed={"doubled": "x * 2"})
+    assert table.to_arrow()["doubled"].to_pylist() == [None, None]
+
+    # The declaration is durable field metadata.
+    field = table.schema.field("doubled")
+    assert field.metadata[b"computed_column.expression"] == b"x * 2"
+
+
+def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})

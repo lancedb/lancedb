@@ -958,7 +958,16 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def add_columns(self, transforms: Dict[str, str]) -> AddColumnsResult:
+    def add_columns(
+        self,
+        transforms: Dict[str, str] | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
+    ) -> AddColumnsResult:
+        if computed:
+            raise NotImplementedError(
+                "computed columns are supported only on local tables"
+            )
         return LOOP.run(self._table.add_columns(transforms))
 
     def alter_columns(

@@ -348,6 +348,20 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn add_computed_columns(
+        &self,
+        columns: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
+        let table = self.inner_ref()?;
+        let mut builder = table.add_columns();
+        for column in columns {
+            builder = builder.computed(column.name, column.value_sql);
+        }
+        let res = builder.execute().await.default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,
