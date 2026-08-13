@@ -8,11 +8,13 @@
 //! - [`alter_columns`](execute_alter_columns): Rename columns, change types, or modify nullability
 //! - [`drop_columns`](execute_drop_columns): Remove columns from the table
 
+use arrow_schema::Schema as ArrowSchema;
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::NativeTable;
+use super::computed_columns;
 use crate::Result;
 
 /// The result of an add columns operation.
@@ -116,6 +118,14 @@ pub(crate) async fn execute_alter_columns(
 ) -> Result<AlterColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    // Nullability is not part of what an expression resolves against, so only
+    // a rename or a retype can invalidate a binding.
+    let rebinding = alterations
+        .iter()
+        .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
+        .map(|alteration| alteration.path.as_str())
+        .collect::<Vec<_>>();
+    computed_columns::ensure_not_an_input(&ArrowSchema::from(dataset.schema()), &rebinding)?;
     dataset.alter_columns(alterations).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -131,6 +141,7 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    computed_columns::ensure_not_an_input(&ArrowSchema::from(dataset.schema()), columns)?;
     dataset.drop_columns(columns).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);

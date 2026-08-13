@@ -140,6 +140,40 @@ pub fn computed_columns(schema: &ArrowSchema) -> Vec<ComputedColumn> {
         .collect()
 }
 
+/// Reject a schema change to a column some declaration reads.
+///
+/// A binding is SQL text naming its inputs, so renaming, retyping or dropping
+/// one leaves an expression that no longer resolves. Refusing the change keeps
+/// a declaration that survived [`plan`] evaluable for as long as it exists.
+///
+/// Paths are compared at their root: a declaration reading `metadata` is
+/// invalidated by a change to `metadata.age` just as surely.
+pub(crate) fn ensure_not_an_input(schema: &ArrowSchema, paths: &[&str]) -> Result<()> {
+    let root = |path: &str| path.split('.').next().unwrap_or(path).to_string();
+    for declaration in computed_columns(schema) {
+        for path in paths {
+            // A declaration does not read itself, so it is free to be dropped
+            // or renamed along with its binding.
+            if declaration.name == root(path) {
+                continue;
+            }
+            if declaration
+                .inputs
+                .iter()
+                .any(|input| root(input) == root(path))
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "column '{}' is read by computed column '{}'; drop that column first",
+                        path, declaration.name
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Resolve `(name, expression)` pairs against `schema` into fields carrying
 /// their bindings.
 ///
@@ -270,6 +304,7 @@ mod tests {
     use arrow_array::record_batch;
     use arrow_schema::DataType;
     use futures::TryStreamExt;
+    use lance::dataset::ColumnAlteration;
 
     use super::*;
     use crate::connect;
@@ -609,5 +644,62 @@ mod tests {
             declared(&table).await[0].inputs,
             vec!["a".to_string(), "b".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn test_dropping_an_input_is_refused() {
+        let table = table_with_ints("drop_input").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        let err = table.drop_columns(&["x"]).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("doubled")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_renaming_an_input_is_refused() {
+        let table = table_with_ints("rename_input").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        let err = table
+            .alter_columns(&[ColumnAlteration::new("x".into()).rename("y".into())])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("doubled")),
+            "{err:?}"
+        );
+    }
+
+    /// Nothing resolves against nullability, so it is not a rebinding.
+    #[tokio::test]
+    async fn test_altering_an_input_nullability_is_allowed() {
+        let table = table_with_ints("nullable_input").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        table
+            .alter_columns(&[ColumnAlteration::new("x".into()).set_nullable(true)])
+            .await
+            .unwrap();
+    }
+
+    /// A declaration does not read itself, so it travels with its binding.
+    #[tokio::test]
+    async fn test_dropping_the_computed_column_is_allowed() {
+        let table = table_with_ints("drop_computed").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        table.drop_columns(&["doubled"]).await.unwrap();
+        assert!(declared(&table).await.is_empty());
     }
 }
