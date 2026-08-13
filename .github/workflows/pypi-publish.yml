@@ -69,6 +69,16 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.10"
+      - name: Add swap for Arm fat LTO
+        if: matrix.config.platform == 'aarch64'
+        shell: bash
+        run: |
+          swap_file="$RUNNER_TEMP/lancedb-swap"
+          sudo fallocate --length 16G "$swap_file"
+          sudo chmod 600 "$swap_file"
+          sudo mkswap "$swap_file"
+          sudo swapon "$swap_file"
+          free -h
       - uses: ./.github/workflows/build_linux_wheel
         with:
           python-minor-version: 10

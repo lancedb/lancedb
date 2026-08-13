@@ -17,7 +17,7 @@ use arrow_array::builder::LargeBinaryBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
-use lance_file::version::LanceFileVersion;
+use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_io::object_store::ObjectStore;
 use object_store::path::Path;
 
@@ -333,7 +333,10 @@ pub(crate) fn ensure_blob_storage_version(schema: &Schema, params: &mut WritePar
         .data_storage_version
         .unwrap_or(LanceFileVersion::Stable)
         .resolve();
-    if resolved < LanceFileVersion::V2_2 {
+    if matches!(
+        resolved,
+        ConcreteFileVersion::V1 | ConcreteFileVersion::V2_0 | ConcreteFileVersion::V2_1
+    ) {
         params.data_storage_version = Some(LanceFileVersion::V2_2);
     }
 }
@@ -499,7 +502,7 @@ mod tests {
         ensure_blob_storage_version(&blob_schema(), &mut params);
         assert_eq!(
             params.data_storage_version.unwrap().resolve(),
-            LanceFileVersion::V2_2
+            ConcreteFileVersion::V2_2
         );
     }
 
@@ -512,7 +515,7 @@ mod tests {
         ensure_blob_storage_version(&blob_schema(), &mut params);
         assert_eq!(
             params.data_storage_version.unwrap().resolve(),
-            LanceFileVersion::V2_2
+            ConcreteFileVersion::V2_2
         );
     }
 

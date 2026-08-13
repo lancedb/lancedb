@@ -49,8 +49,6 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
-# Pin the GooseFS SDK to the version required by Lance's OpenDAL dependency.
-goosefs-sdk = { version = "=0.1.9", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -141,7 +139,6 @@ azure = [
 ]
 cos = ["lance/tencent", "lance-io/tencent"]
 goosefs = [
-    "dep:goosefs-sdk",
     "lance/goosefs",
     "lance-io/goosefs",
     "lance-namespace-impls/dir-goosefs",
@@ -195,6 +192,9 @@ required-features = ["bedrock"]
 
 [[example]]
 name = "bench_streaming_dataloader"
+
+[[example]]
+name = "bench_open_missing_table"
 
 [[example]]
 name = "simple"

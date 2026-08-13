@@ -579,7 +579,7 @@ impl PyBlobFile {
     }
 }
 
-#[pyclass(get_all, from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FtsToken {
     pub text: String,

@@ -50,7 +50,6 @@ use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
-use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -150,55 +149,6 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
-}
-
-/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
-///
-/// Lance reports "there is nothing at this location" and "there is a table directory
-/// here but nothing loadable inside it" with the same error. Only the first is a
-/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
-/// re-create is still reported by `Connection::table_names`, so callers need to be able
-/// to tell "never existed" from "exists but is broken".
-///
-/// See <https://github.com/lancedb/lancedb/issues/3127>.
-async fn map_dataset_not_found(
-    uri: &str,
-    name: &str,
-    params: ReadParams,
-    err: lance::Error,
-) -> Error {
-    let name = name.to_string();
-    let source = Box::new(err);
-    if table_dir_exists(uri, params).await.unwrap_or(false) {
-        Error::TableCorrupted { name, source }
-    } else {
-        Error::TableNotFound { name, source }
-    }
-}
-
-/// Whether a table directory is present at `uri`, even though no dataset could be
-/// loaded from it.
-///
-/// This looks for a `<name>.lance` entry in the parent directory, which is exactly what
-/// `ListingDatabase::table_names` lists, so the two APIs agree on whether a table is
-/// present. Probing `uri` itself would not work: object stores have no empty
-/// directories to probe, and on a local filesystem the interesting case is precisely an
-/// empty directory.
-async fn table_dir_exists(uri: &str, params: ReadParams) -> Result<bool> {
-    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
-        .with_read_params(params)
-        .build_object_store()
-        .await?;
-    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
-    // the list-then-open mismatch this guards against.
-    if path.extension() != Some(LANCE_FILE_EXTENSION) {
-        return Ok(false);
-    }
-    let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
-        return Ok(false);
-    };
-    let entries = object_store.read_dir(parent).await?;
-    Ok(entries.iter().any(|entry| entry.as_str() == dir_name))
 }
 
 /// Defines the type of column
@@ -2429,8 +2379,6 @@ impl NativeTable {
             None => false,
         };
 
-        // Kept so that a `DatasetNotFound` can be re-checked against storage below.
-        let recovery_params = params.clone();
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
@@ -2449,7 +2397,12 @@ impl NativeTable {
         let dataset = match builder.load().await {
             Ok(dataset) => dataset,
             Err(e @ lance::Error::DatasetNotFound { .. }) => {
-                return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
+                // The manifest load is the existence check. A physical prefix may be
+                // from a concurrent or abandoned create, so it cannot refine this error.
+                return Err(Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                });
             }
             Err(e) => return Err(e.into()),
         };
@@ -3736,7 +3689,7 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -3819,73 +3772,50 @@ mod tests {
         );
     }
 
-    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
-    ///
-    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
-    /// empty); otherwise only the manifests are removed, leaving the data files behind.
-    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
-        let dataset_path = dir.join("test.lance");
-        let uri = dataset_path.to_str().unwrap().to_string();
-
-        let batch = make_test_batches();
-        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(reader, &uri, None).await.unwrap();
-
-        if remove_all {
-            for entry in std::fs::read_dir(&dataset_path).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    std::fs::remove_dir_all(entry.path()).unwrap();
-                } else {
-                    std::fs::remove_file(entry.path()).unwrap();
-                }
-            }
-            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
-        } else {
-            let versions = dataset_path.join("_versions");
-            assert!(versions.is_dir(), "expected manifests under {versions:?}");
-            std::fs::remove_dir_all(&versions).unwrap();
-            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
-        }
-
-        uri
-    }
-
     #[tokio::test]
-    async fn test_open_corrupt_empty_dir() {
+    async fn test_open_not_found_when_empty_directory_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn test_open_corrupt_missing_manifest() {
+    async fn test_open_not_found_when_only_uncommitted_storage_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let data_dir = dataset_path.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
-    /// A table listed by `table_names()` must not be reported as missing by
-    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    /// Listing databases discover physical `*.lance` entries. That snapshot is not an
+    /// authoritative table-existence check: only a committed manifest makes a table
+    /// openable, and the entry could also be concurrently created or dropped.
     #[tokio::test]
-    async fn test_open_table_corrupt_is_still_listed() {
+    async fn test_table_names_may_include_uncommitted_storage() {
         let tmp_dir = tempdir().unwrap();
         let db = connect(tmp_dir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
 
-        write_then_corrupt_table(tmp_dir.path(), true).await;
+        std::fs::create_dir(tmp_dir.path().join("test.lance")).unwrap();
 
         assert_eq!(
             db.table_names().execute().await.unwrap(),
@@ -3893,12 +3823,177 @@ mod tests {
         );
         let err = db.open_table("test").execute().await.unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "physical storage without a committed manifest is not a table: {err:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        parent: object_store::path::Path,
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for ParentListGuardStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ParentListGuardStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    #[deny(clippy::missing_trait_methods)]
+    impl object_store::ObjectStore for ParentListGuardStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardWrapper {
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl WrappingObjectStore for ParentListGuardWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(ParentListGuardStore {
+                inner,
+                parent: object_store::path::Path::from("database"),
+                parent_list_calls: self.parent_list_calls.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_missing_never_lists_database_parent() {
+        let parent_list_calls = Arc::new(AtomicUsize::new(0));
+        let params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(ParentListGuardWrapper {
+                    parent_list_calls: parent_list_calls.clone(),
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            "memory:///database/missing.lance",
+            "missing",
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
             "got {err:?}"
         );
-        assert!(
-            err.to_string().contains("exists but could not be loaded"),
-            "got {err}"
+        assert_eq!(
+            parent_list_calls.load(Ordering::Relaxed),
+            0,
+            "opening one missing table must not enumerate sibling tables"
         );
     }
 
@@ -5428,7 +5523,7 @@ mod tests {
     pub async fn test_stats_includes_index_and_overlay_files() {
         use lance::dataset::WriteDestination;
         use lance::dataset::transaction::{DataOverlayGroup, Operation};
-        use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+        use lance_file::version::stable_file_version;
         use lance_file::writer::FileWriterOptions;
         use lance_io::utils::CachedFileSize;
         use lance_table::format::DataFile;
@@ -5494,7 +5589,7 @@ mod tests {
         let fragment_id = dataset.get_fragments()[0].id() as u64;
         let foo_field_id = dataset.schema().field("foo").unwrap().id;
         let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
-        let file_version = ConcreteFileVersion::from(LanceFileVersion::Stable);
+        let file_version = stable_file_version();
 
         let filename = "overlay.lance".to_string();
         let store = dataset.object_store(None).await.unwrap();
