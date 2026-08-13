@@ -1456,6 +1456,408 @@ def test_shuffle_clump_size_yields_all_rows(lance_table):
     )
 
 
+# ---------------------------------------------------------------------------
+# on_transform_error tests
+# ---------------------------------------------------------------------------
+
+
+class BadRowError(ValueError):
+    """Raised by the failing transforms below when a batch contains a bad id."""
+
+
+def _failing_transform(bad_ids: set):
+    """A transform that raises BadRowError whenever the batch has a bad id.
+
+    Raises on the full batch and on any single-row slice containing a bad id,
+    so per-row isolation drops exactly the bad rows.
+    """
+
+    def transform(batch: pa.RecordBatch) -> list:
+        ids = batch.column("id").to_pylist()
+        bad = sorted(set(ids) & bad_ids)
+        if bad:
+            raise BadRowError(f"bad ids in batch: {bad}")
+        return [{"id": i} for i in ids]
+
+    return transform
+
+
+def _sequential_split_members(table) -> list[list[int]]:
+    """Return each split's ids in yield order for shuffle=False.
+
+    With a single rank and no workers the round-robin yields one row per split
+    per cycle, so item k of a clean run belongs to split k % NUM_SPLITS.
+    """
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle=False)
+    members: list[list[int]] = [[] for _ in range(NUM_SPLITS)]
+    for k, row in enumerate(ds):
+        members[k % NUM_SPLITS].append(row["id"])
+    return members
+
+
+def test_on_transform_error_default_raises(lance_table):
+    """By default a transform exception propagates and aborts iteration."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=_failing_transform({7}),
+    )
+    with pytest.raises(BadRowError):
+        list(ds)
+
+
+def test_on_transform_error_invalid_value(lance_table):
+    with pytest.raises(ValueError, match="on_transform_error"):
+        StreamingDataset(lance_table, num_splits=NUM_SPLITS, on_transform_error="bogus")
+
+
+def test_on_transform_error_skip_drops_bad_rows(lance_table):
+    """With one bad row per split, 'skip' yields every good row exactly once
+    and counts the dropped rows in rows_skipped."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][4] for i in range(NUM_SPLITS)}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    assert ds.rows_skipped == 0
+
+    ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == sorted(set(range(NUM_ROWS)) - bad_ids)
+    assert ds.rows_skipped == NUM_SPLITS
+
+
+def test_on_transform_error_skip_uneven_ends_at_last_complete_cycle(lance_table):
+    """When one split loses more rows than the others, the epoch ends at the
+    last cycle where every split still has a row — no crash, no bad rows, and
+    every step remains one sample per split."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0][:3])  # all 3 bad rows in split 0
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    items = [row["id"] for row in ds]
+
+    rows_per_split = NUM_ROWS // NUM_SPLITS
+    expected_cycles = rows_per_split - len(bad_ids)
+    assert len(items) == expected_cycles * NUM_SPLITS
+    assert len(set(items)) == len(items), "duplicate samples yielded"
+    assert not set(items) & bad_ids, "a bad row was yielded"
+    # Split 0 contributed exactly its surviving rows, in order, one per cycle.
+    survivors = [i for i in members[0] if i not in bad_ids]
+    assert items[0::NUM_SPLITS] == survivors[:expected_cycles]
+
+
+def test_on_transform_error_warn_logs(lance_table, caplog):
+    """'warn' skips like 'skip' but logs a warning for the failing batch."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][3] for i in range(NUM_SPLITS)}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="warn",
+    )
+    with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+        items = list(ds)
+
+    assert len(items) == NUM_ROWS - NUM_SPLITS
+    assert ds.rows_skipped == NUM_SPLITS
+    assert "Skipped" in caplog.text
+    assert "BadRowError" in caplog.text
+
+
+def test_on_transform_error_callable_selective(lance_table):
+    """A callable handler can skip expected errors and re-raise the rest."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][0] for i in range(NUM_SPLITS)}
+
+    handled: list[Exception] = []
+
+    def handler(exc: Exception) -> bool:
+        handled.append(exc)
+        return isinstance(exc, BadRowError)
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error=handler,
+    )
+    items = list(ds)
+    assert len(items) == NUM_ROWS - NUM_SPLITS
+    assert handled and all(isinstance(exc, BadRowError) for exc in handled)
+
+    def broken_transform(batch: pa.RecordBatch) -> list:
+        raise TypeError("boom")
+
+    ds2 = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=broken_transform,
+        on_transform_error=handler,
+    )
+    with pytest.raises(TypeError, match="boom"):
+        list(ds2)
+
+
+def test_transform_wrong_row_count_raises(lance_table):
+    """A transform that returns the wrong number of rows is an error even with
+    on_transform_error='skip' — silent shrinkage would corrupt accounting."""
+
+    def drops_rows(batch: pa.RecordBatch) -> list:
+        return batch.column("id").to_pylist()[:-1]
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=drops_rows,
+        on_transform_error="skip",
+    )
+    with pytest.raises(ValueError, match="one output row per input row"):
+        list(ds)
+
+
+def test_skip_deterministic_across_runs(lance_table):
+    """With a fixed seed, skipping produces the identical sample sequence on
+    every run — skips are data-dependent, not run-dependent."""
+    bad_ids = {5, 17, 46}
+
+    def run() -> tuple[list[int], int]:
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            transform=_failing_transform(bad_ids),
+            on_transform_error="skip",
+        )
+        return [row["id"] for row in ds], ds.rows_skipped
+
+    ids_a, skipped_a = run()
+    ids_b, skipped_b = run()
+    assert ids_a == ids_b
+    assert skipped_a == skipped_b
+    assert not set(ids_a) & bad_ids
+
+
+def test_skip_elastic_det_across_world_sizes(lance_table):
+    """With equal bad-row counts per split, skipping preserves the full
+    elastic-determinism guarantee: identical global batches at every step for
+    every compatible world_size."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][6] for i in range(NUM_SPLITS)}
+
+    def collect(world_size: int) -> list[frozenset[int]]:
+        micro = GLOBAL_BATCH_SIZE // world_size
+        iters = [
+            iter(
+                StreamingDataset(
+                    lance_table,
+                    num_splits=NUM_SPLITS,
+                    shuffle=False,
+                    rank=rank,
+                    world_size=world_size,
+                    transform=_failing_transform(bad_ids),
+                    on_transform_error="skip",
+                )
+            )
+            for rank in range(world_size)
+        ]
+        _STOP = object()
+        batches: list[frozenset[int]] = []
+        while True:
+            step_samples: set[int] = set()
+            exhausted = 0
+            for it in iters:
+                for _ in range(micro):
+                    val = next(it, _STOP)
+                    if val is _STOP:
+                        exhausted += 1
+                        break
+                    step_samples.add(val["id"])
+            if exhausted == len(iters):
+                break
+            assert exhausted == 0, (
+                "Rank iterators exhausted at different steps despite equal "
+                "bad-row counts per split"
+            )
+            batches.append(frozenset(step_samples))
+        return batches
+
+    reference = collect(1)
+    assert len(reference) == NUM_ROWS // NUM_SPLITS - 1
+    for ws in (2, 3, 4):
+        assert collect(ws) == reference, f"world_size={ws} diverged"
+
+
+def test_resumability_with_skips_same_topology(lance_table):
+    """Checkpointing mid-epoch with skipped rows resumes exactly: no sample
+    repeated, no sample lost, skipped rows stay skipped."""
+    members = _sequential_split_members(lance_table)
+    # Uneven skips: positions diverge across splits (2 bad in split 0, 1 in
+    # split 5), which only a position-based checkpoint can resume exactly.
+    bad_ids = {members[0][2], members[0][3], members[5][7]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+    rows_per_split = NUM_ROWS // NUM_SPLITS
+    assert len(reference) == (rows_per_split - 2) * NUM_SPLITS
+
+    steps = 3
+    ds = StreamingDataset(lance_table, **kwargs)
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(steps * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    it.close()
+
+    # Split 0 skipped positions 2 and 3 within its first 3 yields; split 5's
+    # bad row is beyond the checkpoint.  Everything else is at 3 = the sample
+    # count.
+    positions = checkpoint["positions_consumed_per_split"]
+    assert positions[0] == 5
+    assert positions[1:] == [3] * (NUM_SPLITS - 1)
+    assert checkpoint["samples_consumed_per_split"] == [3] * NUM_SPLITS
+
+    ds2 = StreamingDataset(lance_table, **kwargs)
+    ds2.load_state_dict(checkpoint)
+    resumed = [row["id"] for row in ds2]
+
+    assert consumed == reference[: steps * NUM_SPLITS]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
+def test_resumability_with_skips_elastic_merge(lance_table):
+    """Elastic resume with skips: each rank's checkpoint knows exact positions
+    only for its own splits; merge_state_dicts recovers the global state, and
+    a run on a different world_size continues exactly."""
+    members = _sequential_split_members(lance_table)
+    # Bad rows early in split 0 (rank 0) and split 6 (rank 1 of a ws=2 run) so
+    # both ranks' position vectors diverge before the checkpoint.
+    bad_ids = {members[0][0], members[0][2], members[6][1]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+
+    steps = 3
+    world_size = 2
+    micro = GLOBAL_BATCH_SIZE // world_size
+    datasets = [
+        StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+    seen: list[frozenset[int]] = []
+    for _ in range(steps):
+        step_samples = set()
+        for it in iters:
+            for _ in range(micro):
+                step_samples.add(next(it)["id"])
+        seen.append(frozenset(step_samples))
+    states = [ds.state_dict() for ds in datasets]
+    for it in iters:
+        it.close()
+
+    merged = StreamingDataset.merge_state_dicts(states)
+    expected_positions = [3] * NUM_SPLITS
+    expected_positions[0] = 5  # skipped positions 0 and 2
+    expected_positions[6] = 4  # skipped position 1
+    assert merged["positions_consumed_per_split"] == expected_positions
+
+    # The first 3 global batches match the world_size=1 reference.
+    ref_batches = [
+        frozenset(reference[s * NUM_SPLITS : (s + 1) * NUM_SPLITS])
+        for s in range(len(reference) // NUM_SPLITS)
+    ]
+    assert seen == ref_batches[:steps]
+
+    # Resume on world_size=1 from the merged state.
+    ds_resume = StreamingDataset(lance_table, **kwargs)
+    ds_resume.load_state_dict(merged)
+    resumed = [row["id"] for row in ds_resume]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
+def test_rows_skipped_flushed_when_split_entirely_bad(lance_table):
+    """A split whose rows all fail never completes a cycle, so the epoch ends
+    immediately — but rows_skipped must still report the drops after the
+    iterator exits (the shared-memory counter is flushed on exhaustion)."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0])  # every row of split 0 is bad
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    assert list(ds) == []
+    assert ds.rows_skipped == len(bad_ids)
+
+
+def test_merge_state_dicts_validates_consistency(lance_table):
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    state = ds.state_dict()
+    other = dict(state, shuffle_seed=SHUFFLE_SEED + 1)
+    with pytest.raises(ValueError, match="shuffle_seed mismatch"):
+        StreamingDataset.merge_state_dicts([state, other])
+    with pytest.raises(ValueError, match="at least one"):
+        StreamingDataset.merge_state_dicts([])
+
+
+def test_load_state_dict_without_positions_key(lance_table):
+    """Checkpoints from before positions_consumed_per_split existed still
+    resume exactly (positions equal sample counts when nothing is skipped)."""
+    reference = [
+        row["id"]
+        for row in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+        )
+    ]
+
+    steps = 4
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(steps * NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    it.close()
+    del checkpoint["positions_consumed_per_split"]
+
+    ds2 = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds2.load_state_dict(checkpoint)
+    resumed = [row["id"] for row in ds2]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
 def test_num_splits_defaults_to_world_size(lance_table):
     """Omitting num_splits gives world_size splits (one per rank)."""
     ds = StreamingDataset(

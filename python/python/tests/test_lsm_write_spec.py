@@ -83,7 +83,9 @@ def test_lsm_write_spec_repr():
     assert s.spec_type == "bucket"
     assert s.column == "id"
     assert s.num_buckets == 4
-    assert s.maintained_indexes == []
+    # A fresh spec defers its maintained set to install time.
+    assert s.maintained_indexes is None
+    assert s.with_maintained_indexes([]).maintained_indexes == []
     assert "bucket" in repr(s)
     assert "id" in repr(s)
     assert "4" in repr(s)
@@ -169,18 +171,23 @@ def test_get_lsm_write_spec(tmp_path):
     table.unset_lsm_write_spec()
     assert table.get_lsm_write_spec() is None
 
-    # Identity round-trips (column recovered from the schema).
+    # Identity round-trips (column recovered from the schema). Leaving the
+    # maintained set to be inferred picks up the index on the table, so the
+    # spec reads back naming it rather than as "infer".
     table.set_lsm_write_spec(LsmWriteSpec.identity("id"))
     spec = table.get_lsm_write_spec()
     assert spec.spec_type == "identity"
     assert spec.column == "id"
+    assert spec.maintained_indexes == [idx_name]
     table.unset_lsm_write_spec()
 
-    # Unsharded round-trips (no routing column).
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    # Unsharded round-trips (no routing column). Opting out is distinct from
+    # the inferred default.
+    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
     spec = table.get_lsm_write_spec()
     assert spec.spec_type == "unsharded"
     assert spec.column is None
+    assert spec.maintained_indexes == []
 
 
 @pytest.mark.asyncio

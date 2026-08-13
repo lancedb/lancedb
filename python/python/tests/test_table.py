@@ -3713,7 +3713,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3730,6 +3731,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):

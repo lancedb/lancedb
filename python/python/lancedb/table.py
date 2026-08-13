@@ -3976,6 +3976,28 @@ class LanceTable(Table):
         [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
         return LOOP.run(self._table.get_lsm_write_spec())
 
+    def checkpoint_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
+        return LOOP.run(self._table.checkpoint_lsm())
+
+    def flush_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
+        return LOOP.run(self._table.flush_lsm())
+
+    def compact_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
+        return LOOP.run(self._table.compact_lsm())
+
+    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+        """Synchronous version of
+        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        return LOOP.run(
+            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+        )
+
     def close_lsm_writers(self) -> None:
         """Close cached MemWAL shard writers. See
         [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
@@ -4654,6 +4676,13 @@ class AsyncTable:
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
+        By default the MemWAL maintains every index on the table, resolved
+        here — a snapshot, so an index created afterwards needs the spec unset
+        and set again. This fails if one cannot be maintained; name the set
+        with ``with_maintained_indexes`` to install anyway. That pins an exact
+        set (a still-building index is rejected, not omitted); ``[]`` maintains
+        none.
+
         Parameters
         ----------
         spec : LsmWriteSpec
@@ -4680,11 +4709,72 @@ class AsyncTable:
 
         Returns ``None`` when the MemWAL LSM write path is not enabled (no
         spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The returned spec — including its ``maintained_indexes`` and
-        ``writer_config_defaults`` — mirrors what was passed to
-        `set_lsm_write_spec`.
+        The returned spec mirrors what was passed to `set_lsm_write_spec`,
+        except that ``maintained_indexes`` always reports the concrete list
+        resolved when the spec was set — ``None`` never round-trips.
         """
         return await self._inner.get_lsm_write_spec()
+
+    async def checkpoint_lsm(self) -> None:
+        """Converge this table's LSM write path into its base table.
+
+        One flush, sealing every memtable into L0, then compaction triggers
+        until every generation that existed at that moment has reached base.
+        The loop runs client-side, reading progress from ``get_lsm_stats``.
+
+        Best-effort: generations created *while* it runs are deliberately not
+        waited on, which is what lets it terminate on a table taking writes.
+        Idempotent and safe on a cadence.
+
+        There is no deadline, and the caller owns that. It returns when the
+        target generations are gone, raises on a terminal server fault, and
+        otherwise waits however long the server takes. A slow table and a
+        stuck one are the same picture from the client: the compactor pool is
+        shared across every table on the node, so a checkpoint queued behind
+        unrelated work looks exactly like one that is merging. Wrap this in
+        ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
+        costs nothing.
+        """
+        return await self._inner.checkpoint_lsm()
+
+    async def flush_lsm(self) -> None:
+        """Seal every bucket's active memtable into L0.
+
+        Does not touch the base table — moving L0 into base is
+        `compact_lsm`. On a node that has not claimed this table, this claims
+        it and replays its WAL log first.
+        """
+        return await self._inner.flush_lsm()
+
+    async def compact_lsm(self) -> None:
+        """Trigger a background L0 to base compaction pass per bucket.
+
+        Returns once the passes are dispatched, not once they finish: watch
+        ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
+        until the current L0 has reached base.
+        """
+        return await self._inner.compact_lsm()
+
+    async def get_lsm_stats(
+        self, *, include_generation_rows: bool = False
+    ) -> Optional[dict]:
+        """Read live per-bucket LSM state.
+
+        Answers "how far behind is my fresh tier", "which bucket is hot", and
+        "why is my fresh-tier vector search brute-force". Mutates no table
+        state, though on a node that has not claimed this table it claims it,
+        exactly as a read would.
+
+        Returns ``None`` only when the LSM write path is not enabled.
+
+        Parameters
+        ----------
+        include_generation_rows
+            Report a row count per L0 generation. Off by default: each count
+            opens an uncached Lance dataset, and ``checkpoint_lsm`` polls this
+            needing only generation numbers.
+        """
+        return await self._inner.get_lsm_stats(include_generation_rows)
 
     async def close_lsm_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
@@ -6251,7 +6341,9 @@ class TableStatistics:
     Attributes
     ----------
     total_bytes: int
-        The total number of bytes in the table.
+        The total size, in bytes, of the table's data files, index files, and
+        overlay files. Read from the manifest, so this excludes deletion files
+        and manifests.
     num_rows: int
         The total number of rows in the table.
     num_indices: int
