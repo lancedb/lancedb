@@ -504,6 +504,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 });
             }
 
+            let k = match q.limit {
+                Some(limit) => limit as i32,
+                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
+                None => i32::MAX,
+            };
+
             let filter = q.filter.as_ref().map(filter_to_sql).transpose()?;
 
             let columns = match &q.select {
@@ -556,7 +562,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             Ok(NsQueryTableRequest {
                 id: None, // Will be set by caller
                 vector,
-                k: q.limit.unwrap_or(10) as i32,
+                k,
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
@@ -827,6 +833,54 @@ mod tests {
         assert!(ns_request.vector_column.is_none());
 
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest::default());
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_with_explicit_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_vector_without_limit() {
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let any_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![query_vector as ArrayRef],
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_fts_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                "hello world".to_string(),
+            )),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
     }
 
     #[tokio::test]
