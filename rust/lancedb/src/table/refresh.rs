@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use super::computed_columns::{BoundExpression, ComputedColumnKind, computed_column_from_field};
 use super::{BaseTable, NativeTable};
+use crate::job::Job;
 use crate::{Error, Result};
 
 /// The result of refreshing a computed column.
@@ -113,6 +114,25 @@ pub(crate) async fn execute_refresh_column(
         rows_filled,
         version,
     })
+}
+
+/// Run the refresh as a [`Job`] in this process.
+pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &str) -> Result<Job> {
+    // Validate before spawning so bad input is reported by this call rather
+    // than only by the job.
+    table.dataset.ensure_mutable()?;
+    ensure_no_lsm_write_spec(table).await?;
+    let dataset = table.dataset.get().await?;
+    declared_expression(&dataset, column)?;
+    drop(dataset);
+
+    let table = table.clone();
+    let column = column.to_string();
+    Ok(Job::spawned(tokio::spawn(async move {
+        execute_refresh_column(&table, &column).await?;
+        table.bump_freshness();
+        Ok(())
+    })))
 }
 
 /// Refuse to refresh under an LSM write spec.
@@ -606,6 +626,230 @@ mod tests {
         assert!(Arc::ptr_eq(&dataset.session(), &session));
     }
 
+    /// The async form's job settles with the fill visible, like
+    /// create_index's execute_async.
+    #[tokio::test]
+    async fn test_refresh_async_job_waits_for_the_fill() {
+        let table = table_with("refresh_async", vec![1, 2, 3]).await;
+        declare_doubled(&table).await.unwrap();
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        assert!(job.id().is_none(), "in-process jobs have no server id");
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(6)]
+        );
+    }
+
+    /// Bad input is reported by the call, not by the job.
+    #[tokio::test]
+    async fn test_refresh_async_rejects_bad_input_before_spawning() {
+        let table = table_with("refresh_async_bad", vec![1, 2, 3]).await;
+
+        let err = table.refresh_column_async("x").await.unwrap_err();
+        assert!(matches!(err, Error::NotAComputedColumn { name } if name == "x"));
+
+        let err = table.refresh_column_async("nope").await.unwrap_err();
+        assert!(matches!(err, Error::ColumnNotFound { name } if name == "nope"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_async_job_reports_success_to_every_waiter() {
+        let table = table_with("refresh_async_waiters", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        job.wait().await.unwrap();
+        // A second wait after completion observes the same outcome.
+        job.wait().await.unwrap();
+        assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_rejects_a_plain_column() {
+        let table = table_with("refresh_plain", vec![1, 2, 3]).await;
+        let err = table.refresh_column("x").await.unwrap_err();
+        assert!(matches!(err, Error::NotAComputedColumn { name } if name == "x"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_rejects_an_unknown_column() {
+        let table = table_with("refresh_missing", vec![1, 2, 3]).await;
+        let err = table.refresh_column("nope").await.unwrap_err();
+        assert!(matches!(err, Error::ColumnNotFound { name } if name == "nope"));
+    }
+
+    /// The gate's reproducer: a poison value in a deleted row must not
+    /// abort filling the live rows, since nobody can read it.
+    #[tokio::test]
+    async fn test_a_deleted_rows_value_is_never_evaluated() {
+        let table = table_with("refresh_deleted_poison", vec![1, 0]).await;
+        table
+            .add_columns()
+            .computed("quotient", "10 / x")
+            .execute()
+            .await
+            .unwrap();
+        table.delete("x = 0").await.unwrap();
+
+        let result = table.refresh_column("quotient").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(read(&table, "quotient").await, vec![Some(10)]);
+    }
+
+    /// The gate's reproducer: an already-filled row's value must not be
+    /// re-evaluated either -- its input may have mutated into one the
+    /// expression chokes on.
+    #[tokio::test]
+    async fn test_a_filled_rows_value_is_never_evaluated() {
+        let table = table_with("refresh_filled_poison", vec![1, 2]).await;
+        table
+            .add_columns()
+            .computed("quotient", "10 / x")
+            .execute()
+            .await
+            .unwrap();
+        table.refresh_column("quotient").await.unwrap();
+
+        table
+            .update()
+            .column("x", "0")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+        append(&table, vec![5]).await;
+
+        let result = table.refresh_column("quotient").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(
+            read(&table, "quotient").await,
+            vec![Some(2), Some(5), Some(10)]
+        );
+    }
+
+    /// The gate's reproducer: the old internal projection alias is an
+    /// ordinary column name; a computed column may use it.
+    #[tokio::test]
+    async fn test_refresh_a_column_named_like_the_old_alias() {
+        let table = table_with("refresh_alias_name", vec![1, 2]).await;
+        table
+            .add_columns()
+            .computed("__lancedb_computed", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("__lancedb_computed").await.unwrap();
+        assert_eq!(result.rows_filled, 2);
+        assert_eq!(
+            read(&table, "__lancedb_computed").await,
+            vec![Some(2), Some(4)]
+        );
+    }
+
+    /// The gate's reproducer: a late-gain fragment (filled, then one null row
+    /// compacted onto the end) fills without the old probe's buffering, which
+    /// this pins behaviorally; the memory bound is structural -- the fill
+    /// stream retains no batches at all.
+    #[tokio::test]
+    async fn test_refresh_fills_a_late_gain_fragment() {
+        let values: Vec<i32> = (0..20_000).collect();
+        let table = table_with("refresh_late_gain", values).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+
+        append(&table, vec![2_000_000]).await;
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        let read_back = read(&table, "doubled").await;
+        assert_eq!(read_back.len(), 20_001);
+        assert_eq!(read_back.last().unwrap(), &Some(4_000_000));
+    }
+
+    /// The gate's reproducer: a nested input declares, refreshes, and guards
+    /// its root against invalidating schema changes.
+    #[tokio::test]
+    async fn test_a_nested_input_declares_and_refreshes() {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let age = Arc::new(Int32Array::from(vec![30, 40]));
+        let fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let metadata = StructArray::new(fields.clone(), vec![age as _], None);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "metadata",
+            DataType::Struct(fields),
+            true,
+        )]));
+        let batch =
+            arrow_array::RecordBatch::try_new(schema, vec![Arc::new(metadata) as _]).unwrap();
+        let table = conn
+            .create_table("refresh_nested", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .add_columns()
+            .computed("next_age", "metadata.age + 1")
+            .execute()
+            .await
+            .unwrap();
+        let declaration =
+            &crate::table::computed_columns(table.schema().await.unwrap().as_ref())[0];
+        assert_eq!(declaration.inputs, vec!["metadata.age".to_string()]);
+
+        let result = table.refresh_column("next_age").await.unwrap();
+        assert_eq!(result.rows_filled, 2);
+        assert_eq!(read(&table, "next_age").await, vec![Some(31), Some(41)]);
+
+        // The dotted input guards its root.
+        let err = table.drop_columns(&["metadata"]).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("next_age")),
+            "{err:?}"
+        );
+
+        // Masking a struct input for a deleted row goes through the same
+        // nullif path as a primitive; a nested input plus deletions must not
+        // be the combination that breaks it.
+        table.delete("next_age = 31").await.unwrap();
+        append_struct_row(&table, 50).await;
+        let result = table.refresh_column("next_age").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(read(&table, "next_age").await, vec![Some(41), Some(51)]);
+    }
+
+    /// Append one `metadata: {age}` row to the nested-input table.
+    async fn append_struct_row(table: &Table, age: i32) {
+        use arrow_array::{Int32Array, StructArray};
+        use arrow_schema::{DataType, Field, Fields};
+
+        let ages = Arc::new(Int32Array::from(vec![age]));
+        let fields = Fields::from(vec![Field::new("age", DataType::Int32, true)]);
+        let metadata = StructArray::new(fields.clone(), vec![ages as _], None);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "metadata",
+            DataType::Struct(fields),
+            true,
+        )]));
+        let batch =
+            arrow_array::RecordBatch::try_new(schema, vec![Arc::new(metadata) as _]).unwrap();
+        table.add(batch).execute().await.unwrap();
+    }
+
     /// Both orders of declare+spec are refused at the source (see the
     /// schema_evolution tests); refresh's own check covers a dataset another
     /// writer left in that state.
@@ -639,6 +883,8 @@ mod tests {
             matches!(&err, Error::NotSupported { message } if message.contains("LSM")),
             "{err:?}"
         );
+        let err = table.refresh_column_async("doubled").await.unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }));
     }
 
     /// After catch-up activation and unset, no spec remains but the catch-up

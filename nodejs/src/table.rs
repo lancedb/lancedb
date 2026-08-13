@@ -372,6 +372,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn refresh_column_async(&self, column: String) -> napi::Result<crate::job::Job> {
+        let job = self
+            .inner_ref()?
+            .refresh_column_async(column)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,
