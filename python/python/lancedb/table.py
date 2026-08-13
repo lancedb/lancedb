@@ -176,6 +176,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
         UpdateFieldMetadataResult,
@@ -1943,9 +1944,10 @@ class Table(ABC):
             data type is supplied.
 
             Unlike ``transforms``, the expression is stored rather than
-            evaluated now: the column is committed with no values, and a
-            later refresh fills the rows. Declaring one therefore costs the
-            same on a large table as on an empty one.
+            evaluated now: the column is committed with no values, and rows get
+            them from [`refresh_column`][lancedb.table.Table.refresh_column].
+            Declaring one therefore costs the same on a large table as on an
+            empty one.
 
             A refresh does not revisit rows it has already filled, so mutating
             an input leaves the value computed at fill time; recomputing means
@@ -1967,8 +1969,37 @@ class Table(ABC):
         >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
-        >>> table.to_arrow()["doubled"].to_pylist()
-        [None, None]
+        >>> table.refresh_column("doubled")
+        RefreshColumnResult(rows_filled=2, version=3)
+        >>> table.to_arrow().sort_by("x").to_pandas()
+           x  doubled
+        0  1        2
+        1  2        4
+        """
+
+    @abstractmethod
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only; LanceDB Cloud and Enterprise raise
+        ``NotImplementedError``.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            rows_filled: the number of rows given a value.
+            version: the new version number of the table.
         """
 
     @abstractmethod
@@ -3984,6 +4015,11 @@ class LanceTable(Table):
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """Fill a computed column's unfilled rows. See
+        [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
+        return LOOP.run(self._table.refresh_column(column))
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:
@@ -5922,8 +5958,9 @@ class AsyncTable:
             column's type and inputs are derived from the expression.
 
             Unlike ``transforms``, the expression is stored rather than
-            evaluated now: the column is committed with no values, and a
-            later refresh fills the rows.
+            evaluated now: the column is committed with no values, and rows get
+            them from
+            [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
 
             A refresh does not revisit rows it has already filled, so mutating
             an input leaves the value computed at fill time. While a
@@ -5956,6 +5993,30 @@ class AsyncTable:
             return await self._inner.add_columns_with_schema(transforms)
         else:
             return await self._inner.add_columns(list(transforms.items()))
+
+    async def refresh_column(self, column: str) -> RefreshColumnResult:
+        """
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only; LanceDB Cloud and Enterprise raise
+        ``NotImplementedError``.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            The number of rows filled and the new version of the table.
+        """
+        return await self._inner.refresh_column(column)
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

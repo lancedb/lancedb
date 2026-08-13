@@ -78,6 +78,7 @@ pub mod merge;
 pub mod optimize;
 mod primary_key;
 pub mod query;
+pub mod refresh;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
@@ -101,6 +102,7 @@ pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 pub use lsm_stats::{BucketStats, GenerationStats, LsmStats, MemtableStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use refresh::RefreshColumnResult;
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -752,6 +754,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "computed columns are not supported on this table type".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows.
+    ///
+    /// The default returns `NotSupported`; Lance-backed tables override it.
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
         })
     }
     /// Alter columns in the table.
@@ -1644,6 +1654,29 @@ impl Table {
     /// Add new columns to the table, providing values to fill in.
     pub fn add_columns(&self) -> AddColumnsBuilder {
         AddColumnsBuilder::new(self.inner.clone())
+    }
+
+    /// Fill the fragments of a computed column that hold no values yet.
+    ///
+    /// Declared with
+    /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
+    /// a column starts empty and gets its values here. Fragments appended
+    /// since the last refresh are filled by the next one; fragments already
+    /// filled are left as they are, so the call is idempotent and does not
+    /// observe a mutated input.
+    ///
+    /// Local tables only.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows at version {}", result.rows_filled, result.version);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
+        self.inner.refresh_column(column.as_ref()).await
     }
 
     /// Change a column's name or nullability.
@@ -3349,6 +3382,12 @@ impl BaseTable for NativeTable {
 
     async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
         let result = schema_evolution::execute_declare(self, columns).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
+        let result = refresh::execute_refresh_column(self, column).await?;
         self.bump_freshness();
         Ok(result)
     }

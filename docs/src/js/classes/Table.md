@@ -70,9 +70,9 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 Add new columns with defined values.
 
 The `{ computed }` form stores the expression rather than evaluating it
-now: the column is committed with no values, and a later refresh fills
-the rows. Declaring one therefore costs the same on a large table as on
-an empty one.
+now: the column is committed with no values, and rows get them from
+[Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
+large table as on an empty one.
 
 A refresh does not revisit rows it has already filled, so mutating an
 input leaves the value computed at fill time; recomputing means dropping
@@ -108,6 +108,7 @@ containing the new version number of the table after adding the columns.
 
 ```ts
 await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+const { rowsFilled } = await table.refreshColumn("doubled");
 ```
 
 ***
@@ -740,6 +741,32 @@ for await (const batch of table.query()) {
   console.log(batch);
 }
 ```
+
+***
+
+### refreshColumn()
+
+```ts
+abstract refreshColumn(column): Promise<RefreshColumnResult>
+```
+
+Fill the rows of a computed column that hold no value yet.
+
+Rows appended since the last refresh are filled by the next one; rows
+already filled are left as they are, so the call is idempotent and does
+not observe a mutated input. Local tables only.
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
+
+A promise that resolves to the
+number of rows filled and the new version number of the table.
 
 ***
 

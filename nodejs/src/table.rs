@@ -362,6 +362,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+        let res = self
+            .inner_ref()?
+            .refresh_column(column)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,
@@ -1208,6 +1218,21 @@ impl From<lancedb::table::MergeResult> for MergeResult {
 #[napi(object)]
 pub struct AddColumnsResult {
     pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshColumnResult {
+    pub rows_filled: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(value: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: value.rows_filled as i64,
+            version: value.version as i64,
+        }
+    }
 }
 
 impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {

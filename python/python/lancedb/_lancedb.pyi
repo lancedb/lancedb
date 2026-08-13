@@ -341,6 +341,7 @@ class Table:
     async def add_computed_columns(
         self, columns: list[tuple[str, str]]
     ) -> AddColumnsResult: ...
+    async def refresh_column(self, column: str) -> RefreshColumnResult: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
     async def alter_columns(
         self, columns: list[dict[str, Any]]
@@ -684,6 +685,10 @@ class LsmWriteSpec:
     def writer_config_defaults(self) -> Dict[str, str]: ...
 
 class AddColumnsResult:
+    version: int
+
+class RefreshColumnResult:
+    rows_filled: int
     version: int
 
 class AlterColumnsResult:

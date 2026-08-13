@@ -33,6 +33,7 @@ import {
   Job,
   Branches as NativeBranches,
   OptimizeStats,
+  RefreshColumnResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -527,9 +528,9 @@ export abstract class Table {
    * Add new columns with defined values.
    *
    * The `{ computed }` form stores the expression rather than evaluating it
-   * now: the column is committed with no values, and a later refresh fills
-   * the rows. Declaring one therefore costs the same on a large table as on
-   * an empty one.
+   * now: the column is committed with no values, and rows get them from
+   * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
+   * large table as on an empty one.
    *
    * A refresh does not revisit rows it has already filled, so mutating an
    * input leaves the value computed at fill time; recomputing means dropping
@@ -549,6 +550,7 @@ export abstract class Table {
    * @example
    * ```ts
    * await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+   * const { rowsFilled } = await table.refreshColumn("doubled");
    * ```
    */
   abstract addColumns(
@@ -559,6 +561,18 @@ export abstract class Table {
       | Schema
       | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Fill the rows of a computed column that hold no value yet.
+   *
+   * Rows appended since the last refresh are filled by the next one; rows
+   * already filled are left as they are, so the call is idempotent and does
+   * not observe a mutated input. Local tables only.
+   * @param {string} column The name of the computed column to fill.
+   * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
+   * number of rows filled and the new version number of the table.
+   */
+  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
 
   /**
    * Alter the name or nullability of columns.
@@ -1159,6 +1173,10 @@ export class LocalTable extends Table {
     }
 
     throw new Error("Invalid input type for addColumns");
+  }
+
+  async refreshColumn(column: string): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column);
   }
 
   async alterColumns(
