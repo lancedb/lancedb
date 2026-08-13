@@ -84,9 +84,8 @@ pub(super) async fn create_lsm_plan(
     let pk_columns = pk_columns(&ds_ref)?;
     // The base index an indexed arm relies on may lag compaction; resolve it so the
     // snapshot retains SSTables the index has not yet caught up to.
-    let arm_index = arm_maintained_index_name(&ds_ref, &query, &details).await?;
-    let (snapshots, in_memory) =
-        build_read_context(table, &ds_ref, &details, arm_index.as_deref()).await?;
+    let arm_indexes = arm_maintained_index_names(&ds_ref, &query, &details).await?;
+    let (snapshots, in_memory) = build_read_context(table, &ds_ref, &details, &arm_indexes).await?;
 
     let limit = query.base.limit;
     let offset = query.base.offset;
@@ -232,28 +231,36 @@ fn pk_columns(dataset: &Dataset) -> Result<Vec<String>> {
     Ok(pk)
 }
 
-/// Per-shard SSTable exclusion watermark: the generation at or below which SSTables
-/// are safe to drop for this arm. A generation is droppable only once it is
-/// compacted into the base table AND covered by `index_name`'s catch-up (for an
-/// indexed arm); a plain scan (`index_name == None`) uses the compaction watermark
-/// alone. Capping at the index catch-up keeps rows the base index has not yet
-/// indexed visible through their SSTable. First occurrence per shard mirrors Lance's
-/// `compacted_generation_for_shard`.
+/// Per-shard SSTable exclusion watermark: the generation at or below which
+/// SSTables are safe to drop for this query.
+///
+/// A generation is droppable only once it is compacted into the base table AND
+/// covered by the catch-up of every index the query relies on, so the watermark
+/// is the minimum across `index_names`. Gating on fewer than all of them would
+/// drop SSTables holding rows an uncounted index has not yet indexed, and that
+/// arm would silently return fewer rows.
+///
+/// See [`arm_maintained_index_names`] for which indexes are collected today: a
+/// vector search with a scalar prefilter is not yet among them.
+///
+/// An empty `index_names` (a plain scan) uses the compaction watermark alone.
+/// First occurrence per shard mirrors Lance's `compacted_generation_for_shard`.
 fn exclusion_watermarks(
     details: &MemWalIndexDetails,
-    index_name: Option<&str>,
+    index_names: &[String],
 ) -> HashMap<Uuid, u64> {
     let mut exclude: HashMap<Uuid, u64> = HashMap::new();
     for entry in &details.compacted_sstables {
         let mut watermark = entry.generation;
-        if let Some(name) = index_name
-            && let Some(caught_up) = details
+        for name in index_names {
+            if let Some(caught_up) = details
                 .index_catchup
                 .iter()
-                .find(|icp| icp.index_name == name)
+                .find(|icp| icp.index_name == *name)
                 .and_then(|icp| icp.caught_up_generation_for_shard(&entry.shard_id))
-        {
-            watermark = watermark.min(caught_up);
+            {
+                watermark = watermark.min(caught_up);
+            }
         }
         exclude.entry(entry.shard_id).or_insert(watermark);
     }
@@ -271,9 +278,9 @@ async fn build_read_context(
     table: &NativeTable,
     dataset: &Dataset,
     details: &MemWalIndexDetails,
-    index_name: Option<&str>,
+    index_names: &[String],
 ) -> Result<(Vec<ShardSnapshot>, HashMap<Uuid, InMemoryMemTables>)> {
-    let exclude = exclusion_watermarks(details, index_name);
+    let exclude = exclusion_watermarks(details, index_names);
 
     let shard_ids = dataset.list_mem_wal_latest_shard_ids().await?;
     // Use the dataset's own object store (not `ObjectStore::from_uri`, which
@@ -487,19 +494,33 @@ async fn index_maintained(
     }))
 }
 
-/// The maintained base index the query's arm relies on (vector index for ANN, FTS
-/// index for full-text), used to gate SSTable compaction exclusion by index catch-up.
-/// `None` for a plain scan or when no maintained index covers the searched column.
-async fn arm_maintained_index_name(
+/// Every maintained base index this query relies on, used to gate SSTable
+/// exclusion by index catch-up.
+///
+/// Returns a list because the watermark must be the lowest across every index a
+/// query relies on. Today it never holds more than one: `reject_unsupported`
+/// refuses hybrid search, so the vector and full-text arms are mutually
+/// exclusive.
+///
+/// The case that is genuinely multi-index -- a vector search with a scalar or
+/// bitmap prefilter -- is **not collected yet**. Identifying those needs the
+/// planner's chosen indexes, not the columns the filter names, and no Lance API
+/// exposes them. Until it does, such a query is gated on its vector index alone.
+///
+/// Empty for a plain scan, or when no maintained index covers the searched
+/// column.
+async fn arm_maintained_index_names(
     dataset: &Dataset,
     query: &VectorQueryRequest,
     details: &MemWalIndexDetails,
-) -> Result<Option<String>> {
+) -> Result<Vec<String>> {
     use lance::index::DatasetIndexExt;
-    // Resolve the arm's searched column, the index-detail type it relies on, and a
+
+    // Each arm's searched column, the index-detail type it relies on, and a
     // label for diagnostics — catch-up is taken from the vector/FTS index
     // specifically, not a BTree on the same column.
-    let (column, type_url_suffix, arm) = if !query.query_vector.is_empty() {
+    let mut arms: Vec<(String, &str, &str)> = Vec::new();
+    if !query.query_vector.is_empty() {
         let arrow_schema = ArrowSchema::from(dataset.schema());
         let column = match &query.column {
             Some(column) => column.clone(),
@@ -508,31 +529,43 @@ async fn arm_maintained_index_name(
                 default_vector_column(&arrow_schema, dim)?
             }
         };
-        (column, "VectorIndexDetails", "vector")
-    } else if let Some(fts) = &query.base.full_text_search {
-        match fts.columns().into_iter().next() {
-            Some(column) => (column, "InvertedIndexDetails", "full-text"),
-            None => return Ok(None),
-        }
-    } else {
-        return Ok(None);
-    };
-    let Some(field) = dataset.schema().field(&column) else {
-        return Ok(None);
-    };
+        arms.push((column, "VectorIndexDetails", "vector"));
+    }
+    if let Some(fts) = &query.base.full_text_search
+        && let Some(column) = fts.columns().into_iter().next()
+    {
+        arms.push((column, "InvertedIndexDetails", "full-text"));
+    }
+    if arms.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let indices = dataset.load_indices().await?;
-    let segment_names: Vec<String> = indices
-        .iter()
-        .filter(|idx| {
-            idx.fields.contains(&field.id)
-                && idx
-                    .index_details
-                    .as_ref()
-                    .is_some_and(|d| d.type_url.ends_with(type_url_suffix))
-        })
-        .map(|idx| idx.name.clone())
-        .collect();
-    resolve_single_index(segment_names, &details.maintained_indexes, arm, &column)
+    let mut names = Vec::with_capacity(arms.len());
+    for (column, type_url_suffix, arm) in arms {
+        let Some(field) = dataset.schema().field(&column) else {
+            continue;
+        };
+        let segment_names: Vec<String> = indices
+            .iter()
+            .filter(|idx| {
+                idx.fields.contains(&field.id)
+                    && idx
+                        .index_details
+                        .as_ref()
+                        .is_some_and(|d| d.type_url.ends_with(type_url_suffix))
+            })
+            .map(|idx| idx.name.clone())
+            .collect();
+        if let Some(name) =
+            resolve_single_index(segment_names, &details.maintained_indexes, arm, &column)?
+        {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 /// Resolve the single logical index from the names of its matching physical
@@ -734,22 +767,83 @@ mod tests {
         };
 
         // Plain scan: drop every compacted generation (through 5).
-        assert_eq!(exclusion_watermarks(&details, None).get(&shard), Some(&5));
+        assert_eq!(exclusion_watermarks(&details, &[]).get(&shard), Some(&5));
 
         // FTS arm with a lagging index: exclusion is capped at the index catch-up
         // (2), so SSTable generations 3..=5 are retained until the index covers
         // them — otherwise those documents would silently vanish from FTS results.
         assert_eq!(
-            exclusion_watermarks(&details, Some("fts_idx")).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
             Some(&2)
         );
 
         // A caught-up index — or one untracked in index_catchup — falls back to the
         // compaction watermark.
         assert_eq!(
-            exclusion_watermarks(&details, Some("caught_up_idx")).get(&shard),
+            exclusion_watermarks(&details, &["caught_up_idx".to_string()]).get(&shard),
             Some(&5)
         );
+    }
+
+    /// A hybrid search reads a vector and a full-text index, and either may lag.
+    /// Retaining to the lower of the two is what keeps both arms complete;
+    /// gating on one alone would drop SSTables the other has not indexed.
+    #[test]
+    fn exclusion_watermark_takes_the_minimum_across_every_index_used() {
+        let shard = Uuid::from_u128(1);
+        let details = MemWalIndexDetails {
+            compacted_sstables: vec![CompactedSsTable::new(shard, 9)],
+            index_catchup: vec![
+                IndexCatchupProgress::new(
+                    "vec_idx".to_string(),
+                    vec![CompactedSsTable::new(shard, 7)],
+                ),
+                IndexCatchupProgress::new(
+                    "fts_idx".to_string(),
+                    vec![CompactedSsTable::new(shard, 4)],
+                ),
+            ],
+            maintained_indexes: vec!["vec_idx".to_string(), "fts_idx".to_string()],
+            ..Default::default()
+        };
+
+        // Each index alone stops at its own catch-up.
+        assert_eq!(
+            exclusion_watermarks(&details, &["vec_idx".to_string()]).get(&shard),
+            Some(&7)
+        );
+        assert_eq!(
+            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
+            Some(&4)
+        );
+
+        // Used together, the lower one governs regardless of order.
+        let both = ["vec_idx".to_string(), "fts_idx".to_string()];
+        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&4));
+        let reversed = ["fts_idx".to_string(), "vec_idx".to_string()];
+        assert_eq!(
+            exclusion_watermarks(&details, &reversed).get(&shard),
+            Some(&4)
+        );
+    }
+
+    /// An index with no catch-up entry contributes no cap today, so a lagging
+    /// sibling must still govern rather than being widened by the untracked one.
+    #[test]
+    fn an_untracked_index_does_not_widen_a_lagging_sibling() {
+        let shard = Uuid::from_u128(1);
+        let details = MemWalIndexDetails {
+            compacted_sstables: vec![CompactedSsTable::new(shard, 9)],
+            index_catchup: vec![IndexCatchupProgress::new(
+                "fts_idx".to_string(),
+                vec![CompactedSsTable::new(shard, 4)],
+            )],
+            maintained_indexes: vec!["fts_idx".to_string(), "untracked_idx".to_string()],
+            ..Default::default()
+        };
+
+        let both = ["fts_idx".to_string(), "untracked_idx".to_string()];
+        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&4));
     }
 
     #[test]
