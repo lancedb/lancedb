@@ -39,7 +39,9 @@ jobs:
             runner: ubuntu-22.04
             package_name: "lancedb"
             rustflags: ""
-          # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+          # Lance v11 exceeds this runner's memory during fat LTO. ThinLTO with
+          # multiple codegen units trades some runtime optimization for lower
+          # peak build memory.
           - platform: aarch64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
@@ -77,6 +79,8 @@ jobs:
           manylinux: ${{ matrix.config.manylinux }}
           package-name: ${{ matrix.config.package_name }}
           rustflags: ${{ matrix.config.rustflags }}
+          release-lto: ${{ matrix.config.platform == 'aarch64' && 'thin' || '' }}
+          release-codegen-units: ${{ matrix.config.platform == 'aarch64' && '16' || '' }}
       - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/v')
         with:

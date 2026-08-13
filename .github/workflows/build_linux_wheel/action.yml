@@ -26,6 +26,14 @@ inputs:
     description: "RUSTFLAGS for the build container, as a single whitespace-free token (e.g. '-Ctarget-cpu=x86-64-v2'). Empty leaves RUSTFLAGS unset, keeping the defaults from .cargo/config.toml."
     required: false
     default: ""
+  release-lto:
+    description: "Override the release profile LTO mode in the build container. Empty keeps the default from .cargo/config.toml."
+    required: false
+    default: ""
+  release-codegen-units:
+    description: "Override the release profile codegen unit count in the build container. Empty keeps the default from .cargo/config.toml."
+    required: false
+    default: ""
 runs:
   using: "composite"
   steps:
@@ -54,7 +62,7 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }} ${{ inputs.release-lto != '' && format('-e CARGO_PROFILE_RELEASE_LTO={0}', inputs.release-lto) || '' }} ${{ inputs.release-codegen-units != '' && format('-e CARGO_PROFILE_RELEASE_CODEGEN_UNITS={0}', inputs.release-codegen-units) || '' }}"
         target: x86_64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
@@ -71,7 +79,7 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }} ${{ inputs.release-lto != '' && format('-e CARGO_PROFILE_RELEASE_LTO={0}', inputs.release-lto) || '' }} ${{ inputs.release-codegen-units != '' && format('-e CARGO_PROFILE_RELEASE_CODEGEN_UNITS={0}', inputs.release-codegen-units) || '' }}"
         target: aarch64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
