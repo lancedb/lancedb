@@ -2,14 +2,36 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! Filling computed columns.
+//!
+//! A row without a value gets one; a row that has one keeps it. Refresh is
+//! therefore idempotent and does not observe input mutation -- once a row is
+//! filled, changing what the expression reads leaves the stored result alone.
+//!
+//! Convergence comes from staging nothing when nothing would change, so an
+//! expression yielding null settles after one pass rather than re-selecting
+//! the same rows forever. Fragments that already cover the column and hold no
+//! nulls are skipped without evaluating it at all.
 
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
 use arrow_schema::Schema as ArrowSchema;
-use lance::dataset::UpdateBuilder as LanceUpdateBuilder;
+use futures::{TryStreamExt, stream};
+use lance::Dataset;
+use lance::dataset::WriteDestination;
+use lance::dataset::fragment::FileFragment;
+use lance::dataset::transaction::Operation;
+use lance_core::ROW_ID;
+use lance_core::datatypes::Schema as LanceSchema;
 use serde::{Deserialize, Serialize};
 
 use super::NativeTable;
 use super::computed_columns::{ComputedColumnKind, computed_column_from_field};
 use crate::{Error, Result};
+
+/// Alias the expression is projected under, so its result and the column's
+/// current values can be read side by side.
+const COMPUTED_ALIAS: &str = "__lancedb_computed";
 
 /// The result of refreshing a computed column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -30,6 +52,65 @@ pub(crate) async fn execute_refresh_column(
     table.dataset.ensure_mutable()?;
     let dataset = table.dataset.get().await?;
 
+    let expression = declared_expression(&dataset, column)?;
+    let field = dataset
+        .schema()
+        .field(column)
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: column.to_string(),
+        })?;
+    // The dataset's own field, so the identity write_column checks against the
+    // manifest holds by construction.
+    let column_schema = LanceSchema {
+        fields: vec![field.clone()],
+        metadata: Default::default(),
+    };
+
+    let mut rows_filled = 0u64;
+    let mut replacements = Vec::new();
+    for fragment in fragments_to_consider(&dataset, column, field.id).await? {
+        let Some((filled, values)) =
+            fill_fragment(&dataset, &fragment, column, &expression).await?
+        else {
+            continue;
+        };
+        rows_filled += filled;
+        replacements.push(
+            fragment
+                .write_column(stream::iter(values.into_iter().map(Ok)), &column_schema)
+                .await?,
+        );
+    }
+
+    if replacements.is_empty() {
+        return Ok(RefreshColumnResult {
+            rows_filled: 0,
+            version: dataset.version().version,
+        });
+    }
+
+    let read_version = dataset.version().version;
+    let new_dataset = Dataset::commit(
+        WriteDestination::Dataset(dataset.clone()),
+        Operation::DataReplacement { replacements },
+        Some(read_version),
+        None,
+        None,
+        Arc::new(Default::default()),
+        false,
+    )
+    .await?;
+
+    let version = new_dataset.version().version;
+    table.dataset.update(new_dataset);
+    Ok(RefreshColumnResult {
+        rows_filled,
+        version,
+    })
+}
+
+/// The SQL expression `column` is declared with.
+fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
     let schema = ArrowSchema::from(dataset.schema());
     let field = schema
         .field_with_name(column)
@@ -40,32 +121,113 @@ pub(crate) async fn execute_refresh_column(
         computed_column_from_field(field).ok_or_else(|| Error::NotAComputedColumn {
             name: column.to_string(),
         })?;
-    let expression = match &declaration.kind {
-        ComputedColumnKind::Sql { expression } => expression,
-        ComputedColumnKind::Unrecognized { kind } => {
-            return Err(Error::NotSupported {
-                message: format!(
-                    "computed column '{column}' is defined by '{kind}', which this version of \
-                     lancedb cannot evaluate"
-                ),
-            });
+    match declaration.kind {
+        ComputedColumnKind::Sql { expression } => Ok(expression),
+        ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
+            message: format!(
+                "computed column '{column}' is defined by '{kind}', which this version of \
+                 lancedb cannot evaluate"
+            ),
+        }),
+    }
+}
+
+/// Quote `name` as a lance SQL identifier.
+///
+/// Lance's dialect delimits with backticks, so a double-quoted name would
+/// parse as a string literal rather than a column.
+fn quote_identifier(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// Fragments that could hold a row needing a value.
+///
+/// A fragment whose data files do not carry the field cannot hold one that
+/// does. One that carries it is asked, since a row rewrite -- an update, or a
+/// compaction folding an unfilled fragment into a filled one -- can leave
+/// nulls behind a covering file.
+async fn fragments_to_consider(
+    dataset: &Dataset,
+    column: &str,
+    field_id: i32,
+) -> Result<Vec<FileFragment>> {
+    let unfilled = format!("{} IS NULL", quote_identifier(column));
+    let mut considered = Vec::new();
+    for fragment in dataset.get_fragments() {
+        let covered = fragment
+            .metadata()
+            .files
+            .iter()
+            .any(|file| file.fields.contains(&field_id));
+        if !covered || fragment.count_rows(Some(unfilled.clone())).await? > 0 {
+            considered.push(fragment);
         }
+    }
+    Ok(considered)
+}
+
+/// Compute one fragment's column, keeping every value it already holds.
+///
+/// `Ok(None)` when no live row gained a value, which is what keeps a refresh
+/// from restaging a fragment whose expression yields null. Deleted rows are
+/// carried through so the values line up positionally with the fragment's data
+/// files; they are never read back, but the column file has to cover them.
+async fn fill_fragment(
+    dataset: &Dataset,
+    fragment: &FileFragment,
+    column: &str,
+    expression: &str,
+) -> Result<Option<(u64, Vec<RecordBatch>)>> {
+    let mut scanner = dataset.scan();
+    scanner
+        .with_fragments(vec![fragment.metadata().clone()])
+        .with_row_id()
+        .include_deleted_rows()
+        .project_with_transform(&[
+            (column, quote_identifier(column).as_str()),
+            (COMPUTED_ALIAS, expression),
+        ])?;
+
+    let projected = Arc::new(ArrowSchema::new(vec![
+        ArrowSchema::from(dataset.schema())
+            .field_with_name(column)
+            .map_err(|_| Error::ColumnNotFound {
+                name: column.to_string(),
+            })?
+            .clone(),
+    ]));
+
+    let missing = |name: &str| Error::Runtime {
+        message: format!("refreshing {column} produced no {name} column"),
     };
 
-    // Rows still holding no value are the ones to fill. A row whose expression
-    // evaluates to null is indistinguishable from an unfilled one and is
-    // recomputed, which costs work but cannot change the result.
-    let builder = LanceUpdateBuilder::new(dataset)
-        .update_where(&format!("{column} IS NULL"))?
-        .set(column, expression)?;
-    let result = builder.build()?.execute().await?;
+    let mut filled = 0u64;
+    let mut values = Vec::new();
+    let mut batches = scanner.try_into_stream().await?;
+    while let Some(batch) = batches.try_next().await? {
+        let existing = batch
+            .column_by_name(column)
+            .ok_or_else(|| missing(column))?;
+        let computed = batch
+            .column_by_name(COMPUTED_ALIAS)
+            .ok_or_else(|| missing("expression"))?;
+        let row_ids = batch
+            .column_by_name(ROW_ID)
+            .ok_or_else(|| missing(ROW_ID))?;
 
-    let version = result.new_dataset.version().version;
-    table.dataset.update(result.new_dataset.as_ref().clone());
-    Ok(RefreshColumnResult {
-        rows_filled: result.rows_updated,
-        version,
-    })
+        // A row is filled only if it gains a value: an expression yielding null
+        // leaves it as unfilled as it was, which is what lets a refresh settle.
+        // A deleted row has a null row id; its value is written but not counted.
+        let unfilled = arrow::compute::is_null(existing.as_ref())?;
+        filled += (0..unfilled.len())
+            .filter(|i| unfilled.value(*i) && row_ids.is_valid(*i) && computed.is_valid(*i))
+            .count() as u64;
+
+        let merged = arrow_select::zip::zip(&unfilled, computed, existing)?;
+        values.push(RecordBatch::try_new(projected.clone(), vec![merged])?);
+    }
+
+    Ok((filled > 0).then_some((filled, values)))
 }
 
 #[cfg(test)]
@@ -172,6 +334,120 @@ mod tests {
         );
     }
 
+    /// A row is filled only by gaining a value, so an expression yielding null
+    /// settles at once instead of re-selecting the same rows forever. Nothing
+    /// is staged, so the version does not move either.
+    #[tokio::test]
+    async fn test_refresh_converges_on_a_null_result() {
+        let table = table_with("refresh_null_result", vec![1, 2, 3]).await;
+        let declared = table
+            .add_columns()
+            .computed("maybe", "nullif(x, x)")
+            .execute()
+            .await
+            .unwrap()
+            .version;
+
+        let first = table.refresh_column("maybe").await.unwrap();
+        assert_eq!(first.rows_filled, 0);
+        assert_eq!(first.version, declared);
+        assert_eq!(read(&table, "maybe").await, vec![None, None, None]);
+
+        let again = table.refresh_column("maybe").await.unwrap();
+        assert_eq!(again.rows_filled, 0);
+        assert_eq!(again.version, declared);
+    }
+
+    /// The contract's boundary: a filled fragment is not revisited, so
+    /// mutating an input leaves the value computed at fill time.
+    #[tokio::test]
+    async fn test_refresh_does_not_observe_input_mutation() {
+        let table = table_with("refresh_mutation", vec![1]).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+        assert_eq!(read(&table, "doubled").await, vec![Some(2)]);
+
+        table.update().column("x", "3").execute().await.unwrap();
+
+        let again = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(again.rows_filled, 0);
+        assert_eq!(read(&table, "doubled").await, vec![Some(2)]);
+    }
+
+    /// A row rewrite before the first refresh materializes the declared
+    /// column as null behind a covering data file. Those rows are still
+    /// unfilled and a later refresh has to reach them.
+    #[tokio::test]
+    async fn test_update_before_the_first_refresh() {
+        let table = table_with("refresh_update_first", vec![1]).await;
+        declare_doubled(&table).await.unwrap();
+
+        table.update().column("x", "3").execute().await.unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(read(&table, "doubled").await, vec![Some(6)]);
+    }
+
+    /// The contract holds row by row, not fragment by fragment: revisiting a
+    /// fragment to fill one row must not recompute a filled row sitting beside
+    /// it, even where the input behind it has since changed.
+    #[tokio::test]
+    async fn test_refresh_does_not_recompute_a_filled_row_beside_an_unfilled_one() {
+        let table = table_with("refresh_mixed", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+
+        append(&table, vec![5]).await;
+        table
+            .update()
+            .column("x", "100")
+            .only_if("x = 1")
+            .execute()
+            .await
+            .unwrap();
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        // 2 is the mutated row keeping the value it was filled with, not 200.
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(10)]
+        );
+    }
+
+    /// Filling a fragment must not disturb the values it already holds, which
+    /// is what makes a compaction-mixed fragment safe to revisit.
+    #[tokio::test]
+    async fn test_refresh_preserves_already_filled_rows() {
+        let table = table_with("refresh_preserves", vec![1, 2]).await;
+        declare_doubled(&table).await.unwrap();
+        table.refresh_column("doubled").await.unwrap();
+
+        append(&table, vec![5]).await;
+        table
+            .optimize(crate::table::OptimizeAction::Compact {
+                options: crate::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 1);
+        assert_eq!(
+            read(&table, "doubled").await,
+            vec![Some(2), Some(4), Some(10)]
+        );
+    }
+
     #[tokio::test]
     async fn test_refresh_leaves_deleted_rows_alone() {
         let table = table_with("refresh_deleted", vec![1, 2, 3, 4]).await;
@@ -198,6 +474,26 @@ mod tests {
 
         let result = table.refresh_column("answer").await.unwrap();
         assert_eq!(result.rows_filled, 3);
+    }
+
+    /// A name needing quotes reaches the evaluator intact: it is carried as a
+    /// projection alias, never spliced into SQL text.
+    #[tokio::test]
+    async fn test_refresh_a_column_whose_name_needs_quoting() {
+        let table = table_with("refresh_quoted", vec![1, 2, 3]).await;
+        table
+            .add_columns()
+            .computed("double value", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+
+        let result = table.refresh_column("double value").await.unwrap();
+        assert_eq!(result.rows_filled, 3);
+        assert_eq!(
+            read(&table, "double value").await,
+            vec![Some(2), Some(4), Some(6)]
+        );
     }
 
     #[tokio::test]
