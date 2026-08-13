@@ -89,6 +89,14 @@ struct CloneCommitHandler {
 
 #[async_trait::async_trait]
 impl CommitHandler for CloneCommitHandler {
+    fn is_version_not_found_definitive(&self) -> bool {
+        self.target.is_version_not_found_definitive()
+    }
+
+    fn propagate_commit_error_after_success(&self) -> bool {
+        self.target.propagate_commit_error_after_success()
+    }
+
     async fn resolve_latest_location(
         &self,
         base_path: &ObjectPath,
@@ -1552,6 +1560,20 @@ mod tests {
                 )
                 .await
         }
+    }
+
+    #[test]
+    fn commit_handler_forwards_commit_outcome_capabilities() {
+        let target: Arc<dyn CommitHandler> =
+            Arc::new(lance_table::io::commit::ConditionalPutCommitHandler);
+        let handler = CloneCommitHandler {
+            source_base: ObjectPath::from("source"),
+            source: target.clone(),
+            target,
+        };
+
+        assert!(handler.is_version_not_found_definitive());
+        assert!(!handler.propagate_commit_error_after_success());
     }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {

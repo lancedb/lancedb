@@ -54,6 +54,14 @@ struct RootedFileCommitHandler;
 #[cfg(any(windows, test))]
 #[async_trait]
 impl CommitHandler for RootedFileCommitHandler {
+    fn is_version_not_found_definitive(&self) -> bool {
+        RenameCommitHandler.is_version_not_found_definitive()
+    }
+
+    fn propagate_commit_error_after_success(&self) -> bool {
+        RenameCommitHandler.propagate_commit_error_after_success()
+    }
+
     async fn resolve_latest_location(
         &self,
         base_path: &Path,
@@ -441,6 +449,14 @@ mod prefixed_file_store_test {
         ) -> Arc<dyn ObjectStore> {
             self.store.clone()
         }
+    }
+
+    #[test]
+    fn commit_handler_forwards_commit_outcome_capabilities() {
+        let handler = RootedFileCommitHandler;
+
+        assert!(handler.is_version_not_found_definitive());
+        assert!(!handler.propagate_commit_error_after_success());
     }
 
     #[tokio::test]
