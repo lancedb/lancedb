@@ -632,10 +632,11 @@ class LanceNamespaceDBConnection(DBConnection):
         """Start dropping a table and return its cleanup job."""
         if namespace_path is None:
             namespace_path = []
-        job = LOOP.run(
-            self._inner.drop_table_async(name, namespace_path=namespace_path)
+        return Job(
+            LOOP.run(
+                self._inner.drop_table_async(name, namespace_path=namespace_path)
+            )
         )
-        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(

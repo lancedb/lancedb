@@ -333,7 +333,7 @@ impl<S: HttpSend> RemoteDatabase<S> {
         &self,
         name: &str,
         namespace_path: &[String],
-    ) -> Result<(StatusCode, Option<String>)> {
+    ) -> Result<(String, StatusCode, Option<String>)> {
         let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
         let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
@@ -351,7 +351,7 @@ impl<S: HttpSend> RemoteDatabase<S> {
                     .filter(|id| !id.is_empty())
                     .map(str::to_string)
             });
-        Ok((status, job_id))
+        Ok((request_id, status, job_id))
     }
 }
 
@@ -929,13 +929,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_table_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
-        let (status, job_id) = self.submit_drop_table(name, namespace_path).await?;
+        let (request_id, status, job_id) = self.submit_drop_table(name, namespace_path).await?;
         Ok(match job_id {
             Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
             None if status == StatusCode::ACCEPTED => {
-                return Err(Error::Runtime {
-                    message: "asynchronous drop-table response did not contain a valid job_id"
-                        .to_string(),
+                return Err(Error::Http {
+                    source: "asynchronous drop-table response did not contain a valid job_id"
+                        .into(),
+                    request_id,
+                    status_code: Some(status),
                 });
             }
             None => Job::new_done(),
