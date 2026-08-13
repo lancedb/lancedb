@@ -21,7 +21,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::{Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
 use lance_datafusion::planner::Planner;
 
@@ -149,7 +150,6 @@ pub fn computed_columns(schema: &ArrowSchema) -> Vec<ComputedColumn> {
 /// Paths are compared at their root: a declaration reading `metadata` is
 /// invalidated by a change to `metadata.age` just as surely.
 pub(crate) fn ensure_not_an_input(schema: &ArrowSchema, paths: &[&str]) -> Result<()> {
-    let root = |path: &str| path.split('.').next().unwrap_or(path).to_string();
     for declaration in computed_columns(schema) {
         for path in paths {
             // A declaration does not read itself, so it is free to be dropped
@@ -174,6 +174,129 @@ pub(crate) fn ensure_not_an_input(schema: &ArrowSchema, paths: &[&str]) -> Resul
     Ok(())
 }
 
+/// True for field-metadata keys that belong to a computed-column declaration.
+///
+/// A declaration is immutable through metadata edits: it is validated as a
+/// whole at declare time, and rewriting any piece of it -- the flag, the
+/// kind, the expression, the inputs -- would bypass that validation or move
+/// a binding out from under a refresh. Drop the column and declare it again.
+pub(crate) fn is_declaration_key(key: &str) -> bool {
+    key == COMPUTED_COLUMN_META_KEY || key.starts_with("computed_column.")
+}
+
+/// Reject retyping a computed column itself.
+///
+/// A cast keeps the stored expression while changing the type it must yield
+/// -- and lance's cast rewrites the field without its metadata, so the
+/// declaration silently stops being one. Dropping and redeclaring is the
+/// coherent way to change a computed column's type.
+pub(crate) fn ensure_not_retyped(schema: &ArrowSchema, paths: &[&str]) -> Result<()> {
+    for declaration in computed_columns(schema) {
+        for path in paths {
+            if declaration.name == root(path) {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "column '{}' is computed; drop it and declare it again to change \
+                         its type",
+                        declaration.name
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The top-level column a possibly nested input path reads.
+pub(crate) fn root(path: &str) -> &str {
+    path.split('.').next().unwrap_or(path)
+}
+
+/// A declaration's expression bound to a schema, ready to evaluate.
+pub(crate) struct BoundExpression {
+    /// The columns the expression names, as written; nested inputs keep
+    /// their dotted path.
+    pub inputs: Vec<String>,
+    /// The top-level columns evaluation reads, in [`Self::read_schema`]
+    /// order. A nested input appears through its root.
+    pub roots: Vec<String>,
+    /// The projected schema evaluation runs against.
+    pub read_schema: SchemaRef,
+    /// The compiled expression.
+    pub physical: Arc<dyn PhysicalExpr>,
+    /// The type the expression yields.
+    pub data_type: DataType,
+}
+
+/// Parse, resolve and compile `expression` against `schema`.
+///
+/// Inputs come from the expression as written, before optimization: the
+/// simplifier can fold a referenced column out entirely (`true OR x > 0`),
+/// and the guard protecting the stored SQL has to see every column the text
+/// names, not just the ones the simplified form still reads.
+pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<BoundExpression> {
+    let invalid = |message: String| Error::InvalidExpression {
+        column: column.to_string(),
+        message,
+    };
+
+    let planner = Planner::new(schema.clone());
+    let parsed = planner
+        .parse_expr(expression)
+        .map_err(|e| invalid(e.to_string()))?;
+
+    let mut inputs = Planner::column_names_in_expr(&parsed);
+    inputs.sort();
+    inputs.dedup();
+
+    // A nested input is recorded by its path but read through its root
+    // column; Schema::index_of resolves top-level names only. Resolved here
+    // rather than left to the planner so an unknown column names itself in
+    // the error instead of surfacing as a plan failure.
+    let mut indices = Vec::with_capacity(inputs.len());
+    for input in &inputs {
+        let index = schema
+            .index_of(root(input))
+            .map_err(|_| invalid(format!("unknown column '{input}'")))?;
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    indices.sort_unstable();
+
+    // Physical expressions address columns by position, so the planner that
+    // compiles the expression has to be built on the projected schema
+    // evaluation will actually read.
+    let read_schema = Arc::new(
+        schema
+            .project(&indices)
+            .map_err(|e| invalid(e.to_string()))?,
+    );
+    let roots = read_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
+    let optimized = planner
+        .optimize_expr(parsed)
+        .map_err(|e| invalid(e.to_string()))?;
+    let physical = Planner::new(read_schema.clone())
+        .create_physical_expr(&optimized)
+        .map_err(|e| invalid(e.to_string()))?;
+    let data_type = physical
+        .data_type(read_schema.as_ref())
+        .map_err(|e| invalid(e.to_string()))?;
+
+    Ok(BoundExpression {
+        inputs,
+        roots,
+        read_schema,
+        physical,
+        data_type,
+    })
+}
+
 /// Resolve `(name, expression)` pairs against `schema` into fields carrying
 /// their bindings.
 ///
@@ -188,7 +311,6 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
         });
     }
 
-    let planner = Planner::new(schema.clone());
     let mut fields = Vec::with_capacity(columns.len());
     let mut declared: Vec<&str> = Vec::with_capacity(columns.len());
 
@@ -197,62 +319,13 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
             return Err(Error::ColumnAlreadyExists { name: name.clone() });
         }
 
-        let expr = planner
-            .parse_expr(expression)
-            .and_then(|expr| planner.optimize_expr(expr))
-            .map_err(|e| Error::InvalidExpression {
-                column: name.clone(),
-                message: e.to_string(),
-            })?;
-
-        let mut inputs = Planner::column_names_in_expr(&expr);
-        inputs.sort();
-        inputs.dedup();
-
-        // Resolved here rather than left to the planner so an unknown column
-        // names itself in the error instead of surfacing as a plan failure.
-        let mut indices = Vec::with_capacity(inputs.len());
-        for input in &inputs {
-            let index = schema
-                .index_of(input)
-                .map_err(|_| Error::InvalidExpression {
-                    column: name.clone(),
-                    message: format!("unknown column '{input}'"),
-                })?;
-            indices.push(index);
-        }
-
-        // Physical expressions address columns by position, so the planner
-        // that types the expression has to be built on the projected schema
-        // the refresh will actually read.
-        let read_schema =
-            Arc::new(
-                schema
-                    .project(&indices)
-                    .map_err(|e| Error::InvalidExpression {
-                        column: name.clone(),
-                        message: e.to_string(),
-                    })?,
-            );
-        let physical = Planner::new(read_schema.clone())
-            .create_physical_expr(&expr)
-            .map_err(|e| Error::InvalidExpression {
-                column: name.clone(),
-                message: e.to_string(),
-            })?;
-        let data_type =
-            physical
-                .data_type(read_schema.as_ref())
-                .map_err(|e| Error::InvalidExpression {
-                    column: name.clone(),
-                    message: e.to_string(),
-                })?;
+        let bound = bind(schema.clone(), name, expression)?;
 
         // Declared columns start entirely null, so nullability is a property
         // of the declaration rather than of what the expression yields.
         fields.push(
-            ArrowField::new(name, data_type, true)
-                .with_metadata(computed_column_metadata(expression, &inputs)),
+            ArrowField::new(name, bound.data_type, true)
+                .with_metadata(computed_column_metadata(expression, &bound.inputs)),
         );
         declared.push(name);
     }
@@ -689,6 +762,95 @@ mod tests {
             .alter_columns(&[ColumnAlteration::new("x".into()).set_nullable(true)])
             .await
             .unwrap();
+    }
+
+    /// The gate's reproducer: the simplifier folds `true OR x > 0` to a
+    /// constant, but the stored SQL still names `x`, so the recorded inputs
+    /// must too -- otherwise dropping `x` is allowed and refresh breaks.
+    #[tokio::test]
+    async fn test_inputs_survive_expression_optimization() {
+        let table = table_with_ints("optimized_inputs").await;
+        add_computed(&table, &[("flag".into(), "true OR x > 0".into())])
+            .await
+            .unwrap();
+
+        assert_eq!(declared(&table).await[0].inputs, vec!["x".to_string()]);
+        let err = table.drop_columns(&["x"]).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("flag")),
+            "{err:?}"
+        );
+    }
+
+    /// The gate's reproducer: casting a computed column rewrites the field
+    /// without its metadata, silently destroying the declaration.
+    #[tokio::test]
+    async fn test_retyping_the_computed_column_is_refused() {
+        use arrow_schema::DataType as ArrowDataType;
+
+        let table = table_with_ints("retype_computed").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        let err = table
+            .alter_columns(&[ColumnAlteration::new("doubled".into()).cast_to(ArrowDataType::Int64)])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message } if message.contains("computed")),
+            "{err:?}"
+        );
+
+        // The declaration survives the refused change.
+        table.refresh_column("doubled").await.unwrap();
+    }
+
+    /// A declaration cannot be edited, fabricated or erased through field
+    /// metadata: it is validated as a whole at declare time.
+    #[tokio::test]
+    async fn test_declaration_metadata_is_immutable() {
+        use crate::table::FieldMetadataUpdate;
+
+        let table = table_with_ints("metadata_tamper").await;
+        add_computed(&table, &[("doubled".into(), "x * 2".into())])
+            .await
+            .unwrap();
+
+        // Moving the binding.
+        let err = table
+            .update_field_metadata(&[
+                FieldMetadataUpdate::new("doubled").set(EXPRESSION_META_KEY, "x * 3")
+            ])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+
+        // Fabricating a declaration on a plain column.
+        let err = table
+            .update_field_metadata(&[FieldMetadataUpdate::new("x")
+                .set(COMPUTED_COLUMN_META_KEY, "true")
+                .set(KIND_META_KEY, SQL_KIND)
+                .set(EXPRESSION_META_KEY, "x")])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+
+        // Erasing the declaration wholesale.
+        let err = table
+            .update_field_metadata(&[FieldMetadataUpdate::new("doubled")
+                .set("note", "hi")
+                .replace()])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
+
+        // Ordinary metadata on a computed column still merges.
+        table
+            .update_field_metadata(&[FieldMetadataUpdate::new("doubled").set("note", "hi")])
+            .await
+            .unwrap();
+        table.refresh_column("doubled").await.unwrap();
     }
 
     /// A declaration does not read itself, so it travels with its binding.

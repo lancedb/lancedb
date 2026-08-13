@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use super::NativeTable;
 use super::computed_columns;
-use crate::Result;
+use crate::{Error, Result};
 
 /// The result of an add columns operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -120,12 +120,19 @@ pub(crate) async fn execute_alter_columns(
     let mut dataset = (*table.dataset.get().await?).clone();
     // Nullability is not part of what an expression resolves against, so only
     // a rename or a retype can invalidate a binding.
+    let schema = ArrowSchema::from(dataset.schema());
     let rebinding = alterations
         .iter()
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
         .map(|alteration| alteration.path.as_str())
         .collect::<Vec<_>>();
-    computed_columns::ensure_not_an_input(&ArrowSchema::from(dataset.schema()), &rebinding)?;
+    computed_columns::ensure_not_an_input(&schema, &rebinding)?;
+    let retyped = alterations
+        .iter()
+        .filter(|alteration| alteration.data_type.is_some())
+        .map(|alteration| alteration.path.as_str())
+        .collect::<Vec<_>>();
+    computed_columns::ensure_not_retyped(&schema, &retyped)?;
     dataset.alter_columns(alterations).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -157,6 +164,44 @@ pub(crate) async fn execute_update_field_metadata(
 ) -> Result<UpdateFieldMetadataResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+
+    // A declaration is validated as a whole at declare time; editing its keys
+    // here would bypass that, fabricate one on a plain column, or move a
+    // binding out from under a refresh. A replace on a declared column would
+    // silently erase it.
+    let schema = ArrowSchema::from(dataset.schema());
+    let declared: Vec<String> = computed_columns::computed_columns(&schema)
+        .into_iter()
+        .map(|declaration| declaration.name)
+        .collect();
+    for update in updates {
+        if update
+            .metadata
+            .keys()
+            .any(|key| computed_columns::is_declaration_key(key))
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "metadata keys of a computed-column declaration cannot be edited \
+                     (path '{}'); drop the column and declare it again",
+                    update.path
+                ),
+            });
+        }
+        if update.replace
+            && declared
+                .iter()
+                .any(|name| name == computed_columns::root(&update.path))
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "replacing all metadata of computed column '{}' would erase its \
+                     declaration; drop the column and declare it again",
+                    update.path
+                ),
+            });
+        }
+    }
 
     let mut builder = dataset.update_field_metadata();
     for update in updates {
