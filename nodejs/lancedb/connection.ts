@@ -328,6 +328,14 @@ export abstract class Connection {
   abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
 
   /**
+   * Start dropping a table and return its cleanup job.
+   *
+   * The table may become unavailable before its data files are removed. Wait
+   * on the returned job to know when cleanup has finished.
+   */
+  abstract dropTableAsync(name: string, namespacePath?: string[]): Promise<Job>;
+
+  /**
    * Drop all tables in the database.
    * @param {string[]} namespacePath The namespace path to drop tables from (defaults to root namespace).
    */
@@ -703,6 +711,10 @@ export class LocalConnection extends Connection {
 
   async dropTable(name: string, namespacePath?: string[]): Promise<void> {
     return this.inner.dropTable(name, namespacePath ?? []);
+  }
+
+  async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return this.inner.dropTableAsync(name, namespacePath ?? []);
   }
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {

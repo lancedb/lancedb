@@ -23,6 +23,8 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::job::Job;
+use crate::remote::job::RemoteJob;
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -323,6 +325,30 @@ impl RemoteDatabase {
             namespace_context_provider,
             tls_config: client_config.tls_config,
         })
+    }
+}
+
+impl<S: HttpSend> RemoteDatabase<S> {
+    async fn submit_drop_table(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Option<String>> {
+        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let cache_key = build_cache_key(name, namespace_path);
+        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+        let body = resp.text().await.err_to_http(request_id)?;
+        self.table_cache.remove(&cache_key).await;
+        Ok(serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("job_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            }))
     }
 }
 
@@ -894,13 +920,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
-        let cache_key = build_cache_key(name, namespace_path);
-        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
-        let (request_id, resp) = self.client.send(req).await?;
-        self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(&cache_key).await;
-        Ok(())
+        self.submit_drop_table(name, namespace_path)
+            .await
+            .map(|_| ())
+    }
+
+    async fn drop_table_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
+        Ok(match self.submit_drop_table(name, namespace_path).await? {
+            Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            None => Job::new_done(),
+        })
     }
 
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
@@ -1490,6 +1519,32 @@ mod tests {
         });
         conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_returns_job() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/drop/");
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"drop-job-123"}"#)
+                .unwrap()
+        });
+
+        let job = conn.drop_table_async("table1", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("drop-job-123"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_old_server_returns_done_job() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let job = conn.drop_table_async("table1", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
     }
 
     #[tokio::test]

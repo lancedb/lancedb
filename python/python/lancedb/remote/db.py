@@ -664,6 +664,17 @@ class RemoteDBConnection(DBConnection):
         LOOP.run(self._conn.drop_table(name, namespace_path=namespace_path))
 
     @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        )
+
+    @override
     def rename_table(
         self,
         cur_name: str,

@@ -49,6 +49,7 @@ from lancedb._lancedb import (
 )
 from lancedb.background_loop import LOOP
 from lancedb.db import AsyncConnection, DBConnection
+from lancedb.job import AsyncJob, Job
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -625,6 +626,17 @@ class LanceNamespaceDBConnection(DBConnection):
         LOOP.run(self._inner.drop_table(name, namespace_path=namespace_path))
 
     @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(self._inner.drop_table_async(name, namespace_path=namespace_path))
+        )
+
+    @override
     def rename_table(
         self,
         cur_name: str,
@@ -1133,6 +1145,14 @@ class AsyncLanceNamespaceDBConnection:
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_table(name, namespace_path=namespace_path)
+
+    async def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_table_async(name, namespace_path=namespace_path)
 
     async def rename_table(
         self,
