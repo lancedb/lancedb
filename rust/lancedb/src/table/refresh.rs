@@ -13,10 +13,11 @@
 //! nulls are skipped without evaluating it at all.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema as ArrowSchema;
-use futures::{TryStreamExt, stream};
+use futures::{Stream, StreamExt, TryStreamExt, stream};
 use lance::Dataset;
 use lance::dataset::WriteDestination;
 use lance::dataset::fragment::FileFragment;
@@ -75,12 +76,10 @@ pub(crate) async fn execute_refresh_column(
         else {
             continue;
         };
-        rows_filled += filled;
-        replacements.push(
-            fragment
-                .write_column(stream::iter(values.into_iter().map(Ok)), &column_schema)
-                .await?,
-        );
+        replacements.push(fragment.write_column(values, &column_schema).await?);
+        // The stream is fully consumed once write_column returns, so the
+        // counter holds the fragment's total.
+        rows_filled += filled.load(Ordering::Relaxed);
     }
 
     if replacements.is_empty() {
@@ -185,18 +184,67 @@ async fn fragments_to_consider(
     Ok(considered)
 }
 
-/// Compute one fragment's column, keeping every value it already holds.
+/// Merge one scanned batch: computed values fill the nulls, existing values
+/// are kept, and `filled` advances by the live rows that gained one.
+fn merge_batch(
+    batch: &RecordBatch,
+    column: &str,
+    projected: &Arc<ArrowSchema>,
+    filled: &AtomicU64,
+) -> lance_core::Result<RecordBatch> {
+    let missing = |name: &str| {
+        lance_core::Error::invalid_input(format!(
+            "refreshing a computed column produced no {name} column"
+        ))
+    };
+    let existing = batch
+        .column_by_name(column)
+        .ok_or_else(|| missing(column))?;
+    let computed = batch
+        .column_by_name(COMPUTED_ALIAS)
+        .ok_or_else(|| missing("expression"))?;
+    let row_ids = batch
+        .column_by_name(ROW_ID)
+        .ok_or_else(|| missing(ROW_ID))?;
+
+    // A row is filled only if it gains a value: an expression yielding null
+    // leaves it as unfilled as it was, which is what lets a refresh settle.
+    // A deleted row has a null row id; its value is written but not counted.
+    let unfilled = arrow::compute::is_null(existing.as_ref())?;
+    let gained = (0..unfilled.len())
+        .filter(|i| unfilled.value(*i) && row_ids.is_valid(*i) && computed.is_valid(*i))
+        .count() as u64;
+    filled.fetch_add(gained, Ordering::Relaxed);
+
+    let merged = arrow_select::zip::zip(&unfilled, computed, existing)?;
+    Ok(RecordBatch::try_new(projected.clone(), vec![merged])?)
+}
+
+/// Compute one fragment's column as a stream, keeping every value it already
+/// holds.
 ///
-/// `Ok(None)` when no live row gained a value, which is what keeps a refresh
-/// from restaging a fragment whose expression yields null. Deleted rows are
-/// carried through so the values line up positionally with the fragment's data
-/// files; they are never read back, but the column file has to cover them.
+/// Batches buffer only until the first row gains a value; from there the
+/// stream feeds `write_column` a batch at a time, so peak memory is bounded
+/// by a batch rather than the fragment's column. `Ok(None)` when no live row
+/// gained one -- the whole scan buffered nothing durable and nothing is
+/// staged, which is what keeps a refresh from restaging a fragment whose
+/// expression yields null. Deleted rows are carried through so the values
+/// line up positionally with the fragment's data files; they are never read
+/// back, but the column file has to cover them.
+///
+/// The counter reports the fragment's total only once the returned stream has
+/// been fully consumed.
 async fn fill_fragment(
     dataset: &Dataset,
     fragment: &FileFragment,
     column: &str,
     expression: &str,
-) -> Result<Option<(u64, Vec<RecordBatch>)>> {
+) -> Result<
+    Option<(
+        Arc<AtomicU64>,
+        impl Stream<Item = lance_core::Result<RecordBatch>> + Send + use<>,
+    )>,
+> {
     let mut scanner = dataset.scan();
     scanner
         .with_fragments(vec![fragment.metadata().clone()])
@@ -216,37 +264,23 @@ async fn fill_fragment(
             .clone(),
     ]));
 
-    let missing = |name: &str| Error::Runtime {
-        message: format!("refreshing {column} produced no {name} column"),
-    };
-
-    let mut filled = 0u64;
-    let mut values = Vec::new();
+    let filled = Arc::new(AtomicU64::new(0));
+    let mut buffered = Vec::new();
     let mut batches = scanner.try_into_stream().await?;
-    while let Some(batch) = batches.try_next().await? {
-        let existing = batch
-            .column_by_name(column)
-            .ok_or_else(|| missing(column))?;
-        let computed = batch
-            .column_by_name(COMPUTED_ALIAS)
-            .ok_or_else(|| missing("expression"))?;
-        let row_ids = batch
-            .column_by_name(ROW_ID)
-            .ok_or_else(|| missing(ROW_ID))?;
-
-        // A row is filled only if it gains a value: an expression yielding null
-        // leaves it as unfilled as it was, which is what lets a refresh settle.
-        // A deleted row has a null row id; its value is written but not counted.
-        let unfilled = arrow::compute::is_null(existing.as_ref())?;
-        filled += (0..unfilled.len())
-            .filter(|i| unfilled.value(*i) && row_ids.is_valid(*i) && computed.is_valid(*i))
-            .count() as u64;
-
-        let merged = arrow_select::zip::zip(&unfilled, computed, existing)?;
-        values.push(RecordBatch::try_new(projected.clone(), vec![merged])?);
+    while filled.load(Ordering::Relaxed) == 0 {
+        match batches.try_next().await? {
+            Some(batch) => buffered.push(merge_batch(&batch, column, &projected, &filled)?),
+            None => return Ok(None),
+        }
     }
 
-    Ok((filled > 0).then_some((filled, values)))
+    let column = column.to_string();
+    let counter = filled.clone();
+    let rest = batches.map(move |batch| {
+        batch.and_then(|batch| merge_batch(&batch, &column, &projected, &counter))
+    });
+    let values = stream::iter(buffered.into_iter().map(Ok)).chain(rest);
+    Ok(Some((filled, values)))
 }
 
 #[cfg(test)]
@@ -513,6 +547,25 @@ mod tests {
             read(&table, "double value").await,
             vec![Some(2), Some(4), Some(6)]
         );
+    }
+
+    /// A fragment spanning several scan batches exercises the streamed fill:
+    /// the probe buffers only until the first gained value and the rest flows
+    /// through write_column a batch at a time.
+    #[tokio::test]
+    async fn test_refresh_streams_a_multi_batch_fragment() {
+        let values: Vec<i32> = (0..20_000).collect();
+        let table = table_with("refresh_multi_batch", values.clone()).await;
+        declare_doubled(&table).await.unwrap();
+
+        let result = table.refresh_column("doubled").await.unwrap();
+        assert_eq!(result.rows_filled, 20_000);
+
+        let read_back = read(&table, "doubled").await;
+        assert_eq!(read_back.len(), 20_000);
+        let mut expected: Vec<Option<i32>> = values.iter().map(|v| Some(v * 2)).collect();
+        expected.sort();
+        assert_eq!(read_back, expected);
     }
 
     /// The async form's job settles with the fill visible, like
