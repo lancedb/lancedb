@@ -189,6 +189,9 @@ required-features = ["bedrock"]
 name = "bench_streaming_dataloader"
 
 [[example]]
+name = "bench_open_missing_table"
+
+[[example]]
 name = "simple"
 
 [[example]]
