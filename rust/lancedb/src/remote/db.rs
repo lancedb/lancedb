@@ -333,14 +333,15 @@ impl<S: HttpSend> RemoteDatabase<S> {
         &self,
         name: &str,
         namespace_path: &[String],
-    ) -> Result<Option<String>> {
+    ) -> Result<(StatusCode, Option<String>)> {
         let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
         let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
+        let status = resp.status();
         self.table_cache.remove(&cache_key).await;
-        Ok(resp
+        let job_id = resp
             .text()
             .await
             .ok()
@@ -350,7 +351,8 @@ impl<S: HttpSend> RemoteDatabase<S> {
                     .get("job_id")
                     .and_then(|id| id.as_str())
                     .map(str::to_string)
-            }))
+            });
+        Ok((status, job_id))
     }
 }
 
@@ -928,8 +930,15 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_table_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
-        Ok(match self.submit_drop_table(name, namespace_path).await? {
+        let (status, job_id) = self.submit_drop_table(name, namespace_path).await?;
+        Ok(match job_id {
             Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            None if status == StatusCode::ACCEPTED => {
+                return Err(Error::Runtime {
+                    message: "asynchronous drop-table response did not contain a valid job_id"
+                        .to_string(),
+                });
+            }
             None => Job::new_done(),
         })
     }
@@ -1547,6 +1556,16 @@ mod tests {
         let job = conn.drop_table_async("table1", &[]).await.unwrap();
         assert_eq!(job.id(), None);
         assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_rejects_accepted_response_without_job_id() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder().status(202).body("{}").unwrap()
+        });
+
+        let error = conn.drop_table_async("table1", &[]).await.err().unwrap();
+        assert!(error.to_string().contains("valid job_id"));
     }
 
     #[tokio::test]
