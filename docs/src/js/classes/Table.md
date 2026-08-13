@@ -69,6 +69,19 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+The `{ computed }` form stores the expression rather than evaluating it
+now: the column is committed with no values, and rows get them from
+[Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
+large table as on an empty one.
+
+A refresh does not revisit rows it has already filled, so mutating an
+input leaves the value computed at fill time; recomputing means dropping
+the column and declaring it again. While a declaration reads a column,
+that column cannot be renamed, retyped or dropped.
+
+Computed columns are local-only: LanceDB Cloud and Enterprise reject a
+declaration.
+
 #### Parameters
 
 * **newColumnTransforms**:
@@ -82,6 +95,7 @@ Add new columns with defined values.
     - A single Arrow Field defining one column with its data type (column will be initialized with null values)
     - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
     - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+    - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
 
 #### Returns
 
@@ -89,6 +103,13 @@ Add new columns with defined values.
 
 A promise that resolves to an object
 containing the new version number of the table after adding the columns.
+
+#### Example
+
+```ts
+await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+const { rowsFilled } = await table.refreshColumn("doubled");
+```
 
 ***
 
@@ -729,7 +750,11 @@ for await (const batch of table.query()) {
 abstract refreshColumn(column): Promise<RefreshColumnResult>
 ```
 
-Compute and store values for a computed column's unfilled rows.
+Fill the rows of a computed column that hold no value yet.
+
+Rows appended since the last refresh are filled by the next one; rows
+already filled are left as they are, so the call is idempotent and does
+not observe a mutated input. Local tables only.
 
 #### Parameters
 

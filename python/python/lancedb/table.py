@@ -1938,11 +1938,68 @@ class Table(ABC):
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression, so no
+            data type is supplied.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and rows get
+            them from [`refresh_column`][lancedb.table.Table.refresh_column].
+            Declaring one therefore costs the same on a large table as on an
+            empty one.
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time; recomputing means
+            dropping the column and declaring it again. While a declaration
+            reads a column, that column cannot be renamed, retyped or dropped.
+
+            Local tables only; LanceDB Cloud and Enterprise raise
+            ``NotImplementedError``. Cannot be combined with ``transforms``.
 
         Returns
         -------
         AddColumnsResult
             version: the new version number of the table after adding columns.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> table.refresh_column("doubled")
+        RefreshColumnResult(rows_filled=2, version=3)
+        >>> table.to_arrow().sort_by("x").to_pandas()
+           x  doubled
+        0  1        2
+        1  2        4
+        """
+
+    @abstractmethod
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only; LanceDB Cloud and Enterprise raise
+        ``NotImplementedError``.
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            rows_filled: the number of rows given a value.
+            version: the new version number of the table.
         """
 
     @abstractmethod
@@ -5896,6 +5953,21 @@ class AsyncTable:
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and rows get
+            them from
+            [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time. While a
+            declaration reads a column, that column cannot be renamed, retyped
+            or dropped.
+
+            Local tables only. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -5924,7 +5996,15 @@ class AsyncTable:
 
     async def refresh_column(self, column: str) -> RefreshColumnResult:
         """
-        Compute and store values for a computed column's unfilled rows.
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only; LanceDB Cloud and Enterprise raise
+        ``NotImplementedError``.
 
         Parameters
         ----------

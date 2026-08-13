@@ -50,6 +50,34 @@ impl AddColumnsBuilder {
     /// Add a column defined by `expression`, evaluated by a later refresh
     /// rather than by this commit. Its type and inputs are derived from the
     /// expression.
+    ///
+    /// The column is committed with no values, so declaring one costs the same
+    /// on an empty table as on a large one. Rows get values from
+    /// [`Table::refresh_column`](super::Table::refresh_column), which fills
+    /// every fragment that has none -- including fragments appended since the
+    /// last refresh.
+    ///
+    /// Refresh does not revisit a fragment it has filled, so mutating an input
+    /// leaves the value computed at fill time; recomputing means dropping the
+    /// column and declaring it again. An input cannot be renamed, retyped or
+    /// dropped while a declaration reads it, since the expression names it.
+    ///
+    /// Local tables only: LanceDB Cloud and Enterprise reject a declaration
+    /// with `NotSupported`.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .add_columns()
+    ///     .computed("doubled", "x * 2")
+    ///     .execute()
+    ///     .await?;
+    /// let filled = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows", filled.rows_filled);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
         self.computed.push((name.into(), expression.into()));
         self
