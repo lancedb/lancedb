@@ -793,7 +793,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
         Err(Error::NotSupported {
-            message: "refresh_column is not supported on this table type".into(),
+            message: "computed columns are supported only on local tables".into(),
         })
     }
     /// Alter columns in the table.
@@ -1688,7 +1688,25 @@ impl Table {
         AddColumnsBuilder::new(self.inner.clone())
     }
 
-    /// Compute and store values for a computed column's unfilled rows.
+    /// Fill the fragments of a computed column that hold no values yet.
+    ///
+    /// Declared with
+    /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
+    /// a column starts empty and gets its values here. Fragments appended
+    /// since the last refresh are filled by the next one; fragments already
+    /// filled are left as they are, so the call is idempotent and does not
+    /// observe a mutated input.
+    ///
+    /// Local tables only.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows at version {}", result.rows_filled, result.version);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
         self.inner.refresh_column(column.as_ref()).await
     }
