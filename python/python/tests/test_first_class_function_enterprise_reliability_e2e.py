@@ -261,6 +261,112 @@ def test_enterprise_reliability_core_lifecycle():
     )
 
 
+def test_enterprise_reliability_restart_retention():
+    import json
+    import os
+
+    import pytest
+
+    import lancedb
+
+    _require_live()
+    raw_evidence = os.environ.get("LANCEDB_FCF_E2E_RESTART_EVIDENCE")
+    if not raw_evidence:
+        pytest.skip(
+            "LANCEDB_FCF_E2E_RESTART_EVIDENCE is required for restart retention"
+        )
+
+    try:
+        evidence = json.loads(raw_evidence)
+    except json.JSONDecodeError as error:
+        pytest.fail(f"LANCEDB_FCF_E2E_RESTART_EVIDENCE must be valid JSON: {error.msg}")
+
+    assert isinstance(evidence, dict), (
+        "LANCEDB_FCF_E2E_RESTART_EVIDENCE must be a JSON object"
+    )
+    table_name = evidence.get("table")
+    function_id = evidence.get("function_id")
+    raw_job_ids = evidence.get("job_ids")
+    assert isinstance(table_name, str) and table_name, (
+        "restart evidence must contain a non-empty table"
+    )
+    assert isinstance(function_id, str) and function_id, (
+        "restart evidence must contain a non-empty function_id"
+    )
+    assert isinstance(raw_job_ids, dict), (
+        "restart evidence must contain a job_ids object"
+    )
+    job_ids = {}
+    for job_kind in ("register", "create", "refresh"):
+        job_id = raw_job_ids.get(job_kind)
+        assert isinstance(job_id, str) and job_id, (
+            f"restart evidence must contain a non-empty job_ids.{job_kind}"
+        )
+        job_ids[job_kind] = job_id
+
+    db = _connect()
+    function = db.functions.get_by_id(function_id)
+    expected_identity = (
+        function_id,
+        (("value", pa.int64()),),
+        pa.int64(),
+        True,
+    )
+    assert type(function) is lancedb.Function
+    assert (
+        function.id,
+        function.parameters,
+        function.output_type,
+        function.output_nullable,
+    ) == expected_identity
+
+    jobs = {}
+    for job_kind in ("register", "create", "refresh"):
+        job = db.get_job(job_ids[job_kind])
+        assert job is not None
+        assert job.job_id == job_ids[job_kind]
+        assert job.state == "finished"
+        assert job.failure is None
+        jobs[job_kind] = job
+
+    registered_result = jobs["register"].result
+    assert type(registered_result) is lancedb.Function
+    assert (
+        registered_result.id,
+        registered_result.parameters,
+        registered_result.output_type,
+        registered_result.output_nullable,
+    ) == expected_identity
+    assert jobs["create"].result is None
+    assert jobs["refresh"].result is None
+
+    table = db.open_table(table_name)
+    status = table.generated_column_status("derived")
+    assert status == "complete"
+    assert table.count_rows() == 3
+    final_rows = _read_rows(table, ["row_id", "value", "derived"], 3)
+    assert final_rows == [
+        {"row_id": 1, "value": 2, "derived": 4},
+        {"row_id": 2, "value": 7, "derived": 14},
+        {"row_id": 3, "value": None, "derived": None},
+    ]
+
+    _emit_evidence(
+        "restart_retention",
+        {
+            "final_rows": final_rows,
+            "function_id": function_id,
+            "generated_column_status": status,
+            "job_ids": job_ids,
+            "job_states": {
+                job_kind: jobs[job_kind].state
+                for job_kind in ("register", "create", "refresh")
+            },
+            "table": table_name,
+        },
+    )
+
+
 def test_enterprise_reliability_failure_atomicity_and_worker_recovery():
     import pytest
 
