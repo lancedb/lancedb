@@ -51,9 +51,10 @@ impl AddColumnsBuilder {
     /// expression.
     ///
     /// The column is committed with no values, so declaring one costs the same
-    /// on an empty table as on a large one. Rows get values from a later
-    /// refresh, which fills every fragment that has none -- including
-    /// fragments appended since the last refresh.
+    /// on an empty table as on a large one. Rows get values from
+    /// [`Table::refresh_column`](super::Table::refresh_column), which fills
+    /// every fragment that has none -- including fragments appended since the
+    /// last refresh.
     ///
     /// Refresh does not revisit a fragment it has filled, so mutating an input
     /// leaves the value computed at fill time; recomputing means dropping the
@@ -71,6 +72,8 @@ impl AddColumnsBuilder {
     ///     .computed("doubled", "x * 2")
     ///     .execute()
     ///     .await?;
+    /// let filled = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows", filled.rows_filled);
     /// # Ok(())
     /// # }
     /// ```

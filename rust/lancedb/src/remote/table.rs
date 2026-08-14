@@ -6479,6 +6479,12 @@ mod tests {
             matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
             "{err:?}"
         );
+
+        let err = table.refresh_column("doubled").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

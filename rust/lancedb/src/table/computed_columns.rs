@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
 use datafusion_common::tree_node::TreeNode;
+use datafusion_physical_plan::PhysicalExpr;
 use lance::dataset::NewColumnTransform;
 use lance_datafusion::planner::Planner;
 
@@ -296,11 +297,18 @@ pub(crate) fn root(path: &str) -> &str {
     path.split('.').next().unwrap_or(path)
 }
 
-/// A declaration's expression bound to a schema.
+/// A declaration's expression bound to a schema, ready to evaluate.
 pub(crate) struct BoundExpression {
     /// The columns the expression names, as written; nested inputs keep
     /// their dotted path.
     pub inputs: Vec<String>,
+    /// The top-level columns evaluation reads, in [`Self::read_schema`]
+    /// order. A nested input appears through its root.
+    pub roots: Vec<String>,
+    /// The projected schema evaluation runs against.
+    pub read_schema: SchemaRef,
+    /// The compiled expression.
+    pub physical: Arc<dyn PhysicalExpr>,
     /// The type the expression yields.
     pub data_type: DataType,
 }
@@ -373,6 +381,12 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
             .project(&indices)
             .map_err(|e| invalid(e.to_string()))?,
     );
+    let roots = read_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
     let optimized = planner
         .optimize_expr(parsed)
         .map_err(|e| invalid(e.to_string()))?;
@@ -383,7 +397,13 @@ pub(crate) fn bind(schema: SchemaRef, column: &str, expression: &str) -> Result<
         .data_type(read_schema.as_ref())
         .map_err(|e| invalid(e.to_string()))?;
 
-    Ok(BoundExpression { inputs, data_type })
+    Ok(BoundExpression {
+        inputs,
+        roots,
+        read_schema,
+        physical,
+        data_type,
+    })
 }
 
 /// Resolve `(name, expression)` pairs against `schema` into fields carrying
@@ -905,7 +925,7 @@ mod tests {
         );
 
         // The declaration survives the refused change.
-        assert_eq!(declared(&table).await.len(), 1);
+        table.refresh_column("doubled").await.unwrap();
     }
 
     /// A declaration cannot be edited, fabricated or erased through field
@@ -947,13 +967,12 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::InvalidInput { .. }), "{err:?}");
 
-        // Ordinary metadata on a computed column still merges, leaving the
-        // declaration intact.
+        // Ordinary metadata on a computed column still merges.
         table
             .update_field_metadata(&[FieldMetadataUpdate::new("doubled").set("note", "hi")])
             .await
             .unwrap();
-        assert_eq!(declared(&table).await.len(), 1);
+        table.refresh_column("doubled").await.unwrap();
     }
 
     /// The gate's reproducer: only refresh materializes a declared column;
