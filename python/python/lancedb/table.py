@@ -1916,7 +1916,14 @@ class Table(ABC):
 
     @abstractmethod
     def add_columns(
-        self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -1930,11 +1937,38 @@ class Table(ABC):
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression, so no
+            data type is supplied.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and a
+            later refresh fills the rows. Declaring one therefore costs the
+            same on a large table as on an empty one.
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time; recomputing means
+            dropping the column and declaring it again. While a declaration
+            reads a column, that column cannot be renamed, retyped or dropped.
+
+            Local tables only; LanceDB Cloud and Enterprise raise
+            ``NotImplementedError``. Cannot be combined with ``transforms``.
 
         Returns
         -------
         AddColumnsResult
             version: the new version number of the table after adding columns.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> table.to_arrow()["doubled"].to_pylist()
+        [None, None]
         """
 
     @abstractmethod
@@ -3939,9 +3973,16 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -5856,7 +5897,14 @@ class AsyncTable:
         return await self._inner.update(updates_sql, where)
 
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: dict[str, str] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -5869,6 +5917,20 @@ class AsyncTable:
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and a
+            later refresh fills the rows.
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time. While a
+            declaration reads a column, that column cannot be renamed, retyped
+            or dropped.
+
+            Local tables only. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -5882,6 +5944,14 @@ class AsyncTable:
             {isinstance(f, pa.Field) for f in transforms}
         ):
             transforms = pa.schema(transforms)
+        if computed:
+            if transforms:
+                raise ValueError(
+                    "add_columns cannot take both transforms and computed columns"
+                )
+            return await self._inner.add_computed_columns(list(computed.items()))
+        if transforms is None:
+            raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
         else:

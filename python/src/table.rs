@@ -1510,6 +1510,21 @@ impl Table {
         })
     }
 
+    pub fn add_computed_columns(
+        self_: PyRef<'_, Self>,
+        columns: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.add_columns();
+            for (name, expression) in columns {
+                builder = builder.computed(name, expression);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
     pub fn add_columns_with_schema(
         self_: PyRef<'_, Self>,
         schema: PyArrowType<Schema>,

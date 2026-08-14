@@ -525,16 +525,39 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
+   *
+   * The `{ computed }` form stores the expression rather than evaluating it
+   * now: the column is committed with no values, and a later refresh fills
+   * the rows. Declaring one therefore costs the same on a large table as on
+   * an empty one.
+   *
+   * A refresh does not revisit rows it has already filled, so mutating an
+   * input leaves the value computed at fill time; recomputing means dropping
+   * the column and declaring it again. While a declaration reads a column,
+   * that column cannot be renamed, retyped or dropped.
+   *
+   * Computed columns are local-only: LanceDB Cloud and Enterprise reject a
+   * declaration.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
    *   - An array of objects with column names and SQL expressions to calculate values
    *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
    *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
    *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+   *   - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
+   * @example
+   * ```ts
+   * await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+   * ```
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
 
   /**
@@ -1088,8 +1111,22 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult> {
+    // Columns defined by an expression are declared, not materialized here.
+    if (
+      typeof newColumnTransforms === "object" &&
+      !Array.isArray(newColumnTransforms) &&
+      "computed" in newColumnTransforms
+    ) {
+      return await this.inner.addComputedColumns(newColumnTransforms.computed);
+    }
+
     // Handle single Field -> convert to array of Fields
     if (newColumnTransforms instanceof Field) {
       newColumnTransforms = [newColumnTransforms];

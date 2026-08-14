@@ -68,6 +68,7 @@ pub mod add_columns;
 mod add_data;
 pub mod branch_merge;
 pub mod checkpoint;
+pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -90,6 +91,9 @@ pub use branch_merge::{
     MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
 };
 pub use chrono::Duration;
+pub use computed_columns::{
+    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
+};
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
@@ -741,6 +745,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns, each defined by a SQL expression.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported on this table type".into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
@@ -2628,6 +2641,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
+        computed_columns::ensure_no_foreign_declarations(batches.arrow_schema().fields())?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -3076,6 +3090,13 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_not_written(
+            &table_schema,
+            add.data.schema().fields().iter().map(|f| f.name().as_str()),
+        )?;
+        if matches!(add.mode, AddDataMode::Overwrite) {
+            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+        }
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
             parallelism
@@ -3236,6 +3257,11 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        computed_columns::ensure_not_written(
+            &Schema::from(self.dataset.get().await?.schema()),
+            source_schema.fields().iter().map(|f| f.name().as_str()),
+        )?;
         let result = merge::execute_merge_insert(self, params, new_data).await?;
         self.bump_freshness();
         Ok(result)
@@ -3317,6 +3343,12 @@ impl BaseTable for NativeTable {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         let result = schema_evolution::execute_add_columns(self, transforms, read_columns).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns).await?;
         self.bump_freshness();
         Ok(result)
     }
