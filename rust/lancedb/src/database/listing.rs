@@ -1032,6 +1032,7 @@ impl Database for ListingDatabase {
         };
 
         Ok(ListTablesResponse {
+            context: None,
             tables: f,
             page_token: next_page_token,
         })
