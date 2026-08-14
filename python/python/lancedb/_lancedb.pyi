@@ -198,6 +198,9 @@ class Connection(object):
     async def drop_table(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
+    async def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job: ...
     async def drop_all_tables(
         self, namespace_path: Optional[List[str]] = None
     ) -> None: ...

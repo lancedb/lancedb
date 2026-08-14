@@ -23,7 +23,7 @@ import pyarrow as pa
 
 from ..common import DATA
 from ..db import DBConnection, LOOP
-from ..job import Job
+from ..job import AsyncJob, Job
 
 if TYPE_CHECKING:
     from .._lancedb import JobDescription, JobInfo
@@ -662,6 +662,16 @@ class RemoteDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         LOOP.run(self._conn.drop_table(name, namespace_path=namespace_path))
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(

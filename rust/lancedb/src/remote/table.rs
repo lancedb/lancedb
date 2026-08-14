@@ -8,7 +8,7 @@ use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
+use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
@@ -392,13 +392,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .text()
             .await
             .ok()
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-            .and_then(|value| {
-                value
-                    .get("job_id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_string)
-            });
+            .and_then(|body| extract_job_id(&body));
 
         if let Some(wait_timeout) = index.wait_timeout {
             let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
