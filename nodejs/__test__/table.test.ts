@@ -3365,6 +3365,28 @@ describe("computed columns", () => {
     expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
   });
 
+  it("returns a job handle from refreshColumnAsync", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+
+    const job = await table.refreshColumnAsync("doubled");
+    expect(job.id).toBeNull();
+    await job.wait();
+    expect(await job.status()).toBe("finished");
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+
+    // Bad input rejects at the call, not through the job.
+    await expect(table.refreshColumnAsync("x")).rejects.toThrow(
+      "not a computed column",
+    );
+  });
+
   it("fills rows added since the last refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_append", [{ x: 1 }]);

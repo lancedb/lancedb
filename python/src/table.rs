@@ -1559,6 +1559,17 @@ impl Table {
         })
     }
 
+    pub fn refresh_column_async(
+        self_: PyRef<'_, Self>,
+        column: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.refresh_column_async(column).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
+        })
+    }
+
     pub fn add_columns_with_schema(
         self_: PyRef<'_, Self>,
         schema: PyArrowType<Schema>,

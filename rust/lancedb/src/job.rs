@@ -141,7 +141,7 @@ impl SpawnedJob {
                 Ok(Err(err)) => Outcome::Failed(Arc::new(err)),
                 Err(err) if err.is_cancelled() => Outcome::Cancelled,
                 Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
-                    message: format!("index job task failed: {err}"),
+                    message: format!("job task failed: {err}"),
                 })),
             };
             let _ = tx.send(Some(outcome));

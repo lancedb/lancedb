@@ -770,6 +770,39 @@ number of rows filled and the new version number of the table.
 
 ***
 
+### refreshColumnAsync()
+
+```ts
+abstract refreshColumnAsync(column): Promise<Job>
+```
+
+Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
+job instead of blocking until it completes.
+
+The job may already be complete when returned; callers must not assume
+the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
+an unknown column, or one that is not computed -- rejects here rather
+than failing the job. Local tables only.
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+#### Example
+
+```ts
+const job = await table.refreshColumnAsync("doubled");
+await job.wait();
+console.log(await job.status()); // "finished"
+```
+
+***
+
 ### restore()
 
 ```ts
