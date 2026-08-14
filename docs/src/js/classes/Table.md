@@ -79,8 +79,9 @@ input leaves the value computed at fill time; recomputing means dropping
 the column and declaring it again. While a declaration reads a column,
 that column cannot be renamed, retyped or dropped.
 
-Computed columns are local-only: LanceDB Cloud and Enterprise reject a
-declaration.
+On LanceDB Cloud and Enterprise the expression is planned by the
+server, and the refresh runs as a server job -- see
+[Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -754,7 +755,8 @@ Fill the rows of a computed column that hold no value yet.
 
 Rows appended since the last refresh are filled by the next one; rows
 already filled are left as they are, so the call is idempotent and does
-not observe a mutated input. Local tables only.
+not observe a mutated input. Local tables only: a remote refresh runs
+as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -782,7 +784,8 @@ job instead of blocking until it completes.
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
 an unknown column, or one that is not computed -- rejects here rather
-than failing the job. Local tables only.
+than failing the job. On local tables the job runs in-process; on
+LanceDB Cloud and Enterprise it is the server's backfill job.
 
 #### Parameters
 

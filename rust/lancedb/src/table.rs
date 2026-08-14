@@ -748,6 +748,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
     /// Declare computed columns, each defined by a SQL expression.
+    ///
+    /// Where the declaration is planned depends on the backend: a local table
+    /// validates and types the expression itself, a remote one sends the text
+    /// for the server to plan.
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
@@ -1672,7 +1676,8 @@ impl Table {
     /// filled are left as they are, so the call is idempotent and does not
     /// observe a mutated input.
     ///
-    /// Local tables only.
+    /// Local tables only: a remote refresh runs as a server job, through
+    /// [`Table::refresh_column_async`].
     ///
     /// ```
     /// # use lancedb::Table;
@@ -1692,8 +1697,9 @@ impl Table {
     /// The job may already be complete when returned, and callers must not
     /// assume the column is filled until [`Job::wait`] returns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
-    /// this call rather than by the job. Local tables only: LanceDB Cloud and
-    /// Enterprise reject with `NotSupported`.
+    /// this call rather than by the job. On local tables the job runs as an
+    /// in-process task; on LanceDB Cloud and Enterprise it is the server's
+    /// backfill job.
     ///
     /// ```
     /// # use lancedb::Table;
