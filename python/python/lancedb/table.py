@@ -277,6 +277,12 @@ class CompactionOptions(TypedDict, total=False):
     max_source_fragments: Optional[int]
     """Maximum number of source fragments compacted in one run."""
 
+    max_source_rows: Optional[int]
+    """Maximum number of live source rows compacted in one run."""
+
+    max_source_bytes: Optional[int]
+    """Maximum source data and overlay bytes compacted in one run."""
+
     max_overlays_per_fragment: Optional[int]
     """Maximum overlays before a fragment is fully compacted."""
 

@@ -3691,6 +3691,24 @@ async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
         await table.optimize(compaction_options={"unknown": 1})
 
 
+@pytest.mark.parametrize("option", ["max_source_rows", "max_source_bytes"])
+@pytest.mark.asyncio
+async def test_optimize_compaction_source_limits(
+    mem_db_async: AsyncConnection, option: str
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            option: 1,
+        }
+    )
+    assert stats.compaction.fragments_removed == 0
+    assert stats.compaction.fragments_added == 0
+
+
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     [
@@ -3702,6 +3720,8 @@ async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
         ("max_rows_per_group", 2**32, "must be between 1 and 4294967295"),
         ("batch_size", 2**32, "must be between 1 and 4294967295"),
         ("io_buffer_size", 2**63, "must be at most 9223372036854775807"),
+        ("max_source_rows", 0, "must be greater than 0"),
+        ("max_source_bytes", 0, "must be greater than 0"),
     ],
 )
 @pytest.mark.asyncio
