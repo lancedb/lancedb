@@ -34,8 +34,8 @@ LanceDB is a central location where developers can build, train and analyze thei
 <details>
 <summary>⭐ Click here ⭐  to see how fast we're growing!</summary>
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lancedb/lancedb&theme=dark&type=Date">
-  <img width="100%" src="https://api.star-history.com/svg?repos=lancedb/lancedb&theme=dark&type=Date">
+  <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=lancedb/lancedb&theme=dark&type=Date">
+  <img width="100%" src="https://star-history.dera.page/svg?repos=lancedb/lancedb&theme=dark&type=Date">
 </picture>
 </details>
 
