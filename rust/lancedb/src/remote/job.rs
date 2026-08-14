@@ -85,6 +85,9 @@ pub(super) fn job_state_to_client(state: &str) -> String {
 const KNOWN_NO_RESULT_JOB_TYPES: &[&str] = &[
     "create_index",
     "create_gen_column",
+    "create_generated_column",
+    "change_generated_column",
+    "refresh_generated_column",
     "reindex_ivf_pq",
     "reindex_ivf_flat",
     "reindex_ivf_rq",
@@ -820,6 +823,57 @@ mod tests {
             unexpected.is_empty(),
             "create_gen_column Function/unknown result must be Error::Http: {unexpected:?}"
         );
+    }
+
+    const CANONICAL_GENERATED_COLUMN_JOB_TYPES: &[&str] = &[
+        "create_generated_column",
+        "change_generated_column",
+        "refresh_generated_column",
+    ];
+
+    /// Canonical generated-column jobs project omitted or explicit None as JobResult::None.
+    #[tokio::test]
+    async fn remote_job_result_canonical_generated_column_done_projects_none() {
+        for job_type in CANONICAL_GENERATED_COLUMN_JOB_TYPES {
+            for result_field in [
+                JsonField::Absent,
+                JsonField::Null,
+                JsonField::Present(job_result_none_wire()),
+            ] {
+                let body = describe_body(
+                    "job-generated-column",
+                    "DONE",
+                    JsonField::Present(Value::String((*job_type).into())),
+                    result_field,
+                );
+                let job = remote_job_with_describe_body("job-generated-column", body);
+                wait_expect_none(&job).await;
+            }
+        }
+    }
+
+    /// Canonical generated-column jobs reject Function or unknown result kinds.
+    #[tokio::test]
+    async fn remote_job_result_canonical_generated_column_rejects_non_none_results() {
+        for job_type in CANONICAL_GENERATED_COLUMN_JOB_TYPES {
+            let function = sample_remote_function();
+            let mut unknown_kind = job_result_none_wire();
+            unknown_kind["kind"] = Value::String("artifact".into());
+
+            for result_field in [
+                JsonField::Present(job_result_function_wire(&function)),
+                JsonField::Present(unknown_kind),
+            ] {
+                let body = describe_body(
+                    "job-generated-column-bad-result",
+                    "DONE",
+                    JsonField::Present(Value::String((*job_type).into())),
+                    result_field,
+                );
+                let job = remote_job_with_describe_body("job-generated-column-bad-result", body);
+                wait_expect_http(&job).await;
+            }
+        }
     }
 
     /// Unknown job_type fails wait; empty historical job_type succeeds only without an explicit result.
