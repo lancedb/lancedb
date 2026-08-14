@@ -289,7 +289,7 @@ struct IvfHnswFlatParams {
     target_partition_size: Option<u32>,
 }
 
-#[pyclass(get_all)]
+#[pyclass(module = "lancedb._lancedb", get_all)]
 /// A description of an index currently configured on a column
 pub struct IndexConfig {
     /// The type of the index

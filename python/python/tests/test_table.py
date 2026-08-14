@@ -3758,7 +3758,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3775,6 +3776,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -3891,3 +3899,37 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
         f"embedding ran off the dedicated executor: {captured_threads}"
     )
+
+
+def test_computed_column_declare_and_refresh(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed", [{"x": 1}, {"x": 2}])
+
+    table.add_columns(computed={"doubled": "x * 2"})
+    assert table.to_arrow()["doubled"].to_pylist() == [None, None]
+
+    result = table.refresh_column("doubled")
+    assert result.rows_filled == 2
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    table.add([{"x": 5}])
+    assert table.refresh_column("doubled").rows_filled == 1
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4, 10]
+
+
+def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+@pytest.mark.asyncio
+async def test_computed_column_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_async", [{"x": 3}])
+
+    await table.add_columns(computed={"tripled": "x * 3"})
+    await table.refresh_column("tripled")
+
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]

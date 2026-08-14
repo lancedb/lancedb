@@ -341,12 +341,22 @@ impl From<lancedb::table::MergeResult> for MergeResult {
     }
 }
 
+/// Render for `__repr__`, so the default reads as Python's `None` rather than
+/// Rust's `Some([..])`.
+fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
+    match maintained {
+        Some(names) => format!("{:?}", names),
+        None => "None".to_string(),
+    }
+}
+
 /// Specification selecting Lance's MemWAL LSM-style write path for
 /// `merge_insert`.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
-/// `with_writer_config_defaults(...)`.
+/// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
+/// MemWAL supports, resolved on install.
 #[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -386,11 +396,11 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Replace the list of indexes the MemWAL should keep up to date as
-    /// rows are appended. Each name must reference an index that
-    /// already exists on the table at the time `set_lsm_write_spec`
-    /// is called.
-    pub fn with_maintained_indexes(&self, indexes: Vec<String>) -> Self {
+    /// Set which indexes the MemWAL maintains. `None` (the default)
+    /// resolves every supported index on install; a list is verbatim,
+    /// and an empty list maintains nothing.
+    #[pyo3(signature = (indexes))]
+    pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
             inner: self.inner.clone().with_maintained_indexes(indexes),
         }
@@ -412,23 +422,29 @@ impl LsmWriteSpec {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={:?}, writer_config_defaults={:?})",
-                column, num_buckets, maintained_indexes, writer_config_defaults,
+                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
+                column,
+                num_buckets,
+                fmt_maintained(maintained_indexes),
+                writer_config_defaults,
             ),
             lancedb::table::LsmWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.identity(column={:?}, maintained_indexes={:?}, writer_config_defaults={:?})",
-                column, maintained_indexes, writer_config_defaults,
+                "LsmWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
+                column,
+                fmt_maintained(maintained_indexes),
+                writer_config_defaults,
             ),
             lancedb::table::LsmWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={:?}, writer_config_defaults={:?})",
-                maintained_indexes, writer_config_defaults,
+                "LsmWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
+                fmt_maintained(maintained_indexes),
+                writer_config_defaults,
             ),
         }
     }
@@ -463,10 +479,10 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Names of indexes the MemWAL should keep up to date during writes.
+    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
     #[getter]
-    pub fn maintained_indexes(&self) -> Vec<String> {
-        self.inner.maintained_indexes().to_vec()
+    pub fn maintained_indexes(&self) -> Option<Vec<String>> {
+        self.inner.maintained_indexes().map(<[String]>::to_vec)
     }
 
     /// Default `ShardWriter` configuration recorded by this spec.
@@ -492,6 +508,32 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
 #[derive(Clone, Debug)]
 pub struct AddColumnsResult {
     pub version: u64,
+}
+
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct RefreshColumnResult {
+    pub rows_filled: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl RefreshColumnResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RefreshColumnResult(rows_filled={}, version={})",
+            self.rows_filled, self.version
+        )
+    }
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(result: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: result.rows_filled,
+            version: result.version,
+        }
+    }
 }
 
 #[pymethods]
@@ -658,7 +700,7 @@ impl PyBlobFile {
     }
 }
 
-#[pyclass(get_all, from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FtsToken {
     pub text: String,
@@ -1588,6 +1630,29 @@ impl Table {
                 .await
                 .infer_error()?;
             Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn add_computed_columns(
+        self_: PyRef<'_, Self>,
+        columns: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.add_columns();
+            for (name, expression) in columns {
+                builder = builder.computed(name, expression);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.refresh_column(column).await.infer_error()?;
+            Ok(RefreshColumnResult::from(result))
         })
     }
 

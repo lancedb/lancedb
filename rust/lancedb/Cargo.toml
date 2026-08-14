@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.37.1-beta.0"
+version = "0.38.0-beta.0"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -49,8 +49,6 @@ lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
-# Pin the GooseFS SDK to the version required by Lance's OpenDAL dependency.
-goosefs-sdk = { version = "=0.1.9", optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
@@ -100,6 +98,7 @@ anyhow = "1"
 lance-testing = { workspace = true }
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
+roaring = "0.11.4"
 tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
@@ -135,7 +134,6 @@ azure = [
 ]
 cos = ["lance/tencent", "lance-io/tencent"]
 goosefs = [
-    "dep:goosefs-sdk",
     "lance/goosefs",
     "lance-io/goosefs",
     "lance-namespace-impls/dir-goosefs",
@@ -189,6 +187,9 @@ required-features = ["bedrock"]
 
 [[example]]
 name = "bench_streaming_dataloader"
+
+[[example]]
+name = "bench_open_missing_table"
 
 [[example]]
 name = "simple"

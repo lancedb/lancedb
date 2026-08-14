@@ -8,7 +8,7 @@ use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
+use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
@@ -392,13 +392,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .text()
             .await
             .ok()
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-            .and_then(|value| {
-                value
-                    .get("job_id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_string)
-            });
+            .and_then(|body| extract_job_id(&body));
 
         if let Some(wait_timeout) = index.wait_timeout {
             let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
@@ -2520,9 +2514,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
-        // tagged on `mode` to mirror sophon's `Sharding` enum; `maintained_indexes`
-        // and `writer_config_defaults` are sent verbatim (an empty list means "no
-        // maintained indexes", not "default to all").
+        // tagged on `mode` to mirror sophon's `Sharding` enum. A null
+        // `maintained_indexes` asks the server to resolve every maintainable
+        // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
             LsmWriteSpec::Bucket {
                 column,
@@ -2705,6 +2699,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 self.track_write_version(result.version);
 
                 Ok(result)
+            }
+            // A declaration reaches here as AllNulls, which the remote protocol
+            // has no representation for.
+            NewColumnTransform::AllNulls(_) => {
+                return Err(Error::NotSupported {
+                    message: "computed columns are supported only on local tables".into(),
+                });
             }
             _ => {
                 return Err(Error::NotSupported {
@@ -6455,6 +6456,37 @@ mod tests {
         assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
+    /// Computed columns are local-only. Both halves say so here rather than
+    /// reaching the wire and failing somewhere less legible.
+    #[tokio::test]
+    async fn test_computed_columns_are_refused() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+
+        let declared = Arc::new(Schema::new(vec![Field::new(
+            "doubled",
+            DataType::Int32,
+            true,
+        )]));
+        let err = table
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(declared))
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
+            "{err:?}"
+        );
+
+        let err = table.refresh_column("doubled").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("local tables")),
+            "{err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_prewarm_index() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -6599,7 +6631,7 @@ mod tests {
                 .unwrap()
         });
         let spec = crate::table::LsmWriteSpec::unsharded()
-            .with_maintained_indexes(["id_idx"])
+            .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
         table.set_lsm_write_spec(spec).await.unwrap();
     }
@@ -6618,11 +6650,29 @@ mod tests {
                 body["sharding"],
                 serde_json::json!({ "mode": "bucket", "column": "id", "num_buckets": 16 })
             );
-            assert_eq!(body["maintained_indexes"], serde_json::json!([]));
+            // An unpinned maintained set sends null: resolve server-side.
+            assert_eq!(body["maintained_indexes"], serde_json::Value::Null);
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
             .set_lsm_write_spec(crate::table::LsmWriteSpec::bucket("id", 16))
+            .await
+            .unwrap();
+    }
+
+    /// `[]` (none) must stay distinguishable on the wire from null (all).
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_no_maintained_indexes() {
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["maintained_indexes"], serde_json::json!([]));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table
+            .set_lsm_write_spec(
+                crate::table::LsmWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
+            )
             .await
             .unwrap();
     }
@@ -6701,7 +6751,7 @@ mod tests {
             } => {
                 assert_eq!(column, "id");
                 assert_eq!(num_buckets, 4);
-                assert_eq!(maintained_indexes, vec!["id_idx".to_string()]);
+                assert_eq!(maintained_indexes, Some(vec!["id_idx".to_string()]));
                 assert_eq!(
                     writer_config_defaults
                         .get("durable_write")

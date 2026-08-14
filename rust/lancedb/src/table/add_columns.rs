@@ -15,6 +15,7 @@ use crate::{Error, Result};
 pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
+    computed: Vec<(String, String)>,
     read_columns: Option<Vec<String>>,
 }
 
@@ -23,6 +24,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
         f.debug_struct("AddColumnsBuilder")
             .field("parent", &self.parent)
             .field("has_transform", &self.transform.is_some())
+            .field("computed", &self.computed)
             .field("read_columns", &self.read_columns)
             .finish()
     }
@@ -33,19 +35,57 @@ impl AddColumnsBuilder {
         Self {
             parent,
             transform: None,
+            computed: Vec::new(),
             read_columns: None,
         }
     }
 
-    /// Set how the new columns' values are produced. Required.
+    /// Set how the new columns' values are produced.
     pub fn transform(mut self, transform: NewColumnTransform) -> Self {
         self.transform = Some(transform);
         self
     }
 
+    /// Add a column defined by `expression`, evaluated by a later refresh
+    /// rather than by this commit. Its type and inputs are derived from the
+    /// expression.
+    ///
+    /// The column is committed with no values, so declaring one costs the same
+    /// on an empty table as on a large one. Rows get values from
+    /// [`Table::refresh_column`](super::Table::refresh_column), which fills
+    /// every fragment that has none -- including fragments appended since the
+    /// last refresh.
+    ///
+    /// Refresh does not revisit a fragment it has filled, so mutating an input
+    /// leaves the value computed at fill time; recomputing means dropping the
+    /// column and declaring it again. An input cannot be renamed, retyped or
+    /// dropped while a declaration reads it, since the expression names it.
+    ///
+    /// Local tables only: LanceDB Cloud and Enterprise reject a declaration
+    /// with `NotSupported`.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn declare(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .add_columns()
+    ///     .computed("doubled", "x * 2")
+    ///     .execute()
+    ///     .await?;
+    /// let filled = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows", filled.rows_filled);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn computed(mut self, name: impl Into<String>, expression: impl Into<String>) -> Self {
+        self.computed.push((name.into(), expression.into()));
+        self
+    }
+
     /// Limit which existing columns a [`NewColumnTransform::BatchUDF`] mapper
-    /// receives. Every other transform determines what it reads, so setting
-    /// this alongside one is an error rather than a silent no-op.
+    /// receives. Every other transform, and a computed column, determines what
+    /// it reads, so setting this alongside one is an error rather than a silent
+    /// no-op.
     pub fn read_columns(mut self, columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.read_columns = Some(columns.into_iter().map(Into::into).collect());
         self
@@ -56,24 +96,42 @@ impl AddColumnsBuilder {
         let Self {
             parent,
             transform,
+            computed,
             read_columns,
         } = self;
 
-        let Some(transform) = transform else {
-            return Err(Error::InvalidInput {
-                message: "add_columns requires a transform".into(),
-            });
-        };
-
-        if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
-            return Err(Error::InvalidInput {
-                message: "read_columns applies only to a BatchUDF transform; \
-                          every other transform determines what it reads"
+        match (transform, computed.is_empty()) {
+            (None, true) => Err(Error::InvalidInput {
+                message: "add_columns requires a transform or a computed column".into(),
+            }),
+            // The two commit through different transforms, so one call covering
+            // both would be two commits and could half-apply.
+            (Some(_), false) => Err(Error::InvalidInput {
+                message: "add_columns cannot mix a transform with computed columns; \
+                          they cannot be added atomically in one call"
                     .into(),
-            });
+            }),
+            (Some(transform), true) => {
+                if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
+                    return Err(Error::InvalidInput {
+                        message: "read_columns applies only to a BatchUDF transform; \
+                                  every other transform determines what it reads"
+                            .into(),
+                    });
+                }
+                parent.add_columns(transform, read_columns).await
+            }
+            (None, false) => {
+                if read_columns.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "read_columns applies only to a BatchUDF transform; \
+                                  a computed column's inputs come from its expression"
+                            .into(),
+                    });
+                }
+                parent.add_computed_columns(&computed).await
+            }
         }
-
-        parent.add_columns(transform, read_columns).await
     }
 }
 
@@ -85,8 +143,8 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use lance::dataset::{BatchUDF, NewColumnTransform};
 
-    use crate::Table;
     use crate::connect;
+    use crate::{Error, Table};
 
     async fn table_with_two_columns(name: &str) -> Table {
         let conn = connect("memory://").execute().await.unwrap();
@@ -98,10 +156,7 @@ mod tests {
     async fn test_requires_a_transform() {
         let table = table_with_two_columns("no_transform").await;
         let err = table.add_columns().execute().await.unwrap_err();
-        assert!(
-            err.to_string().contains("requires a transform"),
-            "got: {err}"
-        );
+        assert!(matches!(err, Error::InvalidInput { .. }));
     }
 
     #[tokio::test]
@@ -117,12 +172,53 @@ mod tests {
             .execute()
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("BatchUDF"), "got: {err}");
+        assert!(matches!(err, Error::InvalidInput { .. }));
 
         let schema = table.schema().await.unwrap();
         assert!(
             schema.field_with_name("doubled").is_err(),
             "a rejected call must not commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mixing_transform_and_computed_is_rejected() {
+        let table = table_with_two_columns("mixed_add").await;
+        let err = table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "eager".into(),
+                "x * 2".into(),
+            )]))
+            .computed("lazy", "x * 3")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+
+        let schema = table.schema().await.unwrap();
+        assert!(schema.field_with_name("eager").is_err());
+        assert!(schema.field_with_name("lazy").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_read_columns_with_computed_is_rejected() {
+        let table = table_with_two_columns("read_cols_computed").await;
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .read_columns(["x"])
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("doubled")
+                .is_err()
         );
     }
 

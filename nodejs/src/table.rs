@@ -348,6 +348,30 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn add_computed_columns(
+        &self,
+        columns: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
+        let table = self.inner_ref()?;
+        let mut builder = table.add_columns();
+        for column in columns {
+            builder = builder.computed(column.name, column.value_sql);
+        }
+        let res = builder.execute().await.default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+        let res = self
+            .inner_ref()?
+            .refresh_column(column)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,
@@ -772,7 +796,8 @@ pub struct LsmWriteSpec {
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Names of indexes the MemWAL should keep up to date during writes.
+    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
@@ -782,7 +807,6 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     type Error = napi::Error;
 
     fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
-        let maintained = value.maintained_indexes.unwrap_or_default();
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
@@ -809,7 +833,7 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
             }
         };
         Ok(spec
-            .with_maintained_indexes(maintained)
+            .with_maintained_indexes(value.maintained_indexes)
             .with_writer_config_defaults(writer_config_defaults))
     }
 }
@@ -827,7 +851,7 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "bucket".to_string(),
                 column: Some(column),
                 num_buckets: Some(num_buckets),
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
             Native::Identity {
@@ -838,7 +862,7 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "identity".to_string(),
                 column: Some(column),
                 num_buckets: None,
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
             Native::Unsharded {
@@ -848,7 +872,7 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
                 spec_type: "unsharded".to_string(),
                 column: None,
                 num_buckets: None,
-                maintained_indexes: Some(maintained_indexes),
+                maintained_indexes,
                 writer_config_defaults: Some(writer_config_defaults),
             },
         }
@@ -1043,7 +1067,10 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
 
 #[napi(object)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests.
     pub total_bytes: i64,
 
     /// The number of rows in the table
@@ -1191,6 +1218,21 @@ impl From<lancedb::table::MergeResult> for MergeResult {
 #[napi(object)]
 pub struct AddColumnsResult {
     pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshColumnResult {
+    pub rows_filled: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(value: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: value.rows_filled as i64,
+            version: value.version as i64,
+        }
+    }
 }
 
 impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {

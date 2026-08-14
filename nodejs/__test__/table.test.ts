@@ -277,8 +277,16 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
-        totalBytes: 44,
+        // Full on-disk size of the two data files, footers and metadata included.
+        totalBytes: 684,
       });
+
+      // Index files count toward totalBytes too (only deletion files and
+      // manifests are excluded).
+      await table.createIndex("id", { config: Index.btree() });
+      const statsWithIndex = await table.stats();
+      expect(statsWithIndex.numIndices).toBe(1);
+      expect(statsWithIndex.totalBytes).toBeGreaterThan(684);
     });
 
     it("should overwrite data if asked", async () => {
@@ -3330,5 +3338,47 @@ describe("LSM merge insert", () => {
     await expect(table.query().useLsm(false).toArray()).resolves.toBeDefined();
     // useLsm(true) demands MemWAL routing; without a spec it errors.
     await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
+  });
+});
+
+describe("computed columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("declares a column and fills it on refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    let rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled)).toEqual([null, null]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(2);
+
+    rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+  });
+
+  it("fills rows added since the last refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_append", [{ x: 1 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    await table.refreshColumn("doubled");
+    await table.add([{ x: 5 }]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(1);
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
   });
 });

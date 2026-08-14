@@ -323,6 +323,18 @@ pub trait Database:
     ) -> Result<()>;
     /// Drop a table in the database
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()>;
+    /// Start dropping a table and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before
+    /// returning an already-finished job.
+    async fn drop_table_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        self.drop_table(name, namespace_path).await?;
+        Ok(crate::job::Job::new_done())
+    }
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
