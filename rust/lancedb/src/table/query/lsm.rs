@@ -36,6 +36,7 @@ use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
 };
 use lance_index::mem_wal::{MemWalIndexDetails, ShardManifest};
+use lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP;
 use uuid::Uuid;
 
 use super::NativeTable;
@@ -248,18 +249,26 @@ fn pk_columns(dataset: &Dataset) -> Result<Vec<String>> {
 fn exclusion_watermarks(
     details: &MemWalIndexDetails,
     index_names: &[String],
+    catchup_required: bool,
 ) -> HashMap<Uuid, u64> {
     let mut exclude: HashMap<Uuid, u64> = HashMap::new();
     for entry in &details.compacted_sstables {
         let mut watermark = entry.generation;
         for name in index_names {
-            if let Some(caught_up) = details
+            match details
                 .index_catchup
                 .iter()
                 .find(|icp| icp.index_name == *name)
                 .and_then(|icp| icp.caught_up_generation_for_shard(&entry.shard_id))
             {
-                watermark = watermark.min(caught_up);
+                Some(caught_up) => watermark = watermark.min(caught_up),
+                // No entry. On a table that requires catch-up this means the
+                // index is *not* known to hold these rows, and the base arm is
+                // index-only -- so every generation stays readable from its
+                // SSTable. Without the bit the field is not maintained at all,
+                // and absence carries no information.
+                None if catchup_required => watermark = 0,
+                None => {}
             }
         }
         exclude.entry(entry.shard_id).or_insert(watermark);
@@ -274,13 +283,26 @@ fn exclusion_watermarks(
 /// with a live cached `ShardWriter` (this session's in-flight writes) the
 /// writer's authoritative in-memory manifest and memtables override the
 /// on-disk view so a read sees data not yet flushed.
+/// Whether this table reads a missing `index_catchup` entry as "not caught up".
+///
+/// Both words must be set. A reader honouring the bit while a writer does not
+/// would retain SSTables the writer had already trimmed, and the reverse would
+/// serve rows from files the writer still expects to be excluded -- so a
+/// half-set manifest is treated as legacy, which is the conservative side.
+fn requires_index_catchup(dataset: &Dataset) -> bool {
+    let manifest = dataset.manifest();
+    manifest.reader_feature_flags & FLAG_MEM_WAL_INDEX_CATCHUP != 0
+        && manifest.writer_feature_flags & FLAG_MEM_WAL_INDEX_CATCHUP != 0
+}
+
 async fn build_read_context(
     table: &NativeTable,
     dataset: &Dataset,
     details: &MemWalIndexDetails,
     index_names: &[String],
 ) -> Result<(Vec<ShardSnapshot>, HashMap<Uuid, InMemoryMemTables>)> {
-    let exclude = exclusion_watermarks(details, index_names);
+    let catchup_required = requires_index_catchup(dataset);
+    let exclude = exclusion_watermarks(details, index_names, catchup_required);
 
     let shard_ids = dataset.list_mem_wal_latest_shard_ids().await?;
     // Use the dataset's own object store (not `ObjectStore::from_uri`, which
@@ -767,21 +789,49 @@ mod tests {
         };
 
         // Plain scan: drop every compacted generation (through 5).
-        assert_eq!(exclusion_watermarks(&details, &[]).get(&shard), Some(&5));
+        assert_eq!(
+            exclusion_watermarks(&details, &[], false).get(&shard),
+            Some(&5)
+        );
 
         // FTS arm with a lagging index: exclusion is capped at the index catch-up
         // (2), so SSTable generations 3..=5 are retained until the index covers
         // them — otherwise those documents would silently vanish from FTS results.
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
             Some(&2)
         );
 
         // A caught-up index — or one untracked in index_catchup — falls back to the
         // compaction watermark.
         assert_eq!(
-            exclusion_watermarks(&details, &["caught_up_idx".to_string()]).get(&shard),
+            exclusion_watermarks(&details, &["caught_up_idx".to_string()], false).get(&shard),
             Some(&5)
+        );
+
+        // The same missing entry, once the table requires catch-up: absence now
+        // means "not known to hold these rows", so nothing may be excluded and
+        // every generation stays readable from its SSTable. This is the whole
+        // point of the protocol -- an indexed query against a table whose index
+        // has not caught up must not silently lose rows.
+        assert_eq!(
+            exclusion_watermarks(&details, &["untracked_idx".to_string()], true).get(&shard),
+            Some(&0)
+        );
+
+        // A tracked index is unaffected by the mode: the recorded position is
+        // information either way, and it still caps the exclusion.
+        assert_eq!(
+            exclusion_watermarks(&details, &["fts_idx".to_string()], true).get(&shard),
+            Some(&2)
+        );
+
+        // One missing entry is enough to hold everything back, even alongside an
+        // index that has caught up.
+        let mixed = vec!["fts_idx".to_string(), "untracked_idx".to_string()];
+        assert_eq!(
+            exclusion_watermarks(&details, &mixed, true).get(&shard),
+            Some(&0)
         );
     }
 
@@ -809,20 +859,23 @@ mod tests {
 
         // Each index alone stops at its own catch-up.
         assert_eq!(
-            exclusion_watermarks(&details, &["vec_idx".to_string()]).get(&shard),
+            exclusion_watermarks(&details, &["vec_idx".to_string()], false).get(&shard),
             Some(&7)
         );
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
             Some(&4)
         );
 
         // Used together, the lower one governs regardless of order.
         let both = ["vec_idx".to_string(), "fts_idx".to_string()];
-        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&4));
+        assert_eq!(
+            exclusion_watermarks(&details, &both, false).get(&shard),
+            Some(&4)
+        );
         let reversed = ["fts_idx".to_string(), "vec_idx".to_string()];
         assert_eq!(
-            exclusion_watermarks(&details, &reversed).get(&shard),
+            exclusion_watermarks(&details, &reversed, false).get(&shard),
             Some(&4)
         );
     }
@@ -843,7 +896,10 @@ mod tests {
         };
 
         let both = ["fts_idx".to_string(), "untracked_idx".to_string()];
-        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&4));
+        assert_eq!(
+            exclusion_watermarks(&details, &both, false).get(&shard),
+            Some(&4)
+        );
     }
 
     #[test]

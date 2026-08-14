@@ -637,6 +637,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "set_lsm_write_spec is not supported on this table type".into(),
         })
     }
+    /// Switch this table to required index catch-up, one way.
+    ///
+    /// The default implementation returns `NotSupported`. Implementations
+    /// that support the MemWAL LSM write path must override this.
+    async fn require_mem_wal_index_catchup(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "require_mem_wal_index_catchup is not supported on this table type".into(),
+        })
+    }
     /// Remove the [`LsmWriteSpec`] from this table.
     ///
     /// This is a no-op if no spec is currently set.
@@ -1691,6 +1700,20 @@ impl Table {
     /// ```
     pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.inner.set_lsm_write_spec(spec).await
+    }
+
+    /// Switch this table to required index catch-up, one way.
+    ///
+    /// Separate from [`Self::set_lsm_write_spec`] on purpose: a table carrying
+    /// the bit retains its SSTables until an index records that it holds the
+    /// compacted rows, so turn it on only once something can repair coverage.
+    /// A writer that already holds the dataset can call the equivalent on
+    /// `DatasetMemWalExt` instead; this is the table-level entry point.
+    ///
+    /// Errors if no spec is set, or if the table already records SSTable
+    /// compaction progress from before this protocol.
+    pub async fn require_mem_wal_index_catchup(&self) -> Result<()> {
+        self.inner.require_mem_wal_index_catchup().await
     }
 
     /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
@@ -3224,6 +3247,10 @@ impl BaseTable for NativeTable {
 
     async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         merge::lsm::set_lsm_write_spec(self, spec).await
+    }
+
+    async fn require_mem_wal_index_catchup(&self) -> Result<()> {
+        merge::lsm::require_mem_wal_index_catchup(self).await
     }
 
     async fn unset_lsm_write_spec(&self) -> Result<()> {
