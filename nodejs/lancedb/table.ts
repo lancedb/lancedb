@@ -537,8 +537,9 @@ export abstract class Table {
    * the column and declaring it again. While a declaration reads a column,
    * that column cannot be renamed, retyped or dropped.
    *
-   * Computed columns are local-only: LanceDB Cloud and Enterprise reject a
-   * declaration.
+   * On LanceDB Cloud and Enterprise the expression is planned by the
+   * server, and the refresh runs as a server job -- see
+   * {@link Table#refreshColumnAsync}.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
    *   - An array of objects with column names and SQL expressions to calculate values
    *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
@@ -567,7 +568,8 @@ export abstract class Table {
    *
    * Rows appended since the last refresh are filled by the next one; rows
    * already filled are left as they are, so the call is idempotent and does
-   * not observe a mutated input. Local tables only.
+   * not observe a mutated input. Local tables only: a remote refresh runs
+   * as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
@@ -581,7 +583,8 @@ export abstract class Table {
    * The job may already be complete when returned; callers must not assume
    * the column is filled until {@link Job.wait} resolves. Invalid input --
    * an unknown column, or one that is not computed -- rejects here rather
-   * than failing the job. Local tables only.
+   * than failing the job. On local tables the job runs in-process; on
+   * LanceDB Cloud and Enterprise it is the server's backfill job.
    * @param {string} column The name of the computed column to fill.
    * @example
    * ```ts

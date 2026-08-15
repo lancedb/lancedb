@@ -1954,8 +1954,10 @@ class Table(ABC):
             dropping the column and declaring it again. While a declaration
             reads a column, that column cannot be renamed, retyped or dropped.
 
-            Local tables only; LanceDB Cloud and Enterprise raise
-            ``NotImplementedError``. Cannot be combined with ``transforms``.
+            On LanceDB Cloud and Enterprise the expression is planned by the
+            server, and the refresh runs as a server job -- see
+            [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
+            Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -1987,8 +1989,8 @@ class Table(ABC):
         by the next one; rows already filled are left as they are, so the call
         is idempotent and does not observe a mutated input.
 
-        Local tables only; LanceDB Cloud and Enterprise raise
-        ``NotImplementedError``.
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
@@ -2011,8 +2013,8 @@ class Table(ABC):
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job. Local tables only; LanceDB Cloud and Enterprise
-        raise ``NotImplementedError``.
+        than failing the job. On local tables the job runs in-process; on
+        LanceDB Cloud and Enterprise it is the server's backfill job.
 
         Examples
         --------
@@ -5999,7 +6001,8 @@ class AsyncTable:
             declaration reads a column, that column cannot be renamed, retyped
             or dropped.
 
-            Local tables only. Cannot be combined with ``transforms``.
+            On LanceDB Cloud and Enterprise the expression is planned by
+            the server. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -6035,8 +6038,8 @@ class AsyncTable:
         by the next one; rows already filled are left as they are, so the call
         is idempotent and does not observe a mutated input.
 
-        Local tables only; LanceDB Cloud and Enterprise raise
-        ``NotImplementedError``.
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
@@ -6058,8 +6061,9 @@ class AsyncTable:
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job. Local tables only; LanceDB Cloud and
-        Enterprise raise ``NotImplementedError``.
+        rather than failing the job. On local tables the job runs
+        in-process; on LanceDB Cloud and Enterprise it is the server's
+        backfill job.
 
         Examples
         --------

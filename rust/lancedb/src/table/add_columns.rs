@@ -61,8 +61,9 @@ impl AddColumnsBuilder {
     /// column and declaring it again. An input cannot be renamed, retyped or
     /// dropped while a declaration reads it, since the expression names it.
     ///
-    /// Local tables only: LanceDB Cloud and Enterprise reject a declaration
-    /// with `NotSupported`.
+    /// On LanceDB Cloud and Enterprise the expression is planned by the
+    /// server, and the refresh runs as a server job -- see
+    /// [`Table::refresh_column_async`](super::Table::refresh_column_async).
     ///
     /// ```
     /// # use lancedb::Table;
