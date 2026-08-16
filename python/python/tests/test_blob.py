@@ -617,3 +617,116 @@ def test_fetch_blobs_nested_path_survives_sort_after_query():
 def _identifiable_payload(size: int) -> bytes:
     block = 256
     return b"".join(bytes([i % 256]) * block for i in range(size // block))
+
+
+def test_merge_insert_binary_source_into_blob_v2_table(tmp_path):
+    # https://github.com/lancedb/lancedb/issues/3760
+    # merge_insert resupplies the whole row, including the blob column as raw
+    # binary, the same input shape add() accepts.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("merge_binary", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "image": pa.array([b"updated", b"two"], pa.large_binary()),
+        }
+    )
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(source)
+    )
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [b"updated", b"two"]
+
+
+def test_merge_insert_binary_source_nulls_into_blob_v2_table(tmp_path):
+    # The blob slot may be null or empty; neither may break the merge.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("merge_nulls", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "image": pa.array([None, b""], pa.large_binary()),
+        }
+    )
+    (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(source)
+    )
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [None, b""]
+
+
+def test_add_with_bad_vector_option_into_blob_v2_table(tmp_path):
+    # add() also routes through the Python cast when on_bad_vectors is set;
+    # a blob column must not turn that path into a cast failure.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("add_bad_vectors", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+    table.add([{"id": 2, "image": b"two"}], on_bad_vectors="drop")
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [b"one", b"two"]
+
+
+def test_update_unrelated_column_on_blob_v2_table(tmp_path):
+    # https://github.com/lancedb/lancedb/issues/3760
+    # update() on a table with a blob v2 column must not depend on the blob
+    # column's storage representation.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("sid", pa.string()),
+            pa.field("body", pa.string()),
+            lancedb.blob("file"),
+        ]
+    )
+    table = db.create_table("update_unrelated", schema=schema)
+    table.add(
+        [
+            {"sid": "a", "body": "one", "file": b"DATA"},
+            {"sid": "b", "body": "two", "file": None},
+        ]
+    )
+
+    result = table.update(where="sid='a'", values={"body": "x"})
+    assert result.rows_updated == 1
+
+    rows = table.to_arrow().sort_by("sid")
+    assert rows["body"].to_pylist() == ["x", "two"]
+    blobs = table.fetch_blobs("file", rows)
+    assert [blob.as_py() for blob in blobs] == [b"DATA", None]
+
+
+def test_update_blob_v2_column_directly_is_rejected_cleanly(tmp_path):
+    # Updating the blob column itself is unsupported; it must surface as a
+    # user-facing error naming the column, not an internal schema-invariant
+    # error. Lance raises NotSupported, which pyo3 surfaces as RuntimeError.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("update_direct", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    with pytest.raises(RuntimeError, match="Direct updates to column 'image'"):
+        table.update(where="id=1", values={"image": b"two"})

@@ -394,6 +394,117 @@ def _sanitize_data(
     return reader
 
 
+def _is_blob_descriptor(data_type: pa.DataType) -> bool:
+    """True for the blob v2 logical struct: a `data` child holding bytes."""
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type.extension_name == "lance.blob.v2"
+    if not pa.types.is_struct(data_type):
+        return False
+    data_field = next((f for f in data_type if f.name == "data"), None)
+    return data_field is not None and _is_binary_like(data_field.type)
+
+
+def _is_binary_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_binary(data_type)
+        or pa.types.is_large_binary(data_type)
+        or pa.types.is_binary_view(data_type)
+    )
+
+
+def _coerce_binary_to_blob_struct(
+    array: pa.Array, blob_type: pa.StructType
+) -> pa.Array:
+    """Coerce raw binary input into the blob v2 logical struct.
+
+    Mirrors the Rust write path: bytes land in `data` and every other
+    descriptor child is null. Nulls stay null.
+    """
+    data_field = next((f for f in blob_type if f.name == "data"), None)
+    children = [
+        pc.cast(array, data_field.type)
+        if f.name == "data"
+        else pa.nulls(len(array), f.type)
+        for f in blob_type
+    ]
+    return pa.StructArray.from_arrays(
+        children, fields=list(blob_type), mask=pc.is_null(array)
+    )
+
+
+def _coerce_blob_values(array: pa.Array, target_type: pa.DataType) -> pa.Array:
+    """Coerce `array` towards `target_type`, handling blob v2 leaves.
+
+    Recurses through structs and lists like the Rust cast plan does. Binary
+    input at a blob v2 leaf becomes the logical blob struct; struct input is
+    aligned child-by-child so partial descriptors widen with nulls.
+    """
+    if isinstance(target_type, pa.ExtensionType):
+        coerced = _coerce_blob_values(array, target_type.storage_type)
+        return pa.ExtensionArray.from_storage(target_type, coerced)
+    if pa.types.is_struct(target_type):
+        if pa.types.is_struct(array.type):
+            names = array.type.names
+            children = []
+            for f in target_type:
+                if f.name in names:
+                    children.append(_coerce_blob_values(array.field(f.name), f.type))
+                else:
+                    children.append(pa.nulls(len(array), f.type))
+            return pa.StructArray.from_arrays(
+                children, fields=list(target_type), mask=array.is_null()
+            )
+        if _is_binary_like(array.type):
+            return _coerce_binary_to_blob_struct(array, target_type)
+        return array
+    if _is_list_like(target_type) and _is_list_like(array.type):
+        # The values buffer may be longer than the offsets window when the
+        # array is a slice, so rebase offsets before rebuilding.
+        offsets = array.offsets
+        start = offsets[0].as_py()
+        if start != 0:
+            offsets = pc.subtract(offsets, pa.scalar(start, type=offsets.type))
+        values = array.values.slice(0, offsets[-1].as_py())
+        child_field = target_type.value_field
+        coerced = _coerce_blob_values(values, child_field.type)
+        if pa.types.is_fixed_size_list(target_type):
+            return pa.FixedSizeListArray.from_arrays(
+                coerced, target_type.list_size, mask=array.is_null()
+            )
+        return pa.ListArray.from_arrays(offsets, coerced, mask=array.is_null())
+    if not array.type.equals(target_type):
+        return pc.cast(array, target_type)
+    return array
+
+
+def _needs_blob_coercion(input_type: pa.DataType, target_type: pa.DataType) -> bool:
+    """True when coercing input to target crosses a blob v2 binary leaf."""
+    if _is_binary_like(input_type):
+        return _is_blob_descriptor(target_type)
+    if pa.types.is_struct(input_type) and pa.types.is_struct(target_type):
+        names = input_type.names
+        return any(
+            _needs_blob_coercion(input_type.field(f.name).type, f.type)
+            for f in target_type
+            if f.name in names and f.type != input_type.field(f.name).type
+        )
+    if _is_list_like(input_type) and _is_list_like(target_type):
+        return _needs_blob_coercion(input_type.value_type, target_type.value_type)
+    return False
+
+
+def _blob_coercions(
+    reader_schema: pa.Schema, target_schema: pa.Schema
+) -> Dict[str, bool]:
+    """Target columns whose input needs Python-side blob coercion."""
+    coercions = {}
+    for field in reader_schema:
+        target_field = target_schema.field(field.name)
+        if _needs_blob_coercion(field.type, target_field.type):
+            coercions[field.name] = True
+    return coercions
+
+
 def _cast_to_target_schema(
     reader: pa.RecordBatchReader,
     target_schema: pa.Schema,
@@ -419,8 +530,49 @@ def _cast_to_target_schema(
         )
         reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
 
+    blob_coercions = _blob_coercions(reader.schema, target_schema)
+
     def gen():
         for batch in reader:
+            if blob_coercions:
+                # pyarrow cannot cast binary into the blob v2 descriptor
+                # struct, and cannot cast through nested extension types at
+                # all, so blob columns are coerced here and excluded from the
+                # Table.cast below.
+                coerced = {}
+                plain_columns = []
+                plain_fields = []
+                for i, field in enumerate(reordered_schema):
+                    if field.name in blob_coercions:
+                        coerced[i] = _coerce_blob_values(batch.column(i), field.type)
+                    else:
+                        plain_columns.append(batch.column(i))
+                        plain_fields.append(field)
+                if plain_fields:
+                    plain_schema = pa.schema(
+                        plain_fields, metadata=target_schema.metadata
+                    )
+                    plain_batch = pa.RecordBatch.from_arrays(
+                        plain_columns, schema=plain_schema
+                    )
+                    cast_columns = (
+                        pa.Table.from_batches([plain_batch])
+                        .cast(plain_schema)
+                        .to_batches()[0]
+                        .columns
+                    )
+                else:
+                    cast_columns = []
+                columns = []
+                cast_iter = iter(cast_columns)
+                for i in range(len(reordered_schema)):
+                    if i in coerced:
+                        columns.append(coerced[i])
+                    else:
+                        columns.append(next(cast_iter))
+                batch = pa.RecordBatch.from_arrays(columns, schema=reordered_schema)
+                yield batch
+                continue
             # Table but not RecordBatch has cast.
             cast_batches = (
                 pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
