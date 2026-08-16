@@ -675,6 +675,36 @@ def test_merge_insert_binary_source_nulls_into_blob_v2_table(tmp_path):
     assert [blob.as_py() for blob in blobs] == [None, b""]
 
 
+@pytest.mark.parametrize("make_list", [pa.list_, pa.large_list])
+def test_merge_insert_binary_source_into_nested_blob_lists(tmp_path, make_list):
+    # Lance's blob rewrite plan accepts List and LargeList containers. This
+    # goes through the write boundary instead of only exercising the Python
+    # coercion helper.
+    db = lancedb.connect(tmp_path)
+    storage = lancedb.blob("photo").type.storage_type
+    photo = pa.field(
+        "photo",
+        storage,
+        metadata={b"ARROW:extension:name": b"lance.blob.v2"},
+    )
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("images", make_list(photo)),
+        ]
+    )
+    table = db.create_table("merge_nested_binary", schema=schema)
+    source = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "images": pa.array([[b"one", b"two"]], make_list(pa.large_binary())),
+        }
+    )
+
+    result = table.merge_insert("id").when_not_matched_insert_all().execute(source)
+    assert result.num_inserted_rows == 1
+
+
 def test_add_with_bad_vector_option_into_blob_v2_table(tmp_path):
     # add() also routes through the Python cast when on_bad_vectors is set;
     # a blob column must not turn that path into a cast failure.
@@ -787,31 +817,6 @@ def test_coercion_spares_plain_struct_nested_beside_blob(tmp_path):
         _coerce_blob_values(source, pa.field("outer", target))
 
 
-def test_coercion_of_fixed_size_list_of_blobs(tmp_path):
-    # FixedSizeListArray has no offsets buffer; blob coercion must derive
-    # the child window from the array offset, and a slice must select the
-    # logical rows, not rows from before the slice.
-    from lancedb.table import _coerce_blob_values
-
-    target = pa.field("images", pa.list_(lancedb.blob("item"), 2))
-
-    source = pa.array([[b"a", b"b"]], pa.list_(pa.large_binary(), 2))
-    out = _coerce_blob_values(source, target)
-    assert out.to_pylist() == [
-        [
-            {"data": b"a", "uri": None, "position": None, "size": None},
-            {"data": b"b", "uri": None, "position": None, "size": None},
-        ]
-    ]
-
-    sliced = pa.array(
-        [[b"a", b"b"], [b"c", b"d"], [b"e", b"f"]],
-        pa.list_(pa.large_binary(), 2),
-    ).slice(1, 1)
-    out = _coerce_blob_values(sliced, target)
-    assert [item["data"] for item in out[0].as_py()] == [b"c", b"d"]
-
-
 def test_coercion_of_sliced_list_selects_logical_window(tmp_path):
     # When a sliced ListArray is rebuilt, the child values must come from
     # the offsets window, not from position zero of the values buffer.
@@ -839,13 +844,21 @@ def test_blob_coercion_selected_for_metadata_marked_list_items():
     assert not _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(untagged))
 
 
+def test_blob_coercion_excludes_fixed_size_lists():
+    # Lance's locked blob rewrite plan has List and LargeList branches only.
+    # Do not construct FixedSizeList blob arrays that the writer rejects.
+    from lancedb.table import _needs_blob_coercion
+
+    target = pa.list_(lancedb.blob("photo"), 2)
+    assert not _needs_blob_coercion(pa.list_(pa.binary(), 2), target)
+
+
 def test_cast_reader_aligns_blob_list_values_by_position():
     from lancedb.table import _cast_to_target_schema
 
     cases = [
         (lambda field: pa.list_(field), [[b"a"]]),
         (lambda field: pa.large_list(field), [[b"a"]]),
-        (lambda field: pa.list_(field, 2), [[b"a", b"b"]]),
     ]
     for make_list, values in cases:
         source_type = make_list(pa.binary())

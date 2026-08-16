@@ -412,6 +412,11 @@ def _is_binary_like(data_type: pa.DataType) -> bool:
     )
 
 
+def _is_blob_list_container(data_type: pa.DataType) -> bool:
+    """True for list containers supported by Lance's blob rewrite plan."""
+    return pa.types.is_list(data_type) or pa.types.is_large_list(data_type)
+
+
 def _coerce_binary_to_blob_struct(
     array: pa.Array, blob_type: pa.StructType
 ) -> pa.Array:
@@ -471,7 +476,7 @@ def _coerce_blob_values(array: pa.Array, target_field: pa.Field) -> pa.Array:
         ):
             return _coerce_binary_to_blob_struct(array, target_type)
         return pc.cast(array, target_type)
-    if _is_list_like(target_type) and _is_list_like(array.type):
+    if _is_blob_list_container(target_type) and _is_list_like(array.type):
         return _coerce_blob_list(array, target_field)
     if not array.type.equals(target_type):
         return pc.cast(array, target_type)
@@ -482,27 +487,15 @@ def _coerce_blob_list(array: pa.Array, target_field: pa.Field) -> pa.Array:
     """Rebuild a list of blob v2 leaves from the array's logical window."""
     target_type = target_field.type
     # Normalize the container to the target's list kind while keeping the
-    # input child type. pyarrow cannot cast a fixed-size list whose child
-    # type changes, and casting also compacts sliced buffers.
+    # input child type. Casting also compacts sliced buffers.
     input_child = array.type.value_field
-    if pa.types.is_fixed_size_list(target_type):
-        kind_type = pa.list_(input_child, target_type.list_size)
-    elif pa.types.is_large_list(target_type):
+    if pa.types.is_large_list(target_type):
         kind_type = pa.large_list(input_child)
     else:
         kind_type = pa.list_(input_child)
     if not array.type.equals(kind_type):
         array = pc.cast(array, kind_type)
     mask = array.is_null()
-    if pa.types.is_fixed_size_list(array.type):
-        # FixedSizeListArray has no offsets buffer; the logical window is
-        # derived from the array offset instead.
-        size = array.type.list_size
-        values = array.values.slice(array.offset * size, len(array) * size)
-        coerced = _coerce_blob_values(values, target_type.value_field)
-        return pa.FixedSizeListArray.from_arrays(
-            coerced, target_type.list_size, mask=mask
-        )
     offsets = array.offsets
     start = offsets[0].as_py()
     # The values buffer may be longer than the offsets window when the array
@@ -532,7 +525,7 @@ def _needs_blob_coercion(
             for f in target_type
             if f.name in names and f.type != input_type.field(f.name).type
         )
-    if _is_list_like(input_type) and _is_list_like(target_type):
+    if _is_list_like(input_type) and _is_blob_list_container(target_type):
         value_field = target_type.value_field
         return _needs_blob_coercion(
             input_type.value_type, value_field.type, value_field.metadata
