@@ -432,49 +432,89 @@ def _coerce_binary_to_blob_struct(
     )
 
 
-def _coerce_blob_values(array: pa.Array, target_type: pa.DataType) -> pa.Array:
-    """Coerce `array` towards `target_type`, handling blob v2 leaves.
+def _coerce_blob_values(array: pa.Array, target_field: pa.Field) -> pa.Array:
+    """Coerce `array` towards the target field, handling blob v2 leaves.
 
+    Field-aware: only leaves that are actually marked blob v2 (the extension
+    type or the `ARROW:extension:name` field metadata) accept raw binary
+    input, so plain struct siblings keep their existing cast semantics.
     Recurses through structs and lists like the Rust cast plan does. Binary
     input at a blob v2 leaf becomes the logical blob struct; struct input is
     aligned child-by-child so partial descriptors widen with nulls.
     """
+    target_type = target_field.type
     if isinstance(target_type, pa.ExtensionType):
-        coerced = _coerce_blob_values(array, target_type.storage_type)
+        # Propagate the extension identity as field metadata so the storage
+        # struct is still recognized as a blob v2 leaf during recursion.
+        storage_field = target_field.with_type(target_type.storage_type)
+        metadata: dict = dict(storage_field.metadata or {})
+        metadata.setdefault(b"ARROW:extension:name", target_type.extension_name)
+        coerced = _coerce_blob_values(array, storage_field.with_metadata(metadata))
         return pa.ExtensionArray.from_storage(target_type, coerced)
+    if isinstance(array.type, pa.ExtensionType):
+        # Extension arrays do not expose .field(); recurse on their storage.
+        array = array.storage
     if pa.types.is_struct(target_type):
         if pa.types.is_struct(array.type):
-            names = array.type.names
-            children = []
-            for f in target_type:
-                if f.name in names:
-                    children.append(_coerce_blob_values(array.field(f.name), f.type))
-                else:
-                    children.append(pa.nulls(len(array), f.type))
+            names = set(array.type.names)
+            children = [
+                _coerce_blob_values(array.field(f.name), f)
+                if f.name in names
+                else pa.nulls(len(array), f.type)
+                for f in target_type
+            ]
             return pa.StructArray.from_arrays(
                 children, fields=list(target_type), mask=array.is_null()
             )
-        if _is_binary_like(array.type):
+        if _is_binary_like(array.type) and _is_blob_descriptor(
+            target_type, target_field.metadata
+        ):
             return _coerce_binary_to_blob_struct(array, target_type)
-        return array
+        return pc.cast(array, target_type)
     if _is_list_like(target_type) and _is_list_like(array.type):
-        # The values buffer may be longer than the offsets window when the
-        # array is a slice, so rebase offsets before rebuilding.
-        offsets = array.offsets
-        start = offsets[0].as_py()
-        if start != 0:
-            offsets = pc.subtract(offsets, pa.scalar(start, type=offsets.type))
-        values = array.values.slice(0, offsets[-1].as_py())
-        child_field = target_type.value_field
-        coerced = _coerce_blob_values(values, child_field.type)
-        if pa.types.is_fixed_size_list(target_type):
-            return pa.FixedSizeListArray.from_arrays(
-                coerced, target_type.list_size, mask=array.is_null()
-            )
-        return pa.ListArray.from_arrays(offsets, coerced, mask=array.is_null())
+        return _coerce_blob_list(array, target_field)
     if not array.type.equals(target_type):
         return pc.cast(array, target_type)
     return array
+
+
+def _coerce_blob_list(array: pa.Array, target_field: pa.Field) -> pa.Array:
+    """Rebuild a list of blob v2 leaves from the array's logical window."""
+    target_type = target_field.type
+    # Normalize the container to the target's list kind while keeping the
+    # input child type. pyarrow cannot cast a fixed-size list whose child
+    # type changes, and casting also compacts sliced buffers.
+    input_child = array.type.value_field
+    if pa.types.is_fixed_size_list(target_type):
+        kind_type = pa.list_(input_child, target_type.list_size)
+    elif pa.types.is_large_list(target_type):
+        kind_type = pa.large_list(input_child)
+    else:
+        kind_type = pa.list_(input_child)
+    if not array.type.equals(kind_type):
+        array = pc.cast(array, kind_type)
+    mask = array.is_null()
+    if pa.types.is_fixed_size_list(array.type):
+        # FixedSizeListArray has no offsets buffer; the logical window is
+        # derived from the array offset instead.
+        size = array.type.list_size
+        values = array.values.slice(array.offset * size, len(array) * size)
+        coerced = _coerce_blob_values(values, target_type.value_field)
+        return pa.FixedSizeListArray.from_arrays(
+            coerced, target_type.list_size, mask=mask
+        )
+    offsets = array.offsets
+    start = offsets[0].as_py()
+    # The values buffer may be longer than the offsets window when the array
+    # is a slice, so slice the child values from the window start (not zero)
+    # and rebase the offsets to match.
+    values = array.values.slice(start, offsets[-1].as_py() - start)
+    coerced = _coerce_blob_values(values, target_type.value_field)
+    if start != 0:
+        offsets = pc.subtract(offsets, pa.scalar(start, type=offsets.type))
+    if pa.types.is_large_list(target_type):
+        return pa.LargeListArray.from_arrays(offsets, coerced, mask=mask)
+    return pa.ListArray.from_arrays(offsets, coerced, mask=mask)
 
 
 def _needs_blob_coercion(
@@ -493,7 +533,10 @@ def _needs_blob_coercion(
             if f.name in names and f.type != input_type.field(f.name).type
         )
     if _is_list_like(input_type) and _is_list_like(target_type):
-        return _needs_blob_coercion(input_type.value_type, target_type.value_type)
+        value_field = target_type.value_field
+        return _needs_blob_coercion(
+            input_type.value_type, value_field.type, value_field.metadata
+        )
     return False
 
 
@@ -548,7 +591,7 @@ def _cast_to_target_schema(
                 plain_fields = []
                 for i, field in enumerate(reordered_schema):
                     if field.name in blob_coercions:
-                        coerced[i] = _coerce_blob_values(batch.column(i), field.type)
+                        coerced[i] = _coerce_blob_values(batch.column(i), field)
                     else:
                         plain_columns.append(batch.column(i))
                         plain_fields.append(field)
@@ -559,12 +602,17 @@ def _cast_to_target_schema(
                     plain_batch = pa.RecordBatch.from_arrays(
                         plain_columns, schema=plain_schema
                     )
-                    cast_columns = (
-                        pa.Table.from_batches([plain_batch])
+                    # An empty batch casts to a zero-chunk table, so pull the
+                    # columns back out chunk-by-chunk instead of indexing the
+                    # (possibly empty) batch list.
+                    cast_columns = [
+                        col.combine_chunks()
+                        if isinstance(col, pa.ChunkedArray)
+                        else col
+                        for col in pa.Table.from_batches([plain_batch])
                         .cast(plain_schema)
-                        .to_batches()[0]
                         .columns
-                    )
+                    ]
                 else:
                     cast_columns = []
                 columns = []

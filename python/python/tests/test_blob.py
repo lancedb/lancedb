@@ -762,3 +762,106 @@ def test_merge_insert_binary_source_into_plain_struct_is_rejected(tmp_path):
     )
     with pytest.raises(RuntimeError, match="Unsupported cast"):
         (table.merge_insert("id").when_matched_update_all().execute(source))
+
+
+def test_coercion_spares_plain_struct_nested_beside_blob(tmp_path):
+    # Only the blob-tagged leaf may accept raw binary. A plain struct
+    # sibling inside the same top-level struct must not be silently
+    # reinterpreted as one of its possible children.
+    from lancedb.table import _coerce_blob_values
+
+    ordinary = pa.struct(
+        [pa.field("data", pa.large_binary()), pa.field("label", pa.string())]
+    )
+    target = pa.struct([lancedb.blob("image"), pa.field("ordinary", ordinary)])
+    source = pa.array(
+        [{"image": b"blob", "ordinary": b"plain"}],
+        pa.struct(
+            [
+                pa.field("image", pa.large_binary()),
+                pa.field("ordinary", pa.large_binary()),
+            ]
+        ),
+    )
+    with pytest.raises((pa.ArrowNotImplementedError, NotImplementedError)):
+        _coerce_blob_values(source, pa.field("outer", target))
+
+
+def test_coercion_of_fixed_size_list_of_blobs(tmp_path):
+    # FixedSizeListArray has no offsets buffer; blob coercion must derive
+    # the child window from the array offset, and a slice must select the
+    # logical rows, not rows from before the slice.
+    from lancedb.table import _coerce_blob_values
+
+    target = pa.field("images", pa.list_(lancedb.blob("item"), 2))
+
+    source = pa.array([[b"a", b"b"]], pa.list_(pa.large_binary(), 2))
+    out = _coerce_blob_values(source, target)
+    assert out.to_pylist() == [
+        [
+            {"data": b"a", "uri": None, "position": None, "size": None},
+            {"data": b"b", "uri": None, "position": None, "size": None},
+        ]
+    ]
+
+    sliced = pa.array(
+        [[b"a", b"b"], [b"c", b"d"], [b"e", b"f"]],
+        pa.list_(pa.large_binary(), 2),
+    ).slice(1, 1)
+    out = _coerce_blob_values(sliced, target)
+    assert [item["data"] for item in out[0].as_py()] == [b"c", b"d"]
+
+
+def test_coercion_of_sliced_list_selects_logical_window(tmp_path):
+    # When a sliced ListArray is rebuilt, the child values must come from
+    # the offsets window, not from position zero of the values buffer.
+    from lancedb.table import _coerce_blob_values
+
+    source = pa.array([[b"prefix"], [b"wanted"]], pa.list_(pa.large_binary()))
+    out = _coerce_blob_values(
+        source.slice(1, 1), pa.field("images", pa.list_(lancedb.blob("item")))
+    )
+    assert out.to_pylist() == [
+        [{"data": b"wanted", "uri": None, "position": None, "size": None}]
+    ]
+
+
+def test_blob_coercion_selected_for_metadata_marked_list_items():
+    # Lance tags nested blob list items with field metadata instead of the
+    # extension type; _needs_blob_coercion must honor that representation.
+    from lancedb.table import _needs_blob_coercion
+
+    storage = lancedb.blob("item").type.storage_type
+    item = pa.field("item", storage, metadata={"ARROW:extension:name": "lance.blob.v2"})
+    assert _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(item))
+    # Untagged storage struct below a list must not be selected.
+    untagged = pa.field("item", storage)
+    assert not _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(untagged))
+
+
+def test_cast_reader_skips_empty_batch_with_blob_column():
+    # A zero-row batch containing both a coerced blob column and a plain
+    # column must not abort the reader before later batches are consumed.
+    from lancedb.table import _cast_to_target_schema
+
+    source_schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("image", pa.large_binary())]
+    )
+    empty = pa.RecordBatch.from_arrays(
+        [pa.array([], pa.int64()), pa.array([], pa.large_binary())],
+        schema=source_schema,
+    )
+    target_schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+
+    reader = pa.RecordBatchReader.from_batches(source_schema, [empty])
+    result = _cast_to_target_schema(reader, target_schema).read_all()
+    assert result.num_rows == 0
+
+    full = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), pa.array([b"x"], pa.large_binary())],
+        schema=source_schema,
+    )
+    reader = pa.RecordBatchReader.from_batches(source_schema, [empty, full])
+    result = _cast_to_target_schema(reader, target_schema).read_all()
+    assert result.num_rows == 1
+    assert result.column("id").to_pylist() == [1]
