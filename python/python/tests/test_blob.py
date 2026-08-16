@@ -730,3 +730,35 @@ def test_update_blob_v2_column_directly_is_rejected_cleanly(tmp_path):
 
     with pytest.raises(RuntimeError, match="Direct updates to column 'image'"):
         table.update(where="id=1", values={"image": b"two"})
+
+
+def test_merge_insert_binary_source_into_plain_struct_is_rejected(tmp_path):
+    # Only blob v2 columns coerce raw binary. An ordinary struct with a
+    # binary child named `data` must keep failing instead of silently
+    # dropping its other children.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info",
+                pa.struct(
+                    [
+                        pa.field("data", pa.large_binary()),
+                        pa.field("label", pa.string()),
+                    ]
+                ),
+            ),
+        ]
+    )
+    table = db.create_table("plain_struct", schema=schema)
+    table.add([{"id": 1, "info": {"data": b"one", "label": "a"}}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "info": pa.array([b"two"], pa.large_binary()),
+        }
+    )
+    with pytest.raises(RuntimeError, match="Unsupported cast"):
+        (table.merge_insert("id").when_matched_update_all().execute(source))

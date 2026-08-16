@@ -99,7 +99,7 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-from .schema import blob_v2_column_paths, schema_has_blob_field
+from .schema import blob_v2_column_paths, is_blob_v2_field, schema_has_blob_field
 
 
 def _should_push_down_query_table(
@@ -394,14 +394,14 @@ def _sanitize_data(
     return reader
 
 
-def _is_blob_descriptor(data_type: pa.DataType) -> bool:
-    """True for the blob v2 logical struct: a `data` child holding bytes."""
+def _is_blob_descriptor(data_type: pa.DataType, field_metadata=None) -> bool:
+    """True for a blob v2 logical struct: the `lance.blob.v2` extension or a
+    struct marked as blob v2 by its field metadata."""
     if isinstance(data_type, pa.ExtensionType):
         return data_type.extension_name == "lance.blob.v2"
     if not pa.types.is_struct(data_type):
         return False
-    data_field = next((f for f in data_type if f.name == "data"), None)
-    return data_field is not None and _is_binary_like(data_field.type)
+    return is_blob_v2_field(pa.field("blob", data_type, metadata=field_metadata or {}))
 
 
 def _is_binary_like(data_type: pa.DataType) -> bool:
@@ -477,14 +477,18 @@ def _coerce_blob_values(array: pa.Array, target_type: pa.DataType) -> pa.Array:
     return array
 
 
-def _needs_blob_coercion(input_type: pa.DataType, target_type: pa.DataType) -> bool:
+def _needs_blob_coercion(
+    input_type: pa.DataType,
+    target_type: pa.DataType,
+    target_metadata: Optional[dict] = None,
+) -> bool:
     """True when coercing input to target crosses a blob v2 binary leaf."""
     if _is_binary_like(input_type):
-        return _is_blob_descriptor(target_type)
+        return _is_blob_descriptor(target_type, target_metadata)
     if pa.types.is_struct(input_type) and pa.types.is_struct(target_type):
         names = input_type.names
         return any(
-            _needs_blob_coercion(input_type.field(f.name).type, f.type)
+            _needs_blob_coercion(input_type.field(f.name).type, f.type, f.metadata)
             for f in target_type
             if f.name in names and f.type != input_type.field(f.name).type
         )
@@ -500,7 +504,7 @@ def _blob_coercions(
     coercions = {}
     for field in reader_schema:
         target_field = target_schema.field(field.name)
-        if _needs_blob_coercion(field.type, target_field.type):
+        if _needs_blob_coercion(field.type, target_field.type, target_field.metadata):
             coercions[field.name] = True
     return coercions
 
