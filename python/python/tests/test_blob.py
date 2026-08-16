@@ -839,6 +839,31 @@ def test_blob_coercion_selected_for_metadata_marked_list_items():
     assert not _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(untagged))
 
 
+def test_cast_reader_aligns_blob_list_values_by_position():
+    from lancedb.table import _cast_to_target_schema
+
+    cases = [
+        (lambda field: pa.list_(field), [[b"a"]]),
+        (lambda field: pa.large_list(field), [[b"a"]]),
+        (lambda field: pa.list_(field, 2), [[b"a", b"b"]]),
+    ]
+    for make_list, values in cases:
+        source_type = make_list(pa.binary())
+        target_type = make_list(lancedb.blob("photo"))
+        batch = pa.record_batch([pa.array(values, type=source_type)], names=["images"])
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+        target_schema = pa.schema([pa.field("images", target_type)])
+        result = _cast_to_target_schema(reader, target_schema).read_all()
+
+        assert result.schema.equals(target_schema, check_metadata=True)
+        actual_values = []
+        for images in result["images"].to_pylist():
+            assert images is not None
+            actual_values.append([blob["data"] for blob in images])
+        assert actual_values == values
+
+
 def test_cast_reader_skips_empty_batch_with_blob_column():
     # A zero-row batch containing both a coerced blob column and a plain
     # column must not abort the reader before later batches are consumed.

@@ -659,37 +659,11 @@ def _align_field_types(
                 )
             else:
                 new_type = target_field.type
-        elif pa.types.is_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_large_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.large_list(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_fixed_size_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0],
-                    target_field.type.list_size,
-                )
-            else:
-                new_type = target_field.type
+        elif _is_list_like(target_field.type):
+            # A list has one positional child.  Its name is incidental
+            # (``item`` vs ``photo``), while the target value field carries
+            # the blob extension metadata needed by the coercion path.
+            new_type = target_field.type
         else:
             new_type = target_field.type
         new_fields.append(
