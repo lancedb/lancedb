@@ -108,6 +108,12 @@ def _should_push_down_query_table(
     return namespace_client is not None and "QueryTable" in pushdown_operations
 
 
+def _requires_local_namespace_execution(query: Query) -> bool:
+    # The namespace QueryTable request has no approx_mode field yet, so pushing
+    # the query down would silently ignore the user's setting.
+    return query.approx_mode is not None
+
+
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
     """Return a Polars frame unchanged while blocking predicate pushdown."""
     return frame
@@ -3828,6 +3834,7 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -5780,6 +5787,7 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
+            and not _requires_local_namespace_execution(query)
         ):
             from lancedb.namespace import _execute_server_side_query
 

@@ -1189,6 +1189,7 @@ impl HybridQuery {
         req.column = vec_req.column;
         req.distance_type = vec_req.distance_type;
         req.ef = vec_req.ef;
+        req.approx_mode = vec_req.approx_mode;
         req.refine_factor = vec_req.refine_factor;
         req.lower_bound = vec_req.lower_bound;
         req.upper_bound = vec_req.upper_bound;

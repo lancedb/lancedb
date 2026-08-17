@@ -1808,6 +1808,20 @@ async def test_query_serialization_async(table_async: AsyncTable):
     )
 
 
+@pytest.mark.asyncio
+async def test_hybrid_query_serialization_async(table_async: AsyncTable):
+    q = (
+        table_async.query()
+        .nearest_to([5.0, 6.0])
+        .nearest_to_text(MatchQuery("dog", "text"))
+        .ef(7)
+        .approx_mode("fast")
+        .to_query_object()
+    )
+    assert q.ef == 7
+    assert q.approx_mode == "fast"
+
+
 def test_query_schema(tmp_path):
     db = lancedb.connect(tmp_path)
     tbl = db.create_table(
