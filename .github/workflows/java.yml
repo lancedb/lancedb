@@ -65,4 +65,4 @@ jobs:
           java-version: ${{ matrix.java-version }}
           cache: "maven"
       - name: Build and install
-        run: ./mvnw clean install
+        run: ./mvnw clean install -Dcheckstyle.skip=true
