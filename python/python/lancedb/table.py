@@ -1241,6 +1241,7 @@ class Table(ABC):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
@@ -1292,6 +1293,10 @@ class Table(ABC):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Store blob URIs that sit outside registered blob bases. The row
+            keeps a reference, so the object has to stay readable. Local
+            tables only.
 
         Returns
         -------
@@ -3364,6 +3369,7 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -3391,6 +3397,9 @@ class LanceTable(Table):
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Allow blob URIs outside registered bases. See :meth:`Table.add`.
+            Local tables only.
 
         Returns
         -------
@@ -3407,6 +3416,7 @@ class LanceTable(Table):
                     fill_value=fill_value,
                     progress=progress,
                     write_parallelism=write_parallelism,
+                    allow_external_blob_outside_bases=allow_external_blob_outside_bases,
                 )
             )
         finally:
@@ -5319,6 +5329,7 @@ class AsyncTable:
         fill_value: Optional[float] = None,
         progress: Optional[Union[bool, Callable, Any]] = None,
         write_parallelism: Optional[int] = None,
+        allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
 
@@ -5349,6 +5360,9 @@ class AsyncTable:
             data in flight. Defaults to an estimate based on the data size,
             capped at the number of CPU cores. Lower this if bulk ingestion is
             using too much memory.
+        allow_external_blob_outside_bases: bool, default False
+            Allow blob URIs outside registered bases. See :meth:`Table.add`.
+            Local tables only.
 
         """
         schema = await self.schema()
@@ -5385,6 +5399,7 @@ class AsyncTable:
                 mode or "append",
                 progress=progress,
                 write_parallelism=write_parallelism,
+                allow_external_blob_outside_bases=allow_external_blob_outside_bases,
             )
         except RuntimeError as e:
             if "Cast error" in str(e):
