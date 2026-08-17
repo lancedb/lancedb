@@ -521,9 +521,11 @@ def test_ollama_embedding(tmp_path):
     "model_name,expected_dims",
     [
         ("voyage-3", 1024),
+        ("voyage-3-large", 1024),
         ("voyage-4", 1024),
         ("voyage-4-lite", 1024),
         ("voyage-4-large", 1024),
+        ("voyage-code-4", 1024),
     ],
 )
 def test_voyageai_embedding_function(model_name, expected_dims, tmp_path):
@@ -540,9 +542,9 @@ def test_voyageai_embedding_function(model_name, expected_dims, tmp_path):
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
-    assert voyageai.ndims() == expected_dims, (
-        f"{model_name} should have {expected_dims} dimensions"
-    )
+    assert (
+        voyageai.ndims() == expected_dims
+    ), f"{model_name} should have {expected_dims} dimensions"
 
     # Test search functionality
     result = tbl.search("hello").limit(1).to_pandas()
@@ -553,21 +555,26 @@ def test_voyageai_embedding_function(model_name, expected_dims, tmp_path):
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-def test_voyageai_embedding_function_contextual_model():
-    voyageai = (
-        get_registry().get("voyageai").create(name="voyage-context-3", max_retries=0)
-    )
+@pytest.mark.parametrize("model_name", ["voyage-context-4", "voyage-context-3"])
+def test_voyageai_embedding_function_contextual_model(model_name, tmp_path):
+    voyageai = get_registry().get("voyageai").create(name=model_name, max_retries=0)
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()
         vector: Vector(voyageai.ndims()) = voyageai.VectorField()
 
     df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect("~/lancedb")
+    db = lancedb.connect(tmp_path)
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
+    # Document path: each row is embedded independently -> one vector per row.
     tbl.add(df)
+    assert len(tbl) == 2
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+
+    # Query path: exercises the retrieval branch (no auto-chunking).
+    result = tbl.search("hello").limit(1).to_pandas()
+    assert result["text"][0] == "hello world"
 
 
 @pytest.mark.slow
@@ -816,9 +823,9 @@ def test_colpali(tmp_path):
     # Verify multivector dimensions
     first_row = table.to_arrow().to_pylist()[0]
     assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
-    assert len(first_row["image_vectors"][0]) == func.ndims(), (
-        "Vector dimension mismatch"
-    )
+    assert (
+        len(first_row["image_vectors"][0]) == func.ndims()
+    ), "Vector dimension mismatch"
 
 
 @pytest.mark.slow
@@ -874,9 +881,9 @@ def test_colpali_models(tmp_path, model_name):
 
     first_row = table.to_arrow().to_pylist()[0]
     assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
-    assert len(first_row["image_vectors"][0]) == func.ndims(), (
-        "Vector dimension mismatch"
-    )
+    assert (
+        len(first_row["image_vectors"][0]) == func.ndims()
+    ), "Vector dimension mismatch"
 
 
 @pytest.mark.slow

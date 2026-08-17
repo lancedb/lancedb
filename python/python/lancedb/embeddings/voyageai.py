@@ -19,16 +19,24 @@ from .utils import api_key_not_found_help, IMAGES, TEXT
 if TYPE_CHECKING:
     import PIL
 
-# Token limits for different VoyageAI models
+# Total tokens allowed per request for different VoyageAI models. Used to build
+# batches that respect the per-request token budget. Values follow the limits
+# published in the Voyage embeddings API reference; unknown models fall back to
+# the conservative 120K default in `_build_batches`.
 VOYAGE_TOTAL_TOKEN_LIMITS = {
+    "voyage-4-large": 120_000,
     "voyage-4": 320_000,
     "voyage-4-lite": 1_000_000,
-    "voyage-4-large": 120_000,
-    "voyage-context-3": 32_000,
-    "voyage-3.5-lite": 1_000_000,
+    "voyage-4-nano": 120_000,
+    "voyage-code-4": 120_000,
+    "voyage-context-4": 120_000,
+    "voyage-context-3": 120_000,
+    "voyage-3-large": 120_000,
     "voyage-3.5": 320_000,
-    "voyage-3-lite": 120_000,
+    "voyage-3.5-lite": 1_000_000,
     "voyage-3": 120_000,
+    "voyage-3-lite": 120_000,
+    "voyage-code-3": 120_000,
     "voyage-multimodal-3": 120_000,
     "voyage-finance-2": 120_000,
     "voyage-multilingual-2": 120_000,
@@ -38,6 +46,12 @@ VOYAGE_TOTAL_TOKEN_LIMITS = {
 
 # Batch size for embedding requests (max number of items per batch)
 BATCH_SIZE = 1000
+
+# Per-input chunk size (in tokens) for contextualized embedding documents. Each
+# document-side input is sent as its own document with auto-chunking enabled, so
+# a chunk size at the model's per-chunk ceiling guarantees inputs up to this many
+# tokens resolve to exactly one chunk and therefore exactly one embedding.
+CONTEXT_CHUNK_SIZE = 32_000
 
 
 def is_valid_url(text):
@@ -170,20 +184,31 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name : str
         The name of the model to use. List of acceptable models:
 
+            * voyage-4-large (1024 dims, best retrieval quality)
             * voyage-4 (1024 dims, general-purpose and multilingual retrieval)
             * voyage-4-lite (1024 dims, optimized for latency and cost)
-            * voyage-4-large (1024 dims, best retrieval quality)
-            * voyage-context-3
+            * voyage-4-nano (1024 dims, open-weight)
+            * voyage-code-4 (1024 dims, optimized for code retrieval)
+            * voyage-context-4 (1024 dims, contextualized chunk embeddings)
+            * voyage-context-3 (1024 dims, contextualized chunk embeddings)
+            * voyage-3-large
             * voyage-3.5
             * voyage-3.5-lite
             * voyage-3
             * voyage-3-lite
-            * voyage-multimodal-3
+            * voyage-code-3
             * voyage-multimodal-3.5
+            * voyage-multimodal-3
             * voyage-finance-2
             * voyage-multilingual-2
             * voyage-law-2
             * voyage-code-2
+
+        Contextualized models (voyage-context-*) embed each input string as its
+        own independent document: the batch is sent as a flat list of documents
+        with server-side auto-chunking, so every input resolves to exactly one
+        embedding. Inputs are NOT contextualized against one another, since
+        generic embedding callers pass unrelated texts.
 
     output_dimension : int, optional
         The output dimension for models that support flexible dimensions.
@@ -221,20 +246,24 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     _FLEXIBLE_DIM_MODELS: ClassVar[list] = ["voyage-multimodal-3.5"]
     _VALID_DIMENSIONS: ClassVar[list] = [256, 512, 1024, 2048]
     text_embedding_models: list = [
+        "voyage-4-large",
         "voyage-4",
         "voyage-4-lite",
-        "voyage-4-large",
+        "voyage-4-nano",
+        "voyage-code-4",
+        "voyage-3-large",
         "voyage-3.5",
         "voyage-3.5-lite",
         "voyage-3",
         "voyage-3-lite",
+        "voyage-code-3",
         "voyage-finance-2",
         "voyage-multilingual-2",
         "voyage-law-2",
         "voyage-code-2",
     ]
     multimodal_embedding_models: list = ["voyage-multimodal-3", "voyage-multimodal-3.5"]
-    contextual_embedding_models: list = ["voyage-context-3"]
+    contextual_embedding_models: list = ["voyage-context-4", "voyage-context-3"]
 
     def _is_multimodal_model(self, model_name: str):
         return (
@@ -261,13 +290,18 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
+            "voyage-4-large",
             "voyage-4",
             "voyage-4-lite",
-            "voyage-4-large",
+            "voyage-4-nano",
+            "voyage-code-4",
+            "voyage-context-4",
             "voyage-context-3",
+            "voyage-3-large",
             "voyage-3.5",
             "voyage-3.5-lite",
             "voyage-3",
+            "voyage-code-3",
             "voyage-multimodal-3",
             "voyage-finance-2",
             "voyage-multilingual-2",
@@ -442,10 +476,27 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self._is_contextual_model(self.name):
 
             def embed_batch(batch: List[str]) -> List[np.array]:
+                # Embed each input as its OWN independent document. The batch is
+                # sent as a flat list[str] (not inputs=[batch], which would treat
+                # the batch as one document's chunks and contextualize unrelated
+                # texts against each other). With auto-chunking and a chunk size
+                # at the model's per-chunk ceiling, every input resolves to
+                # exactly one chunk and one embedding.
+                #
+                # The API rejects auto-chunking for query inputs, so it is only
+                # enabled on the document side.
+                ctx_kwargs = dict(kwargs)
+                if input_type != "query":
+                    ctx_kwargs["enable_auto_chunking"] = True
+                    ctx_kwargs["chunk_size"] = CONTEXT_CHUNK_SIZE
                 result = client.contextualized_embed(
-                    inputs=[batch], model=self.name, input_type=input_type, **kwargs
+                    inputs=batch,
+                    model=self.name,
+                    input_type=input_type,
+                    **ctx_kwargs,
                 )
-                return result.results[0].embeddings
+                # One document per input -> take the single chunk embedding each.
+                return [res.embeddings[0] for res in result.results]
 
             return embed_batch
 
