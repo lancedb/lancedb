@@ -4846,7 +4846,7 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        return await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_lsm()
 
     async def flush_lsm(self) -> None:
         """Seal every bucket's active memtable into L0.
@@ -4855,7 +4855,7 @@ class AsyncTable:
         `compact_lsm`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        return await self._inner.flush_lsm()
+        await self._inner.flush_lsm()
 
     async def compact_lsm(self) -> None:
         """Trigger a background L0 to base compaction pass per bucket.
@@ -4864,7 +4864,7 @@ class AsyncTable:
         ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
         until the current L0 has reached base.
         """
-        return await self._inner.compact_lsm()
+        await self._inner.compact_lsm()
 
     async def get_lsm_stats(
         self, *, include_generation_rows: bool = False
