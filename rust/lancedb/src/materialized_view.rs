@@ -10,6 +10,10 @@
 //! table. Queries, indexes and search work on the view unchanged.
 
 pub mod refresh;
+
+#[cfg(test)]
+mod differential;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

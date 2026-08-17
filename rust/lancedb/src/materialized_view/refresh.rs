@@ -1056,6 +1056,8 @@ async fn publish(
     let planned = view_ds.version().version;
     #[cfg(test)]
     tests::hold_before_publish(view_ds.uri()).await;
+    #[cfg(test)]
+    tests::hold_until_peers_planned();
     let (updated_fragments, removed_fragment_ids) = eviction.unwrap_or_default();
     let committed = CommitBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
         .execute(Transaction::new(
@@ -1342,6 +1344,42 @@ mod tests {
     pub(super) static DRIFT_TARGET: StdMutex<Option<String>> = StdMutex::new(None);
     pub(super) static DRIFT_PLANNED: tokio::sync::Notify = tokio::sync::Notify::const_new();
     pub(super) static DRIFT_RELEASED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+    /// Block until every participant in a cross-process race has planned and
+    /// staged its write, so the commits they then attempt genuinely contend
+    /// rather than depending on the scheduler to overlap them. Inert unless
+    /// `MV_RACE_SYNC` names a directory shared by the participants.
+    pub(super) fn hold_until_peers_planned() {
+        let (Ok(dir), Ok(tag), Ok(peers)) = (
+            std::env::var("MV_RACE_SYNC"),
+            std::env::var("MV_RACE_TAG"),
+            std::env::var("MV_RACE_PEERS"),
+        ) else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let peers: usize = peers.parse().unwrap();
+        std::fs::write(dir.join(format!("planned-{tag}")), b"1").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while planned_count(&dir) < peers {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "peers never reached the commit boundary"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn planned_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("planned-"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
     use arrow_array::{Int32Array, record_batch};
     use futures::TryStreamExt;
     use lance::dataset::NewColumnTransform;
