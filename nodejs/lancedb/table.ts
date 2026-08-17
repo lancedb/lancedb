@@ -33,6 +33,7 @@ import {
   Job,
   Branches as NativeBranches,
   OptimizeStats,
+  RefreshColumnResult,
   TableStatistics,
   Tags,
   UpdateFieldMetadataResult,
@@ -197,7 +198,11 @@ export interface LsmWriteSpec {
   column?: string;
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
-  /** Names of indexes the MemWAL should keep up to date during writes. */
+  /**
+   * Indexes the MemWAL keeps up to date. Omit to maintain every supported
+   * index, resolved on install — a snapshot, so indexes created later are not
+   * maintained. Pass `[]` for none.
+   */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
   writerConfigDefaults?: Record<string, string>;
@@ -521,17 +526,74 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
+   *
+   * The `{ computed }` form stores the expression rather than evaluating it
+   * now: the column is committed with no values, and rows get them from
+   * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
+   * large table as on an empty one.
+   *
+   * A refresh does not revisit rows it has already filled, so mutating an
+   * input leaves the value computed at fill time; recomputing means dropping
+   * the column and declaring it again. While a declaration reads a column,
+   * that column cannot be renamed, retyped or dropped.
+   *
+   * On LanceDB Cloud and Enterprise the expression is planned by the
+   * server, and the refresh runs as a server job -- see
+   * {@link Table#refreshColumnAsync}.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
    *   - An array of objects with column names and SQL expressions to calculate values
    *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
    *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
    *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+   *   - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
+   * @example
+   * ```ts
+   * await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+   * const { rowsFilled } = await table.refreshColumn("doubled");
+   * ```
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Fill the rows of a computed column that hold no value yet.
+   *
+   * Rows appended since the last refresh are filled by the next one; rows
+   * already filled are left as they are, so the call is idempotent and does
+   * not observe a mutated input. Local tables only: a remote refresh runs
+   * as a server job, through {@link Table#refreshColumnAsync}.
+   * @param {string} column The name of the computed column to fill.
+   * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
+   * number of rows filled and the new version number of the table.
+   */
+  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+
+  /**
+   * Like {@link Table#refreshColumn}, but returns a handle to the refresh
+   * job instead of blocking until it completes.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the column is filled until {@link Job.wait} resolves. Invalid input --
+   * an unknown column, or one that is not computed -- rejects here rather
+   * than failing the job. On local tables the job runs in-process; on
+   * LanceDB Cloud and Enterprise it is the server's backfill job.
+   * @param {string} column The name of the computed column to fill.
+   * @example
+   * ```ts
+   * const job = await table.refreshColumnAsync("doubled");
+   * await job.wait();
+   * console.log(await job.status()); // "finished"
+   * ```
+   */
+  abstract refreshColumnAsync(column: string): Promise<Job>;
 
   /**
    * Alter the name or nullability of columns.
@@ -595,6 +657,11 @@ export abstract class Table {
    * All variants require the table to have an unenforced primary key
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
+   *
+   * Omitting `maintainedIndexes` maintains every index on the table, resolved
+   * here, failing if one cannot be maintained — name them to install anyway.
+   * Naming them pins an exact set, and a still-building index is rejected
+   * rather than quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
@@ -622,9 +689,10 @@ export abstract class Table {
    *
    * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
    * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
-   * The returned spec — including its `maintainedIndexes` and
-   * `writerConfigDefaults` — mirrors what was passed to
-   * {@link Table#setLsmWriteSpec}.
+   * The returned spec mirrors what was passed to
+   * {@link Table#setLsmWriteSpec}, except that `maintainedIndexes` always
+   * reports the concrete list resolved when the spec was set — `undefined`
+   * never round-trips.
    * @returns {Promise<LsmWriteSpec | undefined>}
    */
   abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
@@ -1078,8 +1146,22 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult> {
+    // Columns defined by an expression are declared, not materialized here.
+    if (
+      typeof newColumnTransforms === "object" &&
+      !Array.isArray(newColumnTransforms) &&
+      "computed" in newColumnTransforms
+    ) {
+      return await this.inner.addComputedColumns(newColumnTransforms.computed);
+    }
+
     // Handle single Field -> convert to array of Fields
     if (newColumnTransforms instanceof Field) {
       newColumnTransforms = [newColumnTransforms];
@@ -1112,6 +1194,14 @@ export class LocalTable extends Table {
     }
 
     throw new Error("Invalid input type for addColumns");
+  }
+
+  async refreshColumn(column: string): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column);
+  }
+
+  async refreshColumnAsync(column: string): Promise<Job> {
+    return await this.inner.refreshColumnAsync(column);
   }
 
   async alterColumns(

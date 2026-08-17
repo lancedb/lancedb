@@ -2703,7 +2703,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
-        if self._minimum_nprobes:
+        if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
             self._vector_query.maximum_nprobes(self._maximum_nprobes)

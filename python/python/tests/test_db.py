@@ -2,9 +2,11 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import inspect
 import re
 import sys
 from datetime import timedelta
+from importlib import resources
 import os
 from types import SimpleNamespace
 
@@ -15,6 +17,10 @@ import pyarrow as pa
 import pytest
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.pydantic import LanceModel, Vector
+
+
+def test_package_includes_pep_561_marker():
+    assert resources.files(lancedb).joinpath("py.typed").is_file()
 
 
 def test_basic(tmp_path):
@@ -62,19 +68,42 @@ def test_basic(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
-def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
+def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
     from lancedb.background_loop import LOOP
 
     db = lancedb.connect(tmp_path)
     table = db.create_table("test", data=[{"id": 1}])
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("repr should not use the Python background loop")
+        raise AssertionError("debugger inspection should not use the background loop")
 
     monkeypatch.setattr(LOOP, "run", fail_run)
 
+    # Debuggers enumerate and evaluate every exposed attribute when expanding a
+    # variable. This must remain safe while their breakpoint suspends LOOP's thread.
+    members = dict(inspect.getmembers(db))
+
+    assert members["uri"] == str(tmp_path)
+    assert members["read_consistency_interval"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
+
+
+def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkeypatch):
+    from lancedb.background_loop import LOOP
+    from lancedb.db import LanceDBConnection
+
+    consistency_interval = timedelta(seconds=5)
+    db = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    db_from_inner = LanceDBConnection.from_inner(db._inner, consistency_interval)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("properties should not use the Python background loop")
+
+    monkeypatch.setattr(LOOP, "run", fail_run)
+
+    assert db.read_consistency_interval == consistency_interval
+    assert db_from_inner.read_consistency_interval == consistency_interval
 
 
 def test_ingest_pd(tmp_path):
@@ -726,8 +755,7 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     assert tmp_db.table_names() == []
 
 
-@pytest.mark.asyncio
-async def test_delete_table_async(tmp_db: lancedb.DBConnection):
+def test_drop_table_async(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -743,13 +771,27 @@ async def test_delete_table_async(tmp_db: lancedb.DBConnection):
 
     assert tmp_db.table_names() == ["test"]
 
-    tmp_db.drop_table("test")
+    job = tmp_db.drop_table_async("test")
+    assert job.id is None
+    assert job.status() == "finished"
+    job.wait()
     assert tmp_db.table_names() == []
 
     tmp_db.create_table("test", data=data)
     assert tmp_db.table_names() == ["test"]
 
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+
+@pytest.mark.asyncio
+async def test_drop_table_async_connection(tmp_db_async: lancedb.AsyncConnection):
+    await tmp_db_async.create_table("test", data=pa.table({"id": [1, 2]}))
+
+    job = await tmp_db_async.drop_table_async("test")
+    assert job.id is None
+    assert await job.status() == "finished"
+    await job.wait()
+    assert await tmp_db_async.table_names() == []
 
 
 def test_drop_database(tmp_db: lancedb.DBConnection):

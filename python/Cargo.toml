@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.37.1-beta.0"
+version = "0.38.0-beta.1"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -26,7 +26,7 @@ lance-namespace-impls.workspace = true
 lance-io.workspace = true
 env_logger.workspace = true
 log.workspace = true
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39", "chrono"] }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py310", "chrono"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 pyo3-async-runtimes = { version = "0.28", features = [
     "attributes",
@@ -43,7 +43,7 @@ libc = "0.2"
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = [
     "extension-module",
-    "abi3-py39",
+    "abi3-py310",
 ] }
 
 [features]

@@ -576,10 +576,12 @@ mod tests {
 
         // Add a new physical column AFTER the embedding column.
         table
-            .add_columns(
-                NewColumnTransform::SqlExpressions(vec![("score".into(), "42.0".into())]),
-                None,
-            )
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "score".into(),
+                "42.0".into(),
+            )]))
+            .execute()
             .await
             .unwrap();
 
@@ -683,7 +685,9 @@ mod tests {
             true,
         )]));
         table
-            .add_columns(NewColumnTransform::AllNulls(nested_schema), None)
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(nested_schema))
+            .execute()
             .await
             .unwrap();
 

@@ -524,6 +524,12 @@ class DBConnection(EnforceOverrides):
             namespace_path = []
         raise NotImplementedError
 
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        raise NotImplementedError
+
     def rename_table(
         self,
         cur_name: str,
@@ -707,6 +713,9 @@ class LanceDBConnection(DBConnection):
         self._namespace_client_properties = namespace_client_properties
         if _inner is not None:
             self._conn = _inner
+            # Native-derived wrappers resolve this in their async reconstruction
+            # path so construction never synchronously re-enters LOOP.
+            self._read_consistency_interval = read_consistency_interval
             self._cached_namespace_client = None
             return
 
@@ -756,11 +765,14 @@ class LanceDBConnection(DBConnection):
         # storage_options.  Also, this class really shouldn't be holding any state
         # beyond _conn.
         self._conn = AsyncConnection(LOOP.run(do_connect()))
+        # Keep property access synchronous so debugger introspection cannot wait on
+        # the background loop while that thread is suspended at a breakpoint.
+        self._read_consistency_interval = read_consistency_interval
         self._cached_namespace_client: Optional[LanceNamespace] = None
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
-        return LOOP.run(self._conn.get_read_consistency_interval())
+        return self._read_consistency_interval
 
     @property
     def session(self) -> Optional[Session]:
@@ -771,8 +783,16 @@ class LanceDBConnection(DBConnection):
         return self._conn.uri
 
     @classmethod
-    def from_inner(cls, inner: LanceDbConnection):
-        return cls(None, _inner=inner)
+    def from_inner(
+        cls,
+        inner: LanceDbConnection,
+        read_consistency_interval: Optional[timedelta],
+    ):
+        return cls(
+            None,
+            read_consistency_interval=read_consistency_interval,
+            _inner=inner,
+        )
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
@@ -1171,6 +1191,20 @@ class LanceDBConnection(DBConnection):
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
             )
         )
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Call :meth:`Job.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
@@ -1948,6 +1982,23 @@ class AsyncConnection(object):
                 raise e
             if f"Table '{name}' was not found" not in str(e):
                 raise e
+
+    async def drop_table_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Await :meth:`AsyncJob.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_table_async(name, namespace_path=namespace_path)
+        )
 
     async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.

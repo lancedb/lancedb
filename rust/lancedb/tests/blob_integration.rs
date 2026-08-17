@@ -9,14 +9,17 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
-use lance_encoding::version::LanceFileVersion;
+use lance::Dataset;
+use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lancedb::{
     Connection, Error, Result, Table,
     blob::{BlobRangeRequest, blob},
     connect, connect_namespace,
-    database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+    database::listing::{
+        ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+    },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction},
+    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats},
 };
 use tempfile::tempdir;
 
@@ -58,7 +61,7 @@ async fn create_inline_blob_table(
     Ok(table)
 }
 
-async fn storage_format_version(table: &Table) -> LanceFileVersion {
+async fn storage_format_version(table: &Table) -> ConcreteFileVersion {
     table
         .as_native()
         .unwrap()
@@ -66,9 +69,14 @@ async fn storage_format_version(table: &Table) -> LanceFileVersion {
         .await
         .unwrap()
         .data_storage_format
-        .lance_file_version()
-        .unwrap()
-        .resolve()
+        .lance_file_format()
+}
+
+fn supports_blob_v2(version: ConcreteFileVersion) -> bool {
+    matches!(
+        version,
+        ConcreteFileVersion::V2_2 | ConcreteFileVersion::V2_3
+    )
 }
 
 async fn uses_stable_row_ids(table: &Table) -> bool {
@@ -109,7 +117,7 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -124,7 +132,7 @@ async fn explicit_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -136,7 +144,7 @@ async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> 
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let table = db.create_empty_table("t", schema).execute().await?;
 
-    assert!(storage_format_version(&table).await < LanceFileVersion::V2_2);
+    assert!(!supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -168,7 +176,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     .unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
@@ -278,7 +286,7 @@ async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Resu
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -294,7 +302,7 @@ async fn namespace_create_applies_blob_defaults() -> Result<()> {
         .execute()
         .await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -471,7 +479,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let batch = RecordBatch::try_new(schema, vec![Arc::new(info_array) as ArrayRef]).unwrap();
     let table = db.create_table("t", batch).execute().await?;
 
-    assert!(storage_format_version(&table).await >= LanceFileVersion::V2_2);
+    assert!(supports_blob_v2(storage_format_version(&table).await));
     assert!(uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
@@ -1073,5 +1081,254 @@ async fn fetch_blob_files_aligns_across_fragments_with_nulls_and_dups() -> Resul
             }
         }
     }
+    Ok(())
+}
+
+/// Rows exercising the null/empty interleavings from
+/// <https://github.com/lancedb/lancedb/issues/3744>: a payload, a null, a valid
+/// empty value, then payloads whose descriptors a fragment rewrite used to zero.
+fn null_empty_input_batch() -> RecordBatch {
+    let owned = [
+        Some(dedicated_blob_bytes(1)),
+        None,
+        Some(Vec::new()),
+        Some(dedicated_blob_bytes(4)),
+        Some(dedicated_blob_bytes(5)),
+        Some(dedicated_blob_bytes(6)),
+    ];
+    let payloads: Vec<Option<&[u8]>> = owned.iter().map(|payload| payload.as_deref()).collect();
+    binary_input_batch(&[1, 2, 3, 4, 5, 6], &payloads)
+}
+
+/// One `(id, Some((payload length, first byte)))` per live row, or `(id, None)`
+/// for a null blob.  Comparing lengths and first bytes keeps failure output
+/// readable where comparing whole payloads would not.
+type BlobSummary = Vec<(i64, Option<(usize, Option<u8>)>)>;
+
+/// The rows [`null_empty_input_batch`] leaves behind after `id IN (1, 4)` is
+/// deleted: a null, a valid empty value, and the two payloads that follow them.
+fn expected_null_empty_survivors() -> BlobSummary {
+    vec![
+        (2, None),
+        (3, Some((0, None))),
+        (5, Some((DEDICATED_BLOB_LEN, Some(5)))),
+        (6, Some((DEDICATED_BLOB_LEN, Some(6)))),
+    ]
+}
+
+/// `optimize()` only rewrites a fragment when lance's compaction planner selects
+/// it — here because the delete pushes the fragment past
+/// `materialize_deletions_threshold` (0.1 by default; these tests delete 2 of 6
+/// rows). Without this check, a planner or threshold change upstream would leave
+/// both regression tests green while no rewrite happened at all.
+fn assert_compacted(stats: &OptimizeStats) {
+    let metrics = stats
+        .compaction
+        .as_ref()
+        .expect("OptimizeAction::All runs compaction");
+    assert!(
+        metrics.fragments_removed >= 1,
+        "optimize() rewrote no fragment, so this test proves nothing: {metrics:?}"
+    );
+}
+
+fn summarize(rows: &[(i64, Option<Vec<u8>>)]) -> BlobSummary {
+    rows.iter()
+        .map(|(id, payload)| {
+            (
+                *id,
+                payload
+                    .as_ref()
+                    .map(|bytes| (bytes.len(), bytes.first().copied())),
+            )
+        })
+        .collect()
+}
+
+async fn sorted_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
+    let mut pairs = collect_id_rowid(table).await?;
+    pairs.sort_by_key(|(id, _)| *id);
+    Ok(pairs)
+}
+
+/// `{position, size}` descriptors of a legacy v1 blob column, keyed by `id`.
+async fn v1_blob_descriptors(table: &Table) -> Result<Vec<(i64, Option<(u64, u64)>)>> {
+    let batches = table
+        .query()
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let descriptors = batch
+        .column_by_name("image")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .expect("v1 blob column reads back as a descriptor struct");
+    let position = descriptors
+        .column_by_name("position")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    let size = descriptors
+        .column_by_name("size")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    let mut rows: Vec<(i64, Option<(u64, u64)>)> = (0..batch.num_rows())
+        .map(|row| {
+            let descriptor =
+                (!descriptors.is_null(row)).then(|| (position.value(row), size.value(row)));
+            (ids.value(row), descriptor)
+        })
+        .collect();
+    rows.sort_by_key(|(id, _)| *id);
+    Ok(rows)
+}
+
+/// Payload bytes of every live row of a legacy v1 blob column, keyed by `id`.
+/// [`Table::fetch_blobs`] rejects v1 columns, so read them through lance.
+async fn v1_blob_payloads(dataset_uri: &str, table: &Table) -> Result<Vec<(i64, Option<Vec<u8>>)>> {
+    let pairs = sorted_id_rowid(table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();
+    let dataset = Arc::new(Dataset::open(dataset_uri).await?);
+    let files = dataset.take_blobs(&row_ids, "image").await?;
+    assert_eq!(
+        files.len(),
+        pairs.len(),
+        "take_blobs returned {} handles for {} live rows",
+        files.len(),
+        pairs.len()
+    );
+    let mut rows = Vec::with_capacity(pairs.len());
+    for ((id, _), file) in pairs.iter().zip(files) {
+        let payload = match file {
+            Some(file) => Some(file.read().await?.to_vec()),
+            None => None,
+        };
+        rows.push((*id, payload));
+    }
+    Ok(rows)
+}
+
+/// Length and first byte of every live blob v2 value, keyed by `id`.
+async fn blob_v2_values(table: &Table) -> Result<BlobSummary> {
+    let pairs = sorted_id_rowid(table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    Ok(pairs
+        .iter()
+        .enumerate()
+        .map(|(slot, (id, _))| {
+            let value = (!bytes.is_null(slot))
+                .then(|| (bytes.value(slot).len(), bytes.value(slot).first().copied()));
+            (*id, value)
+        })
+        .collect())
+}
+
+/// Regression test for [#3744]: on storage 2.0 (legacy v1 descriptors),
+/// compaction rewrote every payload following a null or empty value in the same
+/// fragment as `{position: 0, size: 0}`, so the payload bytes read back as `b""`
+/// and the new fragment no longer referenced them at all.
+///
+/// [#3744]: https://github.com/lancedb/lancedb/issues/3744
+#[tokio::test]
+async fn optimize_preserves_v1_blob_payloads_with_null_and_empty() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db_uri = tmp.path().to_str().unwrap().to_string();
+    let db = connect(&db_uri)
+        .database_options(&ListingDatabaseOptions {
+            new_table_config: NewTableConfig {
+                data_storage_version: Some(LanceFileVersion::V2_0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .execute()
+        .await?;
+    let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
+        std::collections::HashMap::from([("lance-encoding:blob".to_string(), "true".to_string())]),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        legacy,
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    table.add(null_empty_input_batch()).execute().await?;
+    assert_eq!(
+        storage_format_version(&table).await,
+        LanceFileVersion::V2_0.resolve(),
+        "v1 blob descriptors only exist below storage 2.2"
+    );
+    let dataset_uri = table.uri().await?;
+
+    // Any rewrite triggers it; deleting rows is the shape from the issue.
+    table.delete("id IN (1, 4)").await?;
+    let descriptors_before = v1_blob_descriptors(&table).await?;
+    let before = v1_blob_payloads(&dataset_uri, &table).await?;
+    assert_eq!(
+        summarize(&before),
+        expected_null_empty_survivors(),
+        "test setup no longer produces the null/empty/payload mix"
+    );
+
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
+
+    let descriptors_after = v1_blob_descriptors(&table).await?;
+    let after = v1_blob_payloads(&dataset_uri, &table).await?;
+    assert_eq!(
+        summarize(&after),
+        summarize(&before),
+        "optimize() lost blob payloads; descriptors before={descriptors_before:?} after={descriptors_after:?}"
+    );
+    assert!(after == before, "optimize() changed blob payload bytes");
+    Ok(())
+}
+
+/// Regression test for the blob v2 half of [#3744]: compaction rewrote a valid
+/// empty value as null, destroying the null-vs-empty distinction.
+///
+/// [#3744]: https://github.com/lancedb/lancedb/issues/3744
+#[tokio::test]
+async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+    table.add(null_empty_input_batch()).execute().await?;
+    assert!(
+        supports_blob_v2(storage_format_version(&table).await),
+        "blob v2 columns require storage >= 2.2"
+    );
+
+    table.delete("id IN (1, 4)").await?;
+    let before = blob_v2_values(&table).await?;
+    assert_eq!(
+        before,
+        expected_null_empty_survivors(),
+        "test setup no longer produces the null/empty/payload mix"
+    );
+
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
+
+    assert_eq!(
+        blob_v2_values(&table).await?,
+        before,
+        "optimize() changed blob v2 values"
+    );
     Ok(())
 }

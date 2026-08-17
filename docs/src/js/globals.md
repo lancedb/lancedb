@@ -105,6 +105,7 @@
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
+- [RefreshColumnResult](interfaces/RefreshColumnResult.md)
 - [RemovalStats](interfaces/RemovalStats.md)
 - [RenameTableOptions](interfaces/RenameTableOptions.md)
 - [RestNamespaceConfig](interfaces/RestNamespaceConfig.md)
