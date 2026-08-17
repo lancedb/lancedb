@@ -28,9 +28,9 @@ permissions:
   contents: read
 
 jobs:
-  build-java:
+  style-check:
     runs-on: ubuntu-24.04
-    name: Build
+    name: Style Check
     defaults:
       run:
         working-directory: ./java
@@ -45,5 +45,24 @@ jobs:
           cache: "maven"
       - name: Java Style Check
         run: ./mvnw checkstyle:check
+
+  build-java:
+    runs-on: ubuntu-24.04
+    name: Build (Java ${{ matrix.java-version }})
+    strategy:
+      matrix:
+        java-version: [11, 17]
+    defaults:
+      run:
+        working-directory: ./java
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Set up Java ${{ matrix.java-version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java-version }}
+          cache: "maven"
       - name: Build and install
         run: ./mvnw clean install
