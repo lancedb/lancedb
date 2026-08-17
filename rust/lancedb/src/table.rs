@@ -1066,6 +1066,11 @@ impl Table {
         self.database.as_ref().unwrap()
     }
 
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
+    }
+
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
         &self.embedding_registry
     }
