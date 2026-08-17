@@ -4801,7 +4801,7 @@ class AsyncTable:
 
         Examples
         --------
-        >>> from lancedb._lancedb import LsmWriteSpec
+        >>> from lancedb import LsmWriteSpec
         >>> # table.set_unenforced_primary_key("id")
         >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
