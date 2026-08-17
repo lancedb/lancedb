@@ -291,8 +291,9 @@ impl Display for DistanceType {
 
 /// Controls the speed / accuracy tradeoff for approximate vector search.
 ///
-/// This currently only affects RQ-quantized vector indexes, such as IVF_RQ.
-/// Other index types ignore this setting.
+/// This currently affects RQ-quantized vector indexes (such as IVF_RQ) and
+/// prefiltered search on HNSW sub-indexes, where `Fast` enables the ACORN
+/// traversal. Other index types ignore this setting.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]

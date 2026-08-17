@@ -5753,6 +5753,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if query.approx_mode:
+                async_query = async_query.approx_mode(query.approx_mode)
             if query.bypass_vector_index:
                 async_query = async_query.bypass_vector_index()
 

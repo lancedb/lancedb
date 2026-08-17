@@ -961,6 +961,28 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
         await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
 
 
+def test_approx_mode_works_sync(table):
+    for mode in ["fast", "normal", "accurate"]:
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode(mode).to_list()
+
+
+def test_invalid_approx_mode_sync(table):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").approx_mode("turbo").to_list()
+
+
+@pytest.mark.asyncio
+async def test_approx_mode_works_async(table_async: AsyncTable):
+    for mode in ["fast", "normal", "accurate"]:
+        await table_async.vector_search([0, 0]).approx_mode(mode).to_list()
+
+
+@pytest.mark.asyncio
+async def test_invalid_approx_mode_async(table_async: AsyncTable):
+    with pytest.raises(ValueError, match="approx_mode must be one of"):
+        table_async.vector_search([0, 0]).approx_mode("turbo")
+
+
 def test_query_builder_with_prefilter(table):
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
@@ -1573,6 +1595,9 @@ def test_query_serialization_sync(table: lancedb.table.Table):
     q = table.search([5.0, 6.0]).ef(7).to_query_object()
     check_set_props(q, ef=7, vector_column="vector", vector=[5.0, 6.0])
 
+    q = table.search([5.0, 6.0]).approx_mode("fast").to_query_object()
+    check_set_props(q, approx_mode="fast", vector_column="vector", vector=[5.0, 6.0])
+
     q = table.search([5.0, 6.0]).bypass_vector_index().to_query_object()
     check_set_props(
         q, bypass_vector_index=True, vector_column="vector", vector=[5.0, 6.0]
@@ -1723,6 +1748,19 @@ async def test_query_serialization_async(table_async: AsyncTable):
     check_set_props(
         q,
         ef=7,
+        vector=sample_vector,
+        postfilter=False,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
+    q = (await table_async.search([5.0, 6.0])).approx_mode("fast").to_query_object()
+    check_set_props(
+        q,
+        approx_mode="fast",
         vector=sample_vector,
         postfilter=False,
         minimum_nprobes=20,
