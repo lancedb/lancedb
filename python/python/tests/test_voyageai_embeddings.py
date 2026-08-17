@@ -72,9 +72,9 @@ class TestVoyageAIModelRegistration:
         """Test that each model returns the correct dimensions."""
         registry = get_registry()
         func = registry.get("voyageai").create(name=model_name)
-        assert (
-            func.ndims() == expected_dims
-        ), f"Model {model_name} should have {expected_dims} dimensions"
+        assert func.ndims() == expected_dims, (
+            f"Model {model_name} should have {expected_dims} dimensions"
+        )
 
     def test_unsupported_model_raises_error(self, mock_voyageai_client):
         """Test that unsupported models raise ValueError."""
@@ -111,9 +111,9 @@ class TestVoyageAIModelRegistration:
         """Test that voyage-4 models are classified as text models (not multimodal)."""
         registry = get_registry()
         func = registry.get("voyageai").create(name=model_name)
-        assert not func._is_multimodal_model(
-            model_name
-        ), f"{model_name} should be a text model, not multimodal"
+        assert not func._is_multimodal_model(model_name), (
+            f"{model_name} should be a text model, not multimodal"
+        )
 
     def test_voyage4_models_in_text_embedding_list(self, mock_voyageai_client):
         """Test that voyage-4 models are in the text_embedding_models list."""

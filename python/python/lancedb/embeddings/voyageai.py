@@ -208,7 +208,10 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         own independent document: the batch is sent as a flat list of documents
         with server-side auto-chunking, so every input resolves to exactly one
         embedding. Inputs are NOT contextualized against one another, since
-        generic embedding callers pass unrelated texts.
+        generic embedding callers pass unrelated texts. An input longer than the
+        per-chunk ceiling (``CONTEXT_CHUNK_SIZE`` = 32000 tokens) is split into
+        multiple chunks by the server; only the first chunk's embedding is kept,
+        so keep contextualized rows within that budget to embed them in full.
 
     output_dimension : int, optional
         The output dimension for models that support flexible dimensions.
