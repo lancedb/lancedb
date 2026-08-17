@@ -333,6 +333,40 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None))]
+    pub fn create_materialized_view(
+        self_: PyRef<'_, Self>,
+        name: String,
+        source: String,
+        projections: Option<Vec<(String, String)>>,
+        filter: Option<String>,
+        limit: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.create_materialized_view(name, source);
+            if let Some(projections) = projections {
+                builder = builder.select(projections);
+            }
+            if let Some(filter) = filter {
+                builder = builder.only_if(filter);
+            }
+            if let Some(limit) = limit {
+                builder = builder.limit(limit);
+            }
+            let view = builder.execute().await.infer_error()?;
+            Ok(Table::new(view.table().clone()))
+        })
+    }
+
+    pub fn list_materialized_views(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let views = inner.list_materialized_views().await.infer_error()?;
+            Ok(views.into_iter().map(|view| view.name).collect::<Vec<_>>())
+        })
+    }
+
     #[pyo3(signature = (name, namespace_path=None))]
     pub fn drop_table(
         self_: PyRef<'_, Self>,

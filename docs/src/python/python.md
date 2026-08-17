@@ -102,6 +102,12 @@ listing a storage directory.
 
 ::: lancedb.job.AsyncJob
 
+## Materialized Views (Synchronous)
+
+::: lancedb.materialized_view.MaterializedView
+
+::: lancedb.materialized_view.MaterializedViewDefinition
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -294,6 +300,10 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+## Materialized Views (Asynchronous)
+
+::: lancedb.materialized_view.AsyncMaterializedView
 
 ## Indices (Asynchronous)
 
