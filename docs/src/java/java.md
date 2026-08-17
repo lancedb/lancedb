@@ -55,6 +55,38 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 | `region(String)` | AWS region (default: "us-east-1") | No |
 | `config(String, String)` | Additional configuration parameters | No |
 
+### Opening a Table with Vended Credentials
+
+When the catalog vends temporary object store credentials, open the table through the
+namespace client. The Lance dataset builder fetches the table location and storage options
+from the catalog and refreshes the credentials when they expire.
+
+```java
+import com.lancedb.LanceDbNamespaceClientBuilder;
+import org.lance.Dataset;
+import org.lance.namespace.LanceNamespace;
+
+import java.util.Arrays;
+
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
+    .apiKey(System.getenv("LANCEDB_API_KEY"))
+    .database(System.getenv("LANCEDB_DATABASE"))
+    // Set the endpoint for a LanceDB Enterprise deployment.
+    // .endpoint("https://your-enterprise-endpoint")
+    .build();
+
+try (Dataset dataset = Dataset.open()
+        .namespaceClient(namespaceClient)
+        .tableId(Arrays.asList("my_namespace", "my_table"))
+        .build()) {
+    System.out.println("Rows: " + dataset.countRows());
+}
+```
+
+Do not call `describeTable()` and then open the returned location with `Dataset.open(uri)`.
+Opening through `namespaceClient()` is what applies the vended storage options and enables
+automatic credential refresh. No object store credentials need to be passed by the application.
+
 ## Metadata Operations
 
 ### Creating a Namespace Path
