@@ -597,6 +597,22 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   }
 
   /**
+   * Set the speed / accuracy tradeoff to use for approximate search
+   *
+   * This currently affects RQ-quantized indexes, such as IVF_RQ, and
+   * prefiltered search on HNSW indexes, where "fast" enables the ACORN
+   * traversal. Other index types ignore this setting.
+   *
+   * "fast" favors lower latency and may reduce recall, "normal" (the default)
+   * uses the index's default balance, and "accurate" favors higher recall and
+   * may increase latency.
+   */
+  approxMode(approxMode: "fast" | "normal" | "accurate"): VectorQuery {
+    super.doCall((inner) => inner.approxMode(approxMode));
+    return this;
+  }
+
+  /**
    * Set the vector column to query
    *
    * This controls which column is compared to the query vector supplied in

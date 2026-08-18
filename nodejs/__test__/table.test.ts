@@ -1357,6 +1357,23 @@ describe("When creating an index", () => {
     // test ef
     rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
     expect(rst.numRows).toBe(2);
+
+    // test approxMode
+    for (const mode of ["fast", "normal", "accurate"] as const) {
+      rst = await tbl
+        .query()
+        .limit(2)
+        .nearestTo(queryVec)
+        .approxMode(mode)
+        .toArrow();
+      expect(rst.numRows).toBe(2);
+    }
+    expect(() =>
+      tbl
+        .query()
+        .nearestTo(queryVec)
+        .approxMode("turbo" as "fast"),
+    ).toThrow("approx_mode must be one of");
   });
 
   it("should be able to query unindexed data", async () => {
