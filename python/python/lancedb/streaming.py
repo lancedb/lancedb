@@ -789,7 +789,13 @@ class StreamingDataset(IterableDataset):
 
         def _commit_pack_state() -> None:
             self._pack_consumed = list(pack_consumed)
-            self._pack_buffers = deepcopy(pack_buffers)
+            self._pack_buffers = {
+                split: {
+                    "tokens": list(buffer["tokens"]),
+                    "starts": list(buffer["starts"]),
+                }
+                for split, buffer in pack_buffers.items()
+            }
             self._pack_blocks_emitted = list(pack_blocks_emitted)
 
         # ── Main loop ─────────────────────────────────────────────────────────
