@@ -226,6 +226,215 @@ mod tests {
             }
         ));
     }
+    // Serializes the env-var-mutating tests below: cargo test runs tests in
+    // parallel, but these tests read and write the same process-global env
+    // vars (`LANCE_CLIENT_*_RETRIES`, `LANCE_CLIENT_RETRY_*`), so they would
+    // race without this.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Clears every retry env var so a test starts from a known state.
+    fn clear_retry_env() {
+        for var in [
+            "LANCE_CLIENT_MAX_RETRIES",
+            "LANCE_CLIENT_CONNECT_RETRIES",
+            "LANCE_CLIENT_READ_RETRIES",
+            "LANCE_CLIENT_RETRY_BACKOFF_FACTOR",
+            "LANCE_CLIENT_RETRY_BACKOFF_JITTER",
+            "LANCE_CLIENT_RETRY_STATUSES",
+        ] {
+            // SAFETY: This is only called in tests, under `lock_env()`.
+            unsafe {
+                std::env::remove_var(var);
+            }
+        }
+    }
+
+    /// Sets a retry env var. Callers must hold the `lock_env()` guard.
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: This is only called in tests, under `lock_env()`.
+        unsafe {
+            std::env::set_var(var, value);
+        }
+    }
+
+    #[test]
+    fn test_resolve_retry_defaults_when_unset() {
+        let _guard = lock_env();
+        clear_retry_env();
+
+        let resolved: ResolvedRetryConfig = RetryConfig::default().try_into().unwrap();
+
+        assert_eq!(resolved.retries, 3);
+        assert_eq!(resolved.connect_retries, 3);
+        assert_eq!(resolved.read_retries, 3);
+        assert_eq!(resolved.backoff_factor, 0.25);
+        assert_eq!(resolved.backoff_jitter, 0.25);
+        assert_eq!(
+            resolved.statuses,
+            vec![
+                reqwest::StatusCode::CONFLICT,
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                reqwest::StatusCode::BAD_GATEWAY,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                reqwest::StatusCode::GATEWAY_TIMEOUT,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_retry_from_env() {
+        let _guard = lock_env();
+        clear_retry_env();
+        set_env("LANCE_CLIENT_MAX_RETRIES", "7");
+        set_env("LANCE_CLIENT_CONNECT_RETRIES", "5");
+        set_env("LANCE_CLIENT_READ_RETRIES", "0");
+        set_env("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "1.5");
+        set_env("LANCE_CLIENT_RETRY_BACKOFF_JITTER", "0");
+        set_env("LANCE_CLIENT_RETRY_STATUSES", "500,503");
+
+        let resolved: ResolvedRetryConfig = RetryConfig::default().try_into().unwrap();
+        clear_retry_env();
+
+        assert_eq!(resolved.retries, 7);
+        assert_eq!(resolved.connect_retries, 5);
+        assert_eq!(resolved.read_retries, 0);
+        assert_eq!(resolved.backoff_factor, 1.5);
+        assert_eq!(resolved.backoff_jitter, 0.0);
+        assert_eq!(
+            resolved.statuses,
+            vec![
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_retry_passed_value_wins_over_env() {
+        let _guard = lock_env();
+        clear_retry_env();
+        set_env("LANCE_CLIENT_MAX_RETRIES", "7");
+        set_env("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "1.5");
+        set_env("LANCE_CLIENT_RETRY_STATUSES", "500,503");
+
+        let config = RetryConfig {
+            retries: Some(1),
+            backoff_factor: Some(0.5),
+            statuses: Some(vec![429]),
+            ..Default::default()
+        };
+        let resolved: ResolvedRetryConfig = config.try_into().unwrap();
+        clear_retry_env();
+
+        assert_eq!(resolved.retries, 1);
+        assert_eq!(resolved.backoff_factor, 0.5);
+        assert_eq!(
+            resolved.statuses,
+            vec![reqwest::StatusCode::TOO_MANY_REQUESTS]
+        );
+        // Fields left unset still fall through to the default.
+        assert_eq!(resolved.connect_retries, 3);
+    }
+
+    #[test]
+    fn test_resolve_retry_statuses_tolerates_spacing_and_blanks() {
+        let _guard = lock_env();
+        clear_retry_env();
+        set_env("LANCE_CLIENT_RETRY_STATUSES", " 429 , 503 ,");
+
+        let resolved: ResolvedRetryConfig = RetryConfig::default().try_into().unwrap();
+        clear_retry_env();
+
+        assert_eq!(
+            resolved.statuses,
+            vec![
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_retry_statuses_empty_env_disables() {
+        let _guard = lock_env();
+        clear_retry_env();
+        set_env("LANCE_CLIENT_RETRY_STATUSES", "");
+
+        let resolved: ResolvedRetryConfig = RetryConfig::default().try_into().unwrap();
+        clear_retry_env();
+
+        assert!(resolved.statuses.is_empty());
+    }
+
+    /// Every invalid value is rejected, and the message names both the
+    /// variable the user has to fix and the value they set.
+    #[rstest::rstest]
+    #[case("LANCE_CLIENT_MAX_RETRIES", "not-a-number")]
+    #[case("LANCE_CLIENT_MAX_RETRIES", "300")]
+    #[case("LANCE_CLIENT_CONNECT_RETRIES", "-1")]
+    #[case("LANCE_CLIENT_READ_RETRIES", "1.5")]
+    #[case("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "not-a-number")]
+    #[case("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "-1")]
+    #[case("LANCE_CLIENT_RETRY_BACKOFF_JITTER", "inf")]
+    #[case("LANCE_CLIENT_RETRY_STATUSES", "500,not-a-number")]
+    #[case("LANCE_CLIENT_RETRY_STATUSES", "42")]
+    fn test_resolve_retry_invalid_env(#[case] var: &str, #[case] value: &str) {
+        let _guard = lock_env();
+        clear_retry_env();
+        set_env(var, value);
+
+        let result: crate::Result<ResolvedRetryConfig> = RetryConfig::default().try_into();
+        clear_retry_env();
+
+        let err = result.expect_err("expected invalid env var to be rejected");
+        let crate::Error::InvalidInput { message } = &err else {
+            panic!("expected InvalidInput, got {:?}", err);
+        };
+        assert!(
+            message.contains(var),
+            "message should name the env var to fix, got '{}'",
+            message
+        );
+        assert!(
+            message.contains(value),
+            "message should echo the offending value, got '{}'",
+            message
+        );
+    }
+
+    #[test]
+    fn test_resolve_retry_rejects_invalid_passed_values() {
+        let _guard = lock_env();
+        clear_retry_env();
+
+        // A negative backoff would otherwise panic later in
+        // `Duration::from_secs_f32` when the sleep time is computed.
+        let config = RetryConfig {
+            backoff_factor: Some(-1.0),
+            ..Default::default()
+        };
+        let result: crate::Result<ResolvedRetryConfig> = config.try_into();
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::InvalidInput { .. }
+        ));
+
+        // An out-of-range status code would otherwise panic on `unwrap`.
+        let config = RetryConfig {
+            statuses: Some(vec![42]),
+            ..Default::default()
+        };
+        let result: crate::Result<ResolvedRetryConfig> = config.try_into();
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::InvalidInput { .. }
+        ));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -238,22 +447,142 @@ pub struct ResolvedRetryConfig {
     pub statuses: Vec<reqwest::StatusCode>,
 }
 
+const DEFAULT_RETRIES: u8 = 3;
+const DEFAULT_CONNECT_RETRIES: u8 = 3;
+const DEFAULT_READ_RETRIES: u8 = 3;
+const DEFAULT_BACKOFF_FACTOR: f32 = 0.25;
+const DEFAULT_BACKOFF_JITTER: f32 = 0.25;
+const DEFAULT_RETRY_STATUSES: [u16; 6] = [409, 429, 500, 502, 503, 504];
+
+/// Resolve a retry count from the config value, the environment, or a default.
+///
+/// An explicit config value always wins; the environment is only consulted when
+/// the caller left the field unset.
+fn resolve_retries(passed: Option<u8>, env_var: &str, default: u8) -> crate::Result<u8> {
+    if let Some(value) = passed {
+        Ok(value)
+    } else if let Ok(env) = std::env::var(env_var) {
+        env.trim().parse::<u8>().map_err(|_| Error::InvalidInput {
+            message: format!(
+                "{} must be an integer between 0 and 255, got '{}'",
+                env_var, env
+            ),
+        })
+    } else {
+        Ok(default)
+    }
+}
+
+/// Resolve a backoff factor from the config value, the environment, or a default.
+///
+/// Negative and non-finite values are rejected here rather than left to panic
+/// later in `Duration::from_secs_f32` when the sleep time is computed.
+fn resolve_backoff(passed: Option<f32>, env_var: &str, default: f32) -> crate::Result<f32> {
+    let value = if let Some(value) = passed {
+        value
+    } else if let Ok(env) = std::env::var(env_var) {
+        env.trim().parse::<f32>().map_err(|_| Error::InvalidInput {
+            message: format!(
+                "{} must be a non-negative number of seconds, got '{}'",
+                env_var, env
+            ),
+        })?
+    } else {
+        default
+    };
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "{} must be a non-negative, finite number of seconds, got '{}'",
+                env_var, value
+            ),
+        });
+    }
+    Ok(value)
+}
+
+/// Resolve the retryable status codes from the config value, the environment,
+/// or a default.
+///
+/// The environment variable is a comma-separated list of integers; empty
+/// entries are ignored, so an empty or blank value disables status-based
+/// retries just like passing an empty vector.
+fn resolve_statuses(
+    passed: Option<Vec<u16>>,
+    env_var: &str,
+) -> crate::Result<Vec<reqwest::StatusCode>> {
+    // `Some(env_var)` when the values came from the environment, so an
+    // out-of-range code can point the user at the variable to fix.
+    let (raw, from_env) = if let Some(statuses) = passed {
+        (statuses, None)
+    } else if let Ok(env) = std::env::var(env_var) {
+        let parsed = env
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                part.parse::<u16>().map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "{} must be a comma-separated list of integer status codes, got '{}'",
+                        env_var, env
+                    ),
+                })
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        (parsed, Some(env_var))
+    } else {
+        (DEFAULT_RETRY_STATUSES.to_vec(), None)
+    };
+
+    raw.into_iter()
+        .map(|status| {
+            reqwest::StatusCode::from_u16(status).map_err(|_| Error::InvalidInput {
+                message: match from_env {
+                    Some(env_var) => format!(
+                        "{} contains an invalid HTTP status code: '{}'",
+                        env_var, status
+                    ),
+                    None => format!(
+                        "RetryConfig.statuses contains an invalid HTTP status code: '{}'",
+                        status
+                    ),
+                },
+            })
+        })
+        .collect()
+}
+
 impl TryFrom<RetryConfig> for ResolvedRetryConfig {
     type Error = Error;
 
     fn try_from(retry_config: RetryConfig) -> crate::Result<Self> {
         Ok(Self {
-            retries: retry_config.retries.unwrap_or(3),
-            connect_retries: retry_config.connect_retries.unwrap_or(3),
-            read_retries: retry_config.read_retries.unwrap_or(3),
-            backoff_factor: retry_config.backoff_factor.unwrap_or(0.25),
-            backoff_jitter: retry_config.backoff_jitter.unwrap_or(0.25),
-            statuses: retry_config
-                .statuses
-                .unwrap_or_else(|| vec![409, 429, 500, 502, 503, 504])
-                .into_iter()
-                .map(|status| reqwest::StatusCode::from_u16(status).unwrap())
-                .collect(),
+            retries: resolve_retries(
+                retry_config.retries,
+                "LANCE_CLIENT_MAX_RETRIES",
+                DEFAULT_RETRIES,
+            )?,
+            connect_retries: resolve_retries(
+                retry_config.connect_retries,
+                "LANCE_CLIENT_CONNECT_RETRIES",
+                DEFAULT_CONNECT_RETRIES,
+            )?,
+            read_retries: resolve_retries(
+                retry_config.read_retries,
+                "LANCE_CLIENT_READ_RETRIES",
+                DEFAULT_READ_RETRIES,
+            )?,
+            backoff_factor: resolve_backoff(
+                retry_config.backoff_factor,
+                "LANCE_CLIENT_RETRY_BACKOFF_FACTOR",
+                DEFAULT_BACKOFF_FACTOR,
+            )?,
+            backoff_jitter: resolve_backoff(
+                retry_config.backoff_jitter,
+                "LANCE_CLIENT_RETRY_BACKOFF_JITTER",
+                DEFAULT_BACKOFF_JITTER,
+            )?,
+            statuses: resolve_statuses(retry_config.statuses, "LANCE_CLIENT_RETRY_STATUSES")?,
         })
     }
 }
