@@ -191,8 +191,27 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     }
 
     // datetime.datetime is a subclass of datetime.date, so it must be checked first.
+    //
+    // Python's datetime.timestamp() treats *naive* datetimes as local wall time.
+    // PyArrow (and therefore Lance table storage) encodes naive timestamps as
+    // UTC wall-clock microseconds. Using .timestamp() for naive values therefore
+    // shifts the literal by the local UTC offset on non-UTC machines, so
+    // `col("ts") == lit(naive_dt)` fails against a table that holds the same
+    // naive value. Fix: treat naive datetimes as UTC wall clock (match Arrow);
+    // keep aware datetimes on the real .timestamp() path (correct epoch).
     if let Ok(dt) = value.cast::<PyDateTime>() {
-        let ts: f64 = dt.call_method0("timestamp")?.extract()?;
+        let ts: f64 = if dt.getattr("tzinfo")?.is_none() {
+            // Force UTC interpretation of the naive wall clock.
+            let utc = pyo3::types::PyModule::import(value.py(), "datetime")?
+                .getattr("timezone")?
+                .getattr("utc")?;
+            let kwargs = pyo3::types::PyDict::new(value.py());
+            kwargs.set_item("tzinfo", utc)?;
+            let aware = dt.call_method("replace", (), Some(&kwargs))?;
+            aware.call_method0("timestamp")?.extract()?
+        } else {
+            dt.call_method0("timestamp")?.extract()?
+        };
         let micros = (ts * 1_000_000.0).round() as i64;
         return Ok(PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
             Some(micros),

@@ -2235,6 +2235,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             reranker=self._reranker,
             limit=self._limit,
             with_row_ids=True,
+            offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
@@ -2256,6 +2257,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         reranker,
         limit: int,
         with_row_ids: bool,
+        offset: Optional[int] = None,
     ) -> pa.Table:
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
@@ -2332,7 +2334,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = results.column_names.index("_score")
             results = results.set_column(score_i, "_score", original_scores)
 
-        results = results.slice(length=limit)
+        results = results.slice(offset=offset or 0, length=limit)
 
         if not with_row_ids:
             results = results.drop(["_rowid"])
@@ -2679,8 +2681,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # Apply common configurations
         if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
+            # The final offset/limit window is sliced out of the combined,
+            # reranked results, so each sub-query must fetch enough rows to
+            # cover the skipped prefix as well as the window itself.
+            sub_query_limit = self._limit + (self._offset or 0)
+            self._vector_query.limit(sub_query_limit)
+            self._fts_query.limit(sub_query_limit)
         if self._columns:
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
