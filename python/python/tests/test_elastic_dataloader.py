@@ -1998,7 +1998,7 @@ def test_pack_sequences_pads_lagging_splits(tmp_path):
     assert sharded == input_ids
 
 
-def test_pack_sequences_auto_scans_filtered_token_column(tmp_path):
+def test_pack_sequences_auto_estimates_filtered_token_column(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table(
         "tokens",
@@ -2018,7 +2018,7 @@ def test_pack_sequences_auto_scans_filtered_token_column(tmp_path):
         )
     )
 
-    with pytest.warns(UserWarning, match="complete token column"):
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
         dataset = _packed_dataset(
             table,
             5,
@@ -2067,7 +2067,7 @@ def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
     ]
 
 
-def test_pack_sequences_validates_padding_id(tmp_path):
+def test_pack_sequences_validates_configuration_and_tokens(tmp_path):
     table = _create_token_table(tmp_path, [[1, 2]])
 
     with pytest.raises(ValueError, match="pad_id is required"):
@@ -2099,6 +2099,22 @@ def test_pack_sequences_validates_padding_id(tmp_path):
     resumed = _packed_dataset(table, 4, blocks_per_epoch=1, pad_id=8)
     with pytest.raises(ValueError, match="pad_id mismatch"):
         resumed.load_state_dict(checkpoint)
+
+    float_db = lancedb.connect(tmp_path / "float")
+    float_table = float_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([[1.5, 2.5]], type=pa.list_(pa.float64()))}),
+    )
+    with pytest.raises(ValueError, match="token column with integer values"):
+        _packed_dataset(float_table, 4, blocks_per_epoch=1)
+
+    null_db = lancedb.connect(tmp_path / "null")
+    null_table = null_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([None], type=pa.list_(pa.int64()))}),
+    )
+    with pytest.raises(ValueError, match="does not support null token lists"):
+        list(_packed_dataset(null_table, 4, blocks_per_epoch=1))
 
 
 # ---------------------------------------------------------------------------
