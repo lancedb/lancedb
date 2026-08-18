@@ -421,7 +421,6 @@ class StreamingDataset(IterableDataset):
         warnings.warn(
             "blocks_per_epoch='auto' uses an approximate token-count sample; "
             "pass an explicit value for exact epoch sizing",
-            stacklevel=3,
         )
 
         # TODO: Replace this fallback with Lance's dedicated exact token-count
