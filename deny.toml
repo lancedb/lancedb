@@ -68,22 +68,6 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
-    # rustls-webpki 0.101.7 (old major line): name-constraint checks for
-    # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
-    # from aws-smithy-http-client. The 0.103 line we actively use is patched.
-    # Clearing the 0.101 copy requires the aws-sdk chain to migrate off
-    # rustls 0.21.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0098
-    # https://rustsec.org/advisories/RUSTSEC-2026-0099
-    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-
-    # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
-    # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
-    # we actively use is upgraded to 0.103.13 which contains the fix.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0104
-    { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-
     # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
     # https://rustsec.org/advisories/RUSTSEC-2026-0176
     # https://rustsec.org/advisories/RUSTSEC-2026-0177
