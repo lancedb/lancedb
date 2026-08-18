@@ -169,9 +169,7 @@ class StreamingDataset(IterableDataset):
         are left out of the epoch. This fixed per-split budget keeps packed
         iteration and checkpoints independent of rank and worker topology.
         Pass ``"auto"`` to estimate a corpus-level budget from a bounded sample
-        of token lists. The estimate may be inaccurate. For large-scale training,
-        materialize a ``token_count`` column, calculate an explicit block budget
-        once, and pass that integer instead.
+        of token lists. The estimate may be inaccurate.
     on_transform_error:
         What to do when the transform raises an exception:
 
@@ -405,6 +403,8 @@ class StreamingDataset(IterableDataset):
 
     def _estimate_blocks_per_epoch(self) -> int:
         """Estimate a fixed packed-block budget from a bounded token sample."""
+        # TODO: Replace this fallback with Lance's dedicated exact token-count
+        # estimation API once it is available.
         if self._pack_sequences is None or not self._columns:
             raise RuntimeError(
                 "packing must be configured before estimating its budget"
@@ -423,8 +423,6 @@ class StreamingDataset(IterableDataset):
             "pass an explicit value for exact epoch sizing",
         )
 
-        # TODO: Replace this fallback with Lance's dedicated exact token-count
-        # estimation API once it is available.
         for split in range(self._num_splits):
             permutation = Permutation.from_tables(
                 self._table, self._perm_table, split=split
@@ -458,8 +456,7 @@ class StreamingDataset(IterableDataset):
             total_rows += split_rows
 
         # Pool the samples into one global average. Each document contributes
-        # one EOS token. Round down to a complete split cycle so an inaccurate
-        # estimate favors an unused tail over all-padding blocks.
+        # one EOS token.
         estimated_tokens = (
             (sampled_tokens + total_sampled) * total_rows // total_sampled
         )
