@@ -4119,6 +4119,8 @@ mod tests {
             })
         }
 
+        // The guard counts listings through `wrap`, so a pushed-down listing would slip
+        // past it.
         fn wrap_paginated(
             &self,
             _store_prefix: &str,
@@ -4230,6 +4232,7 @@ mod tests {
             original
         }
 
+        // Hands the store back untouched, so a listing has nothing to go around.
         fn wrap_paginated(
             &self,
             _store_prefix: &str,
