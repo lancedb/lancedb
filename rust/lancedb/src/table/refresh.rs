@@ -12,7 +12,7 @@
 //! decides whether the fragment is staged at all -- a fragment where nothing
 //! would change stages nothing, which is what lets an expression yielding
 //! null settle instead of restaging forever. The second streams the
-//! fragment's physical rows into `write_column` a batch at a time, so peak
+//! fragment's physical rows into `write_columns` a batch at a time, so peak
 //! memory is bounded by a scan batch. The expression is evaluated by this
 //! module, never through a projection alias, and only over rows being
 //! filled: every other row -- deleted, or already holding a value -- has its
@@ -67,7 +67,7 @@ pub(crate) async fn execute_refresh_column(
         .ok_or_else(|| Error::ColumnNotFound {
             name: column.to_string(),
         })?;
-    // The dataset's own field, so the identity write_column checks against the
+    // The dataset's own field, so the identity write_columns checks against the
     // manifest holds by construction.
     let column_schema = LanceSchema {
         fields: vec![field.clone()],
@@ -83,7 +83,7 @@ pub(crate) async fn execute_refresh_column(
         }
         rows_filled += gained;
         let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
-        replacements.push(fragment.write_column(values, &column_schema).await?);
+        replacements.push(fragment.write_columns(values, &column_schema).await?);
     }
 
     if replacements.is_empty() {
