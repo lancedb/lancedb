@@ -167,7 +167,7 @@ class StreamingDataset(IterableDataset):
         Every logical split emits exactly ``blocks_per_epoch / num_splits``
         blocks: exhausted splits emit padding, while tokens beyond the budget
         are left out of the epoch. This fixed per-split budget keeps packed
-        iteration and checkpoints independent of rank and worker topology.
+        iteration and checkpoints independent of rank topology.
         Pass ``"auto"`` to estimate a corpus-level budget from a bounded sample
         of token lists. The estimate may be inaccurate.
     on_transform_error:
@@ -816,7 +816,7 @@ class StreamingDataset(IterableDataset):
                         ):
                             raise ValueError(
                                 "Packed checkpoint is not aligned across the splits "
-                                "owned by this iterator; merge every rank or worker "
+                                "owned by this iterator; merge every rank "
                                 "state with merge_state_dicts before resuming on a "
                                 "different topology"
                             )
@@ -1047,8 +1047,8 @@ class StreamingDataset(IterableDataset):
         before resuming on a different topology.
 
         Packed state includes partial token buffers and emitted block counts
-        for every logical split. When packing is sharded, merge every rank or
-        worker state with ``merge_state_dicts`` before loading it.
+        for every logical split. When packing is sharded, merge every rank
+        state with ``merge_state_dicts`` before loading it.
         """
         if self._pack_sequences is not None:
             return {
@@ -1144,15 +1144,15 @@ class StreamingDataset(IterableDataset):
         splits advanced by different ranks after transform failures. For packed
         mode, the state that emitted the most blocks for each logical split
         supplies that split's permutation position and partial token buffer. Packed
-        states must cover every rank or worker at the same global step.
+        states must cover every rank at the same global step.
 
         Raises ``ValueError`` if the states are empty, were not produced by
         the same run, or do not represent the same global step.
 
         The merge is always all-to-all and topology-agnostic: collect the
-        ``state_dict()`` from every rank or worker of the *previous* run into
+        ``state_dict()`` from every rank of the *previous* run into
         one list, merge that whole list, and hand the identical merged result
-        to every rank or worker of the *next* run — regardless of whether the
+        to every rank of the *next* run — regardless of whether the
         topology grew, shrank, or stayed the same. There is no pairwise or
         subset merging step, because each split's exact state is only known to
         whichever iterator owned that split.
@@ -1245,7 +1245,7 @@ class StreamingDataset(IterableDataset):
             if len(set(merged_emitted)) > 1:
                 raise ValueError(
                     "packed state dicts were not captured at the same global "
-                    "step or do not cover every rank and worker"
+                    "step or do not cover every rank"
                 )
 
             merged = dict(first)
