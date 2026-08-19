@@ -108,6 +108,12 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
+
+    # h2 0.3: empty DATA frames can be queued without limit. The patched
+    # h2 0.4 line is locked to 0.4.16, but no patched 0.3 release exists.
+    # The old copy is pulled in by aws-smithy's legacy hyper 0.14 client.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0258
+    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via legacy aws-smithy/hyper 0.14; no patched 0.3 release" },
 ]
 
 # ---------------------------------------------------------------------------
