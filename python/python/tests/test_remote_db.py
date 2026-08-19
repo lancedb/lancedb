@@ -1134,6 +1134,131 @@ def test_stats():
 
 
 @contextlib.contextmanager
+def lsm_test_table(lsm_handler):
+    """A remote table whose LSM routes are served by ``lsm_handler``.
+
+    ``lsm_handler(request, route)`` is called for ``/v1/table/test/<route>/``
+    where route is one of flush_lsm, compact_lsm, get_lsm_stats, and is
+    responsible for writing the response.
+    """
+    routes = ("flush_lsm", "compact_lsm", "get_lsm_stats")
+
+    def handler(request):
+        match = re.fullmatch(r"/v1/table/test/(\w+)/", request.path)
+        route = match.group(1) if match else None
+        if route in routes:
+            lsm_handler(request, route)
+        elif route == "describe":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        yield db.open_table("test")
+
+
+def read_json_body(request):
+    content_len = int(request.headers.get("Content-Length"))
+    return json.loads(request.rfile.read(content_len))
+
+
+def send_json(request, payload, status=200):
+    request.send_response(status)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(json.dumps(payload).encode())
+
+
+def test_get_lsm_stats_sync():
+    """The sync wrapper round-trips the server payload into a dict."""
+    bucket = {
+        "shard_id": "b0",
+        "status": "Active",
+        "writer_epoch": 3,
+        "manifest_version": 12,
+        "current_generation": 6,
+        "replay_after_wal_entry_position": 40,
+        "wal_entry_position_last_seen": 42,
+        "generations": [{"generation": 5, "bytes": 1024, "rows": 7}],
+        "compacting": False,
+        "memtables": [
+            {
+                "generation": 6,
+                "rows": 2,
+                "bytes": 64,
+                "batches": 1,
+                "indexes": ["vec_idx"],
+            }
+        ],
+    }
+    seen_bodies = []
+
+    def lsm_handler(request, route):
+        assert route == "get_lsm_stats"
+        seen_bodies.append(read_json_body(request))
+        send_json(request, {"lsm_stats": {"buckets": [bucket]}})
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.get_lsm_stats() == {"buckets": [bucket]}
+        # Off by default, and forwarded when asked for.
+        assert seen_bodies == [{"include_generation_rows": False}]
+        table.get_lsm_stats(include_generation_rows=True)
+        assert seen_bodies[-1] == {"include_generation_rows": True}
+
+
+def test_get_lsm_stats_sync_returns_none_when_lsm_disabled():
+    """A null envelope means the LSM write path is not enabled, not an error."""
+
+    def lsm_handler(request, route):
+        send_json(request, {"lsm_stats": None})
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.get_lsm_stats() is None
+
+
+def test_flush_and_compact_lsm_sync():
+    """Both are one-shot POSTs answered 202 with no body."""
+    called = []
+
+    def lsm_handler(request, route):
+        called.append(route)
+        request.send_response(202)
+        request.end_headers()
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.flush_lsm() is None
+        assert table.compact_lsm() is None
+        assert called == ["flush_lsm", "compact_lsm"]
+
+
+def test_checkpoint_lsm_sync():
+    """Seal, read the watermark, and return once L0 holds nothing.
+
+    The convergence loop itself is covered in Rust; this pins the sync
+    binding to the endpoints it drives.
+    """
+    called = []
+
+    def lsm_handler(request, route):
+        called.append(route)
+        if route == "get_lsm_stats":
+            # An empty L0 yields no target watermark, so the loop is done
+            # after the seal without ever polling compaction.
+            send_json(request, {"lsm_stats": {"buckets": []}})
+        else:
+            request.send_response(202)
+            request.end_headers()
+
+    with lsm_test_table(lsm_handler) as table:
+        assert table.checkpoint_lsm() is None
+        assert called == ["flush_lsm", "get_lsm_stats"]
+
+
+@contextlib.contextmanager
 def query_test_table(query_handler, *, server_version=Version("0.1.0")):
     def handler(request):
         if request.path == "/v1/table/test/describe/":

@@ -990,16 +990,38 @@ class RemoteTable(Table):
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
     def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Not supported on LanceDB Cloud."""
+        """Install an LsmWriteSpec."""
         return LOOP.run(self._table.set_lsm_write_spec(spec))
 
     def unset_lsm_write_spec(self) -> None:
-        """Not supported on LanceDB Cloud."""
+        """Remove the LsmWriteSpec."""
         return LOOP.run(self._table.unset_lsm_write_spec())
 
     def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the installed LsmWriteSpec, or ``None``."""
         return LOOP.run(self._table.get_lsm_write_spec())
+
+    def checkpoint_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
+        return LOOP.run(self._table.checkpoint_lsm())
+
+    def flush_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
+        return LOOP.run(self._table.flush_lsm())
+
+    def compact_lsm(self) -> None:
+        """Synchronous version of
+        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
+        return LOOP.run(self._table.compact_lsm())
+
+    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+        """Synchronous version of
+        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        return LOOP.run(
+            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+        )
 
     def close_lsm_writers(self) -> None:
         """No-op on LanceDB Cloud (no local shard writers)."""
