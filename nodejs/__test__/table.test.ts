@@ -3341,6 +3341,59 @@ describe("LSM merge insert", () => {
   });
 });
 
+describe("LSM convergence and stats", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function lsmTable(conn: Connection): Promise<Table> {
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    return table;
+  }
+
+  // These four route through the server that owns the MemWAL, so a local table
+  // rejects them rather than answering. What is asserted here is that the
+  // bindings reach the core at all; the behavior against a real endpoint is
+  // covered by the mocked endpoint tests in rust/lancedb/src/remote/table.rs.
+  it("rejects flushLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.flushLsm()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects compactLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.compactLsm()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects getLsmStats on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.getLsmStats()).rejects.toThrow(/not supported/i);
+    await expect(table.getLsmStats(true)).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects checkpointLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    // checkpointLsm seals first, so it surfaces flushLsm's rejection.
+    await expect(table.checkpointLsm()).rejects.toThrow(/not supported/i);
+  });
+});
+
 describe("computed columns", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {

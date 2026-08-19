@@ -147,6 +147,10 @@ export {
   FtsToken,
   TokenizeTableOptions,
   LsmWriteSpec,
+  LsmStats,
+  BucketStats,
+  GenerationStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";
