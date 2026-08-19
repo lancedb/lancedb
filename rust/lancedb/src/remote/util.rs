@@ -47,10 +47,15 @@ pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> 
     Ok(reqwest::Body::wrap_stream(stream))
 }
 
+/// The response header a Phalanx server stamps its version onto.
+///
+/// A global layer adds it, so it is on error responses as well as successful ones.
+pub const SERVER_VERSION_HEADER: &str = "phalanx-version";
+
 pub fn parse_server_version(req_id: &str, rsp: &Response) -> Result<ServerVersion> {
     let version = rsp
         .headers()
-        .get("phalanx-version")
+        .get(SERVER_VERSION_HEADER)
         .map(|v| {
             let v = v.to_str().map_err(|e| crate::Error::Http {
                 source: e.into(),

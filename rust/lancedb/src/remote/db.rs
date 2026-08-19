@@ -33,7 +33,7 @@ use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
 use super::table::RemoteTable;
-use super::util::parse_server_version;
+use super::util::{SERVER_VERSION_HEADER, parse_server_version};
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
 // Request structure for the remote clone table API
@@ -85,6 +85,10 @@ impl ServerVersion {
 
     pub fn support_blobs(&self) -> bool {
         self.0 >= semver::Version::new(0, 5, 0)
+    }
+
+    pub fn support_paginated_list_tables(&self) -> bool {
+        self.0 >= semver::Version::new(0, 6, 0)
     }
 }
 
@@ -207,6 +211,14 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     namespace_context_provider: Option<Arc<dyn DynamicContextProvider>>,
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
+    /// Whether this server serves the `/v2` table listing, learned once per connection.
+    ///
+    /// This holds the one answer it is asked for rather than the server version it was
+    /// derived from. A server that sends no version header is indistinguishable from one
+    /// running the oldest version we know of, and caching that as a version would let a
+    /// stripped header switch off multivector, structural FTS, multipart write and blobs for
+    /// the life of the connection. A missing header can only cost a listing its pushdown.
+    serves_paginated_list: tokio::sync::OnceCell<bool>,
 }
 
 #[derive(Clone)]
@@ -325,11 +337,45 @@ impl RemoteDatabase {
             namespace_headers,
             namespace_context_provider,
             tls_config: client_config.tls_config,
+            serves_paginated_list: tokio::sync::OnceCell::new(),
         })
     }
 }
 
 impl<S: HttpSend> RemoteDatabase<S> {
+    /// Whether this server serves the `/v2` table listing, asking it once per connection.
+    ///
+    /// The answer has to be known before the first listing rather than learned from it. The
+    /// two listing routes resume from different things, so a walk that started on one cannot
+    /// finish on the other, and a walk that learned the answer from its own first page would
+    /// do exactly that: page one goes to `/v1` for want of an answer, and page two, now
+    /// holding one, hands `/v2` a token `/v1` minted.
+    ///
+    /// `/v1/version` is the question. A server too old to serve it still answers, because the
+    /// version header is on its 404 as well, and a server that is not Phalanx sends no header
+    /// at all, which is the answer for every implementation of the namespace spec: they serve
+    /// `/v1` only.
+    async fn serves_paginated_list(&self) -> Result<bool> {
+        self.serves_paginated_list
+            .get_or_try_init(|| async {
+                let req = self.client.get("/v1/version");
+                // Deliberately not `check_response`: a 404 is a useful answer here, and its
+                // headers carry the version just as a 200's do.
+                let (request_id, rsp) = self.client.send(req).await?;
+                let Some(version) = rsp.headers().get(SERVER_VERSION_HEADER) else {
+                    return Ok(false);
+                };
+                let version = version.to_str().map_err(|e| Error::Http {
+                    source: e.into(),
+                    request_id,
+                    status_code: Some(rsp.status()),
+                })?;
+                Ok(ServerVersion::parse(version)?.support_paginated_list_tables())
+            })
+            .await
+            .copied()
+    }
+
     async fn submit_drop_table(
         &self,
         name: &str,
@@ -366,6 +412,7 @@ mod test_utils {
                 namespace_headers: HashMap::new(),
                 namespace_context_provider: None,
                 tls_config: None,
+                serves_paginated_list: tokio::sync::OnceCell::new(),
             }
         }
 
@@ -388,6 +435,7 @@ mod test_utils {
                 namespace_headers: config.extra_headers.clone(),
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
+                serves_paginated_list: tokio::sync::OnceCell::new(),
             }
         }
     }
@@ -676,9 +724,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
-        let mut req = self
-            .client
-            .get(&format!("/v1/namespace/{}/table/list", namespace_id));
+        // v1 takes a table name in `page_token` to resume after, which `table_names` callers
+        // build themselves from the last name they saw, so its meaning cannot change. Only a
+        // token the server minted can resume a listing in the store, and that contract needs a
+        // route no name-passing caller reaches. Servers that do not serve it keep the listing
+        // they have always served, which is correct and merely slower.
+        let path = if self.serves_paginated_list().await? {
+            format!("/v2/namespace/{}/table/list", namespace_id)
+        } else {
+            format!("/v1/namespace/{}/table/list", namespace_id)
+        };
+        let mut req = self.client.get(&path);
 
         if let Some(limit) = request.limit {
             req = req.query(&[("limit", limit)]);
@@ -1137,7 +1193,7 @@ impl From<StorageOptions> for RemoteOptions {
 // `table_names` is deprecated but still supported, so its tests still call it.
 #[allow(deprecated)]
 mod tests {
-    use super::{NamespaceHeaderProviderContext, build_cache_key};
+    use super::{NamespaceHeaderProviderContext, SERVER_VERSION_HEADER, build_cache_key};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
@@ -1664,6 +1720,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    /// Answer the capability probe with a version, or with no header at all for `None`.
+    fn version_probe(version: Option<&str>) -> http::Response<String> {
+        let builder = http::Response::builder().status(if version.is_some() { 200 } else { 404 });
+        match version {
+            Some(version) => builder
+                .header(SERVER_VERSION_HEADER, version)
+                .body(format!(r#"{{"version": "{version}"}}"#))
+                .unwrap(),
+            None => builder.body(String::new()).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_uses_the_opaque_token_route() {
+        // `table_names` keeps /v1, where `page_token` is a table name to resume after. Only
+        // /v2 round-trips a server-minted token, so that is where this API has to go.
+        let conn = Connection::new_with_handler(|request| {
+            if request.url().path() == "/v1/version" {
+                return version_probe(Some("0.6.0"));
+            }
+            assert_eq!(request.url().path(), "/v2/namespace/$/table/list");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1"], "page_token": "opaque=="}"#.to_string())
+                .unwrap()
+        });
+        let page = conn.list_tables().execute().await.unwrap();
+        assert_eq!(page.tables, vec!["table1"]);
+        assert_eq!(page.page_token.as_deref(), Some("opaque=="));
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_resumes_with_the_server_token() {
+        let conn = Connection::new_with_handler(|request| {
+            if request.url().path() == "/v1/version" {
+                return version_probe(Some("0.6.0"));
+            }
+            assert_eq!(request.url().path(), "/v2/namespace/ns1$ns2/table/list");
+            assert_eq!(request.url().query(), Some("page_token=opaque%3D%3D"));
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table2"]}"#.to_string())
+                .unwrap()
+        });
+        let page = conn
+            .list_tables()
+            .namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .page_token("opaque==")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(page.tables, vec!["table2"]);
+        assert_eq!(page.page_token, None);
+    }
+
+    #[tokio::test]
+    async fn test_a_server_without_the_route_keeps_the_v1_listing() {
+        // Every implementation of the namespace spec is this case: no version header, and only
+        // /v1 to serve. Asking it for /v2 would 404 a listing that /v1 can answer.
+        let conn = Connection::new_with_handler(|request| {
+            if request.url().path() == "/v1/version" {
+                return version_probe(None);
+            }
+            assert_eq!(request.url().path(), "/v1/namespace/$/table/list");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1"]}"#.to_string())
+                .unwrap()
+        });
+        let page = conn.list_tables().execute().await.unwrap();
+        assert_eq!(page.tables, vec!["table1"]);
+    }
+
+    #[tokio::test]
+    async fn test_a_server_older_than_the_route_keeps_the_v1_listing() {
+        let conn = Connection::new_with_handler(|request| {
+            if request.url().path() == "/v1/version" {
+                return version_probe(Some("0.5.0"));
+            }
+            assert_eq!(request.url().path(), "/v1/namespace/$/table/list");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1"]}"#.to_string())
+                .unwrap()
+        });
+        assert_eq!(
+            conn.list_tables().execute().await.unwrap().tables,
+            vec!["table1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_the_probe_is_asked_once_per_connection() {
+        // A walk resumes from what its first page returned, so every page of it has to reach
+        // the same route. Re-asking per request would let a rolling deploy answer differently
+        // mid-walk and hand /v2 a token /v1 minted.
+        let probes = Arc::new(AtomicUsize::new(0));
+        let counted = probes.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            if request.url().path() == "/v1/version" {
+                counted.fetch_add(1, Ordering::SeqCst);
+                return version_probe(Some("0.6.0"));
+            }
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1"]}"#.to_string())
+                .unwrap()
+        });
+        for _ in 0..3 {
+            conn.list_tables().execute().await.unwrap();
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
