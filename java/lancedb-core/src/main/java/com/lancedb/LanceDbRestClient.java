@@ -49,7 +49,12 @@ public class LanceDbRestClient implements Closeable {
     this.baseUri = baseUri.endsWith("/") ? baseUri.substring(0, baseUri.length() - 1) : baseUri;
     this.apiKey = apiKey;
     this.database = database;
-    this.http = HttpClients.createDefault();
+    // Automatic retries off, deliberately. The default strategy retries 429 and 503 —
+    // exactly the two statuses LanceDbTableLsm.checkpointLsm() acts on — which would
+    // silently double its explicit retry budget and would also retry compact_lsm in
+    // place, where the loop is designed to fall through to a fresh stats poll instead.
+    // The checkpoint loop owns the 421/429/503 transitions; the transport must not.
+    this.http = HttpClients.custom().disableAutomaticRetries().build();
   }
 
   /**

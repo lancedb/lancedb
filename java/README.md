@@ -56,7 +56,8 @@ lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
 lsm.checkpointLsm();
 
 // Inspect live per-bucket state.
-lsm.getLsmStats().ifPresent(stats -> System.out.println(stats.get("buckets")));
+lsm.getLsmStats().ifPresent(stats -> stats.buckets().forEach(bucket ->
+    System.out.println(bucket.shardId() + ": " + bucket.generations().size() + " L0 generations")));
 
 client.close();
 ```

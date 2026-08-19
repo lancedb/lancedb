@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * The MemWAL LSM write path for one LanceDB Cloud or Enterprise table.
@@ -154,24 +155,31 @@ public class LanceDbTableLsm {
    * <p>Answers "how far behind is my fresh tier", "which bucket is hot", and "why is my fresh-tier
    * vector search brute-force". Mutates no table state.
    *
-   * <p>Empty only when the LSM write path is not enabled. The returned node is the server's {@code
-   * lsm_stats} object, carrying a {@code buckets} array.
+   * <p>Empty only when the LSM write path is not enabled — that is, when the server sends an absent
+   * or null {@code lsm_stats}. A stats object that is present is decoded strictly, and a malformed
+   * one throws rather than decoding to something empty, because {@link #checkpointLsm} reads
+   * convergence out of these numbers and cannot tell a defaulted array from a drained one.
    *
    * @param includeGenerationRows Also count rows per L0 generation. Off by default because each
    *     count opens an uncached Lance dataset.
+   * @throws IllegalStateException if the response is absent or does not decode.
    */
-  public Optional<JsonNode> getLsmStats(boolean includeGenerationRows) {
+  public Optional<LsmStats> getLsmStats(boolean includeGenerationRows) {
     Map<String, Object> body = new LinkedHashMap<String, Object>();
     body.put("include_generation_rows", includeGenerationRows);
     JsonNode response = client.post(route("get_lsm_stats"), body);
-    if (response == null || !response.hasNonNull("lsm_stats")) {
+    if (response == null) {
+      throw new IllegalStateException("get_lsm_stats returned an empty response body");
+    }
+    JsonNode stats = response.get("lsm_stats");
+    if (stats == null || stats.isNull()) {
       return Optional.empty();
     }
-    return Optional.of(response.get("lsm_stats"));
+    return Optional.of(LsmStats.fromJson(stats));
   }
 
   /** Equivalent to {@code getLsmStats(false)}. */
-  public Optional<JsonNode> getLsmStats() {
+  public Optional<LsmStats> getLsmStats() {
     return getLsmStats(false);
   }
 
@@ -202,7 +210,7 @@ public class LanceDbTableLsm {
         continue;
       }
 
-      Attempt<Optional<JsonNode>> stats = issue(() -> getLsmStats(false));
+      Attempt<Optional<LsmStats>> stats = issue(() -> getLsmStats(false));
       if (stats.lostClaim) {
         backoff(reissue);
         continue;
@@ -234,7 +242,7 @@ public class LanceDbTableLsm {
    */
   private boolean drainToTargets(Map<String, Long> targets) {
     while (true) {
-      Attempt<Optional<JsonNode>> stats = issue(() -> getLsmStats(false));
+      Attempt<Optional<LsmStats>> stats = issue(() -> getLsmStats(false));
       if (stats.lostClaim) {
         return false;
       }
@@ -248,15 +256,15 @@ public class LanceDbTableLsm {
       // as idle.
       long outstanding = 0;
       boolean allCompacting = true;
-      for (JsonNode bucket : stats.value.get().path("buckets")) {
-        Long target = targets.get(bucket.path("shard_id").asText());
+      for (BucketStats bucket : stats.value.get().buckets()) {
+        Long target = targets.get(bucket.shardId());
         if (target == null) {
           continue;
         }
-        long remaining = outstandingGenerations(bucket, target);
+        long remaining = bucket.outstandingGenerations(target);
         if (remaining > 0) {
           outstanding += remaining;
-          allCompacting &= bucket.path("compacting").asBoolean(false);
+          allCompacting &= bucket.compacting();
         }
       }
       if (outstanding == 0) {
@@ -284,34 +292,15 @@ public class LanceDbTableLsm {
   }
 
   /** The newest generation held by each bucket, skipping buckets holding none. */
-  private static Map<String, Long> newestGenerations(JsonNode stats) {
+  private static Map<String, Long> newestGenerations(LsmStats stats) {
     Map<String, Long> targets = new HashMap<String, Long>();
-    for (JsonNode bucket : stats.path("buckets")) {
-      long newest = Long.MIN_VALUE;
-      for (JsonNode generation : bucket.path("generations")) {
-        newest = Math.max(newest, generation.path("generation").asLong());
-      }
-      if (newest != Long.MIN_VALUE) {
-        targets.put(bucket.path("shard_id").asText(), newest);
+    for (BucketStats bucket : stats.buckets()) {
+      OptionalLong newest = bucket.newestGeneration();
+      if (newest.isPresent()) {
+        targets.put(bucket.shardId(), newest.getAsLong());
       }
     }
     return targets;
-  }
-
-  /**
-   * How many generations at or below {@code target} are still in L0.
-   *
-   * <p>A count, not a boolean: one pass drains a bounded prefix rather than the whole target set,
-   * so a boolean would read as "no progress" for every pass but the last.
-   */
-  private static long outstandingGenerations(JsonNode bucket, long target) {
-    long count = 0;
-    for (JsonNode generation : bucket.path("generations")) {
-      if (generation.path("generation").asLong() <= target) {
-        count++;
-      }
-    }
-    return count;
   }
 
   /**
