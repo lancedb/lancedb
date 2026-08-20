@@ -1755,7 +1755,8 @@ mod tests {
 
         let page = db.list_tables().limit(10).execute().await.unwrap();
         assert_eq!(page.tables, names[..10]);
-        // The token is opaque: a caller checks that there is one, not what it says.
+        // The token is opaque and is not a table name: it is whatever resumes the store
+        // the database sits on, so a caller checks that there is one, not what it says.
         assert!(page.page_token.is_some());
 
         // Walking in pages has to reach every table exactly once, with nothing lost
