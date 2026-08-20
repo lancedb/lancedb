@@ -199,7 +199,9 @@ def assert_server_safe_row_id_requests(server):
     `.get`, not `[...]`: a dropped field should read as the assertion message these
     are written for, not as a KeyError.
     """
-    for body in server.query_bodies:
+    # Base-table reads only; the schema probe reads no rows, so it has no reason to
+    # say anything about the LSM.
+    for body in server.scans + server.takes:
         assert body.get("use_lsm") is False, body
     for body in server.takes:
         # The fetch needs the row id back to restore the requested order.
