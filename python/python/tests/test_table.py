@@ -2805,6 +2805,23 @@ async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
     assert filtered == [{"id": "a", "j": '{"k":2}'}]
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    json_values = pa.ExtensionArray.from_storage(
+        json_type, pa.array(['{"k": 3}'], type=json_type.storage_type)
+    )
+    data = pa.Table.from_arrays([pa.array(["c"]), json_values], schema=schema)
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(data, on_bad_vectors="fill")
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
