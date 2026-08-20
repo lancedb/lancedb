@@ -32,6 +32,11 @@ def parse_in_list(filter_sql: str) -> list[int]:
     return [int(m) for m in re.findall(r"-?\d+", match.group(1))]
 
 
+def is_row_id_take(body) -> bool:
+    """True when a query body fetches specific rows by row id."""
+    return "_rowid" in (body.get("filter") or "")
+
+
 def arrow_file_bytes(table: pa.Table) -> bytes:
     """Serialize to the Arrow IPC *file* framing the /query/ route answers with."""
     sink = pa.BufferOutputStream()
@@ -87,8 +92,12 @@ class MockPermutationServer:
 
     @property
     def takes(self):
-        """Bodies of the row-id takes the loader fetches batches with."""
-        return [b for b in self.query_bodies if b.get("filter") is not None]
+        """Bodies of the row-id takes the loader fetches batches with.
+
+        Keyed on `_rowid` rather than "has a filter": the schema probe carries a
+        never-true predicate so it ships no rows, and it is not a take.
+        """
+        return [b for b in self.query_bodies if is_row_id_take(b)]
 
     @staticmethod
     def _read_body(request):
@@ -114,7 +123,7 @@ class MockPermutationServer:
     def _query(self, request, body):
         self.query_bodies.append(body)
 
-        if body.get("filter") is not None:
+        if is_row_id_take(body):
             # A row-id take. Answer in ascending row-id order regardless of the order
             # asked for, so tests prove the client restores the requested order.
             row_ids = sorted(parse_in_list(body["filter"]))
@@ -135,8 +144,9 @@ class MockPermutationServer:
                 pa.table({"_rowid": pa.array(range(self.num_rows), pa.uint64())}),
             )
 
-        # The bounded schema probe.
-        return self._arrow(request, pa.table({"id": pa.array([0], pa.int64())}))
+        # The schema probe: bounded and filtered to nothing, so it carries the schema
+        # and no rows.
+        return self._arrow(request, pa.table({"id": pa.array([], pa.int64())}))
 
 
 def _make_handler(serve):
@@ -203,7 +213,7 @@ def assert_server_safe_row_id_requests(server):
     # `k == 0` counts as unbounded: lance reads a zero limit as "no limit" rather than
     # "no rows", so a probe sending 0 is an open scan wearing a small number.
     def is_unbounded(body):
-        if body.get("filter") is not None:
+        if is_row_id_take(body):
             return False
         k = body.get("k")
         return k is None or k == 0 or k > server.num_rows

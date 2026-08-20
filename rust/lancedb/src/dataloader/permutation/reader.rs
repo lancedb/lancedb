@@ -497,10 +497,25 @@ impl PermutationReader {
             )?;
             Self::load_batch(&self.base_table, row_ids, selection).await
         } else {
+            // Offsets are relative to this reader's own skip, the same way the
+            // permutation branch resolves them through `get_offset_map`.  Without
+            // this, `identity(t).with_skip(5)[0]` returns the row that iteration
+            // skipped — the exact shape `with_skip` exists to support.
+            for offset in offsets {
+                if *offset >= self.available_rows {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Offset {} is out of range; this permutation exposes {} rows",
+                            offset, self.available_rows
+                        ),
+                    });
+                }
+            }
+            let skip = self.offset.unwrap_or(0);
             let table = Table::from(self.base_table.clone());
             let batches = table
-                .take_offsets(offsets.to_vec())
-                .select(selection.clone())
+                .take_offsets(offsets.iter().map(|o| o + skip).collect())
+                .select(selection)
                 .use_lsm(false)
                 .execute()
                 .await?
@@ -534,9 +549,15 @@ impl PermutationReader {
         // One row, not zero: lance reads a limit of `Some(0)` as *no limit* rather than
         // no rows (`Scanner`: `self.limit.unwrap_or(0) > 0` gates the limit node), so a
         // zero here would scan the whole table — the very thing this is preventing.
+        //
+        // The never-true predicate is what keeps the payload empty: the plan, and so
+        // the schema, is unchanged, but no row is matched and none is shipped.  That
+        // matters for wide or blob-bearing tables, where one row per split per epoch
+        // is not free.
         table
             .query()
             .select(selection)
+            .only_if("1 = 0")
             .limit(1)
             .use_lsm(false)
             .output_schema()
@@ -848,6 +869,43 @@ mod tests {
             .values()
             .to_vec();
         assert_eq!(idx_values, vec![0, 2, 4, 6]);
+    }
+
+    /// Offsets are relative to the reader's own skip, so indexing agrees with what
+    /// iteration yields.  They disagreed before: `with_skip(5)` then offset 0 returned
+    /// the row iteration had skipped, which is the resume case `with_skip` is for.
+    #[tokio::test]
+    async fn test_take_offsets_identity_reader_honors_skip() {
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
+            .await;
+
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap()
+            .with_offset(5)
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(), 5);
+
+        let batch = reader.take_offsets(&[0, 2], Select::All).await.unwrap();
+        assert_eq!(
+            batch.column(0).as_primitive::<Int32Type>().values(),
+            &[5, 7]
+        );
+
+        // And the first row of iteration is the row at offset 0.
+        let iterated = collect_from_stream::<Int32Type>(
+            reader.read(Select::All, Default::default()).await.unwrap(),
+            "idx",
+        )
+        .await;
+        assert_eq!(iterated.first(), Some(&5));
+
+        // Past the end of what this reader exposes, rather than silently reading on.
+        let err = reader.take_offsets(&[5], Select::All).await.unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
     }
 
     #[tokio::test]

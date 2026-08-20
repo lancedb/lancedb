@@ -5216,6 +5216,8 @@ mod tests {
         let body = schema_body.lock().unwrap().clone().unwrap();
         // One, not zero: lance reads `k: 0` as "no limit", so zero would be an open scan.
         assert_eq!(body["k"], json!(1), "schema probe must not be an open scan");
+        // ...and a never-true predicate keeps it from shipping the row it bounds to.
+        assert_eq!(body["filter"], json!("1 = 0"));
     }
 
     #[tokio::test]
