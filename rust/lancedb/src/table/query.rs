@@ -91,12 +91,12 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
     // so a pushed-down query would return stale base-only data with no error.
     //
-    // Only `use_lsm(true)` needs to force local execution. `use_lsm(false)` asks for
-    // exactly the base-table read a pushdown performs, and when a MemWAL spec *is*
-    // installed `can_execute_namespace_query` already forces local execution on its
-    // own — so honoring it here would needlessly disable pushdown for callers that
-    // set it defensively (the permutation reader sets it on every base-table read).
-    if query.base().use_lsm == Some(true) {
+    // The permutation reader also relies on this: it sets `use_lsm(false)` on every
+    // base-table read, and the namespace request cannot express what those reads
+    // need (`k` defaults to 10, truncating a row-id take or a full row-id scan, and
+    // `Select::Dynamic` is rejected outright). Narrowing this to `Some(true)` would
+    // break the data loader on namespace-backed tables.
+    if query.base().use_lsm.is_some() {
         return true;
     }
     matches!(
@@ -693,7 +693,6 @@ mod tests {
     use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array};
     use futures::TryStreamExt;
     use lance_arrow::FixedSizeListArrayExt;
-    use snafu::location;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -893,12 +892,7 @@ mod tests {
 
         async fn query_table(&self, _request: NsQueryTableRequest) -> lance::Result<bytes::Bytes> {
             self.query_table_calls.fetch_add(1, Ordering::SeqCst);
-            // Erroring rather than panicking lets a test assert that a pushdown *was*
-            // attempted; tests that assert it was not still check the call count.
-            Err(lance::Error::NotSupported {
-                source: "CountingNamespaceClient does not serve queries".into(),
-                location: location!(),
-            })
+            panic!("approx_mode queries must not be pushed down to namespace query_table");
         }
     }
 
@@ -959,114 +953,34 @@ mod tests {
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// Build an in-memory table with a namespace client that counts pushdowns.
-    async fn table_with_counting_namespace(
-        name: &str,
-    ) -> (NativeTable, Arc<CountingNamespaceClient>) {
+    #[tokio::test]
+    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
         use crate::connect;
+        use crate::table::query::execute_query;
         use arrow_array::{Int32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
 
         let conn = connect("memory://").execute().await.unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let vectors = Arc::new(fixed_size_list_array(
+            vec![0.0, 0.0, 10.0, 10.0, 20.0, 20.0],
+            2,
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
         let batch = RecordBatch::try_new(
             schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), vectors],
         )
         .unwrap();
 
-        let table = conn.create_table(name, batch).execute().await.unwrap();
-        let namespace_client = Arc::new(CountingNamespaceClient::default());
-        let mut native_table = table.as_native().unwrap().clone();
-        native_table.namespace_client = Some(namespace_client.clone());
-        native_table
-            .pushdown_operations
-            .insert(NamespaceClientPushdownOperation::QueryTable);
-        (native_table, namespace_client)
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_use_lsm_true_with_namespace_pushdown_runs_locally() {
-        use crate::table::query::execute_query;
-
-        let (native_table, namespace_client) =
-            table_with_counting_namespace("test_use_lsm_true_namespace_fallback").await;
-
-        // `use_lsm(true)` must force local execution — the namespace request has no
-        // use_lsm field, so a pushdown would silently ignore it and read the base table.
-        let query = AnyQuery::Query(QueryRequest {
-            use_lsm: Some(true),
-            ..Default::default()
-        });
-
-        // The table has no MemWAL write spec, so the local planner is what rejects it.
-        // That error is itself the proof the query never went to the namespace.
-        let err = execute_query(&native_table, &query, QueryExecutionOptions::default())
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("no MemWAL write spec"),
-            "expected the local planner's error, got: {err}"
-        );
-        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_use_lsm_false_still_pushes_down() {
-        use crate::table::query::execute_query;
-
-        let (native_table, namespace_client) =
-            table_with_counting_namespace("test_use_lsm_false_namespace_pushdown").await;
-
-        // `use_lsm(false)` asks for exactly the base-table read a pushdown performs, so
-        // it must not disable pushdown.  Callers set it defensively — the permutation
-        // reader sets it on every base-table read — and losing pushdown would be a
-        // silent regression for namespace-backed tables.
-        let query = AnyQuery::Query(QueryRequest {
-            use_lsm: Some(false),
-            ..Default::default()
-        });
-
-        let err = execute_query(&native_table, &query, QueryExecutionOptions::default())
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("server-side query"),
-            "expected the namespace client's error, got: {err}"
-        );
-        assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_use_lsm_false_with_mem_wal_spec_runs_locally() {
-        use crate::connect;
-        use crate::table::LsmWriteSpec;
-        use crate::table::query::execute_query;
-        use arrow_array::{Int32Array, RecordBatch};
-        use arrow_schema::{DataType, Field, Schema};
-
-        // MemWAL needs a real dataset directory, so this one cannot use `memory://`.
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let conn = connect(tmp_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef],
-        )
-        .unwrap();
         let table = conn
-            .create_table("test_use_lsm_false_with_spec", batch)
+            .create_table("test_use_lsm_namespace_fallback", batch)
             .execute()
             .await
             .unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
-
         let namespace_client = Arc::new(CountingNamespaceClient::default());
         let mut native_table = table.as_native().unwrap().clone();
         native_table.namespace_client = Some(namespace_client.clone());
@@ -1074,10 +988,17 @@ mod tests {
             .pushdown_operations
             .insert(NamespaceClientPushdownOperation::QueryTable);
 
-        // With a spec installed, `can_execute_namespace_query` forces local execution on
-        // its own, so `use_lsm(false)` still reads the base table locally.
-        let query = AnyQuery::Query(QueryRequest {
-            use_lsm: Some(false),
+        // `use_lsm` set (even to false) must force local execution — the namespace
+        // request has no use_lsm field, so a pushdown would silently ignore it.
+        let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
+        let query = AnyQuery::VectorQuery(VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(1),
+                use_lsm: Some(false),
+                ..Default::default()
+            },
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as ArrayRef],
             ..Default::default()
         });
 
@@ -1087,7 +1008,7 @@ mod tests {
         let batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
-        assert_eq!(count, 3);
+        assert_eq!(count, 1);
         assert_eq!(namespace_client.query_table_calls.load(Ordering::SeqCst), 0);
     }
 
