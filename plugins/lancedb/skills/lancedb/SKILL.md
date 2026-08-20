@@ -20,18 +20,16 @@ Do NOT assume local-only table helpers exist on remote tables. If the user asks 
 
 1. Identify the SDK: Python, TypeScript, or both.
 2. Identify the table mode: local/embedded OSS, remote Enterprise/Cloud, or portable across both. If the user says "LanceDB Enterprise", choose the remote table path. If the task involves jobs in any way (listing, inspecting, creating, or canceling jobs), it is always the remote path and requires a remote server connection — see "Connecting to the LanceDB remote server" below before doing anything else.
-3. Read the matching language branch before writing or changing code:
-   - Python patterns: `references/python/patterns.md`
-   - Python API quick reference: `references/python/api_reference.md`
-   - Python performance guidance: `references/python/performance.md`
-   - TypeScript patterns: `references/typescript/patterns.md`
-   - TypeScript API quick reference: `references/typescript/api_reference.md`
-   - TypeScript performance guidance: `references/typescript/performance.md`
+3. Read the matching topic reference before writing or changing code:
    - Column metadata authoring (both SDKs): `references/column_metadata.md`
    - Branch operations (both SDKs): `references/branch_ops.md`
    - Remote server connection resolution (jobs, raw REST): `references/remote_connect.md`
    - Job operations REST API (list/describe/cancel/query_events): `references/remote_jobs.md`
-4. Start with `patterns.md` for the selected SDK. Read `api_reference.md` when choosing method names or return collectors. Read `performance.md` when the task involves ingestion, indexing, filtering, query tuning, diagnostics, or large datasets. Read `column_metadata.md` when the task is documenting, tagging, classifying, or grouping table columns (field descriptions, `lancedb:tag:*` tags, logical column families). Read `branch_ops.md` when the task involves branch lifecycle (list/create/delete), writing to a non-main branch, or verifying a change stayed off main. Read `remote_connect.md` when the task involves jobs or direct REST access to an Enterprise deployment, and `remote_jobs.md` for the job REST methods themselves (list, describe, cancel, query_events).
+
+   There is no bundled per-language guide. For exact method names, signatures, and options, look them up in the canonical sources instead of relying on memory:
+   - Python: `docs/src/python/python.md` (the hand-maintained API reference) and the source under `python/python/lancedb/` when working inside the LanceDB repo; otherwise <https://lancedb.github.io/lancedb/python/python/>.
+   - TypeScript: the generated typedoc under `docs/src/js/` and the source under `nodejs/lancedb/` when working inside the LanceDB repo; otherwise <https://lancedb.github.io/lancedb/js/globals/>.
+4. Apply the SDK invariants in "Per-SDK Invariants" below. Read `column_metadata.md` when the task is documenting, tagging, classifying, or grouping table columns (field descriptions, `lancedb:tag:*` tags, logical column families). Read `branch_ops.md` when the task involves branch lifecycle (list/create/delete), writing to a non-main branch, or verifying a change stayed off main. Read `remote_connect.md` when the task involves jobs or direct REST access to an Enterprise deployment, and `remote_jobs.md` for the job REST methods themselves (list, describe, cancel, query_events).
 5. For Python schemas, favor Pydantic models and validate records before writing. Use PyArrow schemas when Arrow-native, streaming, or highly dynamic data makes them materially better suited.
 6. Prefer `search()` or `query()` builders with explicit `select()` and `limit()` for reads.
 7. Avoid table-level full materialization in remote or portable code. This is the main local-vs-remote read pitfall.
@@ -53,6 +51,23 @@ The unsafe pattern is table-level or unbounded collection, plus local-only datas
 
 - Python: `table.to_pandas()`, `table.to_arrow()`, `table.to_polars()`; `table.to_lance()` is local/OSS-only dataset access, not materialization
 - TypeScript: `await table.toArrow()`, `await table.query().toArray()` without `limit()`
+
+## Per-SDK Invariants
+
+Python:
+
+- Result collectors: default to `.to_list()` (plain dicts, no extra dependency) or `.to_arrow()` (PyArrow ships with LanceDB). Use `.to_pandas()` / `.to_polars()` only when the project already declares that dependency — do not assume pandas or polars is installed.
+- Plain scans differ by client: the sync client has no `.query()` method — use `table.search()` with no argument; the async client uses `await async_table.query()`.
+
+TypeScript:
+
+- Collect bounded results with `.toArray()` (objects) or `.toArrow()` (Arrow) after `select()` and `limit()`.
+- For large reads, stream batches instead of collecting: `for await (const batch of table.query().where(...).select(...).limit(...)) { ... }`.
+
+Both SDKs:
+
+- Ingest in bulk or in batches of thousands of rows; never write per-row in a loop — each write creates a version and fragment, slowing ingestion and later queries.
+- Build a vector index once brute-force search is too slow (rule of thumb: beyond roughly 100K vectors locally), and scalar indexes for filtered columns and merge/upsert keys. Use index defaults unless the task states recall/latency requirements.
 
 ## Enterprise: never drop-then-reuse the same table name
 
