@@ -23,7 +23,6 @@ use arrow_array::{RecordBatch, UInt64Array};
 use arrow_schema::SchemaRef;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::io::RecordBatchStream;
 use lance_arrow::RecordBatchExt;
 use lance_core::ROW_ID;
 use lance_core::error::LanceOptionExt;
@@ -1106,12 +1105,20 @@ mod tests {
         .await
         .unwrap();
 
+        // Compare takes against the permutation's own order rather than assuming one:
+        // `build` sorts by split id, and that sort is not guaranteed to be stable.
+        let in_order = collect_from_stream::<Int32Type>(
+            reader.read(Select::All, Default::default()).await.unwrap(),
+            "idx",
+        )
+        .await;
+        assert_eq!(in_order.len(), 10);
+
         let batch = reader.take_offsets(&[3, 1], Select::All).await.unwrap();
         assert_eq!(batch.num_rows(), 2);
-        // No shuffle was configured, so permutation offsets follow storage order.
         assert_eq!(
             batch.column(0).as_primitive::<Int32Type>().values(),
-            &[3, 1]
+            &[in_order[3], in_order[1]]
         );
     }
 }

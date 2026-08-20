@@ -1236,7 +1236,20 @@ def test_permutation_over_remote_table():
 
         permutation = Permutation.from_tables(table, permutation_tbl, 0)
         assert permutation.num_rows == server.num_rows // 2
-        # Offsets are resolved to row ids client-side, then taken in that order.
-        assert permutation.take_offsets([2, 0]) == [{"id": 2}, {"id": 0}]
+
+        # Compare against the permutation's own order rather than assuming one: the
+        # builder sorts by split id, and that sort is not guaranteed to be stable.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        split0 = [
+            row_id
+            for row_id, split in zip(rows["row_id"], rows["split_id"])
+            if not split
+        ]
+        # The mock table's `id` equals its `_rowid`. Offsets are resolved to row ids
+        # client-side, then taken back in the order asked for.
+        assert permutation.take_offsets([2, 0]) == [
+            {"id": split0[2]},
+            {"id": split0[0]},
+        ]
 
     assert_server_safe_row_id_requests(server)

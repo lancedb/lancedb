@@ -4953,7 +4953,7 @@ mod tests {
             if path == "/v1/table/my_table/count_rows/" {
                 return http::Response::builder()
                     .status(200)
-                    .body("3".to_string().into_bytes())
+                    .body(b"3".to_vec())
                     .unwrap();
             }
 
