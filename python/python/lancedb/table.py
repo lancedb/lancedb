@@ -433,6 +433,20 @@ def _cast_to_target_schema(
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
+def _field_extension_name(field: pa.Field) -> Optional[str]:
+    extension_name = getattr(field.type, "extension_name", None)
+    if extension_name is not None:
+        return extension_name
+
+    metadata = field.metadata or {}
+    extension_name = metadata.get(b"ARROW:extension:name") or metadata.get(
+        "ARROW:extension:name"
+    )
+    if isinstance(extension_name, bytes):
+        return extension_name.decode()
+    return extension_name
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -445,6 +459,16 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
+        # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
+        # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
+        # input to that storage type here merely relabels the raw JSON bytes as
+        # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
+        if (
+            _field_extension_name(field) == "arrow.json"
+            and _field_extension_name(target_field) == "lance.json"
+        ):
+            new_fields.append(field)
+            continue
         if pa.types.is_struct(target_field.type):
             if pa.types.is_struct(field.type):
                 new_type = pa.struct(
