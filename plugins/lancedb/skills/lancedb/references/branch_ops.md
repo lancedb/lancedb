@@ -1,6 +1,6 @@
 # Branch Operations
 
-Branches are isolated, writable lines of history forked from `main`. There is no global "switch branch" state: `branches.create(...)` / `branches.checkout(...)` return a **table handle scoped to that branch**, and every read/write on that handle lands on the branch while the original main handle is unaffected.
+Branches are isolated, writable lines of history forked from `main` by default (or from another branch/version via `create`'s `from_ref`/`from_version`). There is no global "switch branch" state: `branches.create(...)` / `branches.checkout(...)` return a **table handle scoped to that branch**, and every read/write on that handle lands on the branch while the original main handle is unaffected. Unpinned handles track the branch's latest version and are writable; `checkout(name, version=...)` pins the handle to that version and is read-only.
 
 Don't work from memory — read the public docs for the current API:
 
