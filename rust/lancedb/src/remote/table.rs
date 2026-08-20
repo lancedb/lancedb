@@ -1142,6 +1142,54 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    async fn count_rows_impl(
+        &self,
+        filter: Option<Filter>,
+        use_lsm: Option<bool>,
+    ) -> Result<usize> {
+        let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
+
+        let version = self.current_version().await;
+
+        let mut body = if let Some(filter) = filter {
+            let filter_sql = match filter {
+                Filter::Sql(sql) => sql.clone(),
+                Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
+            };
+            serde_json::json!({ "predicate": filter_sql, "version": version })
+        } else {
+            serde_json::json!({ "version": version })
+        };
+        // Only forward when explicitly set; a server that predates it ignores the
+        // field and counts as it would by default.
+        if let Some(use_lsm) = use_lsm {
+            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        }
+        self.apply_branch_body(&mut body);
+        request = request.json(&body);
+
+        let (request_id, response) = match self.send(request, true).await {
+            Ok((id, resp)) => {
+                // check_table_response now handles error-based invalidation
+                let response = self.check_table_response(&id, resp).await?;
+                (id, response)
+            }
+            Err(e) => {
+                self.handle_error_invalidation(&e);
+                return Err(e);
+            }
+        };
+
+        self.track_read_version_from_headers(response.headers());
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse row count: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     fn invalidate_schema_cache(&self) {
         self.schema_cache.invalidate();
     }
@@ -2106,43 +2154,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
-        let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
-
-        let version = self.current_version().await;
-
-        let mut body = if let Some(filter) = filter {
-            let filter_sql = match filter {
-                Filter::Sql(sql) => sql.clone(),
-                Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
-            };
-            serde_json::json!({ "predicate": filter_sql, "version": version })
-        } else {
-            serde_json::json!({ "version": version })
-        };
-        self.apply_branch_body(&mut body);
-        request = request.json(&body);
-
-        let (request_id, response) = match self.send(request, true).await {
-            Ok((id, resp)) => {
-                // check_table_response now handles error-based invalidation
-                let response = self.check_table_response(&id, resp).await?;
-                (id, response)
-            }
-            Err(e) => {
-                self.handle_error_invalidation(&e);
-                return Err(e);
-            }
-        };
-
-        self.track_read_version_from_headers(response.headers());
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse row count: {}", e).into(),
-            request_id,
-            status_code: None,
-        })
+        self.count_rows_impl(filter, None).await
     }
+
+    /// The server rejects `count_rows` outright on a table carrying a MemWAL write
+    /// spec, because the count would silently omit every un-compacted row. Sending
+    /// `use_lsm: false` asks for the base-only count explicitly, which is what a
+    /// caller addressing rows by `_rowid` wants.
+    async fn count_base_rows(&self, filter: Option<Filter>) -> Result<usize> {
+        self.count_rows_impl(filter, Some(false)).await
+    }
+
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
 
@@ -4943,7 +4965,9 @@ mod tests {
         use crate::dataloader::permutation::builder::PermutationBuilder;
 
         let scan_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
-        let captured = scan_body.clone();
+        let count_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured_scan = scan_body.clone();
+        let captured_count = count_body.clone();
 
         let table = Table::new_with_handler("my_table", move |request: reqwest::Request| {
             let path = request.url().path().to_string();
@@ -4951,6 +4975,7 @@ mod tests {
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
 
             if path == "/v1/table/my_table/count_rows/" {
+                *captured_count.lock().unwrap() = Some(body);
                 return http::Response::builder()
                     .status(200)
                     .body(b"3".to_vec())
@@ -4958,7 +4983,7 @@ mod tests {
             }
 
             assert_eq!(path, "/v1/table/my_table/query/");
-            *captured.lock().unwrap() = Some(body);
+            *captured_scan.lock().unwrap() = Some(body);
             http::Response::builder()
                 .status(200)
                 .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
@@ -4973,6 +4998,28 @@ mod tests {
         assert_eq!(body["columns"], json!([]));
         assert_eq!(body["with_row_id"], json!(true));
         assert_eq!(body["use_lsm"], json!(false));
+
+        // The count has to agree with that scan. The server rejects `count_rows`
+        // outright on a MemWAL table unless it is told to count the base table.
+        let body = count_body.lock().unwrap().clone().unwrap();
+        assert_eq!(body["use_lsm"], json!(false));
+    }
+
+    /// A plain `count_rows` must not acquire the base-only flag by accident — only
+    /// the permutation's `count_base_rows` opts in.
+    #[tokio::test]
+    async fn test_count_rows_does_not_send_use_lsm() {
+        let table = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body.get("use_lsm"), None, "{body}");
+            http::Response::builder()
+                .status(200)
+                .body(b"7".to_vec())
+                .unwrap()
+        });
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 7);
     }
 
     /// The permutation fetch is a row-id take: the same `_rowid IN (...)` filter

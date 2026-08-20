@@ -21,6 +21,17 @@ def exception_output(e_info: pytest.ExceptionInfo):
     return "".join(lines).strip()
 
 
+def parse_in_list(filter_sql: str) -> list[int]:
+    """Pull the integers out of a `<col> IN (a, b, c)` predicate.
+
+    Scoped to the parenthesised list rather than scanning the whole predicate, so a
+    cast or a type name in the rendered SQL cannot contribute phantom values.
+    """
+    match = re.search(r"\bIN\s*\(([^)]*)\)", filter_sql, re.IGNORECASE)
+    assert match is not None, f"expected an IN list, got: {filter_sql}"
+    return [int(m) for m in re.findall(r"-?\d+", match.group(1))]
+
+
 def arrow_file_bytes(table: pa.Table) -> bytes:
     """Serialize to the Arrow IPC *file* framing the /query/ route answers with."""
     sink = pa.BufferOutputStream()
@@ -103,7 +114,7 @@ class MockPermutationServer:
         if body.get("filter") is not None:
             # A row-id take. Answer in ascending row-id order regardless of the order
             # asked for, so tests prove the client restores the requested order.
-            row_ids = sorted(int(m) for m in re.findall(r"\d+", body["filter"]))
+            row_ids = sorted(parse_in_list(body["filter"]))
             return self._arrow(
                 request,
                 pa.table(
@@ -141,8 +152,15 @@ def _make_handler(serve):
 
 @contextlib.contextmanager
 def mock_remote_table(server):
-    """Run ``server`` on a local port and yield an open remote table against it."""
-    with http.server.HTTPServer(("localhost", 0), _make_handler(server)) as srv:
+    """Run ``server`` on a local port and yield an open remote table against it.
+
+    Threading, because the loader fans out ``num_splits * prefetch_batches`` fetch
+    threads; a single-threaded server would serialize them in the accept backlog and
+    hide the prefetch overlap being exercised.
+    """
+    with http.server.ThreadingHTTPServer(
+        ("localhost", 0), _make_handler(server)
+    ) as srv:
         thread = threading.Thread(target=srv.serve_forever)
         thread.start()
         try:

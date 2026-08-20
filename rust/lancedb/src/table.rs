@@ -562,6 +562,18 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
+    /// Count rows in the base table, ignoring any MemWAL.
+    ///
+    /// The default is [`Self::count_rows`], which is already base-only for tables
+    /// backed by a Lance dataset. Implementations whose plain count would include —
+    /// or refuse because of — un-compacted MemWAL data override this.
+    ///
+    /// Callers that address rows by `_rowid` need it: only base-table rows have a
+    /// stable one, so a count that disagrees with what a base-only scan returns
+    /// would silently mis-size the result (see [`crate::dataloader::permutation`]).
+    async fn count_base_rows(&self, filter: Option<Filter>) -> Result<usize> {
+        self.count_rows(filter).await
+    }
     /// Create a physical plan for the query.
     async fn create_plan(
         &self,

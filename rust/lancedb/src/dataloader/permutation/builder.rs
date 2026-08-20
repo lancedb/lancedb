@@ -21,6 +21,7 @@ use crate::{
         util::{TemporaryDirectory, rename_column},
     },
     query::{ExecutableQuery, QueryBase, Select},
+    table::Filter,
 };
 
 pub const SRC_ROW_ID_COL: &str = "row_id";
@@ -236,6 +237,36 @@ impl PermutationBuilder {
         }))
     }
 
+    /// Check that the row-id scan came back with exactly the columns we asked for.
+    ///
+    /// The scan requests the row id with `with_row_id` and an *empty* projection,
+    /// which is a different wire value from "no projection given". A server that read
+    /// the empty list as "all columns" would answer with the whole table, and nothing
+    /// downstream would notice: the split id is appended to whatever arrives and
+    /// `_rowid` is still found by name, so the permutation would silently materialize
+    /// every base column — and `Hash` would silently hash all of them rather than the
+    /// configured ones. Fail here instead.
+    fn validate_scan_schema(schema: &arrow_schema::Schema, splitter: &Splitter) -> Result<()> {
+        let mut expected = splitter.projected_columns();
+        expected.push(ROW_ID.to_string());
+        let actual = schema
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect::<Vec<_>>();
+        if actual != expected {
+            return Err(Error::Other {
+                message: format!(
+                    "Permutation row id scan returned columns {:?}, expected {:?}.  \
+                     The table's backing store did not honor the requested projection.",
+                    actual, expected
+                ),
+                source: None,
+            });
+        }
+        Ok(())
+    }
+
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
         // First pass, apply filter and load row ids.  The row id is requested with the
@@ -266,13 +297,18 @@ impl PermutationBuilder {
         // split id)
         rows = splitter.project(rows);
 
+        // Base-only, to agree with the base-only scan above.  On a remote MemWAL
+        // table a plain `count_rows` is rejected outright rather than merely
+        // disagreeing.
         let num_rows = self
             .base_table
-            .count_rows(self.config.filter.clone())
+            .base_table()
+            .count_base_rows(self.config.filter.clone().map(Filter::Sql))
             .await? as u64;
 
         // Apply splits
         let rows = rows.execute().await?;
+        Self::validate_scan_schema(rows.schema().as_ref(), &splitter)?;
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested

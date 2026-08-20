@@ -255,8 +255,8 @@ class Permutations:
 
     Attributes
     ----------
-    base_table: LanceTable
-        The base table that the permutations are based on.
+    base_table: Table
+        The base table that the permutations are based on.  May be a remote table.
     permutation_table: LanceTable
         The permutation table that defines the splits.
     split_names: list[str]
@@ -289,7 +289,7 @@ class Permutations:
     {'train': 0, 'test': 1}
     """
 
-    def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
+    def __init__(self, base_table: Table, permutation_table: LanceTable):
         self.base_table = base_table
         self.permutation_table = permutation_table
 

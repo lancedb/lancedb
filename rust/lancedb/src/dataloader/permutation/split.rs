@@ -11,6 +11,7 @@ use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::hash_utils::{RandomState, create_hashes};
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
+use lance_core::ROW_ID;
 
 use crate::{
     Error, Result,
@@ -223,13 +224,20 @@ impl Splitter {
         )))
     }
 
-    fn hash_split_id(batch: &RecordBatch, thresholds: &[u64], total_weight: u64) -> UInt64Array {
+    fn hash_split_id(
+        batch: &RecordBatch,
+        row_id_index: usize,
+        thresholds: &[u64],
+        total_weight: u64,
+    ) -> UInt64Array {
         let arrays = batch
             .columns()
             .iter()
-            // Don't hash the last column which should always be the row id
-            .take(batch.columns().len() - 1)
-            .cloned()
+            .enumerate()
+            // The row id identifies the row rather than describing it, so hashing it
+            // would make the split assignment depend on storage position.
+            .filter(|(i, _)| *i != row_id_index)
+            .map(|(_, col)| col.clone())
             .collect::<Vec<_>>();
         let mut hashes = vec![0; batch.num_rows()];
         let random_state = RandomState::with_seed(0);
@@ -268,7 +276,9 @@ impl Splitter {
         weights: &[u64],
         discard_weight: u64,
     ) -> Result<SendableRecordBatchStream> {
-        let row_id_index = source.schema().fields.len() - 1;
+        // By name, not by position: the row id is appended by `with_row_id`, so where
+        // it lands is up to the scanner (or the server) rather than to `project`.
+        let row_id_index = source.schema().index_of(ROW_ID)?;
         let new_schema = Arc::new(Schema::new(vec![
             source.schema().field(row_id_index).clone(),
             Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
@@ -288,7 +298,7 @@ impl Splitter {
 
         let new_schema_clone = new_schema.clone();
         let stream = source.map_ok(move |batch| {
-            let split_ids = Self::hash_split_id(&batch, &thresholds, total_weight);
+            let split_ids = Self::hash_split_id(&batch, row_id_index, &thresholds, total_weight);
 
             if split_ids.null_count() > 0 {
                 let is_valid = split_ids.nulls().unwrap().inner();
@@ -358,10 +368,21 @@ impl Splitter {
         }
     }
 
+    /// The columns this strategy needs, in order, to compute a split id.
+    ///
+    /// The row id is not among them: the caller requests it with `with_row_id`, which
+    /// appends it after these columns.
+    pub fn projected_columns(&self) -> Vec<String> {
+        match &self.strategy {
+            SplitStrategy::Calculated { .. } => vec![SPLIT_ID_COLUMN.to_string()],
+            SplitStrategy::Hash { columns, .. } => columns.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Add the columns this strategy needs to compute a split id.
     ///
-    /// The row id is not projected here.  The caller requests it with `with_row_id`,
-    /// which appends it after these columns — the position [`Self::apply`] expects.
+    /// See [`Self::projected_columns`] for why the row id is not projected here.
     pub fn project(&self, query: Query) -> Query {
         match &self.strategy {
             SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![(
@@ -558,7 +579,9 @@ mod tests {
     use lance_datagen::{BatchCount, ByteCount, RowCount, Seed};
     use std::sync::Arc;
 
-    const ID_COLUMN: &str = "id";
+    /// Stands in for the row id column the builder's scan appends via `with_row_id`.
+    /// Named as it really is, because `apply_hash` looks it up by name.
+    const ID_COLUMN: &str = ROW_ID;
 
     #[test]
     fn test_split_sizes_percentages_validation() {
