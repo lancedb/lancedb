@@ -506,11 +506,13 @@ impl PermutationReader {
         // `output_schema` reads the schema off a query plan, and building a plan on a
         // remote table executes the query.  Without a limit that is a full table scan
         // over HTTP for every `Permutation` constructed — once per split, per epoch — so
-        // bound it.  Native tables never execute the plan, so this costs them nothing.
+        // bound it to no rows at all: the response still carries the schema, which is
+        // the only thing wanted here, and a wide or blob-bearing table does not pay to
+        // ship a row.  Native tables never execute the plan, so this costs them nothing.
         table
             .query()
             .select(selection)
-            .limit(1)
+            .limit(0)
             .use_lsm(false)
             .output_schema()
             .await

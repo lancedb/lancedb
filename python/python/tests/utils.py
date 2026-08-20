@@ -74,6 +74,9 @@ class MockPermutationServer:
         if path == f"/v1/table/{self.name}/query/":
             return self._query(request, self._read_body(request))
 
+        # Drain before answering, so an unexpected route cannot desync a
+        # keep-alive connection.
+        self._read_body(request)
         request.send_response(404)
         request.end_headers()
 
