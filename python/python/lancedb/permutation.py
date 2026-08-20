@@ -1041,6 +1041,10 @@ class Permutation:
         The returned value is passed through the permutation's current transform,
         so `with_format` and `with_transform` affect this method in the same way
         they affect iteration.
+
+        Offsets must be distinct.  A repeated offset resolves to one row rather than
+        two, which would silently misalign a batch, so it raises instead.  Sampling
+        with replacement is therefore not supported here.
         """
         self._ensure_open()
 

@@ -459,6 +459,11 @@ impl PermutationReader {
         Ok(offset_map)
     }
 
+    /// Read the rows at `offsets`, in that order.
+    ///
+    /// Offsets must be distinct: a repeated offset resolves to a single row, which
+    /// would misalign the returned batch against what the caller asked for, so it is
+    /// rejected by the row-count checks rather than returned short.
     pub async fn take_offsets(&self, offsets: &[u64], selection: Select) -> Result<RecordBatch> {
         if offsets.is_empty() {
             return Ok(RecordBatch::new_empty(self.output_schema(selection).await?));
