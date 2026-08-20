@@ -249,19 +249,28 @@ impl PermutationBuilder {
     fn validate_scan_schema(schema: &arrow_schema::Schema, splitter: &Splitter) -> Result<()> {
         let mut expected = splitter.projected_columns();
         expected.push(ROW_ID.to_string());
-        let actual = schema
+        let mut actual = schema
             .fields()
             .iter()
             .map(|f| f.name().clone())
             .collect::<Vec<_>>();
-        if actual != expected {
-            return Err(Error::Other {
+        // Compared as sets: `apply_hash` finds the row id by name precisely because
+        // where a backing store puts it is not ours to dictate, and a hash strategy
+        // may legitimately name the same column twice.  What matters is that nothing
+        // unrequested came back.
+        let (mut expected_set, mut actual_set) = (expected.clone(), actual.clone());
+        expected_set.sort_unstable();
+        expected_set.dedup();
+        actual_set.sort_unstable();
+        actual_set.dedup();
+        if actual_set != expected_set {
+            actual.sort_unstable();
+            return Err(Error::InvalidInput {
                 message: format!(
                     "Permutation row id scan returned columns {:?}, expected {:?}.  \
                      The table's backing store did not honor the requested projection.",
-                    actual, expected
+                    actual, expected_set
                 ),
-                source: None,
             });
         }
         Ok(())

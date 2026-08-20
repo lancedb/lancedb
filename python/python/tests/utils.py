@@ -187,9 +187,11 @@ def assert_server_safe_row_id_requests(server):
     the MemWAL LSM scanner rejects ``with_row_id`` because it exposes ``_rowaddr``
     rather than the stable ``_rowid`` a permutation is defined over.
     """
+    # `.get`, not `[...]`: a dropped field should read as the assertion message these
+    # are written for, not as a KeyError.
     for body in server.scans + server.takes:
-        assert body["with_row_id"] is True, body
-        assert body["use_lsm"] is False, body
+        assert body.get("with_row_id") is True, body
+        assert body.get("use_lsm") is False, body
     for body in server.takes:
         assert "_rowid" in body["filter"], body
 

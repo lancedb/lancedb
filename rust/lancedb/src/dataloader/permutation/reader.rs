@@ -95,8 +95,13 @@ impl PermutationReader {
         Self::inner_new(base_table, Some(permutation_table), split).await
     }
 
-    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Self {
-        Self::inner_new(base_table, None, 0).await.unwrap()
+    /// A reader over the base table in storage order, with no permutation.
+    ///
+    /// Fallible: construction counts the base table, which for a remote table is an
+    /// HTTP round trip, so a transient network or auth failure must surface as an
+    /// error rather than a panic across a binding boundary.
+    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
+        Self::inner_new(base_table, None, 0).await
     }
 
     /// Validates the limit and offset and returns the number of rows that will be read
@@ -459,7 +464,14 @@ impl PermutationReader {
         Ok(offset_map)
     }
 
-    /// Read the rows at `offsets`, in that order.
+    /// Read the rows at `offsets`.
+    ///
+    /// With a permutation table the rows come back in the order `offsets` names them.
+    /// An identity reader does **not** reorder: it filters on `_rowoffset`, and
+    /// [`crate::Table::take_offsets`] makes no ordering guarantee, so rows arrive in
+    /// whatever order the backing store produces. Reordering that branch needs the
+    /// offsets echoed back in the result, which is a change of its own; until then, do
+    /// not rely on identity takes for a shuffled sampler.
     ///
     /// Offsets must be distinct: a repeated offset resolves to a single row, which
     /// would misalign the returned batch against what the caller asked for, so it is
@@ -820,7 +832,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         // With no permutation table, take_offsets uses the base table directly
         let offsets = vec![0, 2, 4, 6];
@@ -1002,7 +1016,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         let batch = reader.take_offsets(&[], Select::All).await.unwrap();
 
