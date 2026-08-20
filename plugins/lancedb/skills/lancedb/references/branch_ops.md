@@ -13,3 +13,4 @@ Notes the docs may not state prominently:
 
 - Branch lifecycle works on local/OSS and remote Cloud/Enterprise tables; **merging into main is Enterprise-only** (others raise `NotSupported`). A rejected merge is not an exception — inspect the returned `status` and `diff.mergeBlockers`.
 - To verify isolation after a branch write, read through both handles: the branch handle sees the change, the main handle must not.
+
