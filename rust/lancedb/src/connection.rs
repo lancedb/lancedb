@@ -73,11 +73,13 @@ fn set_storage_options_provider(
 }
 
 /// A builder for configuring a [`Connection::table_names`] operation
+#[deprecated(note = "Use Connection::list_tables instead")]
 pub struct TableNamesBuilder {
     parent: Arc<dyn Database>,
     request: TableNamesRequest,
 }
 
+#[allow(deprecated)]
 impl TableNamesBuilder {
     fn new(parent: Arc<dyn Database>) -> Self {
         Self {
@@ -112,6 +114,57 @@ impl TableNamesBuilder {
     #[allow(deprecated)]
     pub async fn execute(self) -> Result<Vec<String>> {
         self.parent.clone().table_names(self.request).await
+    }
+}
+
+/// A builder for configuring a [`Connection::list_tables`] operation
+pub struct ListTablesBuilder {
+    parent: Arc<dyn Database>,
+    request: ListTablesRequest,
+}
+
+impl ListTablesBuilder {
+    fn new(parent: Arc<dyn Database>) -> Self {
+        Self {
+            parent,
+            request: ListTablesRequest {
+                // The root namespace is an empty path, not an absent one: a
+                // namespace-backed database rejects a request that names no namespace.
+                id: Some(Vec::new()),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Resume listing from a previous page.
+    ///
+    /// Pass the `page_token` from the previous [`ListTablesResponse`]. The token is
+    /// opaque: it carries whatever the database needs to resume, and callers should
+    /// not construct or interpret one. A response whose token is `None` or empty is
+    /// the end of the listing.
+    pub fn page_token(mut self, page_token: impl Into<String>) -> Self {
+        self.request.page_token = Some(page_token.into());
+        self
+    }
+
+    /// An upper bound on how many tables to return.
+    ///
+    /// A page may hold fewer than this and still not be the last one, so continue
+    /// while the response carries a page token rather than while pages are full.
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.request.limit = Some(i32::try_from(limit).unwrap_or(i32::MAX));
+        self
+    }
+
+    /// Set the namespace path to list tables from. Defaults to the root namespace.
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.request.id = Some(namespace_path);
+        self
+    }
+
+    /// Execute the list tables operation
+    pub async fn execute(self) -> Result<ListTablesResponse> {
+        self.parent.clone().list_tables(self.request).await
     }
 }
 
@@ -414,7 +467,9 @@ impl Connection {
     /// under creation, may contain only uncommitted storage, or may be concurrently
     /// dropped before it is opened.
     ///
-    /// The parameters `page_token` and `limit` can be used to paginate the results
+    /// The parameters `start_after` and `limit` can be used to paginate the results
+    #[deprecated(note = "Use Connection::list_tables instead")]
+    #[allow(deprecated)]
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
     }
@@ -652,9 +707,32 @@ impl Connection {
         self.internal.namespace_client_config().await
     }
 
-    /// List tables with pagination support
-    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
-        self.internal.list_tables(request).await
+    /// List the tables in the database, a page at a time
+    ///
+    /// ```
+    /// # use lancedb::Connection;
+    /// # async fn list_all(conn: &Connection) -> Result<Vec<String>, lancedb::Error> {
+    /// let mut names = Vec::new();
+    /// let mut token = None;
+    /// loop {
+    ///     let mut request = conn.list_tables().limit(100);
+    ///     if let Some(token) = token {
+    ///         request = request.page_token(token);
+    ///     }
+    ///     let page = request.execute().await?;
+    ///     names.extend(page.tables);
+    ///     // A page may be short without being the last one, so the token is what ends
+    ///     // the walk.
+    ///     token = page.page_token.filter(|token| !token.is_empty());
+    ///     if token.is_none() {
+    ///         break;
+    ///     }
+    /// }
+    /// # Ok(names)
+    /// # }
+    /// ```
+    pub fn list_tables(&self) -> ListTablesBuilder {
+        ListTablesBuilder::new(self.internal.clone())
     }
 
     /// Get the in-memory embedding registry.
@@ -1310,6 +1388,8 @@ mod test_utils {
 }
 
 #[cfg(test)]
+// `table_names` is deprecated but still supported, so its tests still call it.
+#[allow(deprecated)]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
@@ -1650,6 +1730,74 @@ mod tests {
         let tables = db.table_names().limit(7).execute().await.unwrap();
 
         assert_eq!(tables, names[..7]);
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_paginates() {
+        let tc = new_test_connection().await.unwrap();
+        if tc.is_remote {
+            // What resumes a page is the server's to decide, and asserting it here would be
+            // asserting the server's contract rather than this one.
+            return;
+        }
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let mut names = Vec::with_capacity(25);
+        for _ in 0..25 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+        names.sort();
+
+        let page = db.list_tables().limit(10).execute().await.unwrap();
+        assert_eq!(page.tables, names[..10]);
+        // The token is opaque: a caller checks that there is one, not what it says.
+        assert!(page.page_token.is_some());
+
+        // Walking in pages has to reach every table exactly once, with nothing lost
+        // at a page boundary.
+        let mut seen = Vec::with_capacity(names.len());
+        let mut page_token = None;
+        loop {
+            let mut request = db.list_tables().limit(10);
+            if let Some(token) = page_token {
+                request = request.page_token(token);
+            }
+            let page = request.execute().await.unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token.filter(|token| !token.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, names);
+    }
+
+    #[tokio::test]
+    async fn test_list_tables_exhausted_has_no_token() {
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        for i in 0..3 {
+            db.create_empty_table(format!("table{i}"), schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        // A limit the listing does not fill leaves no token behind.
+        let page = db.list_tables().limit(10).execute().await.unwrap();
+        assert_eq!(page.tables.len(), 3);
+        assert_eq!(page.page_token, None);
+
+        // Neither does one that exactly exhausts it.
+        let page = db.list_tables().limit(3).execute().await.unwrap();
+        assert_eq!(page.tables.len(), 3);
+        assert_eq!(page.page_token, None);
     }
 
     #[tokio::test]

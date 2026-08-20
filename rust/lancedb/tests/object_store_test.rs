@@ -117,8 +117,8 @@ async fn test_minio_lifecycle() -> Result<()> {
     let row_count = table.count_rows(None).await?;
     assert_eq!(row_count, 3);
 
-    let table_names = db.table_names().execute().await?;
-    assert_eq!(table_names, vec!["test_table"]);
+    let tables = db.list_tables().execute().await?.tables;
+    assert_eq!(tables, vec!["test_table"]);
 
     // Re-open the table
     let table = db.open_table("test_table").execute().await?;
