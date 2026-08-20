@@ -51,20 +51,20 @@ metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
-tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true }
 log.workspace = true
-async-trait = "0"
-bytes = "1"
+async-trait = { workspace = true }
+bytes = { workspace = true }
 futures.workspace = true
 num-traits.workspace = true
 url.workspace = true
 rand.workspace = true
 regex.workspace = true
-serde = { version = "^1" }
-serde_json = { version = "1" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
-tempfile = "3.5.0"
+tempfile = { workspace = true }
 aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }
 # For remote feature
 reqwest = { version = "0.12.0", default-features = false, features = [
@@ -79,7 +79,7 @@ reqwest = { version = "0.12.0", default-features = false, features = [
 ], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
 urlencoding = { version = "2", optional = true }
-uuid = { version = "1.7.0", features = ["v4", "v5"] }
+uuid = { workspace = true, features = ["v5"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
 hf-hub = { version = "0.4.1", optional = true, default-features = false, features = [
@@ -96,11 +96,11 @@ semver = { workspace = true }
 [dev-dependencies]
 anyhow = "1"
 lance-testing = { workspace = true }
-tempfile = "3.5.0"
+tempfile = { workspace = true }
 random_word = { version = "0.4.3", features = ["en"] }
 roaring = "0.11.4"
-tokio = { version = "1.23", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
-uuid = { version = "1.7.0", features = ["v4"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "test-util"] }
+uuid = { workspace = true }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.55.0" }
 aws-sdk-s3 = { version = "1.55.0" }
