@@ -29,6 +29,18 @@ use lance_core::error::LanceOptionExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// One column of a caller's requested output.
+///
+/// The row id cannot be asked for in a projection, so a selection that mentions it is
+/// fetched without it and reassembled against this plan.
+#[derive(Debug, Clone)]
+enum OutputSlot {
+    /// Take this column from the fetched batch, by name.
+    Fetched(String),
+    /// Fill from the row id, under this output name.
+    RowId(String),
+}
+
 /// Reads a permutation of a source table based on row IDs stored in a separate table
 #[derive(Clone)]
 pub struct PermutationReader {
@@ -193,7 +205,7 @@ impl PermutationReader {
         selection: Select,
     ) -> Result<RecordBatch> {
         // The row id never travels in the projection; see `split_row_id_selection`.
-        let (transport_selection, row_id_aliases) = Self::split_row_id_selection(selection)?;
+        let (transport_selection, row_id_slots) = Self::split_row_id_selection(selection)?;
 
         let num_rows = row_ids.num_rows();
         // One column, positionally — the callers name it differently (`row_id` from a
@@ -286,7 +298,7 @@ impl PermutationReader {
             arrow_select::take::take_record_batch(&batch, &desired_idx_order)?
         };
 
-        Self::restore_row_ids(ordered_batch, &row_id_aliases)
+        Self::restore_row_ids(ordered_batch, row_id_slots.as_deref())
     }
 
     async fn row_ids_to_batches(
@@ -324,86 +336,137 @@ impl PermutationReader {
     ///
     /// The row id is a system column: the LanceDB server accepts it only through the
     /// `with_row_id` flag and rejects it outright in a projection. So it never goes on
-    /// the wire. This returns the projection to send plus the output names the caller
-    /// wanted the row id under, which [`Self::restore_row_ids`] puts back once the
-    /// batch is in hand — the fetch always sets `with_row_id`, so the values are there.
-    fn split_row_id_selection(selection: Select) -> Result<(Select, Vec<String>)> {
-        // An empty projection travels as `Select::Columns([])`, the one empty shape
-        // both the native scanner and the server agree on.
-        fn narrowed(columns: Vec<(String, String)>) -> Select {
+    /// the wire. This returns the projection to send plus, when the caller did ask for
+    /// the row id, the full output shape to rebuild afterwards — in the requested order
+    /// and multiplicity, which appending to the fetched batch would not preserve.
+    fn split_row_id_selection(selection: Select) -> Result<(Select, Option<Vec<OutputSlot>>)> {
+        // An empty projection travels as `Select::Columns([])`, the one empty shape both
+        // the native scanner and the server agree on.
+        fn narrowed<T>(
+            columns: Vec<(String, T)>,
+            rebuild: impl Fn(Vec<(String, T)>) -> Select,
+        ) -> Select {
             if columns.is_empty() {
                 Select::Columns(Vec::new())
             } else {
-                Select::Dynamic(columns)
+                rebuild(columns)
             }
         }
 
         match selection {
             // `_rowid` is a system column and is not included in Select::All
-            Select::All => Ok((Select::All, Vec::new())),
+            Select::All => Ok((Select::All, None)),
             Select::Columns(columns) => {
-                let (row_ids, rest): (Vec<_>, Vec<_>) =
-                    columns.into_iter().partition(|column| column == ROW_ID);
-                Ok((Select::Columns(rest), row_ids))
+                if !columns.iter().any(|column| column == ROW_ID) {
+                    return Ok((Select::Columns(columns), None));
+                }
+                let slots = columns
+                    .iter()
+                    .map(|column| {
+                        if column == ROW_ID {
+                            OutputSlot::RowId(column.clone())
+                        } else {
+                            OutputSlot::Fetched(column.clone())
+                        }
+                    })
+                    .collect();
+                let rest = columns
+                    .into_iter()
+                    .filter(|column| column != ROW_ID)
+                    .collect();
+                Ok((Select::Columns(rest), Some(slots)))
             }
             Select::Dynamic(columns) => {
-                let mut aliases = Vec::new();
-                let mut rest = Vec::new();
-                for (alias, expr) in columns {
-                    if expr == ROW_ID {
-                        aliases.push(alias);
-                    } else if alias == ROW_ID {
+                for (alias, expr) in &columns {
+                    if alias == ROW_ID && expr != ROW_ID {
                         return Err(Error::InvalidInput {
                             message: format!(
                                 "Dynamic column {} cannot be used to select _rowid",
                                 expr
                             ),
                         });
-                    } else {
-                        rest.push((alias, expr));
                     }
                 }
-                Ok((narrowed(rest), aliases))
+                if !columns.iter().any(|(_, expr)| expr == ROW_ID) {
+                    return Ok((Select::Dynamic(columns), None));
+                }
+                let slots = columns
+                    .iter()
+                    .map(|(alias, expr)| {
+                        if expr == ROW_ID {
+                            OutputSlot::RowId(alias.clone())
+                        } else {
+                            OutputSlot::Fetched(alias.clone())
+                        }
+                    })
+                    .collect();
+                let rest = columns
+                    .into_iter()
+                    .filter(|(_, expr)| expr != ROW_ID)
+                    .collect();
+                Ok((narrowed(rest, Select::Dynamic), Some(slots)))
             }
             Select::Expr(columns) => {
-                let mut aliases = Vec::new();
-                let mut rest = Vec::new();
-                for (alias, expr) in columns {
-                    match &expr {
-                        datafusion_expr::Expr::Column(column) if column.name == ROW_ID => {
-                            aliases.push(alias)
+                let is_row_id = |expr: &datafusion_expr::Expr| matches!(expr, datafusion_expr::Expr::Column(column) if column.name == ROW_ID);
+                if !columns.iter().any(|(_, expr)| is_row_id(expr)) {
+                    return Ok((Select::Expr(columns), None));
+                }
+                let slots = columns
+                    .iter()
+                    .map(|(alias, expr)| {
+                        if is_row_id(expr) {
+                            OutputSlot::RowId(alias.clone())
+                        } else {
+                            OutputSlot::Fetched(alias.clone())
                         }
-                        _ => rest.push((alias, expr)),
-                    }
-                }
-                if rest.is_empty() {
-                    Ok((Select::Columns(Vec::new()), aliases))
-                } else {
-                    Ok((Select::Expr(rest), aliases))
-                }
+                    })
+                    .collect();
+                let rest = columns
+                    .into_iter()
+                    .filter(|(_, expr)| !is_row_id(expr))
+                    .collect();
+                Ok((narrowed(rest, Select::Expr), Some(slots)))
             }
         }
     }
 
-    /// Put the row id back under the names the caller asked for, and drop it otherwise.
-    fn restore_row_ids(batch: RecordBatch, aliases: &[String]) -> Result<RecordBatch> {
-        if aliases.is_empty() {
-            // Requested only so the order could be restored; the caller never asked
-            // to see it.
-            return Ok(batch.drop_column(ROW_ID)?);
-        }
+    /// Rebuild the caller's requested output from a fetched batch plus its row ids.
+    ///
+    /// `slots` is `None` when the caller never asked for the row id, in which case it
+    /// was fetched only so the requested order could be restored and is dropped here.
+    fn restore_row_ids(batch: RecordBatch, slots: Option<&[OutputSlot]>) -> Result<RecordBatch> {
+        let Some(slots) = slots else {
+            return match batch.column_by_name(ROW_ID) {
+                Some(_) => Ok(batch.drop_column(ROW_ID)?),
+                None => Ok(batch),
+            };
+        };
+
         let row_ids = batch.column_by_name(ROW_ID).expect_ok()?.clone();
-        let mut out = batch;
-        for alias in aliases.iter().filter(|alias| *alias != ROW_ID) {
-            out = out.try_with_column(
-                arrow_schema::Field::new(alias, row_ids.data_type().clone(), true),
-                row_ids.clone(),
-            )?;
+        let schema = batch.schema();
+        let mut fields = Vec::with_capacity(slots.len());
+        let mut columns = Vec::with_capacity(slots.len());
+        for slot in slots {
+            match slot {
+                OutputSlot::Fetched(name) => {
+                    let index = schema.index_of(name)?;
+                    fields.push(schema.field(index).clone());
+                    columns.push(batch.column(index).clone());
+                }
+                OutputSlot::RowId(name) => {
+                    fields.push(arrow_schema::Field::new(
+                        name,
+                        row_ids.data_type().clone(),
+                        true,
+                    ));
+                    columns.push(row_ids.clone());
+                }
+            }
         }
-        if !aliases.iter().any(|alias| alias == ROW_ID) {
-            out = out.drop_column(ROW_ID)?;
-        }
-        Ok(out)
+        Ok(RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(fields)),
+            columns,
+        )?)
     }
 
     async fn validate(&self) -> Result<()> {
@@ -561,15 +624,18 @@ impl PermutationReader {
                 }
             }
             let skip = self.offset.unwrap_or(0);
+            // The row id cannot be named in a projection here either; ask by flag and
+            // rebuild the caller's shape below.
+            let (transport_selection, row_id_slots) = Self::split_row_id_selection(selection)?;
             let table = Table::from(self.base_table.clone());
-            let batches = table
+            let mut take = table
                 .take_offsets(offsets.iter().map(|o| o + skip).collect())
-                .select(selection)
-                .use_lsm(false)
-                .execute()
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
+                .select(transport_selection)
+                .use_lsm(false);
+            if row_id_slots.is_some() {
+                take = take.with_row_id();
+            }
+            let batches = take.execute().await?.try_collect::<Vec<_>>().await?;
             let taken = batches.iter().map(|b| b.num_rows()).sum::<usize>();
             if taken != offsets.len() {
                 // Same contract `load_batch` enforces for the permutation branch: a
@@ -584,7 +650,8 @@ impl PermutationReader {
                 });
             }
             let schema = batches[0].schema();
-            Ok(arrow::compute::concat_batches(&schema, &batches)?)
+            let batch = arrow::compute::concat_batches(&schema, &batches)?;
+            Self::restore_row_ids(batch, row_id_slots.as_deref())
         }
     }
 
@@ -603,9 +670,9 @@ impl PermutationReader {
         // the schema, is unchanged, but no row is matched and none is shipped.  That
         // matters for wide or blob-bearing tables, where one row per split per epoch
         // is not free.
-        // Same split as the fetch: naming `_rowid` in the projection is rejected by
-        // the server, so it is asked for by flag and its fields appended here.
-        let (transport_selection, row_id_aliases) = Self::split_row_id_selection(selection)?;
+        // Same split as the fetch: naming `_rowid` in a projection is rejected by the
+        // server, so the schema is assembled against the caller's requested shape.
+        let (transport_selection, row_id_slots) = Self::split_row_id_selection(selection)?;
         let schema = table
             .query()
             .select(transport_selection)
@@ -614,17 +681,23 @@ impl PermutationReader {
             .use_lsm(false)
             .output_schema()
             .await?;
-        if row_id_aliases.is_empty() {
+        let Some(slots) = row_id_slots else {
             return Ok(schema);
-        }
-        let mut fields = schema.fields().to_vec();
-        for alias in &row_id_aliases {
-            fields.push(Arc::new(arrow_schema::Field::new(
-                alias,
-                arrow_schema::DataType::UInt64,
-                true,
-            )));
-        }
+        };
+        let fields = slots
+            .iter()
+            .map(|slot| match slot {
+                OutputSlot::Fetched(name) => schema
+                    .field_with_name(name)
+                    .map(|field| Arc::new(field.clone()))
+                    .map_err(Error::from),
+                OutputSlot::RowId(name) => Ok(Arc::new(arrow_schema::Field::new(
+                    name,
+                    arrow_schema::DataType::UInt64,
+                    true,
+                ))),
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(arrow_schema::Schema::new(fields)))
     }
 

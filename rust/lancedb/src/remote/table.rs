@@ -5322,12 +5322,103 @@ mod tests {
         assert_eq!(batch.num_columns(), 1);
         assert_eq!(batch.schema().field(0).name(), "my_id");
 
-        // The schema probe takes the same route.
-        let schema = reader
-            .output_schema(Select::Columns(vec!["idx".to_string(), ROW_ID.to_string()]))
+        // Row id first, and asked for twice: the output has to come back in the order
+        // and multiplicity requested, which appending it to the fetched batch loses.
+        let batch = reader
+            .take_offsets(
+                &[0],
+                Select::Columns(vec![
+                    ROW_ID.to_string(),
+                    "idx".to_string(),
+                    ROW_ID.to_string(),
+                ]),
+            )
             .await
             .unwrap();
-        assert!(schema.column_with_name(ROW_ID).is_some(), "{schema:?}");
+        assert_eq!(
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![ROW_ID, "idx", ROW_ID]
+        );
+
+        // The schema probe takes the same route, and reports the same shape.
+        let schema = reader
+            .output_schema(Select::Columns(vec![ROW_ID.to_string(), "idx".to_string()]))
+            .await
+            .unwrap();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec![ROW_ID, "idx"]
+        );
+    }
+
+    /// An identity permutation has no permutation table, so its take is a different
+    /// branch — and it was still naming `_rowid` in the projection after the fetch path
+    /// stopped doing so.
+    #[tokio::test]
+    async fn test_identity_take_never_projects_row_id() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let base = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            let path = request.url().path().to_string();
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+
+            if path == "/v1/table/my_table/count_rows/" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(b"3".to_vec())
+                    .unwrap();
+            }
+
+            let names_row_id = match &body["columns"] {
+                serde_json::Value::Array(columns) => columns.iter().any(|column| column == ROW_ID),
+                serde_json::Value::Object(aliases) => aliases
+                    .iter()
+                    .any(|(alias, expr)| alias == ROW_ID || expr == ROW_ID),
+                _ => false,
+            };
+            if names_row_id {
+                return http::Response::builder()
+                    .status(400)
+                    .body(b"_rowid cannot be used in a select statement".to_vec())
+                    .unwrap();
+            }
+
+            let mut fields = vec![Field::new("idx", DataType::Int32, false)];
+            let mut columns: Vec<arrow_array::ArrayRef> =
+                vec![Arc::new(Int32Array::from(vec![10]))];
+            if body["with_row_id"] == json!(true) {
+                fields.push(Field::new(ROW_ID, DataType::UInt64, false));
+                columns.push(Arc::new(arrow_array::UInt64Array::from(vec![1u64])));
+            }
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(
+                    &RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap(),
+                ))
+                .unwrap()
+        });
+
+        let reader = PermutationReader::inner_new(base.base_table().clone(), None, 0)
+            .await
+            .unwrap();
+
+        let batch = reader
+            .take_offsets(&[0], Select::Columns(vec![ROW_ID.to_string()]))
+            .await
+            .unwrap();
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.schema().field(0).name(), ROW_ID);
     }
 
     /// Reading a schema builds a plan, and building a plan on a remote table executes
