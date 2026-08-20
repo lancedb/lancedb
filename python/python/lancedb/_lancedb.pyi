@@ -31,6 +31,7 @@ IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+__version__: str
 
 class MetricPoint:
     name: str
@@ -198,9 +199,6 @@ class Connection(object):
     async def drop_table(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
-    async def drop_table_async(
-        self, name: str, namespace_path: Optional[List[str]] = None
-    ) -> Job: ...
     async def drop_all_tables(
         self, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -338,11 +336,6 @@ class Table:
     ) -> list[FtsToken]: ...
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
-    async def add_computed_columns(
-        self, columns: list[tuple[str, str]]
-    ) -> AddColumnsResult: ...
-    async def refresh_column(self, column: str) -> RefreshColumnResult: ...
-    async def refresh_column_async(self, column: str) -> Job: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
     async def alter_columns(
         self, columns: list[dict[str, Any]]
@@ -686,10 +679,6 @@ class LsmWriteSpec:
     def writer_config_defaults(self) -> Dict[str, str]: ...
 
 class AddColumnsResult:
-    version: int
-
-class RefreshColumnResult:
-    rows_filled: int
     version: int
 
 class AlterColumnsResult:
