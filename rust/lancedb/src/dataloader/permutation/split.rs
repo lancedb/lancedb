@@ -379,8 +379,26 @@ impl Splitter {
             SplitStrategy::Sequential { sizes } | SplitStrategy::Random { sizes, .. } => {
                 Some(sizes.to_counts(num_rows).iter().sum())
             }
-            SplitStrategy::Hash { .. } | SplitStrategy::Calculated { .. } => None,
+            // A passthrough: every scanned row keeps its calculated split id.
+            SplitStrategy::Calculated { .. } => Some(num_rows),
+            // Only a discarding hash is data-dependent; without one every scanned row
+            // lands in some split.
+            SplitStrategy::Hash { discard_weight, .. } => {
+                (*discard_weight == 0).then_some(num_rows)
+            }
         }
+    }
+
+    /// Whether [`Self::apply`] reads its source to the end.
+    ///
+    /// `apply_sequential` stops as soon as the configured splits are full, so a scan
+    /// that is longer than the splits need is expected rather than an error. The
+    /// draining strategies have no such shape, so their input can be counted directly.
+    pub fn drains_source(&self) -> bool {
+        matches!(
+            self.strategy,
+            SplitStrategy::Hash { .. } | SplitStrategy::Calculated { .. }
+        )
     }
 
     /// The columns this strategy needs, in order, to compute a split id.

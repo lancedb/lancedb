@@ -332,6 +332,23 @@ impl PermutationReader {
         Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
     }
 
+    /// Whether an expression mentions the row id anywhere inside it.
+    fn references_row_id(expr: &datafusion_expr::Expr) -> bool {
+        use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
+
+        let mut found = false;
+        // The closure is infallible, so the walk cannot fail.
+        let _ = expr.apply(|node| {
+            if matches!(node, datafusion_expr::Expr::Column(column) if column.name == ROW_ID) {
+                found = true;
+                Ok(TreeNodeRecursion::Stop)
+            } else {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        });
+        found
+    }
+
     /// Split `_rowid` out of a caller's selection.
     ///
     /// The row id is a system column: the LanceDB server accepts it only through the
@@ -408,6 +425,21 @@ impl PermutationReader {
             }
             Select::Expr(columns) => {
                 let is_row_id = |expr: &datafusion_expr::Expr| matches!(expr, datafusion_expr::Expr::Column(column) if column.name == ROW_ID);
+                // A bare reference can be served by the flag and reassembled here.  One
+                // buried in a larger expression cannot: the store would have to evaluate
+                // `_rowid`, which is exactly what it refuses to accept.
+                for (alias, expr) in &columns {
+                    if !is_row_id(expr) && Self::references_row_id(expr) {
+                        return Err(Error::InvalidInput {
+                            message: format!(
+                                "Column {} computes over _rowid, which the table's backing \
+                                 store cannot evaluate.  Select _rowid on its own and \
+                                 compute over the result.",
+                                alias
+                            ),
+                        });
+                    }
+                }
                 if !columns.iter().any(|(_, expr)| is_row_id(expr)) {
                     return Ok((Select::Expr(columns), None));
                 }
@@ -1303,6 +1335,40 @@ mod tests {
             .await,
             vec!["doubled"]
         );
+    }
+
+    /// A bare `_rowid` expression is served by the flag, but one computed over cannot
+    /// be: the store would have to evaluate a column it refuses to accept in a
+    /// projection, so it is rejected here rather than sent and 400'd.
+    #[tokio::test]
+    async fn test_expression_over_row_id_is_rejected() {
+        use datafusion_expr::{col, lit};
+
+        let (base_table, row_ids_table, _) = setup_permutation_tables(5).await;
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let err = reader
+            .take_offsets(
+                &[0],
+                Select::Expr(vec![("shifted".to_string(), col(ROW_ID) + lit(1u64))]),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("computes over _rowid"), "{err}");
+
+        // The bare form still works, under whatever alias was asked for.
+        let batch = reader
+            .take_offsets(&[0], Select::Expr(vec![("my_id".to_string(), col(ROW_ID))]))
+            .await
+            .unwrap();
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.schema().field(0).name(), "my_id");
     }
 
     /// A MemWAL write spec routes reads through the LSM scanner, which rejects

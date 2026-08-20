@@ -5051,6 +5051,52 @@ mod tests {
         );
     }
 
+    /// The guard fires after the destination is committed, so a persisted permutation
+    /// has to be rolled back — otherwise it is left behind under-filled and the obvious
+    /// retry, rebuilding under the same name, fails as already existing.
+    #[tokio::test]
+    async fn test_permutation_build_rolls_back_persisted_short_scan() {
+        use crate::connect;
+        use crate::dataloader::permutation::builder::PermutationBuilder;
+
+        let table = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            if request.url().path() == "/v1/table/my_table/count_rows/" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(b"5".to_vec())
+                    .unwrap();
+            }
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&row_id_batch(vec![10, 11, 12])))
+                .unwrap()
+        });
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let destination = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let err = PermutationBuilder::new(table)
+            .persist(destination.database().clone(), "perm".to_string())
+            .build()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("expected 5"), "{err}");
+
+        assert!(
+            !destination
+                .table_names()
+                .execute()
+                .await
+                .unwrap()
+                .contains(&"perm".to_string()),
+            "a failed build must not leave its destination behind"
+        );
+    }
+
     /// The permutation fetch is a row-id take: the same `_rowid IN (...)` filter
     /// `Table::take_row_ids` sends, plus `with_row_id` so the requested order can be
     /// restored client-side.

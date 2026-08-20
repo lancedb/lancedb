@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 
@@ -274,6 +274,42 @@ impl PermutationBuilder {
         Ok(())
     }
 
+    /// Fail if the row id scan yields a different number of rows than the count that
+    /// sized the splits.
+    ///
+    /// Only for strategies that read the scan to the end — see [`Splitter::drains_source`].
+    fn verify_scanned_row_count(
+        stream: SendableRecordBatchStream,
+        expected: u64,
+    ) -> SendableRecordBatchStream {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let schema = stream.schema();
+        let seen = Arc::new(AtomicU64::new(0));
+        let counted = {
+            let seen = seen.clone();
+            stream.map_ok(move |batch| {
+                seen.fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+                batch
+            })
+        };
+        let tail = futures::stream::once(async move {
+            let scanned = seen.load(Ordering::Relaxed);
+            (scanned != expected).then(|| {
+                Err(Error::InvalidInput {
+                    message: format!(
+                        "Row id scan returned {} rows, expected {}.  The table may have \
+                         changed while the permutation was being built.",
+                        scanned, expected
+                    ),
+                })
+            })
+        })
+        .filter_map(std::future::ready);
+
+        Box::pin(SimpleRecordBatchStream::new(counted.chain(tail), schema))
+    }
+
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
         // First pass, apply filter and load row ids.  The row id is requested with the
@@ -316,6 +352,14 @@ impl PermutationBuilder {
         // Apply splits
         let rows = rows.execute().await?;
         Self::validate_scan_schema(rows.schema().as_ref(), &splitter)?;
+        // A discarding hash drops rows by data, so its output size cannot be predicted
+        // and the check below cannot see a short scan.  Count the input instead, which
+        // is only safe for strategies that read their source to the end.
+        let rows = if splitter.expected_row_count(num_rows).is_none() && splitter.drains_source() {
+            Self::verify_scanned_row_count(rows, num_rows)
+        } else {
+            rows
+        };
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested
@@ -364,8 +408,8 @@ impl PermutationBuilder {
         let create_table_request =
             CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
 
-        let table = database.create_table(create_table_request).await?;
-        let table = Table::new(table, database);
+        let created = database.create_table(create_table_request).await?;
+        let table = Table::new(created, database.clone());
 
         // The splits were sized from `count_rows`, but nothing so far has checked that
         // the scan actually produced that many rows.  A short scan — a server-side
@@ -376,6 +420,12 @@ impl PermutationBuilder {
         if let Some(expected) = splitter.expected_row_count(num_rows) {
             let actual = table.count_rows(None).await? as u64;
             if actual != expected {
+                // The destination is already committed at this point.  A persisted one
+                // would otherwise be left behind under-filled, and the obvious retry —
+                // rebuilding under the same name — would then fail as already existing.
+                if let PermutationDestination::Permanent(_, table_name) = &self.config.destination {
+                    database.drop_table(table_name, &[]).await?;
+                }
                 return Err(Error::InvalidInput {
                     message: format!(
                         "Permutation has {} rows, expected {}.  The row id scan returned \
@@ -578,6 +628,41 @@ mod tests {
         // constant input.
         assert!(pairs.iter().any(|(_, split_id)| *split_id == 0));
         assert!(pairs.iter().any(|(_, split_id)| *split_id == 1));
+    }
+
+    /// A hash split that discards nothing keeps every scanned row, so its size is as
+    /// predictable as a sequential one — and the short-scan guard has to see that, or a
+    /// truncated scan slips through unnoticed.
+    #[test]
+    fn test_expected_row_count_covers_every_strategy() {
+        let expected =
+            |strategy| Splitter::new(TemporaryDirectory::None, strategy).expected_row_count(5);
+
+        assert_eq!(expected(SplitStrategy::NoSplit), Some(5));
+        assert_eq!(
+            expected(SplitStrategy::Calculated {
+                calculation: "id % 2".to_string()
+            }),
+            Some(5)
+        );
+        assert_eq!(
+            expected(SplitStrategy::Hash {
+                columns: vec!["id".to_string()],
+                split_weights: vec![1, 1],
+                discard_weight: 0,
+            }),
+            Some(5)
+        );
+        // Only a discarding hash is genuinely data-dependent; that one is covered by
+        // counting the scan's input instead.
+        assert_eq!(
+            expected(SplitStrategy::Hash {
+                columns: vec!["id".to_string()],
+                split_weights: vec![1, 1],
+                discard_weight: 1,
+            }),
+            None
+        );
     }
 
     /// The other strategy with a projection of its own: `Calculated` computes the split
