@@ -151,7 +151,8 @@ impl PermutationReader {
                 ))))
                 .await? as u64
         } else {
-            self.base_table.count_rows(None).await? as u64
+            // Base-only, to agree with the base-only identity scan in `read`.
+            self.base_table.count_base_rows(None).await? as u64
         };
         Self::validate_limit_offset(limit, offset, available_rows)
     }
@@ -189,6 +190,20 @@ impl PermutationReader {
         let has_row_id = Self::has_row_id(&selection)?;
 
         let num_rows = row_ids.num_rows();
+        // One column, positionally — the callers name it differently (`row_id` from a
+        // permutation table, `_rowid` from an identity scan).  Checked rather than
+        // assumed: an identity scan asks for an empty projection plus `with_row_id`,
+        // and a store that answered that with every column would otherwise have its
+        // first data column silently read as row ids.
+        if row_ids.num_columns() != 1 {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Expected a single row id column, got {}.  The table's backing \
+                     store did not honor the requested projection.",
+                    row_ids.num_columns()
+                ),
+            });
+        }
         let row_ids = row_ids
             .column(0)
             .as_primitive_opt::<UInt64Type>()
@@ -354,7 +369,8 @@ impl PermutationReader {
         let avail_rows = if let Some(permutation_table) = &self.permutation_table {
             permutation_table.count_rows(None).await? as u64
         } else {
-            self.base_table.count_rows(None).await? as u64
+            // Base-only, to agree with the base-only identity scan in `read`.
+            self.base_table.count_base_rows(None).await? as u64
         };
         Self::validate_limit_offset(self.limit, self.offset, avail_rows)?;
         Ok(())
@@ -478,10 +494,9 @@ impl PermutationReader {
                 let batch = arrow::compute::concat_batches(&schema, &batches)?;
                 Ok(batch)
             } else {
-                Ok(RecordBatch::try_new(
-                    self.output_schema(selection).await?,
-                    vec![],
-                )?)
+                // `try_new` with no columns errors on any non-empty schema; this is
+                // the same empty batch the `offsets.is_empty()` branch above builds.
+                Ok(RecordBatch::new_empty(self.output_schema(selection).await?))
             }
         }
     }

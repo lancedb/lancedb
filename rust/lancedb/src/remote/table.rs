@@ -5089,6 +5089,93 @@ mod tests {
         );
     }
 
+    /// An identity permutation has no permutation table, so it counts and scans the
+    /// base table directly. Both have to be base-only or they disagree — and on a
+    /// MemWAL table the server rejects a count that is not.
+    #[tokio::test]
+    async fn test_permutation_identity_counts_base_rows() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let count_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured = count_body.clone();
+
+        let base = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let path = request.url().path().to_string();
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+
+            if path == "/v1/table/my_table/count_rows/" {
+                *captured.lock().unwrap() = Some(body);
+                return http::Response::builder()
+                    .status(200)
+                    .body(b"3".to_vec())
+                    .unwrap();
+            }
+
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&row_id_batch(vec![0, 1, 2])))
+                .unwrap()
+        });
+
+        let reader = PermutationReader::inner_new(base.base_table().clone(), None, 0)
+            .await
+            .unwrap();
+        assert_eq!(reader.count_rows(), 3);
+
+        let body = count_body.lock().unwrap().clone().unwrap();
+        assert_eq!(body["use_lsm"], json!(false));
+    }
+
+    /// The identity scan asks for an empty projection plus `with_row_id`. If a store
+    /// answered that with every column, reading the row ids positionally would train
+    /// on the wrong rows — so the reader checks rather than assumes.
+    #[tokio::test]
+    async fn test_permutation_identity_rejects_unrequested_columns() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let base = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            if request.url().path() == "/v1/table/my_table/count_rows/" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(b"2".to_vec())
+                    .unwrap();
+            }
+            // A server that read `columns: []` as "all columns" would answer like this.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("idx", DataType::Int32, false),
+                    Field::new(ROW_ID, DataType::UInt64, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![50, 70])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![0u64, 1])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let reader = PermutationReader::inner_new(base.base_table().clone(), None, 0)
+            .await
+            .unwrap();
+        // `err()` rather than `unwrap_err()`: the Ok type is a stream, which is not Debug.
+        let err = reader
+            .read(Select::All, QueryExecutionOptions::default())
+            .await
+            .err()
+            .expect("expected the projection guard to fire");
+        assert!(
+            err.to_string().contains("single row id column"),
+            "expected the projection guard to fire, got: {err}"
+        );
+    }
+
     /// Reading a schema builds a plan, and building a plan on a remote table executes
     /// the query. Bounded, or every `Permutation` construction scans the whole table.
     #[tokio::test]
