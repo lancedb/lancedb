@@ -4065,6 +4065,16 @@ mod tests {
                 parent_list_calls: self.parent_list_calls.clone(),
             })
         }
+
+        // The guard counts listings through `wrap`, so a pushed-down listing would slip
+        // past it.
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            None
+        }
     }
 
     #[tokio::test]
@@ -4167,6 +4177,15 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
+        }
+
+        // Hands the store back untouched, so a listing has nothing to go around.
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            Some(original)
         }
     }
 

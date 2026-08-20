@@ -7,6 +7,7 @@ use std::{fmt::Formatter, sync::Arc};
 
 use futures::{StreamExt, TryFutureExt, stream::BoxStream};
 use lance::io::WrappingObjectStore;
+use object_store::list::PaginatedListStore;
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
@@ -186,6 +187,16 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
             primary,
             secondary: self.secondary.clone(),
         })
+    }
+
+    // Only writes are mirrored, and a listing reads, so a pushed-down listing sees the same
+    // primary this wrapper would have read from.
+    fn wrap_paginated(
+        &self,
+        _store_prefix: &str,
+        original: Arc<dyn PaginatedListStore>,
+    ) -> Option<Arc<dyn PaginatedListStore>> {
+        Some(original)
     }
 }
 
