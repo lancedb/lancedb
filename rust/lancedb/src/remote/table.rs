@@ -1142,6 +1142,54 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    async fn count_rows_impl(
+        &self,
+        filter: Option<Filter>,
+        use_lsm: Option<bool>,
+    ) -> Result<usize> {
+        let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
+
+        let version = self.current_version().await;
+
+        let mut body = if let Some(filter) = filter {
+            let filter_sql = match filter {
+                Filter::Sql(sql) => sql.clone(),
+                Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
+            };
+            serde_json::json!({ "predicate": filter_sql, "version": version })
+        } else {
+            serde_json::json!({ "version": version })
+        };
+        // Only forward when explicitly set; a server that predates the field ignores
+        // it and counts as it would by default.
+        if let Some(use_lsm) = use_lsm {
+            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        }
+        self.apply_branch_body(&mut body);
+        request = request.json(&body);
+
+        let (request_id, response) = match self.send(request, true).await {
+            Ok((id, resp)) => {
+                // check_table_response now handles error-based invalidation
+                let response = self.check_table_response(&id, resp).await?;
+                (id, response)
+            }
+            Err(e) => {
+                self.handle_error_invalidation(&e);
+                return Err(e);
+            }
+        };
+
+        self.track_read_version_from_headers(response.headers());
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse row count: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     fn invalidate_schema_cache(&self) {
         self.schema_cache.invalidate();
     }
@@ -2106,42 +2154,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
-        let mut request = self.post_read(&format!("/v1/table/{}/count_rows/", self.identifier));
+        self.count_rows_impl(filter, None).await
+    }
 
-        let version = self.current_version().await;
-
-        let mut body = if let Some(filter) = filter {
-            let filter_sql = match filter {
-                Filter::Sql(sql) => sql.clone(),
-                Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
-            };
-            serde_json::json!({ "predicate": filter_sql, "version": version })
-        } else {
-            serde_json::json!({ "version": version })
-        };
-        self.apply_branch_body(&mut body);
-        request = request.json(&body);
-
-        let (request_id, response) = match self.send(request, true).await {
-            Ok((id, resp)) => {
-                // check_table_response now handles error-based invalidation
-                let response = self.check_table_response(&id, resp).await?;
-                (id, response)
-            }
-            Err(e) => {
-                self.handle_error_invalidation(&e);
-                return Err(e);
-            }
-        };
-
-        self.track_read_version_from_headers(response.headers());
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse row count: {}", e).into(),
-            request_id,
-            status_code: None,
-        })
+    /// The server rejects `count_rows` outright on a table carrying a MemWAL write
+    /// spec, because the count would silently omit every un-compacted row.  Sending
+    /// `use_lsm: false` asks for the base-only count explicitly, which is what a
+    /// caller addressing rows by `_rowid` needs.
+    async fn count_base_rows(&self, filter: Option<Filter>) -> Result<usize> {
+        self.count_rows_impl(filter, Some(false)).await
     }
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
@@ -4901,6 +4922,98 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    /// The permutation reads the base table: a plain `count_rows` is rejected outright
+    /// by the server on a table with a MemWAL write spec, so the base-only variant has
+    /// to say so explicitly.
+    #[tokio::test]
+    async fn test_count_base_rows_asks_for_the_base_table() {
+        let captured = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let seen = captured.clone();
+        let table = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            *seen.lock().unwrap() = Some(body);
+            http::Response::builder().status(200).body("7").unwrap()
+        });
+
+        assert_eq!(table.base_table().count_base_rows(None).await.unwrap(), 7);
+        assert_eq!(
+            captured.lock().unwrap().clone().unwrap()["use_lsm"],
+            json!(false)
+        );
+
+        // A plain count must not pick the flag up by accident.
+        let captured = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let seen = captured.clone();
+        let table = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            *seen.lock().unwrap() = Some(body);
+            http::Response::builder().status(200).body("7").unwrap()
+        });
+        assert_eq!(table.count_rows(None).await.unwrap(), 7);
+        assert_eq!(
+            captured.lock().unwrap().clone().unwrap().get("use_lsm"),
+            None
+        );
+    }
+
+    /// Reading a schema builds a plan, and building a plan on a remote table executes
+    /// the query. Bounded, or every `Permutation` construction — one per split, per
+    /// epoch — scans the whole table.
+    #[tokio::test]
+    async fn test_permutation_output_schema_is_bounded() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let captured = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let seen = captured.clone();
+        let base = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            *seen.lock().unwrap() = Some(body);
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("idx", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let split_ids = arrow_array::UInt64Array::from(vec![0u64]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("row_id", DataType::UInt64, false),
+                Field::new("split_id", DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(arrow_array::UInt64Array::from(vec![7u64])),
+                Arc::new(split_ids),
+            ],
+        )
+        .unwrap();
+        let permutation = crate::test_utils::datagen::virtual_table("permutation", &batch).await;
+
+        let reader = PermutationReader::try_from_tables(
+            base.base_table().clone(),
+            permutation.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let schema = reader.output_schema(Select::All).await.unwrap();
+        assert_eq!(schema.field(0).name(), "idx");
+        assert_eq!(
+            captured.lock().unwrap().clone().unwrap()["k"],
+            json!(1),
+            "the schema probe must not be an open scan"
+        );
     }
 
     #[tokio::test]

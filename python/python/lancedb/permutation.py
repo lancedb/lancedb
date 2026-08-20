@@ -41,21 +41,21 @@ class PermutationBuilder:
     The permutation is stored in memory and will be lost when the program exits.
     """
 
-    def __init__(self, table: LanceTable):
+    def __init__(self, table: Table):
         """
         Creates a new permutation builder for the given table.
 
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
+
+        Both local tables and remote tables (LanceDB Cloud and Enterprise) are
+        supported.  Against a remote table the permutation is built by reading every
+        row id over HTTP, so expect the build to cost roughly 8 bytes per row of
+        transfer, and note that it reads the base table only: rows still sitting in a
+        MemWAL that have not been compacted are not part of the permutation, because
+        the LSM scanner does not expose the stable ``_rowid`` a permutation is
+        defined over.
         """
-        if not hasattr(table, "_inner"):
-            raise TypeError(
-                f"PermutationBuilder requires a local LanceTable, "
-                f"got {type(table).__name__}. "
-                "The permutation API is not supported on remote tables. "
-                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
-                "direct access to the underlying Lance dataset needed for permutations."
-            )
         self._async = async_permutation_builder(table)
 
     def split_random(
@@ -231,7 +231,14 @@ class PermutationBuilder:
         return LOOP.run(do_execute())
 
 
-def permutation_builder(table: LanceTable) -> PermutationBuilder:
+def permutation_builder(table: Table) -> PermutationBuilder:
+    """
+    Creates a new permutation builder for the given table.
+
+    Accepts both local tables and remote tables (LanceDB Cloud and Enterprise); see
+    [PermutationBuilder][lancedb.permutation.PermutationBuilder] for what building a
+    permutation over a remote table costs.
+    """
     return PermutationBuilder(table)
 
 
@@ -248,8 +255,8 @@ class Permutations:
 
     Attributes
     ----------
-    base_table: LanceTable
-        The base table that the permutations are based on.
+    base_table: Table
+        The base table that the permutations are based on.  May be a remote table.
     permutation_table: LanceTable
         The permutation table that defines the splits.
     split_names: list[str]
@@ -282,7 +289,7 @@ class Permutations:
     {'train': 0, 'test': 1}
     """
 
-    def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
+    def __init__(self, base_table: Table, permutation_table: LanceTable):
         self.base_table = base_table
         self.permutation_table = permutation_table
 

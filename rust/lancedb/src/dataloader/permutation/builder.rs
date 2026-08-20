@@ -21,6 +21,7 @@ use crate::{
         util::{TemporaryDirectory, rename_column},
     },
     query::{ExecutableQuery, QueryBase, Select},
+    table::Filter,
 };
 
 pub const SRC_ROW_ID_COL: &str = "row_id";
@@ -238,8 +239,14 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
-        // First pass, apply filter and load row ids
-        let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
+        // First pass, apply filter and load row ids.  A permutation addresses rows by
+        // stable `_rowid`, which the MemWAL LSM scanner does not expose, so it always
+        // reads the base table.
+        let mut rows = self
+            .base_table
+            .query()
+            .select(Select::columns(&[ROW_ID]))
+            .use_lsm(false);
 
         if let Some(filter) = &self.config.filter {
             rows = rows.only_if(filter);
@@ -256,9 +263,12 @@ impl PermutationBuilder {
         // split id)
         rows = splitter.project(rows);
 
+        // Base-only, to agree with the scan above.  On a remote MemWAL table a plain
+        // `count_rows` is rejected outright rather than merely disagreeing.
         let num_rows = self
             .base_table
-            .count_rows(self.config.filter.clone())
+            .base_table()
+            .count_base_rows(self.config.filter.clone().map(Filter::Sql))
             .await? as u64;
 
         // Apply splits

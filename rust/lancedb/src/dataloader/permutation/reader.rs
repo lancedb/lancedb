@@ -97,8 +97,13 @@ impl PermutationReader {
         Self::inner_new(base_table, Some(permutation_table), split).await
     }
 
-    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Self {
-        Self::inner_new(base_table, None, 0).await.unwrap()
+    /// A reader over the base table in storage order, with no permutation.
+    ///
+    /// Fallible: construction counts the base table, which for a remote table is an
+    /// HTTP round trip, so a transient network or auth failure must surface as an
+    /// error rather than a panic across a binding boundary.
+    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
+        Self::inner_new(base_table, None, 0).await
     }
 
     /// Validates the limit and offset and returns the number of rows that will be read
@@ -153,7 +158,8 @@ impl PermutationReader {
                 ))))
                 .await? as u64
         } else {
-            self.base_table.count_rows(None).await? as u64
+            // Base-only, to agree with the base-only identity scan in `read`.
+            self.base_table.count_base_rows(None).await? as u64
         };
         Self::validate_limit_offset(limit, offset, available_rows)
     }
@@ -203,6 +209,9 @@ impl PermutationReader {
             filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
             select: selection,
             with_row_id: true,
+            // The permutation is defined over stable `_rowid`s, which the MemWAL LSM
+            // scanner does not expose — and which it rejects `with_row_id` for.
+            use_lsm: Some(false),
             ..Default::default()
         };
 
@@ -359,7 +368,8 @@ impl PermutationReader {
         let avail_rows = if let Some(permutation_table) = &self.permutation_table {
             permutation_table.count_rows(None).await? as u64
         } else {
-            self.base_table.count_rows(None).await? as u64
+            // Base-only, to agree with the base-only identity scan in `read`.
+            self.base_table.count_base_rows(None).await? as u64
         };
         Self::validate_limit_offset(self.limit, self.offset, avail_rows)?;
         Ok(())
@@ -392,6 +402,8 @@ impl PermutationReader {
                 .query(
                     &AnyQuery::Query(QueryRequest {
                         select: Select::Columns(vec![ROW_ID.to_string()]),
+                        // See `load_batch`: the permutation reads the base table.
+                        use_lsm: Some(false),
                         offset: self.offset.map(|o| o as usize),
                         limit: self.limit.map(|l| l as usize),
                         ..Default::default()
@@ -468,6 +480,7 @@ impl PermutationReader {
             let batches = table
                 .take_offsets(offsets.to_vec())
                 .select(selection.clone())
+                .use_lsm(false)
                 .execute()
                 .await?
                 .try_collect::<Vec<_>>()
@@ -487,7 +500,21 @@ impl PermutationReader {
 
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
-        table.query().select(selection).output_schema().await
+        // `output_schema` reads the schema off a query plan, and building a plan on a
+        // remote table executes the query.  Unbounded that is a full table scan over
+        // HTTP for every `Permutation` constructed — once per split, per epoch.
+        //
+        // One row, not zero: lance reads a limit of `Some(0)` as *no limit* rather than
+        // no rows (`Scanner`: `self.limit.unwrap_or(0) > 0` gates the limit node), so a
+        // zero here would scan the whole table.  Native tables never execute the plan,
+        // so the bound costs them nothing.
+        table
+            .query()
+            .select(selection)
+            .limit(1)
+            .use_lsm(false)
+            .output_schema()
+            .await
     }
 
     pub fn count_rows(&self) -> u64 {
@@ -779,7 +806,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         // With no permutation table, take_offsets uses the base table directly
         let offsets = vec![0, 2, 4, 6];
@@ -961,7 +990,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         let batch = reader.take_offsets(&[], Select::All).await.unwrap();
 
