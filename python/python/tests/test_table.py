@@ -3953,3 +3953,31 @@ async def test_computed_column_async(tmp_path):
     await table.refresh_column("tripled")
 
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+def test_refresh_column_async_returns_job(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
+    table.add_columns(computed={"doubled": "x * 2"})
+
+    job = table.refresh_column_async("doubled")
+    assert job.id is None  # in-process jobs have no server id
+    job.wait()
+    assert job.status() == "finished"
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    # Bad input raises at the call, not through the job.
+    with pytest.raises(Exception, match="not a computed column"):
+        table.refresh_column_async("x")
+
+
+@pytest.mark.asyncio
+async def test_refresh_column_async_job_async_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_job_async", [{"x": 3}])
+    await table.add_columns(computed={"tripled": "x * 3"})
+
+    job = await table.refresh_column_async("tripled")
+    await job.wait()
+    assert await job.status() == "finished"
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]

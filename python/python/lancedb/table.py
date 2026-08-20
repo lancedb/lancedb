@@ -2029,8 +2029,10 @@ class Table(ABC):
             dropping the column and declaring it again. While a declaration
             reads a column, that column cannot be renamed, retyped or dropped.
 
-            Local tables only; LanceDB Cloud and Enterprise raise
-            ``NotImplementedError``. Cannot be combined with ``transforms``.
+            On LanceDB Cloud and Enterprise the expression is planned by the
+            server, and the refresh runs as a server job -- see
+            [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
+            Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -2062,8 +2064,8 @@ class Table(ABC):
         by the next one; rows already filled are left as they are, so the call
         is idempotent and does not observe a mutated input.
 
-        Local tables only; LanceDB Cloud and Enterprise raise
-        ``NotImplementedError``.
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
@@ -2075,6 +2077,31 @@ class Table(ABC):
         RefreshColumnResult
             rows_filled: the number of rows given a value.
             version: the new version number of the table.
+        """
+
+    @abstractmethod
+    def refresh_column_async(self, column: str) -> Job:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`Job.wait` returns. Invalid input --
+        an unknown column, or one that is not computed -- raises here rather
+        than failing the job. On local tables the job runs in-process; on
+        LanceDB Cloud and Enterprise it is the server's backfill job.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_job_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> job = table.refresh_column_async("doubled")
+        >>> job.wait()
+        >>> job.status()
+        'finished'
         """
 
     @abstractmethod
@@ -4101,6 +4128,13 @@ class LanceTable(Table):
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
+    def refresh_column_async(self, column: str) -> Job:
+        """Fill a computed column's unfilled rows, returning a handle to the
+        refresh job. See
+        [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
+        """
+        return Job(LOOP.run(self._table.refresh_column_async(column)))
+
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
     ) -> AlterColumnsResult:
@@ -4848,7 +4882,7 @@ class AsyncTable:
 
         Examples
         --------
-        >>> from lancedb._lancedb import LsmWriteSpec
+        >>> from lancedb import LsmWriteSpec
         >>> # table.set_unenforced_primary_key("id")
         >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
@@ -4893,7 +4927,7 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        return await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_lsm()
 
     async def flush_lsm(self) -> None:
         """Seal every bucket's active memtable into L0.
@@ -4902,7 +4936,7 @@ class AsyncTable:
         `compact_lsm`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        return await self._inner.flush_lsm()
+        await self._inner.flush_lsm()
 
     async def compact_lsm(self) -> None:
         """Trigger a background L0 to base compaction pass per bucket.
@@ -4911,7 +4945,7 @@ class AsyncTable:
         ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
         until the current L0 has reached base.
         """
-        return await self._inner.compact_lsm()
+        await self._inner.compact_lsm()
 
     async def get_lsm_stats(
         self, *, include_generation_rows: bool = False
@@ -6048,7 +6082,8 @@ class AsyncTable:
             declaration reads a column, that column cannot be renamed, retyped
             or dropped.
 
-            Local tables only. Cannot be combined with ``transforms``.
+            On LanceDB Cloud and Enterprise the expression is planned by
+            the server. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -6084,8 +6119,8 @@ class AsyncTable:
         by the next one; rows already filled are left as they are, so the call
         is idempotent and does not observe a mutated input.
 
-        Local tables only; LanceDB Cloud and Enterprise raise
-        ``NotImplementedError``.
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
         ----------
@@ -6098,6 +6133,34 @@ class AsyncTable:
             The number of rows filled and the new version of the table.
         """
         return await self._inner.refresh_column(column)
+
+    async def refresh_column_async(self, column: str) -> AsyncJob:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
+        input -- an unknown column, or one that is not computed -- raises here
+        rather than failing the job. On local tables the job runs
+        in-process; on LanceDB Cloud and Enterprise it is the server's
+        backfill job.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def refresh_in_background():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
+        ...     await table.add_columns(computed={"doubled": "x * 2"})
+        ...     job = await table.refresh_column_async("doubled")
+        ...     await job.wait()
+        ...     return await job.status()
+        >>> asyncio.run(refresh_in_background())
+        'finished'
+        """
+        return AsyncJob(await self._inner.refresh_column_async(column))
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

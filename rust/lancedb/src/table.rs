@@ -750,6 +750,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
     /// Declare computed columns, each defined by a SQL expression.
+    ///
+    /// Where the declaration is planned depends on the backend: a local table
+    /// validates and types the expression itself, a remote one sends the text
+    /// for the server to plan.
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
@@ -762,6 +766,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
+    /// the operation.
+    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
         })
@@ -1667,7 +1678,8 @@ impl Table {
     /// filled are left as they are, so the call is idempotent and does not
     /// observe a mutated input.
     ///
-    /// Local tables only.
+    /// Local tables only: a remote refresh runs as a server job, through
+    /// [`Table::refresh_column_async`].
     ///
     /// ```
     /// # use lancedb::Table;
@@ -1679,6 +1691,29 @@ impl Table {
     /// ```
     pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
         self.inner.refresh_column(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
+    /// operation instead of blocking until it completes.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// -- an unknown column, or one that is not computed -- is reported by
+    /// this call rather than by the job. On local tables the job runs as an
+    /// in-process task; on LanceDB Cloud and Enterprise it is the server's
+    /// backfill job.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async("doubled").await?;
+    /// println!("refresh running: {:?}", job.status().await?);
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+        self.inner.refresh_column_async(column.as_ref()).await
     }
 
     /// Change a column's name or nullability.
@@ -3392,6 +3427,10 @@ impl BaseTable for NativeTable {
         let result = refresh::execute_refresh_column(self, column).await?;
         self.bump_freshness();
         Ok(result)
+    }
+
+    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+        refresh::execute_refresh_column_async(self, column).await
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
