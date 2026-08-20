@@ -177,6 +177,11 @@ multiple-versions = "warn"
 # Wildcard version requirements (`foo = "*"`) are a footgun — they let any
 # future release in without review. Ban them outright.
 wildcards = "deny"
+# Lint every dependency declared by a workspace member against the shared
+# `[workspace.dependencies]` table: any crate used by more than one member must
+# go through `workspace = true`, and entries nothing uses are an error. This
+# keeps versions from drifting between the core crate and the bindings.
+workspace-dependencies = { duplicates = "deny", unused = "deny" }
 # Internal workspace crates reference each other via `path = "..."`, which
 # cargo-deny sees as a wildcard version. That's fine for private workspace
 # members (not published to crates.io), so allow it specifically for paths.
