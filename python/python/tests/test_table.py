@@ -12,7 +12,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
-from typing import List
+from typing import Any, List
 from unittest.mock import patch
 
 import lancedb
@@ -3709,6 +3709,25 @@ async def test_optimize_compaction_source_limits(
     assert stats.compaction.fragments_added == 0
 
 
+@pytest.mark.asyncio
+async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            "excluded_fragment_ids": [0],
+        }
+    )
+    assert stats.compaction.fragments_removed == 0
+    assert stats.compaction.fragments_added == 0
+
+    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    assert stats.compaction.fragments_removed == 2
+    assert stats.compaction.fragments_added == 1
+
+
 @pytest.mark.parametrize(
     ("option", "value", "message"),
     [
@@ -3722,11 +3741,21 @@ async def test_optimize_compaction_source_limits(
         ("io_buffer_size", 2**63, "must be at most 9223372036854775807"),
         ("max_source_rows", 0, "must be greater than 0"),
         ("max_source_bytes", 0, "must be greater than 0"),
+        (
+            "excluded_fragment_ids",
+            [-1],
+            "must contain values between 0 and 4294967295",
+        ),
+        (
+            "excluded_fragment_ids",
+            [2**32],
+            "must contain values between 0 and 4294967295",
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_optimize_compaction_options_validation(
-    mem_db_async: AsyncConnection, option: str, value: int, message: str
+    mem_db_async: AsyncConnection, option: str, value: Any, message: str
 ):
     table = await mem_db_async.create_table("test", data=[{"x": 1}])
     with pytest.raises(ValueError, match=message):

@@ -142,6 +142,21 @@ fn optional_positive_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Optio
     Ok(value)
 }
 
+fn u32_list(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u32>> {
+    value
+        .extract::<Vec<i64>>()?
+        .into_iter()
+        .map(|value| {
+            u32::try_from(value).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "{name} must contain values between 0 and {}",
+                    u32::MAX
+                ))
+            })
+        })
+        .collect()
+}
+
 fn optional_i64_bounded_u64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<u64>> {
     let value: Option<u64> = value.extract()?;
     if value.is_some_and(|value| value > i64::MAX as u64) {
@@ -195,6 +210,7 @@ fn parse_compaction_options(options: Option<&Bound<'_, PyDict>>) -> PyResult<Com
             "max_source_fragments" => parsed.max_source_fragments = value.extract()?,
             "max_source_rows" => parsed.max_source_rows = optional_positive_usize(&value, &key)?,
             "max_source_bytes" => parsed.max_source_bytes = optional_positive_u64(&value, &key)?,
+            "excluded_fragment_ids" => parsed.excluded_fragment_ids = u32_list(&value, &key)?,
             "max_overlays_per_fragment" => parsed.max_overlays_per_fragment = value.extract()?,
             _ => {
                 return Err(PyValueError::new_err(format!(

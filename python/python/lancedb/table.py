@@ -224,26 +224,36 @@ class CompactionOptions(TypedDict, total=False):
 
     Unspecified options use Lance's defaults.
 
+    Compaction planning is row based. Lowering ``target_rows_per_fragment``
+    based on the expected row size can bound later compaction passes once
+    oversized fragments have been rewritten. It does not split an existing
+    fragment, so the first pass over an oversized fragment is not subject to
+    that bound. ``max_bytes_per_file`` limits output file size, not compaction
+    memory. Source budgets keep whole planned tasks; if the first task exceeds
+    a budget, that run performs no compaction work.
+
     Examples
     --------
-    Limit fragment size and compaction concurrency for tables with large rows:
+    Derive a steady-state row target from the expected row size:
 
+    >>> desired_fragment_bytes = 750 * 1024 * 1024
+    >>> average_row_bytes = 1_500_000
     >>> options: CompactionOptions = {
-    ...     "target_rows_per_fragment": 500,
-    ...     "batch_size": 1024,
-    ...     "num_threads": 1,
+    ...     "target_rows_per_fragment": max(
+    ...         1, desired_fragment_bytes // average_row_bytes
+    ...     ),
     ... }
     >>> await table.optimize(compaction_options=options)  # doctest: +SKIP
     """
 
     target_rows_per_fragment: int
-    """Target number of rows per fragment (default: 1,048,576)."""
+    """Target rows per fragment; existing oversized fragments are not split."""
 
     max_rows_per_group: int
     """Maximum number of rows per row group (default: 1,024)."""
 
     max_bytes_per_file: Optional[int]
-    """Maximum number of bytes per data file."""
+    """Maximum output data-file size; this does not bound compaction memory."""
 
     materialize_deletions: bool
     """Whether to rewrite fragments containing deleted rows (default: True)."""
@@ -278,10 +288,13 @@ class CompactionOptions(TypedDict, total=False):
     """Maximum number of source fragments compacted in one run."""
 
     max_source_rows: Optional[int]
-    """Maximum number of live source rows compacted in one run."""
+    """Maximum live source rows per run, applied to whole planned tasks."""
 
     max_source_bytes: Optional[int]
-    """Maximum source data and overlay bytes compacted in one run."""
+    """Maximum source bytes per run, applied to whole planned tasks."""
+
+    excluded_fragment_ids: List[int]
+    """Fragment IDs to leave unchanged and use as planning boundaries."""
 
     max_overlays_per_fragment: Optional[int]
     """Maximum overlays before a fragment is fully compacted."""
@@ -1936,9 +1949,10 @@ class Table(ABC):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
         compaction_options: CompactionOptions, optional
-            Options that control file compaction. This can be used to bound
-            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
-            or ``num_threads``.
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -4048,9 +4062,10 @@ class LanceTable(Table):
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
         compaction_options: CompactionOptions, optional
-            Options that control file compaction. This can be used to bound
-            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
-            or ``num_threads``.
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -6440,9 +6455,10 @@ class AsyncTable:
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
         compaction_options: CompactionOptions, optional
-            Options that control file compaction. This can be used to bound
-            memory usage by reducing ``target_rows_per_fragment``, ``batch_size``,
-            or ``num_threads``.
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
