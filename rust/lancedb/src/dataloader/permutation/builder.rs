@@ -242,6 +242,13 @@ impl PermutationBuilder {
         // First pass, apply filter and load row ids.  A permutation addresses rows by
         // stable `_rowid`, which the MemWAL LSM scanner does not expose, so it always
         // reads the base table.
+        //
+        // This scan's row order is load-bearing: `Shuffler` permutes positions rather
+        // than values, so the permutation is a function of (scan order, seed).  Every
+        // rank builds its own permutation and they have to agree, or splits overlap and
+        // rows are trained twice or not at all.  Locally that holds because a scan
+        // reads fragments in manifest order; remotely it depends on the server
+        // returning a stable order for the same table version.
         let mut rows = self
             .base_table
             .query()
