@@ -238,8 +238,18 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
-        // First pass, apply filter and load row ids
-        let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
+        // First pass, apply filter and load row ids.  The row id is requested with the
+        // `with_row_id` flag rather than by projecting `_rowid`: that is the shape the
+        // LanceDB server accepts for remote tables, and it appends the row id after any
+        // columns the splitter projects, which `Splitter` relies on.
+        let mut rows = self
+            .base_table
+            .query()
+            .select(Select::Columns(Vec::new()))
+            .with_row_id()
+            // A permutation addresses rows by stable `_rowid`, which the MemWAL LSM
+            // scanner does not expose, so the permutation always reads the base table.
+            .use_lsm(false);
 
         if let Some(filter) = &self.config.filter {
             rows = rows.only_if(filter);
@@ -319,12 +329,66 @@ impl PermutationBuilder {
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::Int32Type;
+    use arrow::array::AsArray;
+    use arrow::datatypes::{Int32Type, UInt64Type};
+    use futures::TryStreamExt;
     use lance_datagen::{BatchCount, RowCount};
+    use std::collections::HashSet;
 
-    use crate::{arrow::LanceDbDatagenExt, connect, dataloader::permutation::split::SplitSizes};
+    use crate::{
+        arrow::LanceDbDatagenExt,
+        connect,
+        dataloader::permutation::split::SplitSizes,
+        query::{ExecutableQuery, QueryBase, Select},
+    };
 
     use super::*;
+
+    /// Collect `(row_id, split_id)` pairs out of a permutation table.
+    async fn permutation_pairs(permutation_table: &Table) -> Vec<(u64, u64)> {
+        let batches = permutation_table
+            .query()
+            .select(Select::Columns(vec![
+                SRC_ROW_ID_COL.to_string(),
+                SPLIT_ID_COLUMN.to_string(),
+            ]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let mut pairs = Vec::new();
+        for batch in batches {
+            // `Calculated` splits carry whatever type the SQL produced, so normalize.
+            let to_u64 = |idx: usize| {
+                arrow::compute::cast(batch.column(idx), &arrow_schema::DataType::UInt64).unwrap()
+            };
+            let row_ids = to_u64(0);
+            let split_ids = to_u64(1);
+            let row_ids = row_ids.as_primitive::<UInt64Type>();
+            let split_ids = split_ids.as_primitive::<UInt64Type>();
+            for i in 0..batch.num_rows() {
+                pairs.push((row_ids.value(i), split_ids.value(i)));
+            }
+        }
+        pairs
+    }
+
+    /// A 100-row table whose `col_a` steps 0..100, for the split-strategy tests below.
+    async fn stepped_table(name: &str) -> (tempfile::TempDir, Table) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(10));
+        let table = db.create_table(name, data).execute().await.unwrap();
+        (temp_dir, table)
+    }
 
     #[tokio::test]
     async fn test_permutation_table_only_stores_row_id_and_split_id() {
@@ -415,5 +479,68 @@ mod tests {
                 .unwrap(),
             283
         );
+    }
+
+    /// The row id reaches the splitter via `with_row_id` rather than a projected
+    /// `_rowid` column.  `Hash` is one of the two strategies that projects columns of
+    /// its own, and it hashes "every column except the last", so this pins that the row
+    /// id still arrives last and is not itself fed into the hash.
+    #[tokio::test]
+    async fn test_permutation_builder_hash_split() {
+        let (_temp_dir, data_table) = stepped_table("hash_tbl").await;
+
+        let permutation_table = PermutationBuilder::new(data_table.clone())
+            .with_split_strategy(
+                SplitStrategy::Hash {
+                    columns: vec!["col_a".to_string()],
+                    split_weights: vec![1, 1],
+                    discard_weight: 0,
+                },
+                None,
+            )
+            .build()
+            .await
+            .unwrap();
+
+        let pairs = permutation_pairs(&permutation_table).await;
+        assert_eq!(pairs.len(), 100);
+
+        // Every base row appears exactly once. If the row id had been hashed along with
+        // `col_a`, or read from the wrong column, this is what would break.
+        let row_ids: HashSet<u64> = pairs.iter().map(|(row_id, _)| *row_id).collect();
+        assert_eq!(row_ids, (0..100).collect::<HashSet<u64>>());
+        assert!(pairs.iter().all(|(_, split_id)| *split_id < 2));
+        // Both splits should get rows; a constant split id would mean the hash saw a
+        // constant input.
+        assert!(pairs.iter().any(|(_, split_id)| *split_id == 0));
+        assert!(pairs.iter().any(|(_, split_id)| *split_id == 1));
+    }
+
+    /// The other strategy with a projection of its own: `Calculated` computes the split
+    /// id in SQL, and the row id rides alongside it via `with_row_id`.
+    #[tokio::test]
+    async fn test_permutation_builder_calculated_split() {
+        let (_temp_dir, data_table) = stepped_table("calculated_tbl").await;
+
+        let permutation_table = PermutationBuilder::new(data_table.clone())
+            .with_split_strategy(
+                SplitStrategy::Calculated {
+                    calculation: "col_a % 2".to_string(),
+                },
+                None,
+            )
+            .build()
+            .await
+            .unwrap();
+
+        let mut pairs = permutation_pairs(&permutation_table).await;
+        pairs.sort_unstable();
+        assert_eq!(pairs.len(), 100);
+
+        // `col_a` steps 0..100 and row ids follow storage order, so the split id of row
+        // `n` must be `n % 2` — an exact check that the row id was paired with the split
+        // id computed from *its own* row.
+        let expected: Vec<(u64, u64)> = (0..100).map(|row_id| (row_id, row_id % 2)).collect();
+        assert_eq!(pairs, expected);
     }
 }

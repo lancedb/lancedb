@@ -1,6 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import contextlib
+import http.server
+import json
+import re
+import threading
+
+import lancedb
+import pyarrow as pa
 import pytest
+
+ARROW_FILE_CONTENT_TYPE = "application/vnd.apache.arrow.file"
 
 
 def exception_output(e_info: pytest.ExceptionInfo):
@@ -9,3 +19,168 @@ def exception_output(e_info: pytest.ExceptionInfo):
     # skip traceback part, since it's not worth checking in tests
     lines = traceback.format_exception_only(e_info.type, e_info.value)
     return "".join(lines).strip()
+
+
+def arrow_file_bytes(table: pa.Table) -> bytes:
+    """Serialize to the Arrow IPC *file* framing the /query/ route answers with."""
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+class MockPermutationServer:
+    """A stand-in LanceDB server hosting one table whose ``id`` equals its ``_rowid``.
+
+    Serves the three routes the permutation API and the streaming data loader touch
+    (``describe``, ``count_rows``, ``query``) and records every ``/query/`` body, so a
+    test can assert on the request shapes sent to the server — the part that has to
+    stay compatible rather than merely round-trip locally.
+    """
+
+    def __init__(self, name="remote_data", num_rows=8):
+        self.name = name
+        self.num_rows = num_rows
+        self.query_bodies = []
+
+    def __call__(self, request):
+        path = request.path
+        if path == f"/v1/table/{self.name}/describe/":
+            return self._json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {"name": "id", "type": {"type": "int64"}, "nullable": False}
+                        ]
+                    },
+                },
+            )
+        if path == f"/v1/table/{self.name}/count_rows/":
+            self._read_body(request)
+            return self._json(request, self.num_rows)
+        if path == f"/v1/table/{self.name}/query/":
+            return self._query(request, self._read_body(request))
+
+        request.send_response(404)
+        request.end_headers()
+
+    @property
+    def scans(self):
+        """Bodies of the permutation build scan: row ids, no user columns."""
+        return [b for b in self.query_bodies if b.get("columns") == []]
+
+    @property
+    def takes(self):
+        """Bodies of the row-id takes the loader fetches batches with."""
+        return [b for b in self.query_bodies if b.get("filter") is not None]
+
+    @staticmethod
+    def _read_body(request):
+        content_len = int(request.headers.get("Content-Length") or 0)
+        return json.loads(request.rfile.read(content_len)) if content_len else {}
+
+    @staticmethod
+    def _json(request, payload):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(payload).encode())
+
+    @staticmethod
+    def _arrow(request, table):
+        body = arrow_file_bytes(table)
+        request.send_response(200)
+        request.send_header("Content-Type", ARROW_FILE_CONTENT_TYPE)
+        request.send_header("Content-Length", str(len(body)))
+        request.end_headers()
+        request.wfile.write(body)
+
+    def _query(self, request, body):
+        self.query_bodies.append(body)
+
+        if body.get("filter") is not None:
+            # A row-id take. Answer in ascending row-id order regardless of the order
+            # asked for, so tests prove the client restores the requested order.
+            row_ids = sorted(int(m) for m in re.findall(r"\d+", body["filter"]))
+            return self._arrow(
+                request,
+                pa.table(
+                    {
+                        "id": pa.array(row_ids, pa.int64()),
+                        "_rowid": pa.array(row_ids, pa.uint64()),
+                    }
+                ),
+            )
+
+        if body.get("columns") == []:
+            # The permutation build scan: row ids only, via the with_row_id flag.
+            return self._arrow(
+                request,
+                pa.table({"_rowid": pa.array(range(self.num_rows), pa.uint64())}),
+            )
+
+        # The bounded schema probe.
+        return self._arrow(request, pa.table({"id": pa.array([0], pa.int64())}))
+
+
+def _make_handler(serve):
+    class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            serve(self)
+
+        def do_POST(self):
+            serve(self)
+
+        def log_message(self, *args):
+            pass  # keep pytest output readable
+
+    return MockLanceDBHandler
+
+
+@contextlib.contextmanager
+def mock_remote_table(server):
+    """Run ``server`` on a local port and yield an open remote table against it."""
+    with http.server.HTTPServer(("localhost", 0), _make_handler(server)) as srv:
+        thread = threading.Thread(target=srv.serve_forever)
+        thread.start()
+        try:
+            db = lancedb.connect(
+                "db://dev",
+                api_key="fake",
+                host_override=f"http://localhost:{srv.server_address[1]}",
+                client_config={"timeout_config": {"connect_timeout": 5}},
+            )
+            yield db.open_table(server.name)
+        finally:
+            srv.shutdown()
+            thread.join()
+
+
+def assert_server_safe_row_id_requests(server):
+    """Assert the loader asked for row ids the only way the server accepts.
+
+    The row id must travel as the ``with_row_id`` flag, never as a projected
+    ``_rowid`` column, and every base-table read must pin itself to the base table:
+    the MemWAL LSM scanner rejects ``with_row_id`` because it exposes ``_rowaddr``
+    rather than the stable ``_rowid`` a permutation is defined over.
+    """
+    for body in server.scans + server.takes:
+        assert body["with_row_id"] is True, body
+        assert body["use_lsm"] is False, body
+    for body in server.takes:
+        assert "_rowid" in body["filter"], body
+
+    # A query with no row-id filter and no k asks the server for the whole table.
+    # Only the one-off permutation scan may do that — notably not the schema probe,
+    # which is built once per split per epoch. Takes carry their own bound in the
+    # `IN` list, so their k is irrelevant.
+    unbounded = [
+        b
+        for b in server.query_bodies
+        if b.get("filter") is None and b.get("k", 0) > server.num_rows
+    ]
+    assert unbounded == server.scans, (
+        f"only the permutation scan may be unbounded, got {unbounded}"
+    )

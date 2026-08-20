@@ -3190,6 +3190,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{StreamExt, TryFutureExt, future::BoxFuture};
+    use lance_core::ROW_ID;
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
@@ -4901,6 +4902,185 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    /// Build a one-column `_rowid` batch, the shape the permutation build scan expects
+    /// back from the server.
+    fn row_id_batch(row_ids: Vec<u64>) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                ROW_ID,
+                DataType::UInt64,
+                false,
+            )])),
+            vec![Arc::new(arrow_array::UInt64Array::from(row_ids))],
+        )
+        .unwrap()
+    }
+
+    /// An in-memory permutation table over `row_ids`, all in split 0.
+    async fn permutation_table_for(row_ids: Vec<u64>) -> Table {
+        let split_ids = arrow_array::UInt64Array::from(vec![0u64; row_ids.len()]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("row_id", DataType::UInt64, false),
+                Field::new("split_id", DataType::UInt64, false),
+            ])),
+            vec![
+                Arc::new(arrow_array::UInt64Array::from(row_ids)),
+                Arc::new(split_ids),
+            ],
+        )
+        .unwrap();
+        crate::test_utils::datagen::virtual_table("permutation", &batch).await
+    }
+
+    /// The permutation build scans row ids with the `with_row_id` flag and an empty
+    /// projection, not by naming `_rowid` in `columns` — the server accepts the former
+    /// and `use_lsm(false)` keeps it off the MemWAL, which has no stable `_rowid`.
+    #[tokio::test]
+    async fn test_permutation_build_scan_request_shape() {
+        use crate::dataloader::permutation::builder::PermutationBuilder;
+
+        let scan_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured = scan_body.clone();
+
+        let table = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let path = request.url().path().to_string();
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+
+            if path == "/v1/table/my_table/count_rows/" {
+                return http::Response::builder()
+                    .status(200)
+                    .body("3".to_string().into_bytes())
+                    .unwrap();
+            }
+
+            assert_eq!(path, "/v1/table/my_table/query/");
+            *captured.lock().unwrap() = Some(body);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&row_id_batch(vec![10, 11, 12])))
+                .unwrap()
+        });
+
+        let permutation = PermutationBuilder::new(table).build().await.unwrap();
+        assert_eq!(permutation.count_rows(None).await.unwrap(), 3);
+
+        let body = scan_body.lock().unwrap().clone().unwrap();
+        assert_eq!(body["columns"], json!([]));
+        assert_eq!(body["with_row_id"], json!(true));
+        assert_eq!(body["use_lsm"], json!(false));
+    }
+
+    /// The permutation fetch is a row-id take: the same `_rowid IN (...)` filter
+    /// `Table::take_row_ids` sends, plus `with_row_id` so the requested order can be
+    /// restored client-side.
+    #[tokio::test]
+    async fn test_permutation_take_request_shape() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let take_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured = take_body.clone();
+
+        let base = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            *captured.lock().unwrap() = Some(body);
+
+            // Deliberately returned in the opposite order to the request, so the
+            // assertion below proves the client reorders by `_rowid`.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("idx", DataType::Int32, false),
+                    Field::new(ROW_ID, DataType::UInt64, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![50, 70])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![5u64, 7])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let permutation = permutation_table_for(vec![7, 3, 5]).await;
+        let reader = PermutationReader::try_from_tables(
+            base.base_table().clone(),
+            permutation.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Offsets 0 and 2 of the permutation are row ids 7 and 5.
+        let batch = reader.take_offsets(&[0, 2], Select::All).await.unwrap();
+
+        let body = take_body.lock().unwrap().clone().unwrap();
+        let filter = body["filter"].as_str().expect("take must send a filter");
+        assert!(
+            filter.contains(ROW_ID) && filter.contains("IN"),
+            "expected a _rowid IN (...) filter, got: {filter}"
+        );
+        assert!(filter.contains('7') && filter.contains('5'), "{filter}");
+        assert_eq!(body["with_row_id"], json!(true));
+        assert_eq!(body["use_lsm"], json!(false));
+
+        // Reordered to the requested row ids, and `_rowid` dropped since it was not
+        // part of the selection.
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(
+            batch.column(0).as_primitive::<Int32Type>().values(),
+            &[70, 50]
+        );
+    }
+
+    /// Reading a schema builds a plan, and building a plan on a remote table executes
+    /// the query. Bounded, or every `Permutation` construction scans the whole table.
+    #[tokio::test]
+    async fn test_permutation_output_schema_is_bounded() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let schema_body = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let captured = schema_body.clone();
+
+        let base = Table::new_with_handler("my_table", move |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            *captured.lock().unwrap() = Some(body);
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("idx", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let permutation = permutation_table_for(vec![7]).await;
+        let reader = PermutationReader::try_from_tables(
+            base.base_table().clone(),
+            permutation.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let schema = reader.output_schema(Select::All).await.unwrap();
+        assert_eq!(schema.field(0).name(), "idx");
+
+        let body = schema_body.lock().unwrap().clone().unwrap();
+        assert_eq!(body["k"], json!(1), "schema probe must not be an open scan");
     }
 
     #[tokio::test]

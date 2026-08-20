@@ -12,8 +12,6 @@ use datafusion_common::hash_utils::{RandomState, create_hashes};
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
 
-use lance_core::ROW_ID;
-
 use crate::{
     Error, Result,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
@@ -360,17 +358,17 @@ impl Splitter {
         }
     }
 
+    /// Add the columns this strategy needs to compute a split id.
+    ///
+    /// The row id is not projected here.  The caller requests it with `with_row_id`,
+    /// which appends it after these columns — the position [`Self::apply`] expects.
     pub fn project(&self, query: Query) -> Query {
         match &self.strategy {
-            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![
-                (SPLIT_ID_COLUMN.to_string(), calculation.clone()),
-                (ROW_ID.to_string(), ROW_ID.to_string()),
-            ])),
-            SplitStrategy::Hash { columns, .. } => {
-                let mut cols = columns.clone();
-                cols.push(ROW_ID.to_string());
-                query.select(Select::Columns(cols))
-            }
+            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![(
+                SPLIT_ID_COLUMN.to_string(),
+                calculation.clone(),
+            )])),
+            SplitStrategy::Hash { columns, .. } => query.select(Select::Columns(columns.clone())),
             _ => query,
         }
     }

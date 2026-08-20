@@ -21,7 +21,6 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::UInt64Type;
 use arrow_array::{RecordBatch, UInt64Array};
 use arrow_schema::SchemaRef;
-use datafusion_expr::{Expr, col, lit};
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
@@ -197,23 +196,20 @@ impl PermutationReader {
             .expect_ok()?
             .values();
 
-        let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
-
-        let base_query = QueryRequest {
-            filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
-            select: selection,
-            with_row_id: true,
-            ..Default::default()
-        };
-
-        let data = base_table
-            .query(
-                &AnyQuery::Query(base_query),
-                QueryExecutionOptions {
-                    max_batch_length: num_rows as u32,
-                    ..Default::default()
-                },
-            )
+        // Fetch through the public take API so this shares one request shape with
+        // `Table::take_row_ids`.  `with_row_id` brings `_rowid` back so the requested
+        // order can be restored below; `use_lsm(false)` reads the base table, since the
+        // MemWAL LSM scanner exposes `_rowaddr` rather than the stable `_rowid` a
+        // permutation is defined over.
+        let data = Table::from(base_table.clone())
+            .take_row_ids(row_ids.to_vec())
+            .select(selection)
+            .with_row_id()
+            .use_lsm(false)
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: num_rows as u32,
+                ..Default::default()
+            })
             .await?;
         let schema = data.schema();
 
@@ -391,7 +387,12 @@ impl PermutationReader {
             self.base_table
                 .query(
                     &AnyQuery::Query(QueryRequest {
-                        select: Select::Columns(vec![ROW_ID.to_string()]),
+                        // `_rowid` is requested with the flag rather than projected, the
+                        // only shape the LanceDB server accepts.  See `load_batch` for why
+                        // the identity scan reads the base table rather than the MemWAL.
+                        select: Select::Columns(Vec::new()),
+                        with_row_id: true,
+                        use_lsm: Some(false),
                         offset: self.offset.map(|o| o as usize),
                         limit: self.limit.map(|l| l as usize),
                         ..Default::default()
@@ -468,6 +469,7 @@ impl PermutationReader {
             let batches = table
                 .take_offsets(offsets.to_vec())
                 .select(selection.clone())
+                .use_lsm(false)
                 .execute()
                 .await?
                 .try_collect::<Vec<_>>()
@@ -487,7 +489,17 @@ impl PermutationReader {
 
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
-        table.query().select(selection).output_schema().await
+        // `output_schema` reads the schema off a query plan, and building a plan on a
+        // remote table executes the query.  Without a limit that is a full table scan
+        // over HTTP for every `Permutation` constructed — once per split, per epoch — so
+        // bound it.  Native tables never execute the plan, so this costs them nothing.
+        table
+            .query()
+            .select(selection)
+            .limit(1)
+            .use_lsm(false)
+            .output_schema()
+            .await
     }
 
     pub fn count_rows(&self) -> u64 {
@@ -1010,5 +1022,96 @@ mod tests {
         assert_eq!(batch.num_rows(), 0);
         assert_eq!(batch.num_columns(), 1);
         assert_eq!(batch.schema().field(0).name(), "idx");
+    }
+
+    /// `output_schema` bounds its plan with `limit(1)` so a remote table does not run a
+    /// full scan just to report a schema. The schema itself must be unaffected, for
+    /// every selection shape.
+    #[tokio::test]
+    async fn test_output_schema_matches_selection() {
+        let (base_table, row_ids_table, _) = setup_permutation_tables(5).await;
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            row_ids_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let names = async |selection: Select| -> Vec<String> {
+            reader
+                .output_schema(selection)
+                .await
+                .unwrap()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect()
+        };
+
+        assert_eq!(names(Select::All).await, vec!["idx", "other_col"]);
+        assert_eq!(
+            names(Select::Columns(vec!["other_col".to_string()])).await,
+            vec!["other_col"]
+        );
+        assert_eq!(
+            names(Select::Dynamic(vec![(
+                "doubled".to_string(),
+                "idx * 2".to_string()
+            )]))
+            .await,
+            vec!["doubled"]
+        );
+    }
+
+    /// A MemWAL write spec routes reads through the LSM scanner, which rejects
+    /// `with_row_id` because it exposes `_rowaddr` rather than a stable `_rowid`. The
+    /// permutation is defined over `_rowid`, so both the build and the fetch read the
+    /// base table explicitly. Without that this whole path errors.
+    #[tokio::test]
+    async fn test_permutation_over_mem_wal_table() {
+        // Aliased: `test_utils::datagen` exports a same-named trait already in scope.
+        use crate::arrow::LanceDbDatagenExt as _;
+        use crate::connect;
+        use crate::dataloader::permutation::builder::PermutationBuilder;
+        use crate::table::LsmWriteSpec;
+
+        // MemWAL needs a real dataset directory rather than an in-memory table.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(1));
+        let base_table = db.create_table("tbl", data).execute().await.unwrap();
+        base_table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let permutation_table = PermutationBuilder::new(base_table.clone())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(permutation_table.count_rows(None).await.unwrap(), 10);
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            permutation_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        let batch = reader.take_offsets(&[3, 1], Select::All).await.unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        // No shuffle was configured, so permutation offsets follow storage order.
+        assert_eq!(
+            batch.column(0).as_primitive::<Int32Type>().values(),
+            &[3, 1]
+        );
     }
 }
