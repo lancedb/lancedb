@@ -5214,7 +5214,8 @@ mod tests {
         assert_eq!(schema.field(0).name(), "idx");
 
         let body = schema_body.lock().unwrap().clone().unwrap();
-        assert_eq!(body["k"], json!(0), "schema probe must not fetch row data");
+        // One, not zero: lance reads `k: 0` as "no limit", so zero would be an open scan.
+        assert_eq!(body["k"], json!(1), "schema probe must not be an open scan");
     }
 
     #[tokio::test]

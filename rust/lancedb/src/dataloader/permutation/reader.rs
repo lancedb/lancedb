@@ -489,15 +489,21 @@ impl PermutationReader {
                 .await?
                 .try_collect::<Vec<_>>()
                 .await?;
-            if let Some(first_batch) = batches.first() {
-                let schema = first_batch.schema();
-                let batch = arrow::compute::concat_batches(&schema, &batches)?;
-                Ok(batch)
-            } else {
-                // `try_new` with no columns errors on any non-empty schema; this is
-                // the same empty batch the `offsets.is_empty()` branch above builds.
-                Ok(RecordBatch::new_empty(self.output_schema(selection).await?))
+            let taken = batches.iter().map(|b| b.num_rows()).sum::<usize>();
+            if taken != offsets.len() {
+                // Same contract `load_batch` enforces for the permutation branch: a
+                // take that comes back short means the offsets and the table disagree,
+                // which silently drops training rows if it is allowed through.
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Base table returned {} rows for {} offsets",
+                        taken,
+                        offsets.len()
+                    ),
+                });
             }
+            let schema = batches[0].schema();
+            Ok(arrow::compute::concat_batches(&schema, &batches)?)
         }
     }
 
@@ -506,13 +512,15 @@ impl PermutationReader {
         // `output_schema` reads the schema off a query plan, and building a plan on a
         // remote table executes the query.  Without a limit that is a full table scan
         // over HTTP for every `Permutation` constructed — once per split, per epoch — so
-        // bound it to no rows at all: the response still carries the schema, which is
-        // the only thing wanted here, and a wide or blob-bearing table does not pay to
-        // ship a row.  Native tables never execute the plan, so this costs them nothing.
+        // bound it.  Native tables never execute the plan, so this costs them nothing.
+        //
+        // One row, not zero: lance reads a limit of `Some(0)` as *no limit* rather than
+        // no rows (`Scanner`: `self.limit.unwrap_or(0) > 0` gates the limit node), so a
+        // zero here would scan the whole table — the very thing this is preventing.
         table
             .query()
             .select(selection)
-            .limit(0)
+            .limit(1)
             .use_lsm(false)
             .output_schema()
             .await

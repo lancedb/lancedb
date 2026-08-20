@@ -193,15 +193,20 @@ def assert_server_safe_row_id_requests(server):
     for body in server.takes:
         assert "_rowid" in body["filter"], body
 
-    # A query with no row-id filter and no k asks the server for the whole table.
+    # A filterless query with no effective bound asks the server for the whole table.
     # Only the one-off permutation scan may do that — notably not the schema probe,
     # which is built once per split per epoch. Takes carry their own bound in the
     # `IN` list, so their k is irrelevant.
-    unbounded = [
-        b
-        for b in server.query_bodies
-        if b.get("filter") is None and b.get("k", 0) > server.num_rows
-    ]
+    #
+    # `k == 0` counts as unbounded: lance reads a zero limit as "no limit" rather than
+    # "no rows", so a probe sending 0 is an open scan wearing a small number.
+    def is_unbounded(body):
+        if body.get("filter") is not None:
+            return False
+        k = body.get("k")
+        return k is None or k == 0 or k > server.num_rows
+
+    unbounded = [b for b in server.query_bodies if is_unbounded(b)]
     assert unbounded == server.scans, (
         f"only the permutation scan may be unbounded, got {unbounded}"
     )
