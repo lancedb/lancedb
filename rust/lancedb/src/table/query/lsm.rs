@@ -248,7 +248,6 @@ fn pk_columns(dataset: &Dataset) -> Result<Vec<String>> {
 fn exclusion_watermarks(
     details: &MemWalIndexDetails,
     index_names: &[String],
-    catchup_required: bool,
 ) -> HashMap<Uuid, u64> {
     let mut exclude: HashMap<Uuid, u64> = HashMap::new();
     for entry in &details.compacted_sstables {
@@ -261,13 +260,10 @@ fn exclusion_watermarks(
                 .and_then(|icp| icp.caught_up_generation_for_shard(&entry.shard_id))
             {
                 Some(caught_up) => watermark = watermark.min(caught_up),
-                // No entry. On a table that requires catch-up this means the
-                // index is *not* known to hold these rows, and the base arm is
-                // index-only -- so every generation stays readable from its
-                // SSTable. Without the bit the field is not maintained at all,
-                // and absence carries no information.
-                None if catchup_required => watermark = 0,
-                None => {}
+                // No entry means the index is *not* known to hold these rows,
+                // and the base arm is index-only -- so every generation stays
+                // readable from its SSTable.
+                None => watermark = 0,
             }
         }
         exclude.entry(entry.shard_id).or_insert(watermark);
@@ -288,8 +284,7 @@ async fn build_read_context(
     details: &MemWalIndexDetails,
     index_names: &[String],
 ) -> Result<(Vec<ShardSnapshot>, HashMap<Uuid, InMemoryMemTables>)> {
-    let catchup_required = dataset.requires_mem_wal_index_catchup();
-    let exclude = exclusion_watermarks(details, index_names, catchup_required);
+    let exclude = exclusion_watermarks(details, index_names);
 
     let shard_ids = dataset.list_mem_wal_latest_shard_ids().await?;
     // Use the dataset's own object store (not `ObjectStore::from_uri`, which
@@ -776,23 +771,34 @@ mod tests {
         };
 
         // Plain scan: drop every compacted generation (through 5).
-        assert_eq!(
-            exclusion_watermarks(&details, &[], false).get(&shard),
-            Some(&5)
-        );
+        assert_eq!(exclusion_watermarks(&details, &[]).get(&shard), Some(&5));
 
         // FTS arm with a lagging index: exclusion is capped at the index catch-up
         // (2), so SSTable generations 3..=5 are retained until the index covers
         // them — otherwise those documents would silently vanish from FTS results.
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
             Some(&2)
         );
 
-        // A caught-up index — or one untracked in index_catchup — falls back to the
-        // compaction watermark.
+        // An index with no entry has not recorded that it holds these rows, so
+        // nothing is excluded. This is the case a table written before catch-up
+        // was maintained lands in, and it errs toward reading the SSTables.
         assert_eq!(
-            exclusion_watermarks(&details, &["caught_up_idx".to_string()], false).get(&shard),
+            exclusion_watermarks(&details, &["untracked_idx".to_string()]).get(&shard),
+            Some(&0)
+        );
+
+        // An index recorded as covering the compaction watermark excludes up to it.
+        let caught_up = MemWalIndexDetails {
+            index_catchup: vec![IndexCatchupProgress::new(
+                "caught_up_idx".to_string(),
+                vec![CompactedSsTable::new(shard, 5)],
+            )],
+            ..details.clone()
+        };
+        assert_eq!(
+            exclusion_watermarks(&caught_up, &["caught_up_idx".to_string()]).get(&shard),
             Some(&5)
         );
     }
@@ -821,31 +827,28 @@ mod tests {
 
         // Each index alone stops at its own catch-up.
         assert_eq!(
-            exclusion_watermarks(&details, &["vec_idx".to_string()], false).get(&shard),
+            exclusion_watermarks(&details, &["vec_idx".to_string()]).get(&shard),
             Some(&7)
         );
         assert_eq!(
-            exclusion_watermarks(&details, &["fts_idx".to_string()], false).get(&shard),
+            exclusion_watermarks(&details, &["fts_idx".to_string()]).get(&shard),
             Some(&4)
         );
 
         // Used together, the lower one governs regardless of order.
         let both = ["vec_idx".to_string(), "fts_idx".to_string()];
-        assert_eq!(
-            exclusion_watermarks(&details, &both, false).get(&shard),
-            Some(&4)
-        );
+        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&4));
         let reversed = ["fts_idx".to_string(), "vec_idx".to_string()];
         assert_eq!(
-            exclusion_watermarks(&details, &reversed, false).get(&shard),
+            exclusion_watermarks(&details, &reversed).get(&shard),
             Some(&4)
         );
     }
 
-    /// An index with no catch-up entry contributes no cap today, so a lagging
-    /// sibling must still govern rather than being widened by the untracked one.
+    /// An index with no catch-up entry is not known to hold anything, so it
+    /// governs over a lagging sibling rather than the other way round.
     #[test]
-    fn an_untracked_index_does_not_widen_a_lagging_sibling() {
+    fn an_untracked_index_retains_everything() {
         let shard = Uuid::from_u128(1);
         let details = MemWalIndexDetails {
             compacted_sstables: vec![CompactedSsTable::new(shard, 9)],
@@ -858,10 +861,7 @@ mod tests {
         };
 
         let both = ["fts_idx".to_string(), "untracked_idx".to_string()];
-        assert_eq!(
-            exclusion_watermarks(&details, &both, false).get(&shard),
-            Some(&4)
-        );
+        assert_eq!(exclusion_watermarks(&details, &both).get(&shard), Some(&0));
     }
 
     #[test]
