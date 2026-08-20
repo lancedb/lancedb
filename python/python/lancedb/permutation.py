@@ -1045,6 +1045,13 @@ class Permutation:
         Offsets must be distinct.  A repeated offset resolves to one row rather than
         two, which would silently misalign a batch, so it raises instead.  Sampling
         with replacement is therefore not supported here.
+
+        Rows come back in the order `offsets` names them only when this permutation
+        has a permutation table behind it.  An identity permutation
+        ([Permutation.identity][lancedb.permutation.Permutation.identity]) reads by
+        row offset, which carries no ordering guarantee, so its rows arrive in
+        whatever order the backing store produces — do not pair it with a shuffling
+        sampler.
         """
         self._ensure_open()
 

@@ -247,29 +247,28 @@ impl PermutationBuilder {
     /// every base column — and `Hash` would silently hash all of them rather than the
     /// configured ones. Fail here instead.
     fn validate_scan_schema(schema: &arrow_schema::Schema, splitter: &Splitter) -> Result<()> {
-        let mut expected = splitter.projected_columns();
-        expected.push(ROW_ID.to_string());
-        let mut actual = schema
-            .fields()
-            .iter()
-            .map(|f| f.name().clone())
-            .collect::<Vec<_>>();
+        /// Sorted and deduplicated, so the comparison and the error message agree.
+        fn normalize(mut names: Vec<String>) -> Vec<String> {
+            names.sort_unstable();
+            names.dedup();
+            names
+        }
+
         // Compared as sets: `apply_hash` finds the row id by name precisely because
         // where a backing store puts it is not ours to dictate, and a hash strategy
         // may legitimately name the same column twice.  What matters is that nothing
         // unrequested came back.
-        let (mut expected_set, mut actual_set) = (expected.clone(), actual.clone());
-        expected_set.sort_unstable();
-        expected_set.dedup();
-        actual_set.sort_unstable();
-        actual_set.dedup();
-        if actual_set != expected_set {
-            actual.sort_unstable();
+        let mut expected = splitter.projected_columns();
+        expected.push(ROW_ID.to_string());
+        let expected = normalize(expected);
+        let actual = normalize(schema.fields().iter().map(|f| f.name().clone()).collect());
+
+        if actual != expected {
             return Err(Error::InvalidInput {
                 message: format!(
                     "Permutation row id scan returned columns {:?}, expected {:?}.  \
                      The table's backing store did not honor the requested projection.",
-                    actual, expected_set
+                    actual, expected
                 ),
             });
         }
