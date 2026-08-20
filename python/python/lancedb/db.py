@@ -524,6 +524,12 @@ class DBConnection(EnforceOverrides):
             namespace_path = []
         raise NotImplementedError
 
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        raise NotImplementedError
+
     def rename_table(
         self,
         cur_name: str,
@@ -1185,6 +1191,20 @@ class LanceDBConnection(DBConnection):
                 name, namespace_path=namespace_path, ignore_missing=ignore_missing
             )
         )
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Call :meth:`Job.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
@@ -1962,6 +1982,23 @@ class AsyncConnection(object):
                 raise e
             if f"Table '{name}' was not found" not in str(e):
                 raise e
+
+    async def drop_table_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Await :meth:`AsyncJob.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_table_async(name, namespace_path=namespace_path)
+        )
 
     async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.

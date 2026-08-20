@@ -176,6 +176,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
         UpdateFieldMetadataResult,
@@ -432,6 +433,20 @@ def _cast_to_target_schema(
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
+def _field_extension_name(field: pa.Field) -> Optional[str]:
+    extension_name = getattr(field.type, "extension_name", None)
+    if extension_name is not None:
+        return extension_name
+
+    metadata = field.metadata or {}
+    extension_name = metadata.get(b"ARROW:extension:name") or metadata.get(
+        "ARROW:extension:name"
+    )
+    if isinstance(extension_name, bytes):
+        return extension_name.decode()
+    return extension_name
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -444,6 +459,16 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
+        # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
+        # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
+        # input to that storage type here merely relabels the raw JSON bytes as
+        # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
+        if (
+            _field_extension_name(field) == "arrow.json"
+            and _field_extension_name(target_field) == "lance.json"
+        ):
+            new_fields.append(field)
+            continue
         if pa.types.is_struct(target_field.type):
             if pa.types.is_struct(field.type):
                 new_type = pa.struct(
@@ -1916,7 +1941,14 @@ class Table(ABC):
 
     @abstractmethod
     def add_columns(
-        self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ):
         """
         Add new columns with defined values.
@@ -1930,11 +1962,95 @@ class Table(ABC):
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression, so no
+            data type is supplied.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and rows get
+            them from [`refresh_column`][lancedb.table.Table.refresh_column].
+            Declaring one therefore costs the same on a large table as on an
+            empty one.
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time; recomputing means
+            dropping the column and declaring it again. While a declaration
+            reads a column, that column cannot be renamed, retyped or dropped.
+
+            On LanceDB Cloud and Enterprise the expression is planned by the
+            server, and the refresh runs as a server job -- see
+            [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
+            Cannot be combined with ``transforms``.
 
         Returns
         -------
         AddColumnsResult
             version: the new version number of the table after adding columns.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> table.refresh_column("doubled")
+        RefreshColumnResult(rows_filled=2, version=3)
+        >>> table.to_arrow().sort_by("x").to_pandas()
+           x  doubled
+        0  1        2
+        1  2        4
+        """
+
+    @abstractmethod
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            rows_filled: the number of rows given a value.
+            version: the new version number of the table.
+        """
+
+    @abstractmethod
+    def refresh_column_async(self, column: str) -> Job:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`Job.wait` returns. Invalid input --
+        an unknown column, or one that is not computed -- raises here rather
+        than failing the job. On local tables the job runs in-process; on
+        LanceDB Cloud and Enterprise it is the server's backfill job.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("computed_job_demo", [{"x": 1}, {"x": 2}])
+        >>> table.add_columns(computed={"doubled": "x * 2"})
+        AddColumnsResult(version=2)
+        >>> job = table.refresh_column_async("doubled")
+        >>> job.wait()
+        >>> job.status()
+        'finished'
         """
 
     @abstractmethod
@@ -3939,9 +4055,28 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms))
+        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+
+    def refresh_column(self, column: str) -> "RefreshColumnResult":
+        """Fill a computed column's unfilled rows. See
+        [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
+        return LOOP.run(self._table.refresh_column(column))
+
+    def refresh_column_async(self, column: str) -> Job:
+        """Fill a computed column's unfilled rows, returning a handle to the
+        refresh job. See
+        [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
+        """
+        return Job(LOOP.run(self._table.refresh_column_async(column)))
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -4690,7 +4825,7 @@ class AsyncTable:
 
         Examples
         --------
-        >>> from lancedb._lancedb import LsmWriteSpec
+        >>> from lancedb import LsmWriteSpec
         >>> # table.set_unenforced_primary_key("id")
         >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
         """
@@ -4735,7 +4870,7 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        return await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_lsm()
 
     async def flush_lsm(self) -> None:
         """Seal every bucket's active memtable into L0.
@@ -4744,7 +4879,7 @@ class AsyncTable:
         `compact_lsm`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        return await self._inner.flush_lsm()
+        await self._inner.flush_lsm()
 
     async def compact_lsm(self) -> None:
         """Trigger a background L0 to base compaction pass per bucket.
@@ -4753,7 +4888,7 @@ class AsyncTable:
         ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
         until the current L0 has reached base.
         """
-        return await self._inner.compact_lsm()
+        await self._inner.compact_lsm()
 
     async def get_lsm_stats(
         self, *, include_generation_rows: bool = False
@@ -5856,7 +5991,14 @@ class AsyncTable:
         return await self._inner.update(updates_sql, where)
 
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | None = None,
+        *,
+        computed: dict[str, str] | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -5869,6 +6011,22 @@ class AsyncTable:
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+        computed: Dict[str, str], optional
+            A map of column name to a SQL expression defining the column. The
+            column's type and inputs are derived from the expression.
+
+            Unlike ``transforms``, the expression is stored rather than
+            evaluated now: the column is committed with no values, and rows get
+            them from
+            [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
+
+            A refresh does not revisit rows it has already filled, so mutating
+            an input leaves the value computed at fill time. While a
+            declaration reads a column, that column cannot be renamed, retyped
+            or dropped.
+
+            On LanceDB Cloud and Enterprise the expression is planned by
+            the server. Cannot be combined with ``transforms``.
 
         Returns
         -------
@@ -5882,10 +6040,70 @@ class AsyncTable:
             {isinstance(f, pa.Field) for f in transforms}
         ):
             transforms = pa.schema(transforms)
+        if computed:
+            if transforms:
+                raise ValueError(
+                    "add_columns cannot take both transforms and computed columns"
+                )
+            return await self._inner.add_computed_columns(list(computed.items()))
+        if transforms is None:
+            raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
         else:
             return await self._inner.add_columns(list(transforms.items()))
+
+    async def refresh_column(self, column: str) -> RefreshColumnResult:
+        """
+        Fill the rows of a computed column that hold no value yet.
+
+        Declared with ``add_columns(computed=...)``, a column starts empty and
+        gets its values here. Rows appended since the last refresh are filled
+        by the next one; rows already filled are left as they are, so the call
+        is idempotent and does not observe a mutated input.
+
+        Local tables only: a remote refresh runs as a server job, through
+        [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
+
+        Parameters
+        ----------
+        column: str
+            The name of the computed column to fill.
+
+        Returns
+        -------
+        RefreshColumnResult
+            The number of rows filled and the new version of the table.
+        """
+        return await self._inner.refresh_column(column)
+
+    async def refresh_column_async(self, column: str) -> AsyncJob:
+        """
+        Like :meth:`refresh_column`, but returns a handle to the refresh job
+        instead of blocking until it completes.
+
+        The job may already be complete when returned; callers must not assume
+        the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
+        input -- an unknown column, or one that is not computed -- raises here
+        rather than failing the job. On local tables the job runs
+        in-process; on LanceDB Cloud and Enterprise it is the server's
+        backfill job.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def refresh_in_background():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
+        ...     await table.add_columns(computed={"doubled": "x * 2"})
+        ...     job = await table.refresh_column_async("doubled")
+        ...     await job.wait()
+        ...     return await job.status()
+        >>> asyncio.run(refresh_in_background())
+        'finished'
+        """
+        return AsyncJob(await self._inner.refresh_column_async(column))
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

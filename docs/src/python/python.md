@@ -52,6 +52,8 @@ listing a storage directory.
 
 ::: lancedb.table.Branches
 
+::: lancedb.LsmWriteSpec
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead

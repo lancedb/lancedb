@@ -415,6 +415,32 @@ pub struct AddColumnsResult {
     pub version: u64,
 }
 
+#[pyclass(get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct RefreshColumnResult {
+    pub rows_filled: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl RefreshColumnResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "RefreshColumnResult(rows_filled={}, version={})",
+            self.rows_filled, self.version
+        )
+    }
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(result: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: result.rows_filled,
+            version: result.version,
+        }
+    }
+}
+
 #[pymethods]
 impl AddColumnsResult {
     pub fn __repr__(&self) -> String {
@@ -579,7 +605,7 @@ impl PyBlobFile {
     }
 }
 
-#[pyclass(get_all, from_py_object)]
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct FtsToken {
     pub text: String,
@@ -1507,6 +1533,40 @@ impl Table {
                 .await
                 .infer_error()?;
             Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn add_computed_columns(
+        self_: PyRef<'_, Self>,
+        columns: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.add_columns();
+            for (name, expression) in columns {
+                builder = builder.computed(name, expression);
+            }
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner.refresh_column(column).await.infer_error()?;
+            Ok(RefreshColumnResult::from(result))
+        })
+    }
+
+    pub fn refresh_column_async(
+        self_: PyRef<'_, Self>,
+        column: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let job = inner.refresh_column_async(column).await.infer_error()?;
+            Ok(crate::job::Job::new(job))
         })
     }
 
