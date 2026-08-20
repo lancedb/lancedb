@@ -368,6 +368,21 @@ impl Splitter {
         }
     }
 
+    /// How many rows the permutation must end up with, when the strategy fixes it.
+    ///
+    /// `None` when the row count depends on the data rather than the configuration,
+    /// which is the case for a hash split that discards and for a calculated split
+    /// whose expression can produce a null split id.
+    pub fn expected_row_count(&self, num_rows: u64) -> Option<u64> {
+        match &self.strategy {
+            SplitStrategy::NoSplit => Some(num_rows),
+            SplitStrategy::Sequential { sizes } | SplitStrategy::Random { sizes, .. } => {
+                Some(sizes.to_counts(num_rows).iter().sum())
+            }
+            SplitStrategy::Hash { .. } | SplitStrategy::Calculated { .. } => None,
+        }
+    }
+
     /// The columns this strategy needs, in order, to compute a split id.
     ///
     /// The row id is not among them: the caller requests it with `with_row_id`, which

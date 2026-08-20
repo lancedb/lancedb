@@ -5022,6 +5022,35 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 7);
     }
 
+    /// The splits are sized from `count_rows`, so a scan that returns fewer rows than
+    /// that would quietly under-fill the trailing splits and train on less data than
+    /// was asked for. It fails instead.
+    #[tokio::test]
+    async fn test_permutation_build_rejects_short_scan() {
+        use crate::dataloader::permutation::builder::PermutationBuilder;
+
+        let table = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            if request.url().path() == "/v1/table/my_table/count_rows/" {
+                return http::Response::builder()
+                    .status(200)
+                    .body(b"5".to_vec())
+                    .unwrap();
+            }
+            // Two rows short of what the count promised.
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&row_id_batch(vec![10, 11, 12])))
+                .unwrap()
+        });
+
+        let err = PermutationBuilder::new(table).build().await.unwrap_err();
+        assert!(
+            err.to_string().contains("expected 5"),
+            "expected the row count guard to fire, got: {err}"
+        );
+    }
+
     /// The permutation fetch is a row-id take: the same `_rowid IN (...)` filter
     /// `Table::take_row_ids` sends, plus `with_row_id` so the requested order can be
     /// restored client-side.
@@ -5174,6 +5203,131 @@ mod tests {
             err.to_string().contains("single row id column"),
             "expected the projection guard to fire, got: {err}"
         );
+    }
+
+    /// Selecting `_rowid` must not put it in the `columns` payload: the server takes
+    /// the row id only through `with_row_id` and rejects it in a projection. The client
+    /// asks by flag and reconstructs the requested output shape itself.
+    #[tokio::test]
+    async fn test_permutation_take_never_projects_row_id() {
+        use crate::dataloader::permutation::reader::PermutationReader;
+
+        let base = Table::new_with_handler("my_table", |request: reqwest::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+
+            // Stand in for the server, which refuses `_rowid` in a select list.
+            let names_row_id = match &body["columns"] {
+                serde_json::Value::Array(columns) => columns.iter().any(|column| column == ROW_ID),
+                serde_json::Value::Object(aliases) => aliases
+                    .iter()
+                    .any(|(alias, expr)| alias == ROW_ID || expr == ROW_ID),
+                _ => false,
+            };
+            if names_row_id {
+                return http::Response::builder()
+                    .status(400)
+                    .body(
+                        b"_rowid cannot be used in a select statement, pass `with_row_id` instead"
+                            .to_vec(),
+                    )
+                    .unwrap();
+            }
+
+            // Answer the row ids actually asked for, ascending rather than in the
+            // requested order, so the client's reordering is what is under test.
+            let filter = body["filter"].as_str().unwrap_or_default();
+            let mut row_ids = filter
+                .rsplit_once('(')
+                .map(|(_, list)| list.trim_end_matches(')'))
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|value| value.trim().parse::<u64>().ok())
+                .collect::<Vec<_>>();
+            row_ids.sort_unstable();
+
+            // Honor the projection, so an empty one really does come back with no user
+            // columns — that is the shape a `_rowid`-only selection reduces to.
+            let wants_idx = match &body["columns"] {
+                serde_json::Value::Null => true,
+                serde_json::Value::Array(columns) => columns.iter().any(|c| c == "idx"),
+                serde_json::Value::Object(aliases) => aliases.values().any(|e| e == "idx"),
+                _ => true,
+            };
+            let mut fields = Vec::new();
+            let mut columns: Vec<arrow_array::ArrayRef> = Vec::new();
+            if wants_idx {
+                fields.push(Field::new("idx", DataType::Int32, false));
+                columns.push(Arc::new(Int32Array::from(
+                    row_ids.iter().map(|id| *id as i32 * 10).collect::<Vec<_>>(),
+                )));
+            }
+            // Only when asked by flag — the schema probe does not ask, and a server
+            // would not volunteer a system column.
+            if body["with_row_id"] == json!(true) {
+                fields.push(Field::new(ROW_ID, DataType::UInt64, false));
+                columns.push(Arc::new(arrow_array::UInt64Array::from(row_ids)));
+            }
+            let data = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let permutation = permutation_table_for(vec![7, 3, 5]).await;
+        let reader = PermutationReader::try_from_tables(
+            base.base_table().clone(),
+            permutation.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        // Asking for the row id by its own name gives it back under that name.
+        let batch = reader
+            .take_offsets(
+                &[0, 2],
+                Select::Columns(vec!["idx".to_string(), ROW_ID.to_string()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["idx", ROW_ID]
+        );
+        assert_eq!(
+            batch
+                .column_by_name(ROW_ID)
+                .unwrap()
+                .as_primitive::<arrow::datatypes::UInt64Type>()
+                .values(),
+            &[7, 5]
+        );
+
+        // And under an alias, which is how `rename_column` leaves the selection.
+        let batch = reader
+            .take_offsets(
+                &[0],
+                Select::Dynamic(vec![("my_id".to_string(), ROW_ID.to_string())]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(batch.num_columns(), 1);
+        assert_eq!(batch.schema().field(0).name(), "my_id");
+
+        // The schema probe takes the same route.
+        let schema = reader
+            .output_schema(Select::Columns(vec!["idx".to_string(), ROW_ID.to_string()]))
+            .await
+            .unwrap();
+        assert!(schema.column_with_name(ROW_ID).is_some(), "{schema:?}");
     }
 
     /// Reading a schema builds a plan, and building a plan on a remote table executes

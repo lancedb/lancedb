@@ -247,17 +247,16 @@ impl PermutationBuilder {
     /// every base column — and `Hash` would silently hash all of them rather than the
     /// configured ones. Fail here instead.
     fn validate_scan_schema(schema: &arrow_schema::Schema, splitter: &Splitter) -> Result<()> {
-        /// Sorted and deduplicated, so the comparison and the error message agree.
+        /// Sorted but not deduplicated, so the comparison and the error message agree.
         fn normalize(mut names: Vec<String>) -> Vec<String> {
             names.sort_unstable();
-            names.dedup();
             names
         }
 
-        // Compared as sets: `apply_hash` finds the row id by name precisely because
-        // where a backing store puts it is not ours to dictate, and a hash strategy
-        // may legitimately name the same column twice.  What matters is that nothing
-        // unrequested came back.
+        // Sorted rather than positional, because `apply_hash` finds the row id by name
+        // precisely since where a backing store puts it is not ours to dictate.
+        // Multiplicity is still compared: `apply_hash` hashes every non-`_rowid` array,
+        // so an extra copy of a hash column would silently change split assignment.
         let mut expected = splitter.projected_columns();
         expected.push(ROW_ID.to_string());
         let expected = normalize(expected);
@@ -366,8 +365,29 @@ impl PermutationBuilder {
             CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
 
         let table = database.create_table(create_table_request).await?;
+        let table = Table::new(table, database);
 
-        Ok(Table::new(table, database))
+        // The splits were sized from `count_rows`, but nothing so far has checked that
+        // the scan actually produced that many rows.  A short scan — a server-side
+        // result cap, a truncated stream, a concurrent delete between the count and the
+        // scan — otherwise just under-fills the trailing splits: `apply_sequential`
+        // assigns ids as data flows and `Shuffler` only objects to seeing *more* rows
+        // than expected, so training would quietly run on less data than was asked for.
+        if let Some(expected) = splitter.expected_row_count(num_rows) {
+            let actual = table.count_rows(None).await? as u64;
+            if actual != expected {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "Permutation has {} rows, expected {}.  The row id scan returned \
+                         fewer rows than the table reported; the table may have changed \
+                         while the permutation was being built.",
+                        actual, expected
+                    ),
+                });
+            }
+        }
+
+        Ok(table)
     }
 }
 
