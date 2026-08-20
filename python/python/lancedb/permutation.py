@@ -48,13 +48,8 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
 
-        Both local tables and remote tables (LanceDB Cloud and Enterprise) are
-        supported.  Against a remote table the permutation is built by reading every
-        row id over HTTP, so expect the build to cost roughly 8 bytes per row of
-        transfer, and note that it reads the base table only: rows still sitting in a
-        MemWAL that have not been compacted are not part of the permutation, because
-        the LSM scanner does not expose the stable ``_rowid`` a permutation is
-        defined over.
+        Rows sitting in an LSM that have not been flushed to the base table have no
+        row id yet, so they are not part of the permutation.
         """
         self._async = async_permutation_builder(table)
 
@@ -232,13 +227,6 @@ class PermutationBuilder:
 
 
 def permutation_builder(table: Table) -> PermutationBuilder:
-    """
-    Creates a new permutation builder for the given table.
-
-    Accepts both local tables and remote tables (LanceDB Cloud and Enterprise); see
-    [PermutationBuilder][lancedb.permutation.PermutationBuilder] for what building a
-    permutation over a remote table costs.
-    """
     return PermutationBuilder(table)
 
 
@@ -256,7 +244,7 @@ class Permutations:
     Attributes
     ----------
     base_table: Table
-        The base table that the permutations are based on.  May be a remote table.
+        The base table that the permutations are based on.
     permutation_table: LanceTable
         The permutation table that defines the splits.
     split_names: list[str]

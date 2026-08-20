@@ -75,16 +75,7 @@ class StreamingDataset(IterableDataset):
     Parameters
     ----------
     table:
-        LanceDB table to stream from.  Local tables and remote tables (LanceDB Cloud
-        and Enterprise) are both supported.
-
-        Against a remote table every fetch is one HTTP request taking
-        ``read_batch_size`` rows by row id, so ``prefetch_batches`` is what hides the
-        round trip: raise it if ``prefetch_queue_depth`` keeps touching zero.
-        Construction is more expensive too — the permutation is built by reading every
-        row id over HTTP, roughly 8 bytes per row, once per rank.  Rows that are still
-        in an uncompacted MemWAL are not included; see
-        [PermutationBuilder][lancedb.permutation.PermutationBuilder].
+        LanceDB table to stream from.
     num_splits:
         Number of fixed splits to partition the table into.  Must be divisible
         by ``world_size``.  When used with DataLoader workers it must also be

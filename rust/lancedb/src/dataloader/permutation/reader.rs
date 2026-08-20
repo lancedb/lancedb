@@ -99,9 +99,7 @@ impl PermutationReader {
 
     /// A reader over the base table in storage order, with no permutation.
     ///
-    /// Fallible: construction counts the base table, which for a remote table is an
-    /// HTTP round trip, so a transient network or auth failure must surface as an
-    /// error rather than a panic across a binding boundary.
+    /// Fallible because construction counts the base table, which can fail.
     pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
         Self::inner_new(base_table, None, 0).await
     }
@@ -209,8 +207,8 @@ impl PermutationReader {
             filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
             select: selection,
             with_row_id: true,
-            // The permutation is defined over stable `_rowid`s, which the MemWAL LSM
-            // scanner does not expose — and which it rejects `with_row_id` for.
+            // Rows still in the LSM have no row id, so they cannot match a row id
+            // take and are not part of the data loader's view of the table.
             use_lsm: Some(false),
             ..Default::default()
         };
@@ -402,7 +400,7 @@ impl PermutationReader {
                 .query(
                     &AnyQuery::Query(QueryRequest {
                         select: Select::Columns(vec![ROW_ID.to_string()]),
-                        // See `load_batch`: the permutation reads the base table.
+                        // See `load_batch`: rows still in the LSM have no row id.
                         use_lsm: Some(false),
                         offset: self.offset.map(|o| o as usize),
                         limit: self.limit.map(|l| l as usize),
@@ -500,19 +498,12 @@ impl PermutationReader {
 
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
-        // `output_schema` reads the schema off a query plan, and building a plan on a
-        // remote table executes the query.  Unbounded that is a full table scan over
-        // HTTP for every `Permutation` constructed — once per split, per epoch.
-        //
-        // One row, not zero: lance reads a limit of `Some(0)` as *no limit* rather than
-        // no rows (`Scanner`: `self.limit.unwrap_or(0) > 0` gates the limit node), so a
-        // zero here would scan the whole table.  Native tables never execute the plan,
-        // so the bound costs them nothing.
+        // limit(1) because some table types may require executing the
+        // query to determine the output schema
         table
             .query()
             .select(selection)
             .limit(1)
-            .use_lsm(false)
             .output_schema()
             .await
     }
