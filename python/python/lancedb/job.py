@@ -5,16 +5,14 @@
 
 import asyncio
 from datetime import timedelta
-from typing import Generic, Optional, TypeVar, cast
+from typing import Optional
 
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
 
-T = TypeVar("T")
 
-
-class AsyncJob(Generic[T]):
+class AsyncJob:
     """A handle to an operation that may still be running.
 
     The operation may already be complete when the handle is created.
@@ -46,20 +44,18 @@ class AsyncJob(Generic[T]):
             return "finished"
         return await self._inner.status()
 
-    async def wait(self, timeout: Optional[timedelta] = None) -> T:
+    async def wait(self, timeout: Optional[timedelta] = None):
         """Wait until the operation reaches a terminal state.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
         if self._inner is None:
-            return cast(T, None)
+            return
         if timeout is None:
-            return cast(T, await self._inner.wait())
-        return cast(
-            T,
-            await asyncio.wait_for(self._inner.wait(), timeout.total_seconds()),
-        )
+            await self._inner.wait()
+        else:
+            await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
 
     async def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""
@@ -68,10 +64,10 @@ class AsyncJob(Generic[T]):
         await self._inner.cancel()
 
 
-class Job(Generic[T]):
+class Job:
     """Synchronous counterpart of `AsyncJob`."""
 
-    def __init__(self, inner: Optional[AsyncJob[T]]):
+    def __init__(self, inner: Optional[AsyncJob]):
         self._inner = inner
 
     @property
@@ -92,15 +88,15 @@ class Job(Generic[T]):
             return "finished"
         return LOOP.run(self._inner.status())
 
-    def wait(self, timeout: Optional[timedelta] = None) -> T:
+    def wait(self, timeout: Optional[timedelta] = None):
         """Block until the operation reaches a terminal state.
 
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
         if self._inner is None:
-            return cast(T, None)
-        return LOOP.run(self._inner.wait(timeout))
+            return
+        LOOP.run(self._inner.wait(timeout))
 
     def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""

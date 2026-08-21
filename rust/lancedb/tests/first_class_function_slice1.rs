@@ -105,24 +105,61 @@ fn refresh_job_result_matches_shared_canonical_golden() {
         result.to_canonical_json().expect("canonical JSON"),
         fixture("remote_refresh_result.canonical.json").trim()
     );
+
+    let result = RefreshColumnResult::from_json(&fixture(
+        "remote_refresh_result_without_published_version.json",
+    ))
+    .expect("optional version");
+    assert_eq!(result.published_version, None);
+    assert_eq!(
+        result
+            .to_canonical_json()
+            .expect("canonical result without version"),
+        fixture("remote_refresh_result_without_published_version.canonical.json").trim()
+    );
+    assert_eq!(
+        RefreshColumnResult::from_json(
+            &result
+                .to_canonical_json()
+                .expect("canonical result without version")
+        )
+        .expect("round-trip result without version"),
+        result
+    );
 }
 
 #[test]
 fn unknown_fields_and_discriminators_are_forward_decodable() {
     let mut result = job_result("remote_function_job.json");
     result["future_version_metadata"] = serde_json::json!({"retention_class": "catalog"});
-    result["runtime"]["kind"] = Value::String("future_python_runtime".to_string());
-    result["runtime"]["environment"]["kind"] =
-        Value::String("future_environment_source".to_string());
+    result["runtime"] = serde_json::json!({
+        "kind": "wasm",
+        "module_digest": "sha256:wasm"
+    });
     result["signature"]["output"]["kind"] = Value::String("future_output_shape".to_string());
 
     let version = FunctionVersion::from_json(&result.to_string()).expect("future remote value");
-    assert_eq!(version.runtime().kind, "future_python_runtime");
-    assert_eq!(
-        version.runtime().environment.kind,
-        "future_environment_source"
-    );
+    assert_eq!(version.runtime().kind(), "wasm");
+    assert_eq!(version.runtime().python_version(), None);
     assert_eq!(version.signature().output.kind, "future_output_shape");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &version.to_canonical_json().expect("canonical future value")
+        )
+        .expect("canonical JSON")["runtime"],
+        serde_json::json!({"kind": "wasm"})
+    );
+}
+
+#[test]
+fn floating_point_application_literals_are_rejected_consistently() {
+    let error = FunctionApplication::from_json(&fixture("remote_function_application_float.json"))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("floating-point Function literals")
+    );
 }
 
 #[test]

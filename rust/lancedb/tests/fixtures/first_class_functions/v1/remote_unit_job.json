@@ -4,5 +4,6 @@
   "job_state": "DONE",
   "creation_ms": 1787270400002,
   "spec": {"column": "vector"},
+  "result": {"future_information": "ignored by Job<()>"},
   "future_job": {"trace_id": "trace-2"}
 }

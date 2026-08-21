@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
     FunctionBinding,
     FunctionVersion,
+    PythonRuntimeSpec,
     RefreshColumnResult,
 )
 
@@ -48,6 +50,13 @@ def assert_no_secret_values(value):
             assert_no_secret_values(child)
 
 
+def test_public_function_values_are_in_api_reference():
+    docs = Path(__file__).parents[3] / "docs" / "src" / "python" / "python.md"
+    rendered = docs.read_text()
+    for name in functions.__all__:
+        assert f"::: lancedb.functions.{name}" in rendered
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "canonical_name", "model", "nested_result"),
     [
@@ -74,6 +83,12 @@ def assert_no_secret_values(value):
             "remote_refresh_result.canonical.json",
             RefreshColumnResult,
             True,
+        ),
+        (
+            "remote_refresh_result_without_published_version.json",
+            "remote_refresh_result_without_published_version.canonical.json",
+            RefreshColumnResult,
+            False,
         ),
     ],
 )
@@ -107,13 +122,14 @@ def test_function_version_identity_is_immutable_and_exact():
 def test_unknown_fields_and_discriminators_are_forward_decodable():
     value = job_result("remote_function_job.json")
     value["future_version_metadata"] = {"retention_class": "catalog"}
-    value["runtime"]["kind"] = "future_python_runtime"
-    value["runtime"]["environment"]["kind"] = "future_environment_source"
+    value["runtime"] = {"kind": "wasm", "module_digest": "sha256:wasm"}
     value["signature"]["output"]["kind"] = "future_output_shape"
 
     version = FunctionVersion.from_json(json.dumps(value))
-    assert version.runtime.kind == "future_python_runtime"
-    assert version.runtime.environment.kind == "future_environment_source"
+    assert version.runtime.kind == "wasm"
+    assert version.runtime.python_version is None
+    assert version.runtime.environment is None
+    assert json.loads(version.to_canonical_json())["runtime"] == {"kind": "wasm"}
     assert version.signature.output.kind == "future_output_shape"
 
 
@@ -156,6 +172,48 @@ def test_binding_and_refresh_result_keep_stable_remote_fields():
     )
     assert result.rows_filled == result.rows_assigned
     assert result.version == result.published_version
+
+    result = RefreshColumnResult.from_json(
+        fixture("remote_refresh_result_without_published_version.json")
+    )
+    assert result.published_version is None
+    assert RefreshColumnResult.from_json(result.to_canonical_json()) == result
+
+
+def test_function_literal_numeric_domain_matches_rust():
+    with pytest.raises(ValueError, match="floating-point Function literals"):
+        FunctionApplication.from_json(fixture("remote_function_application_float.json"))
+
+    value = json.loads(fixture("remote_function_application_float.json"))
+    value["inputs"][0]["value"] = 2**64
+    with pytest.raises(ValueError, match="outside the canonical JSON range"):
+        FunctionApplication.from_json(json.dumps(value))
+
+
+def test_empty_default_maps_have_stable_canonical_bytes():
+    runtime = PythonRuntimeSpec(
+        kind="python", python_version="3.12", environment={"kind": "pip"}
+    )
+    assert runtime.to_canonical_json() == (
+        '{"environment":{"kind":"pip"},"kind":"python","python_version":"3.12"}'
+    )
+
+    value = json.loads(fixture("remote_function_application.json"))
+    value.pop("columns")
+    application = FunctionApplication.from_json(json.dumps(value))
+    assert "columns" not in json.loads(application.to_canonical_json())
+
+
+@pytest.mark.parametrize("field", ["rows_assigned", "source_version"])
+def test_refresh_result_rejects_non_u64_values(field):
+    value = job_result("remote_refresh_job.json")
+    value[field] = -1
+    with pytest.raises(ValueError):
+        RefreshColumnResult.from_json(json.dumps(value))
+
+    value[field] = "1"
+    with pytest.raises(ValueError):
+        RefreshColumnResult.from_json(json.dumps(value))
 
 
 def test_canonical_client_values_contain_secret_names_only():

@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::{Error, Result};
@@ -60,6 +60,18 @@ fn canonical_json<T: Serialize>(value: &T) -> Result<String> {
 
 fn from_json<T: DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(invalid_json)
+}
+
+fn validate_literal(value: &Value) -> Result<()> {
+    match value {
+        Value::Number(number) if number.is_f64() => Err(Error::InvalidInput {
+            message: "floating-point Function literals are not part of the Slice 1 canonical wire contract"
+                .to_string(),
+        }),
+        Value::Array(values) => values.iter().try_for_each(validate_literal),
+        Value::Object(values) => values.values().try_for_each(validate_literal),
+        _ => Ok(()),
+    }
 }
 
 macro_rules! impl_json {
@@ -145,16 +157,123 @@ pub struct PythonEnvironmentSpec {
 ///
 /// `env` contains non-secret values. Secret values have no client model;
 /// [`FunctionVersion::required_secrets`] contains names only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PythonRuntimeSpec {
-    pub kind: String,
-    pub python_version: String,
-    pub environment: PythonEnvironmentSpec,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PythonRuntimeSpec {
+    /// The V1 Sophon-managed Python runtime.
+    Python {
+        python_version: String,
+        environment: PythonEnvironmentSpec,
+        env: BTreeMap<String, String>,
+    },
+    /// A runtime kind introduced by a newer server.
+    ///
+    /// Unknown payload fields are intentionally not retained because the
+    /// client does not proxy catalog values.
+    Unrecognized { kind: String },
+}
+
+impl PythonRuntimeSpec {
+    /// The wire discriminator reported by Sophon.
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::Python { .. } => "python",
+            Self::Unrecognized { kind } => kind,
+        }
+    }
+
+    /// The Python version for the V1 runtime, or `None` for an unknown kind.
+    pub fn python_version(&self) -> Option<&str> {
+        match self {
+            Self::Python { python_version, .. } => Some(python_version),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// The Python environment for the V1 runtime, or `None` for an unknown kind.
+    pub fn environment(&self) -> Option<&PythonEnvironmentSpec> {
+        match self {
+            Self::Python { environment, .. } => Some(environment),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+
+    /// Non-secret environment variables, or `None` for an unknown kind.
+    pub fn env(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            Self::Python { env, .. } => Some(env),
+            Self::Unrecognized { .. } => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PythonRuntimeWire {
+    kind: String,
+    #[serde(default)]
+    python_version: Option<String>,
+    #[serde(default)]
+    environment: Option<PythonEnvironmentSpec>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for PythonRuntimeSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let wire = PythonRuntimeWire::deserialize(deserializer)?;
+        if wire.kind == "python" {
+            Ok(Self::Python {
+                python_version: wire
+                    .python_version
+                    .ok_or_else(|| de::Error::missing_field("python_version"))?,
+                environment: wire
+                    .environment
+                    .ok_or_else(|| de::Error::missing_field("environment"))?,
+                env: wire.env,
+            })
+        } else {
+            Ok(Self::Unrecognized { kind: wire.kind })
+        }
+    }
+}
+
+impl Serialize for PythonRuntimeSpec {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct PythonRuntimeRef<'a> {
+            kind: &'static str,
+            python_version: &'a str,
+            environment: &'a PythonEnvironmentSpec,
+            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+            env: &'a BTreeMap<String, String>,
+        }
+
+        #[derive(Serialize)]
+        struct UnrecognizedRuntimeRef<'a> {
+            kind: &'a str,
+        }
+
+        match self {
+            Self::Python {
+                python_version,
+                environment,
+                env,
+            } => PythonRuntimeRef {
+                kind: "python",
+                python_version,
+                environment,
+                env,
+            }
+            .serialize(serializer),
+            Self::Unrecognized { kind } => UnrecognizedRuntimeRef { kind }.serialize(serializer),
+        }
+    }
 }
 
 /// Immutable Function version returned by the Enterprise catalog.
+///
+/// Scheduling resources, priority, concurrency, and retry policy belong to
+/// the submitting Job and are not part of this identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
@@ -219,8 +338,10 @@ pub struct FunctionVersionRef {
 
 /// Parameter binding in a FunctionApplication.
 ///
-/// `kind` and `value` intentionally remain open until the Python authoring
-/// encoder is added in Slice 2.
+/// `kind` remains open until Python authoring is added in Slice 2. Slice 1
+/// freezes JSON integers, strings, booleans, nulls, arrays, and objects as
+/// canonical literal values. Floating-point literals are rejected until a
+/// language-neutral numeric representation is defined.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplicationInput {
     pub parameter: String,
@@ -259,9 +380,25 @@ impl FunctionApplication {
     pub fn columns(&self) -> &BTreeMap<String, String> {
         &self.columns
     }
-}
 
-impl_json!(FunctionApplication);
+    /// Decode a remote application after validating the Slice 1 literal domain.
+    pub fn from_json(json: &str) -> Result<Self> {
+        let application: Self = from_json(json)?;
+        application
+            .inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))?;
+        Ok(application)
+    }
+
+    /// Encode the application with bytewise-sorted JSON keys.
+    pub fn to_canonical_json(&self) -> Result<String> {
+        self.inputs
+            .iter()
+            .try_for_each(|input| validate_literal(&input.value))?;
+        canonical_json(self)
+    }
+}
 
 /// Stable table input bound to a registered parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +411,9 @@ pub struct InputBinding {
 }
 
 /// Ordered result-field to table-field mapping for a grouped binding.
+///
+/// Assignment state is not part of the Slice 1 client contract. During the
+/// NULL transition there is no public Lance cell-flag identifier to persist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputMapping {
     pub result_field: String,

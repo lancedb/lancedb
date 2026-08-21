@@ -56,11 +56,31 @@ listing a storage directory.
 
 ## Functions and Jobs
 
+::: lancedb.functions.FunctionArtifact
+
+::: lancedb.functions.FunctionParameter
+
+::: lancedb.functions.FunctionResultField
+
+::: lancedb.functions.FunctionOutput
+
+::: lancedb.functions.FunctionSignature
+
+::: lancedb.functions.PythonEnvironmentSpec
+
 ::: lancedb.functions.FunctionVersion
 
 ::: lancedb.functions.PythonRuntimeSpec
 
+::: lancedb.functions.FunctionVersionRef
+
+::: lancedb.functions.ApplicationInput
+
 ::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.InputBinding
+
+::: lancedb.functions.OutputMapping
 
 ::: lancedb.functions.FunctionBinding
 
@@ -169,8 +189,9 @@ The same option is available on `lancedb.tokenize(...)` and the deprecated
 ```python
 import lancedb
 
-tokens = list(lancedb.tokenize("acme makes searchable data",
-                               custom_stop_words=["acme"]))
+tokens = list(
+    lancedb.tokenize("acme makes searchable data", custom_stop_words=["acme"])
+)
 ```
 
 ::: lancedb.tokenize
