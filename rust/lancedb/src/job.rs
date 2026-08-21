@@ -120,6 +120,15 @@ impl Job<()> {
     pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
         Self::new(Box::new(SpawnedJob::new(task)))
     }
+
+    /// Wait for an untyped job while preserving a remote terminal payload.
+    #[doc(hidden)]
+    pub async fn wait_raw_json(&self) -> Result<Option<Value>> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => Ok(handle.wait().await?.value),
+            JobInner::Completed(()) => Ok(None),
+        }
+    }
 }
 
 impl<T> Job<T>

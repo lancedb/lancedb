@@ -22,6 +22,12 @@ pub struct FunctionJob {
     inner: Arc<lancedb::Job<lancedb::function::FunctionVersion>>,
 }
 
+/// Python bridge for a typed remote Function-column refresh job.
+#[pyclass]
+pub struct RefreshJob {
+    inner: Arc<lancedb::Job>,
+}
+
 impl FunctionJob {
     pub(crate) fn new(inner: lancedb::Job<lancedb::function::FunctionVersion>) -> Self {
         Self {
@@ -35,6 +41,56 @@ impl Job {
         Self {
             inner: Arc::new(inner),
         }
+    }
+}
+
+impl RefreshJob {
+    pub(crate) fn new(inner: lancedb::Job) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+#[pymethods]
+impl RefreshJob {
+    #[getter]
+    pub fn id(&self) -> Option<String> {
+        self.inner.id().map(str::to_string)
+    }
+
+    pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.status().await.infer_error() },
+        )
+    }
+
+    pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let value = inner.wait_raw_json().await.infer_error()?.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "successful refresh job did not contain a result",
+                )
+            })?;
+            let result: lancedb::function::RefreshColumnResult = serde_json::from_value(value)
+                .map_err(|error| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid refresh job result: {error}"
+                    ))
+                })?;
+            result.to_canonical_json().infer_error()
+        })
+    }
+
+    pub fn cancel(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.cancel().await.infer_error()?;
+            Ok(())
+        })
     }
 }
 

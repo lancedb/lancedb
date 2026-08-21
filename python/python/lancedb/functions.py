@@ -20,6 +20,7 @@ import re
 import sys
 import textwrap
 import types
+import uuid
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import (
@@ -264,6 +265,42 @@ class FunctionVersion(_RemoteValue):
     environment_digest: str
     required_secrets: tuple[str, ...] = ()
     created_at: str
+
+    def __call__(self, **inputs: Any) -> FunctionApplication:
+        """Bind this exact version to table columns as one grouped application."""
+        from lancedb.expr import Expr
+
+        parameters = tuple(parameter.name for parameter in self.signature.inputs)
+        missing = [parameter for parameter in parameters if parameter not in inputs]
+        unknown = sorted(set(inputs) - set(parameters))
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append(f"missing inputs: {missing!r}")
+            if unknown:
+                details.append(f"unknown inputs: {unknown!r}")
+            raise TypeError("invalid Function inputs (" + "; ".join(details) + ")")
+
+        bindings = []
+        for parameter in parameters:
+            value = inputs[parameter]
+            if not isinstance(value, Expr) or value._column_path is None:
+                raise TypeError(
+                    f"Function input {parameter!r} must be a direct col(...) reference"
+                )
+            bindings.append(
+                ApplicationInput(
+                    parameter=parameter,
+                    kind="column",
+                    value={"path": value._column_path},
+                )
+            )
+        return FunctionApplication(
+            function=FunctionVersionRef(name=self.name, version=self.version),
+            inputs=tuple(bindings),
+            output=self.signature.output,
+            group_id=f"fg_{uuid.uuid4().hex}",
+        )
 
 
 class FunctionRegistrationRequest(_RemoteValue):

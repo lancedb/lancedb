@@ -6148,7 +6148,9 @@ class AsyncTable:
         >>> asyncio.run(refresh_in_background())
         'finished'
         """
-        return AsyncJob(await self._inner.refresh_column_async(column))
+        from .job import _refresh_job
+
+        return _refresh_job(await self._inner.refresh_column_async(column))
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]
