@@ -16,12 +16,12 @@ crate-type = ["cdylib"]
 async-trait.workspace = true
 arrow-ipc.workspace = true
 arrow-array.workspace = true
-arrow-buffer = "58.0.0"
+arrow-buffer.workspace = true
 half.workspace = true
 arrow-schema.workspace = true
 env_logger.workspace = true
 futures.workspace = true
-lancedb = { path = "../rust/lancedb", default-features = false }
+lancedb.workspace = true
 lance-namespace.workspace = true
 napi = { version = "3.8.3", default-features = false, features = [
     "napi9",
@@ -29,8 +29,8 @@ napi = { version = "3.8.3", default-features = false, features = [
     "chrono_date",
     "serde-json",
 ] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-serde_json = "1"
+chrono.workspace = true
+serde_json.workspace = true
 napi-derive = "3.5.2"
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "0.1", features = ["static"] }

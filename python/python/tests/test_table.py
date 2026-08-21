@@ -2772,6 +2772,56 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     assert (await table.to_arrow()).sort_by("a") == expected
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+
+    def json_table(rows):
+        json_values = pa.ExtensionArray.from_storage(
+            json_type,
+            pa.array([value for _, value in rows], type=json_type.storage_type),
+        )
+        return pa.Table.from_arrays(
+            [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+        )
+
+    table = await mem_db_async.create_table("json_merge", schema=schema)
+    await table.add(json_table([("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(json_table([("a", '{"k": 2}')]))
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"k":2}'},
+        {"id": "b", "j": '{"k":9}'},
+    ]
+    filtered = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert filtered == [{"id": "a", "j": '{"k":2}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    json_values = pa.ExtensionArray.from_storage(
+        json_type, pa.array(['{"k": 3}'], type=json_type.storage_type)
+    )
+    data = pa.Table.from_arrays([pa.array(["c"]), json_values], schema=schema)
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(data, on_bad_vectors="fill")
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str

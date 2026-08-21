@@ -1,0 +1,20 @@
+{
+  "function": {"name": "text_features", "version": "fv_01K3TEXT"},
+  "inputs": [
+    {"parameter": "title", "kind": "column", "value": {"path": "title"}},
+    {"parameter": "body", "kind": "column", "value": {"path": "body"}}
+  ],
+  "output": {
+    "kind": "named_struct",
+    "fields": [
+      {"name": "normalized_text", "arrow_type": "utf8", "nullable": false},
+      {"name": "token_count", "arrow_type": "int64", "nullable": false}
+    ]
+  },
+  "group_id": "fg_01K3TEXT",
+  "columns": {
+    "normalized_text": "search_text",
+    "token_count": "search_token_count"
+  },
+  "future_application": {"declaration_mode": "managed"}
+}
