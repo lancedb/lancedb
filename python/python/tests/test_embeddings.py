@@ -6,9 +6,11 @@ import pickle
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
+import httpx
 import lance
 import lancedb
 import numpy as np
+import openai
 import pyarrow as pa
 import pytest
 import pandas as pd
@@ -594,6 +596,38 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_func.call_count == 1
     # Verify that sleep was never called (no retries)
     assert mock_sleep.call_count == 0
+
+
+def test_openai_bad_request_partial_batch_recovery():
+    # Regression test for issue #1677
+    registry = get_registry()
+    model = registry.get("openai").create(name="text-embedding-ada-002")
+
+    def make_bad_request_error():
+        request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+        response = httpx.Response(400, request=request, json={"error": {}})
+        return openai.BadRequestError("bad request", response=response, body=None)
+
+    def fake_create(input, model=None, **kwargs):
+        # Full batch always rejected
+        if len(input) > 1:
+            raise make_bad_request_error()
+        if input[0] == "bad text":
+            raise make_bad_request_error()
+        embedding = MagicMock()
+        embedding.embedding = [0.1, 0.2, 0.3]
+        result = MagicMock()
+        result.data = [embedding]
+        return result
+
+    mock_client = MagicMock()
+    mock_client.embeddings.create.side_effect = fake_create
+
+    with patch.object(type(model), "_openai_client", new_callable=lambda: mock_client):
+        embeddings = model.generate_embeddings(["good text", "bad text"])
+
+    assert embeddings[0] == [0.1, 0.2, 0.3]
+    assert embeddings[1] is None
 
 
 def test_ollama_embeddings_pickle():
