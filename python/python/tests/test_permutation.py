@@ -1221,6 +1221,31 @@ def test_remove_rowid_after_select(some_permutation: Permutation):
     assert perm_without_rowid.column_names == ["id"]
 
 
+def test_permutation_is_stable_when_remote_scan_order_varies():
+    """Splits are assigned by scan position, and every rank builds its own
+    permutation, so two ranks seeing different scan orders must still agree."""
+    server = MockPermutationServer(num_rows=16, vary_scan_order=True)
+
+    def split_of_each_row(permutation_tbl):
+        # Sequential splits are assigned by position, so a reversed scan would put
+        # the last rows in split 0.  Compare the mapping rather than the table order,
+        # which the split-id sort does not pin down.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        return dict(zip(rows["row_id"], rows["split_id"]))
+
+    with mock_remote_table(server) as table:
+        first = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+        second = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+
+    assert server.scan_calls == 2, "both builds must have scanned"
+    assert first == second
+    assert first[0] == 0 and first[server.num_rows - 1] == 1, first
+
+
 def test_permutation_over_remote_table():
     """The permutation API accepts a remote table, addressing rows by `_rowid` just
     as `take_row_ids` does.  Also pins the request shapes sent to the server.

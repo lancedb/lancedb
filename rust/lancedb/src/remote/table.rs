@@ -4233,6 +4233,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_remote_scan_order_is_not_deterministic() {
+        // A distributed scan answers in no fixed order, so callers that assign meaning
+        // to row position have to sort for themselves.
+        let table = Table::new_with_handler("my_table", |_| {
+            http::Response::builder()
+                .status(200)
+                .body(Vec::new())
+                .unwrap()
+        });
+        assert!(!table.base_table().scan_order_is_deterministic());
+    }
+
+    #[tokio::test]
     async fn test_fetch_blobs_sends_the_checked_out_version() {
         let ipc = one_row_blob_ipc_stream("image");
         let table = Table::new_with_handler_version(

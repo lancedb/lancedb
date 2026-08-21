@@ -51,10 +51,13 @@ class MockPermutationServer:
     the server, which is the part that has to stay compatible.
     """
 
-    def __init__(self, name="remote_data", num_rows=8):
+    def __init__(self, name="remote_data", num_rows=8, vary_scan_order=False):
         self.name = name
         self.num_rows = num_rows
         self.query_bodies = []
+        # Stand in for a distributed scan that answers in no fixed order.
+        self.vary_scan_order = vary_scan_order
+        self.scan_calls = 0
 
     def __call__(self, request):
         path = request.path
@@ -137,9 +140,13 @@ class MockPermutationServer:
 
         if body.get("columns") == ["_rowid"]:
             # The permutation build scan: row ids and nothing else.
+            row_ids = list(range(self.num_rows))
+            if self.vary_scan_order and self.scan_calls % 2:
+                row_ids.reverse()
+            self.scan_calls += 1
             return self._arrow(
                 request,
-                pa.table({"_rowid": pa.array(range(self.num_rows), pa.uint64())}),
+                pa.table({"_rowid": pa.array(row_ids, pa.uint64())}),
             )
 
         # The schema probe: filtered to nothing, so it carries schema and no rows.
