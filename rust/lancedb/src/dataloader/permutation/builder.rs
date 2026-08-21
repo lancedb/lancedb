@@ -90,6 +90,22 @@ pub enum ShuffleStrategy {
 /// The permutation table is not a materialized copy of the underlying data and can be very lightweight.
 /// It is not a view of the underlying data and is not a copy of the data.  It is a separate table that
 /// stores just row id and split id.
+///
+/// # Determinism
+///
+/// Clients that build a permutation independently — the ranks of a distributed training job, say —
+/// have to arrive at the same one.  If they do not, their split boundaries disagree and they
+/// silently train on overlapping or missing data.
+///
+/// Splitting and shuffling both work on the position of a row in the scan, and no backend
+/// guarantees that two scans return rows in the same order: a server is free to fan a scan out
+/// across nodes and return the rows in whatever order they arrive.  The builder therefore sorts by
+/// row id before anything positional runs, so the permutation depends only on the rows themselves.
+///
+/// Two things remain the caller's responsibility.  Seed the shuffle and any random split
+/// explicitly, or each client draws its own seed.  And use the same
+/// `LANCEDB_PERM_BUILDER_MEMORY_LIMIT` everywhere, because regrouping a shuffled permutation by
+/// split id is not a stable sort and where it spills decides how rows within a split are ordered.
 pub struct PermutationBuilder {
     config: PermutationConfig,
     base_table: Table,
@@ -160,10 +176,13 @@ impl PermutationBuilder {
         self
     }
 
-    async fn sort_by_split_id(
+    /// Sorts the stream by the given columns, spilling to disk when it does not fit in memory.
+    async fn sort_by(
         &self,
         data: SendableRecordBatchStream,
+        columns: &[&str],
     ) -> Result<SendableRecordBatchStream> {
+        let sort_key = columns.join(", ");
         let memory_limit = std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT")
             .unwrap_or_else(|_| DEFAULT_MEMORY_LIMIT.to_string())
             .parse::<usize>()
@@ -188,25 +207,25 @@ impl PermutationBuilder {
         let df = ctx
             .read_one_shot(data.into_df_stream())
             .map_err(|e| Error::Other {
-                message: format!("Failed to setup sort by split id: {}", e),
+                message: format!("Failed to setup sort by {}: {}", sort_key, e),
                 source: Some(e.into()),
             })?;
         let df_stream = df
-            .sort_by(vec![col(SPLIT_ID_COLUMN)])
+            .sort_by(columns.iter().map(|column| col(*column)).collect())
             .map_err(|e| Error::Other {
-                message: format!("Failed to plan sort by split id: {}", e),
+                message: format!("Failed to plan sort by {}: {}", sort_key, e),
                 source: Some(e.into()),
             })?
             .execute_stream()
             .await
             .map_err(|e| Error::Other {
-                message: format!("Failed to sort by split id: {}", e),
+                message: format!("Failed to sort by {}: {}", sort_key, e),
                 source: Some(e.into()),
             })?;
 
         let schema = df_stream.schema();
-        let stream = df_stream.map_err(|e| Error::Other {
-            message: format!("Failed to execute sort by split id: {}", e),
+        let stream = df_stream.map_err(move |e| Error::Other {
+            message: format!("Failed to execute sort by {}: {}", sort_key, e),
             source: Some(e.into()),
         });
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
@@ -250,8 +269,6 @@ impl PermutationBuilder {
             self.config.split_strategy.clone(),
         );
 
-        let mut needs_sort = !splitter.orders_by_split_id();
-
         // Might need to load additional columns to calculate splits (e.g. hash columns or calculated
         // split id)
         rows = splitter.project(rows);
@@ -261,12 +278,24 @@ impl PermutationBuilder {
             .count_rows(self.config.filter.clone())
             .await? as u64;
 
-        // Apply splits
-        let rows = rows.execute().await?;
-        let split_data = splitter.apply(rows, num_rows).await?;
+        let scanned = rows.execute().await?;
 
-        // Shuffle data if requested
-        let shuffled = match self.config.shuffle_strategy {
+        // Apply splits.  Scans carry no ordering guarantee, so the row order has to be
+        // canonicalized before anything positional runs against it.
+        let split_data = if splitter.assigns_split_by_position() {
+            let canonical = self.sort_by(scanned, &[ROW_ID]).await?;
+            splitter.apply(canonical, num_rows).await?
+        } else {
+            // The split id does not depend on position here, so canonicalize afterwards, where
+            // the stream has narrowed to the row id and the split id.  Leading with the split id
+            // also groups the output, which the positional strategies get from `apply` itself.
+            let split_data = splitter.apply(scanned, num_rows).await?;
+            self.sort_by(split_data, &[SPLIT_ID_COLUMN, ROW_ID]).await?
+        };
+
+        // Shuffle data if requested.  A shuffle is global, so it breaks the grouping by split id
+        // that the split established and the permutation has to be regrouped afterwards.
+        let permutation = match self.config.shuffle_strategy {
             ShuffleStrategy::None => split_data,
             ShuffleStrategy::Random { seed, clump_size } => {
                 let shuffler = Shuffler::new(ShufflerConfig {
@@ -275,22 +304,13 @@ impl PermutationBuilder {
                     temp_dir: self.config.temp_dir.clone(),
                     max_rows_per_file: 10 * 1024 * 1024,
                 });
-                shuffler.shuffle(split_data, num_rows).await?
+                let shuffled = shuffler.shuffle(split_data, num_rows).await?;
+                self.sort_by(shuffled, &[SPLIT_ID_COLUMN]).await?
             }
         };
 
-        // We want the final permutation to be sorted by the split id.  If we shuffled or if
-        // the split was not assigned sequentially then we need to sort the data.
-        needs_sort |= !matches!(self.config.shuffle_strategy, ShuffleStrategy::None);
-
-        let sorted = if needs_sort {
-            self.sort_by_split_id(shuffled).await?
-        } else {
-            shuffled
-        };
-
         // Rename _rowid to row_id
-        let renamed = rename_column(sorted, ROW_ID, SRC_ROW_ID_COL)?;
+        let renamed = rename_column(permutation, ROW_ID, SRC_ROW_ID_COL)?;
 
         let streaming_data = if let Some(split_names) = &self.config.split_names {
             Self::add_split_names(renamed, split_names)?
@@ -415,5 +435,244 @@ mod tests {
                 .unwrap(),
             283
         );
+    }
+
+    /// A scan carries no ordering guarantee, and a server is free to fan one out across nodes and
+    /// return the rows in whatever order they arrive.  Every client still has to build the same
+    /// permutation, so the builder canonicalizes by row id.  These tests drive the builder against
+    /// a mock server that serves the same rows in two different orders.
+    #[cfg(feature = "remote")]
+    mod scan_order {
+        use arrow::array::AsArray;
+        use arrow::datatypes::UInt64Type;
+        use arrow_array::{Int32Array, RecordBatch, UInt64Array};
+        use arrow_schema::{DataType, Field, Schema};
+        use futures::TryStreamExt;
+        use http::header::CONTENT_TYPE;
+
+        use super::*;
+
+        const ARROW_FILE_CONTENT_TYPE: &str = "application/vnd.apache.arrow.file";
+        const HASH_COLUMN: &str = "hash_col";
+        const ROW_COUNT: u64 = 40;
+
+        fn ascending_scan() -> Vec<u64> {
+            (0..ROW_COUNT).collect()
+        }
+
+        /// The same rows a fan-out scan might return: whole blocks arriving out of order.
+        fn out_of_order_scan() -> Vec<u64> {
+            let mut row_ids = Vec::with_capacity(ROW_COUNT as usize);
+            for start in [20, 0, 30, 10] {
+                row_ids.extend(start..start + 10);
+            }
+            row_ids
+        }
+
+        fn row_id_batch(row_ids: Vec<u64>) -> RecordBatch {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    ROW_ID,
+                    DataType::UInt64,
+                    false,
+                )])),
+                vec![Arc::new(UInt64Array::from(row_ids))],
+            )
+            .unwrap()
+        }
+
+        /// The hash strategy projects its columns with the row id last.
+        fn hash_batch(row_ids: Vec<u64>) -> RecordBatch {
+            let hashes = Int32Array::from(row_ids.iter().map(|id| *id as i32).collect::<Vec<_>>());
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(HASH_COLUMN, DataType::Int32, false),
+                    Field::new(ROW_ID, DataType::UInt64, false),
+                ])),
+                vec![Arc::new(hashes), Arc::new(UInt64Array::from(row_ids))],
+            )
+            .unwrap()
+        }
+
+        fn write_ipc_file(batch: &RecordBatch) -> Vec<u8> {
+            let mut body = Vec::new();
+            {
+                let mut writer =
+                    arrow_ipc::writer::FileWriter::try_new(&mut body, &batch.schema()).unwrap();
+                writer.write(batch).unwrap();
+                writer.finish().unwrap();
+            }
+            body
+        }
+
+        /// A remote table whose scan returns exactly `batch`, in exactly that order.
+        fn table_scanning(batch: RecordBatch) -> Table {
+            let num_rows = batch.num_rows();
+            let body = write_ipc_file(&batch);
+            Table::new_with_handler("scan_order", move |request| match request.url().path() {
+                "/v1/table/scan_order/query/" => http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(body.clone())
+                    .unwrap(),
+                "/v1/table/scan_order/count_rows/" => http::Response::builder()
+                    .status(200)
+                    .body(num_rows.to_string().into_bytes())
+                    .unwrap(),
+                path => panic!("Unexpected request path: {}", path),
+            })
+        }
+
+        /// The permutation's (row id, split id) pairs, in permutation order.
+        async fn permutation_of(
+            batch: RecordBatch,
+            split_strategy: SplitStrategy,
+            shuffle_strategy: ShuffleStrategy,
+        ) -> Vec<(u64, u64)> {
+            let permutation = PermutationBuilder::new(table_scanning(batch))
+                .with_split_strategy(split_strategy, None)
+                .with_shuffle_strategy(shuffle_strategy)
+                .build()
+                .await
+                .unwrap();
+
+            let batches = permutation
+                .query()
+                .select(Select::columns(&[SRC_ROW_ID_COL, SPLIT_ID_COLUMN]))
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+
+            let mut rows = Vec::new();
+            for batch in batches {
+                let row_ids = batch
+                    .column_by_name(SRC_ROW_ID_COL)
+                    .unwrap()
+                    .as_primitive::<UInt64Type>();
+                let split_ids = batch
+                    .column_by_name(SPLIT_ID_COLUMN)
+                    .unwrap()
+                    .as_primitive::<UInt64Type>();
+                for idx in 0..batch.num_rows() {
+                    rows.push((row_ids.value(idx), split_ids.value(idx)));
+                }
+            }
+            rows
+        }
+
+        fn sequential_halves() -> SplitStrategy {
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Counts(vec![10, 10]),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_positional_split_ignores_scan_order() {
+            // Two splits of 10 out of 40 rows, so the scan order decides both which rows land in
+            // which split and which 20 rows are dropped entirely.
+            let expected = (0..20u64)
+                .map(|row_id| (row_id, row_id / 10))
+                .collect::<Vec<_>>();
+
+            let in_order = permutation_of(
+                row_id_batch(ascending_scan()),
+                sequential_halves(),
+                ShuffleStrategy::None,
+            )
+            .await;
+            let out_of_order = permutation_of(
+                row_id_batch(out_of_order_scan()),
+                sequential_halves(),
+                ShuffleStrategy::None,
+            )
+            .await;
+
+            assert_eq!(in_order, expected);
+            assert_eq!(out_of_order, expected);
+        }
+
+        #[tokio::test]
+        async fn test_value_based_split_ignores_scan_order() {
+            let hash_halves = || SplitStrategy::Hash {
+                columns: vec![HASH_COLUMN.to_string()],
+                split_weights: vec![1, 1],
+                discard_weight: 0,
+            };
+
+            let in_order = permutation_of(
+                hash_batch(ascending_scan()),
+                hash_halves(),
+                ShuffleStrategy::None,
+            )
+            .await;
+            let out_of_order = permutation_of(
+                hash_batch(out_of_order_scan()),
+                hash_halves(),
+                ShuffleStrategy::None,
+            )
+            .await;
+
+            assert_eq!(in_order, out_of_order);
+            // Hashing a row's own values is order-independent, so what the scan order leaked into
+            // here was the permutation's order, which is what the reader slices by offset.  Rows
+            // come out grouped by split id and ascending by row id within a split.
+            assert!(
+                in_order
+                    .windows(2)
+                    .all(|pair| (pair[0].1, pair[0].0) < (pair[1].1, pair[1].0)),
+                "not grouped by split id and ordered by row id: {:?}",
+                in_order
+            );
+            assert_eq!(in_order.len(), ROW_COUNT as usize);
+            assert!(in_order.iter().any(|(_, split_id)| *split_id == 0));
+            assert!(in_order.iter().any(|(_, split_id)| *split_id == 1));
+        }
+
+        #[tokio::test]
+        async fn test_shuffled_permutation_ignores_scan_order() {
+            let shuffle = || ShuffleStrategy::Random {
+                seed: Some(7),
+                clump_size: None,
+            };
+
+            let in_order = permutation_of(
+                row_id_batch(ascending_scan()),
+                sequential_halves(),
+                shuffle(),
+            )
+            .await;
+            let out_of_order = permutation_of(
+                row_id_batch(out_of_order_scan()),
+                sequential_halves(),
+                shuffle(),
+            )
+            .await;
+
+            assert_eq!(in_order, out_of_order);
+
+            let mut members = in_order
+                .iter()
+                .map(|(row_id, _)| *row_id)
+                .collect::<Vec<_>>();
+            members.sort_unstable();
+            assert_eq!(members, (0..20u64).collect::<Vec<_>>());
+
+            // Regrouped by split id, but still shuffled within each split.
+            assert!(
+                in_order.windows(2).all(|pair| pair[0].1 <= pair[1].1),
+                "not grouped by split id: {:?}",
+                in_order
+            );
+            assert!(
+                in_order
+                    .windows(2)
+                    .any(|pair| pair[0].1 == pair[1].1 && pair[0].0 > pair[1].0),
+                "shuffle left the rows in row id order: {:?}",
+                in_order
+            );
+        }
     }
 }
