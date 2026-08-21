@@ -89,6 +89,16 @@ describe("given a connection", () => {
     await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
   });
 
+  it("should return a completed job when dropping a local table", async () => {
+    await db.createTable("async-drop", [{ id: 1 }]);
+
+    const job = await db.dropTableAsync("async-drop");
+    expect(job.id).toBeNull();
+    await expect(job.status()).resolves.toBe("finished");
+    await job.wait();
+    await expect(db.tableNames()).resolves.toEqual([]);
+  });
+
   it("should fail if creating table twice, unless overwrite is true", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
     await expect(tbl.countRows()).resolves.toBe(2);

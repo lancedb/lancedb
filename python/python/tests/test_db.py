@@ -755,8 +755,7 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     assert tmp_db.table_names() == []
 
 
-@pytest.mark.asyncio
-async def test_delete_table_async(tmp_db: lancedb.DBConnection):
+def test_drop_table_async(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -772,13 +771,27 @@ async def test_delete_table_async(tmp_db: lancedb.DBConnection):
 
     assert tmp_db.table_names() == ["test"]
 
-    tmp_db.drop_table("test")
+    job = tmp_db.drop_table_async("test")
+    assert job.id is None
+    assert job.status() == "finished"
+    job.wait()
     assert tmp_db.table_names() == []
 
     tmp_db.create_table("test", data=data)
     assert tmp_db.table_names() == ["test"]
 
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+
+@pytest.mark.asyncio
+async def test_drop_table_async_connection(tmp_db_async: lancedb.AsyncConnection):
+    await tmp_db_async.create_table("test", data=pa.table({"id": [1, 2]}))
+
+    job = await tmp_db_async.drop_table_async("test")
+    assert job.id is None
+    assert await job.status() == "finished"
+    await job.wait()
+    assert await tmp_db_async.table_names() == []
 
 
 def test_drop_database(tmp_db: lancedb.DBConnection):

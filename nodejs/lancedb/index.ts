@@ -50,6 +50,7 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
@@ -146,6 +147,10 @@ export {
   FtsToken,
   TokenizeTableOptions,
   LsmWriteSpec,
+  LsmStats,
+  BucketStats,
+  GenerationStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";

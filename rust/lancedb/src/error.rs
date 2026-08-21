@@ -71,6 +71,14 @@ pub enum Error {
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
+    #[snafu(display("Column '{name}' was not found"))]
+    ColumnNotFound { name: String },
+    #[snafu(display("Column '{name}' already exists"))]
+    ColumnAlreadyExists { name: String },
+    #[snafu(display("Column '{name}' is not a computed column"))]
+    NotAComputedColumn { name: String },
+    #[snafu(display("Invalid expression for column '{column}': {message}"))]
+    InvalidExpression { column: String, message: String },
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },

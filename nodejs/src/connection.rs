@@ -334,6 +334,22 @@ impl Connection {
             .default_error()
     }
 
+    /// Start dropping a table and return its cleanup job.
+    #[napi(catch_unwind)]
+    pub async fn drop_table_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_table_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
     #[napi(catch_unwind)]
     pub async fn drop_all_tables(&self, namespace_path: Option<Vec<String>>) -> napi::Result<()> {
         let ns = namespace_path.unwrap_or_default();

@@ -45,7 +45,8 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
-from .job import AsyncJob, Job
+from .functions import FunctionVersion, UdfDefinition
+from .job import AsyncJob, Job, _function_job
 from .table import (
     AsyncTable,
     LanceTable,
@@ -524,6 +525,12 @@ class DBConnection(EnforceOverrides):
             namespace_path = []
         raise NotImplementedError
 
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        raise NotImplementedError
+
     def rename_table(
         self,
         cur_name: str,
@@ -609,6 +616,31 @@ class DBConnection(EnforceOverrides):
             Serialized representation of this connection.
         """
         raise NotImplementedError("serialize is not supported for this connection type")
+
+    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
+        """Register a scalar Python UDF and wait for its immutable version.
+
+        This is the blocking counterpart of :meth:`create_function_async`.
+        Local connections raise ``NotImplementedError``.
+        """
+        return self.create_function_async(definition).wait()
+
+    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
+        """Register a scalar Python UDF through the remote Function catalog.
+
+        Submission returns a typed job. The immutable Function version becomes
+        available only when :meth:`Job.wait` succeeds. Local connections raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
+
+    def get_function(self, name: str, *, version: str) -> FunctionVersion:
+        """Open one exact immutable Function version from the remote catalog."""
+        raise NotImplementedError(
+            "Function catalog operations are not supported for this connection type"
+        )
 
     def job(self, job_id: str) -> Job:
         """A [Job][lancedb.job.Job] handle for a server-side job by id.
@@ -1187,6 +1219,20 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Call :meth:`Job.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
+
+    @override
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         if namespace_path is None:
             namespace_path = []
@@ -1235,6 +1281,15 @@ class LanceDBConnection(DBConnection):
         on the job itself.
         """
         return Job(self._conn.job(job_id))
+
+    @override
+    def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
+        job = LOOP.run(self._conn.create_function_async(definition))
+        return Job(job)
+
+    @override
+    def get_function(self, name: str, *, version: str) -> FunctionVersion:
+        return LOOP.run(self._conn.get_function(name, version=version))
 
     @override
     def list_jobs(self) -> List[JobInfo]:
@@ -1963,6 +2018,23 @@ class AsyncConnection(object):
             if f"Table '{name}' was not found" not in str(e):
                 raise e
 
+    async def drop_table_async(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job.
+
+        The table may become unavailable before its data files are removed.
+        Await :meth:`AsyncJob.wait` to wait for cleanup to finish.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return AsyncJob(
+            await self._inner.drop_table_async(name, namespace_path=namespace_path)
+        )
+
     async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """Drop all tables from the database.
 
@@ -1985,6 +2057,25 @@ class AsyncConnection(object):
         on the job itself.
         """
         return AsyncJob(self._inner.job(job_id))
+
+    async def create_function_async(
+        self, definition: UdfDefinition
+    ) -> AsyncJob[FunctionVersion]:
+        """Register a scalar Python UDF through the remote Function catalog.
+
+        The returned typed job resolves to the immutable Function version.
+        Local connections raise ``NotImplementedError``.
+        """
+        if not isinstance(definition, UdfDefinition):
+            raise TypeError("create_function_async requires a @udf definition")
+        inner = await self._inner.create_function_async(
+            definition.registration_request.to_canonical_json()
+        )
+        return _function_job(inner)
+
+    async def get_function(self, name: str, *, version: str) -> FunctionVersion:
+        """Open one exact immutable Function version from the remote catalog."""
+        return FunctionVersion.from_json(await self._inner.get_function(name, version))
 
     async def list_jobs(self) -> List[JobInfo]:
         """List server-side jobs across the database's tables."""

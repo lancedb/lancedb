@@ -409,6 +409,11 @@ impl Connection {
     ///
     /// The names will be returned in lexicographical order (ascending)
     ///
+    /// Listing databases discover physical `*.lance` entries without opening every
+    /// dataset. The result is a point-in-time discovery snapshot: an entry may still be
+    /// under creation, may contain only uncommitted storage, or may be concurrently
+    /// dropped before it is opened.
+    ///
     /// The parameters `page_token` and `limit` can be used to paginate the results
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
@@ -456,10 +461,9 @@ impl Connection {
     ///
     /// # Returns
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
-    /// If the table's storage is present but holds no readable dataset (for example a
-    /// `<name>.lance` directory left behind by an interrupted drop and re-create, which
-    /// [`Self::table_names`] still lists) this returns [`Error::TableCorrupted`]
-    /// instead.
+    /// On listing databases, a committed Lance manifest is authoritative for table
+    /// existence. Uncommitted files or a physical `<name>.lance` directory alone do not
+    /// make a table openable.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),
@@ -490,6 +494,33 @@ impl Connection {
             target_table_name.into(),
             source_uri.into(),
         )
+    }
+
+    /// Register a Python callable as a new immutable Function version.
+    ///
+    /// Registration is remote-only and always asynchronous. Waiting on the
+    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn create_function_async(
+        &self,
+        request: crate::function::FunctionRegistrationRequest,
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        self.internal.create_function_async(request).await
+    }
+
+    /// Look up one exact immutable Function version in the remote catalog.
+    ///
+    /// Both the logical name and server-assigned version id are required;
+    /// mutable aliases and latest-version lookup are intentionally absent.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn get_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function(name.as_ref(), version.as_ref())
+            .await
     }
 
     /// Rename a table in the database.
@@ -558,6 +589,21 @@ impl Connection {
     pub async fn drop_table(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
         self.internal
             .drop_table(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Start dropping a table and return a handle to the cleanup job.
+    ///
+    /// The table may become unavailable before its physical data is removed.
+    /// Call [`crate::job::Job::wait`] to wait for cleanup to finish. Local
+    /// backends may complete the drop before returning the handle.
+    pub async fn drop_table_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        self.internal
+            .drop_table_async(name.as_ref(), namespace_path)
             .await
     }
 

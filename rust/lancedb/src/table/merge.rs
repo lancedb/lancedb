@@ -233,6 +233,10 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "merge_insert",
+    )?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
             let future =
@@ -1161,7 +1165,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([fts_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1254,7 +1258,7 @@ mod lsm_tests {
             .unwrap();
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes([vec_index]))
+            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 

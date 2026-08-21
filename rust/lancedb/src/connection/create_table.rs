@@ -438,10 +438,9 @@ mod tests {
             .await
             .unwrap()
             .data_storage_format
-            .lance_file_version()
-            .unwrap();
+            .lance_file_format();
         // Compare resolved versions since Stable/Next are aliases that resolve at storage time
-        assert_eq!(storage_format.resolve(), data_storage_version.resolve());
+        assert_eq!(storage_format, data_storage_version.resolve());
     }
 
     #[tokio::test]

@@ -2772,6 +2772,56 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     assert (await table.to_arrow()).sort_by("a") == expected
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+
+    def json_table(rows):
+        json_values = pa.ExtensionArray.from_storage(
+            json_type,
+            pa.array([value for _, value in rows], type=json_type.storage_type),
+        )
+        return pa.Table.from_arrays(
+            [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+        )
+
+    table = await mem_db_async.create_table("json_merge", schema=schema)
+    await table.add(json_table([("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(json_table([("a", '{"k": 2}')]))
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"k":2}'},
+        {"id": "b", "j": '{"k":9}'},
+    ]
+    filtered = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert filtered == [{"id": "a", "j": '{"k":2}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    json_values = pa.ExtensionArray.from_storage(
+        json_type, pa.array(['{"k": 3}'], type=json_type.storage_type)
+    )
+    data = pa.Table.from_arrays([pa.array(["c"]), json_values], schema=schema)
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(data, on_bad_vectors="fill")
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
@@ -3713,7 +3763,8 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 60,
+        # Full on-disk size of the data file, footer and metadata included.
+        "total_bytes": 633,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {
@@ -3730,6 +3781,13 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -3846,3 +3904,65 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
         f"embedding ran off the dedicated executor: {captured_threads}"
     )
+
+
+def test_computed_column_declare_and_refresh(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed", [{"x": 1}, {"x": 2}])
+
+    table.add_columns(computed={"doubled": "x * 2"})
+    assert table.to_arrow()["doubled"].to_pylist() == [None, None]
+
+    result = table.refresh_column("doubled")
+    assert result.rows_filled == 2
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    table.add([{"x": 5}])
+    assert table.refresh_column("doubled").rows_filled == 1
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4, 10]
+
+
+def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+@pytest.mark.asyncio
+async def test_computed_column_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_async", [{"x": 3}])
+
+    await table.add_columns(computed={"tripled": "x * 3"})
+    await table.refresh_column("tripled")
+
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+def test_refresh_column_async_returns_job(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
+    table.add_columns(computed={"doubled": "x * 2"})
+
+    job = table.refresh_column_async("doubled")
+    assert job.id is None  # in-process jobs have no server id
+    assert job.wait() is None
+    assert job.status() == "finished"
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    # Bad input raises at the call, not through the job.
+    with pytest.raises(Exception, match="not a computed column"):
+        table.refresh_column_async("x")
+
+
+@pytest.mark.asyncio
+async def test_refresh_column_async_job_async_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_job_async", [{"x": 3}])
+    await table.add_columns(computed={"tripled": "x * 3"})
+
+    job = await table.refresh_column_async("tripled")
+    assert await job.wait() is None
+    assert await job.status() == "finished"
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]
