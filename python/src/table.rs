@@ -1265,6 +1265,17 @@ impl Table {
         })
     }
 
+    pub fn list_bases(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let bases = inner.list_bases().await.infer_error()?;
+            Ok(bases
+                .into_iter()
+                .map(|base| (base.path, base.name, base.is_dataset_root))
+                .collect::<Vec<_>>())
+        })
+    }
+
     /// Read blob bytes for `row_ids` from blob v2 column `column`.
     #[pyo3(signature = (column, row_ids))]
     pub fn fetch_blobs(

@@ -1089,6 +1089,10 @@ class RemoteTable(Table):
         """Register additional storage bases for this table."""
         LOOP.run(self._table.add_bases(bases))
 
+    def list_bases(self) -> list[TableBase]:
+        """Return the additional storage bases for the current table snapshot."""
+        return LOOP.run(self._table.list_bases())
+
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:

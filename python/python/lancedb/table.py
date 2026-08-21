@@ -1596,6 +1596,10 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def list_bases(self) -> list[TableBase]:
+        """Return the additional storage bases for the current table snapshot."""
+        raise NotImplementedError
+
     @abstractmethod
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -2447,6 +2451,10 @@ class LanceTable(Table):
         bases: Union[str, TableBase, Iterable[Union[str, TableBase]]],
     ) -> None:
         LOOP.run(self._table.add_bases(bases))
+
+    def list_bases(self) -> list[TableBase]:
+        """Return the additional storage bases for the current table snapshot."""
+        return LOOP.run(self._table.list_bases())
 
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -6311,6 +6319,13 @@ class AsyncTable:
             await table.add_bases("s3://bucket/media/")
         """
         await self._inner.add_bases(_normalize_bases(bases))
+
+    async def list_bases(self) -> list[TableBase]:
+        """Return the additional storage bases for the current table snapshot."""
+        return [
+            TableBase(path=path, name=name, is_dataset_root=is_dataset_root)
+            for path, name, is_dataset_root in await self._inner.list_bases()
+        ]
 
     async def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]

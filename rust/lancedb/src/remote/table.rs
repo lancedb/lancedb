@@ -2249,6 +2249,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.add_bases_impl(bases).await
     }
 
+    async fn list_bases(&self) -> Result<Vec<crate::table::TableBase>> {
+        self.list_bases_impl().await
+    }
+
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
         self.fetch_blobs_impl(column, row_ids).await
     }
@@ -4115,6 +4119,46 @@ mod tests {
         });
 
         table.add_bases(["s3://bucket/media/"]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_bases_posts_and_returns_the_bases() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/bases/list/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"bases":[{"path":"s3://bucket/media/","isDatasetRoot":false}]}"#)
+                .unwrap()
+        });
+
+        let bases = table.list_bases().await.unwrap();
+        assert_eq!(
+            bases,
+            vec![crate::table::TableBase::from("s3://bucket/media/")]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_bases_returns_named_dataset_root_entries() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/bases/list/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"bases":[{"path":"s3://bucket/archive/","name":"archive","isDatasetRoot":true}]}"#)
+                .unwrap()
+        });
+
+        let bases = table.list_bases().await.unwrap();
+        assert_eq!(
+            bases,
+            vec![crate::table::TableBase {
+                path: "s3://bucket/archive/".into(),
+                name: Some("archive".into()),
+                is_dataset_root: true,
+            }]
+        );
     }
 
     #[tokio::test]

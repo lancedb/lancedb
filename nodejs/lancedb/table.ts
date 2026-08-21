@@ -591,6 +591,9 @@ export abstract class Table {
     bases: string | TableBase | Array<string | TableBase>,
   ): Promise<void>;
 
+  /** Return the additional storage bases for the current table snapshot. */
+  abstract listBases(): Promise<TableBase[]>;
+
   /**
    * Fill the rows of a computed column that hold no value yet.
    *
@@ -1228,6 +1231,10 @@ export class LocalTable extends Table {
     bases: string | TableBase | Array<string | TableBase>,
   ): Promise<void> {
     await this.inner.addBases(normalizeBases(bases));
+  }
+
+  async listBases(): Promise<TableBase[]> {
+    return await this.inner.listBases();
   }
 
   async refreshColumn(column: string): Promise<RefreshColumnResult> {

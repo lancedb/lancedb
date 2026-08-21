@@ -1028,11 +1028,30 @@ describe("remote connection jobs surface", () => {
           });
           return;
         }
+        if (path.endsWith("/bases/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              bases: [
+                {
+                  path: "s3://bucket/media/",
+                  isDatasetRoot: false,
+                },
+              ],
+            }),
+          );
+          return;
+        }
         res.writeHead(404).end();
       },
       async (db) => {
         const table = await db.openTable("photos");
         await table.addBases({ path: "s3://bucket/media/" });
+        expect(await table.listBases()).toEqual([
+          {
+            path: "s3://bucket/media/",
+            isDatasetRoot: false,
+          },
+        ]);
       },
     );
     expect(postedBodies).toEqual([
@@ -1045,5 +1064,48 @@ describe("remote connection jobs surface", () => {
         ],
       },
     ]);
+  });
+
+  it("listBases returns a named dataset-root base", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "photos",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/bases/list/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              bases: [
+                {
+                  path: "s3://bucket/archive/",
+                  name: "archive",
+                  isDatasetRoot: true,
+                },
+              ],
+            }),
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("photos");
+        expect(await table.listBases()).toEqual([
+          {
+            path: "s3://bucket/archive/",
+            name: "archive",
+            isDatasetRoot: true,
+          },
+        ]);
+      },
+    );
   });
 });

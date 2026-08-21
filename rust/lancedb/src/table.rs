@@ -717,6 +717,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "Registering table bases is not supported for this table type.".into(),
         })
     }
+    /// Return the additional storage bases for the current table snapshot.
+    async fn list_bases(&self) -> Result<Vec<TableBase>> {
+        Err(Error::NotSupported {
+            message: "Listing table bases is not supported for this table type.".into(),
+        })
+    }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
@@ -1197,6 +1203,11 @@ impl Table {
     ) -> Result<()> {
         let bases: Vec<TableBase> = bases.into_iter().map(Into::into).collect();
         self.inner.add_bases(&bases).await
+    }
+
+    /// Return the additional storage bases for the current table snapshot.
+    pub async fn list_bases(&self) -> Result<Vec<TableBase>> {
+        self.inner.list_bases().await
     }
 
     /// Materialize blob bytes for the given row ids.
@@ -3454,6 +3465,20 @@ impl BaseTable for NativeTable {
         let dataset = dataset.add_bases(new_bases, None).await?;
         self.dataset.update(dataset);
         Ok(())
+    }
+
+    async fn list_bases(&self) -> Result<Vec<TableBase>> {
+        let dataset = self.dataset.get().await?;
+        let mut bases: Vec<&BasePath> = dataset.manifest().base_paths.values().collect();
+        bases.sort_by_key(|base| base.id);
+        Ok(bases
+            .into_iter()
+            .map(|base| TableBase {
+                path: base.path.clone(),
+                name: base.name.clone(),
+                is_dataset_root: base.is_dataset_root,
+            })
+            .collect())
     }
 
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {

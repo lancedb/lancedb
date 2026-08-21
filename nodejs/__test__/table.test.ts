@@ -3413,7 +3413,7 @@ describe("table bases", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
-  it("addBases accepts a file uri", async () => {
+  it("listBases reflects added bases", async () => {
     const conn = await connect(tmpDir.name);
     const table = await conn.createEmptyTable(
       "photos",
@@ -3421,6 +3421,12 @@ describe("table bases", () => {
     );
     const media = path.join(tmpDir.name, "media");
     fs.mkdirSync(media);
-    await table.addBases(pathToFileURL(media).toString());
+    const location = pathToFileURL(media).toString();
+
+    expect(await table.listBases()).toEqual([]);
+    await table.addBases(location);
+    expect(await table.listBases()).toEqual([
+      { path: location, isDatasetRoot: false },
+    ]);
   });
 });

@@ -21,31 +21,27 @@ fn file_uri(path: &std::path::Path) -> String {
 }
 
 #[tokio::test]
-async fn test_add_bases_accepts_named_and_dataset_root_entries() -> Result<()> {
+async fn test_list_bases_reflects_added_bases() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().join("db").to_str().unwrap())
         .execute()
         .await?;
     let table = db.create_empty_table("t", empty_schema()).execute().await?;
-    let media = tmp.path().join("media");
-    let parent = tmp.path().join("parent");
-    std::fs::create_dir_all(&media).unwrap();
-    std::fs::create_dir_all(&parent).unwrap();
+    assert!(table.list_bases().await?.is_empty());
 
-    table
-        .add_bases([
-            TableBase {
-                path: file_uri(&media),
-                name: Some("media".into()),
-                is_dataset_root: false,
-            },
-            TableBase {
-                path: file_uri(&parent),
-                name: Some("parent".into()),
-                is_dataset_root: true,
-            },
-        ])
-        .await
+    let media = tmp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    let media_uri = file_uri(&media);
+    table.add_bases([&media_uri]).await?;
+    assert_eq!(
+        table.list_bases().await?,
+        vec![TableBase {
+            path: media_uri,
+            name: None,
+            is_dataset_root: false,
+        }]
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -59,9 +55,26 @@ async fn test_add_bases_accepts_two_unnamed_paths() -> Result<()> {
     let other = tmp.path().join("other");
     std::fs::create_dir_all(&media).unwrap();
     std::fs::create_dir_all(&other).unwrap();
-    table
-        .add_bases([&file_uri(&media), &file_uri(&other)])
-        .await
+    let media_uri = file_uri(&media);
+    let other_uri = file_uri(&other);
+
+    table.add_bases([&media_uri, &other_uri]).await?;
+    assert_eq!(
+        table.list_bases().await?,
+        vec![
+            TableBase {
+                path: media_uri,
+                name: None,
+                is_dataset_root: false,
+            },
+            TableBase {
+                path: other_uri,
+                name: None,
+                is_dataset_root: false,
+            },
+        ]
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -125,23 +138,94 @@ async fn test_add_bases_write_and_read_through_registered_base() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_memory_add_bases_accepts_a_file_uri() -> Result<()> {
+async fn test_add_bases_accepts_named_and_dataset_root_entries() -> Result<()> {
     let tmp = tempdir().unwrap();
-    let db = connect("memory://").execute().await?;
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
     let table = db.create_empty_table("t", empty_schema()).execute().await?;
     let media = tmp.path().join("media");
+    let parent = tmp.path().join("parent");
     std::fs::create_dir_all(&media).unwrap();
-    table.add_bases([file_uri(&media)]).await
+    std::fs::create_dir_all(&parent).unwrap();
+    let media_uri = file_uri(&media);
+    let parent_uri = file_uri(&parent);
+
+    table
+        .add_bases([
+            TableBase {
+                path: media_uri.clone(),
+                name: Some("media".into()),
+                is_dataset_root: false,
+            },
+            TableBase {
+                path: parent_uri.clone(),
+                name: Some("parent".into()),
+                is_dataset_root: true,
+            },
+        ])
+        .await?;
+
+    assert_eq!(
+        table.list_bases().await?,
+        vec![
+            TableBase {
+                path: media_uri,
+                name: Some("media".into()),
+                is_dataset_root: false,
+            },
+            TableBase {
+                path: parent_uri,
+                name: Some("parent".into()),
+                is_dataset_root: true,
+            },
+        ]
+    );
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_namespace_add_bases_accepts_a_file_uri() -> Result<()> {
+async fn test_memory_list_bases_reflects_added_bases() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect("memory://").execute().await?;
+    let table = db.create_empty_table("t", empty_schema()).execute().await?;
+    assert!(table.list_bases().await?.is_empty());
+
+    let media = tmp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    let media_uri = file_uri(&media);
+    table.add_bases([&media_uri]).await?;
+    assert_eq!(
+        table.list_bases().await?,
+        vec![TableBase {
+            path: media_uri,
+            name: None,
+            is_dataset_root: false,
+        }]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_namespace_list_bases_reflects_added_bases() -> Result<()> {
     let tmp = tempdir().unwrap();
     let mut properties = std::collections::HashMap::new();
     properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
     let db = connect_namespace("dir", properties).execute().await?;
     let table = db.create_empty_table("t", empty_schema()).execute().await?;
+    assert!(table.list_bases().await?.is_empty());
+
     let media = tmp.path().join("media");
     std::fs::create_dir_all(&media).unwrap();
-    table.add_bases([file_uri(&media)]).await
+    let media_uri = file_uri(&media);
+    table.add_bases([&media_uri]).await?;
+    assert_eq!(
+        table.list_bases().await?,
+        vec![TableBase {
+            path: media_uri,
+            name: None,
+            is_dataset_root: false,
+        }]
+    );
+    Ok(())
 }

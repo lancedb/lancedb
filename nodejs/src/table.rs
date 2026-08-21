@@ -460,6 +460,18 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn list_bases(&self) -> napi::Result<Vec<TableBase>> {
+        Ok(self
+            .inner_ref()?
+            .list_bases()
+            .await
+            .default_error()?
+            .into_iter()
+            .map(TableBase::from)
+            .collect())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
         let res = self
@@ -723,6 +735,16 @@ pub struct TableBase {
     /// True when `path` is a Lance dataset root. When false, `path` is the
     /// directory containing the referenced files.
     pub is_dataset_root: bool,
+}
+
+impl From<LanceTableBase> for TableBase {
+    fn from(base: LanceTableBase) -> Self {
+        Self {
+            path: base.path,
+            name: base.name,
+            is_dataset_root: base.is_dataset_root,
+        }
+    }
 }
 
 #[napi(object)]
