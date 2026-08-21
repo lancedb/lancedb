@@ -788,11 +788,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
-    /// Whether an unfiltered scan returns rows in the same order every time.
+    /// Whether repeated identical scans return rows in the same order.
     ///
-    /// Callers that assign meaning to a row's position in a scan — the data loader
-    /// builds a permutation of positions — must sort the results themselves when this
-    /// is false.  Defaults to false so a table type opts in deliberately.
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
     fn scan_order_is_deterministic(&self) -> bool {
         false
     }
