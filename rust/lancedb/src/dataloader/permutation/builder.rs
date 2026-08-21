@@ -258,6 +258,10 @@ impl PermutationBuilder {
 
         // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
         // every rank must scan the rows in the same order to build the same permutation.
+        // TODO: this assumes the server returns a stable order for identical requests;
+        // make that an actual guarantee.
+        // TODO: pin the version resolved here so later takes of these row ids cannot
+        // land on a compacted table.  Remote does not implement Lazy consistency.
         let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
