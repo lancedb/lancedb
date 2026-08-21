@@ -37,6 +37,12 @@ pub struct ListNamespacesResponse {
 }
 
 #[napi(object)]
+pub struct ListTablesResponse {
+    pub tables: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
 pub struct CreateNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
     pub transaction_id: Option<String>,
@@ -189,6 +195,8 @@ impl Connection {
 
     /// List all tables in the dataset.
     #[napi(catch_unwind)]
+    // Deprecated in favour of `list_tables`, but still exposed to JavaScript.
+    #[allow(deprecated)]
     pub async fn table_names(
         &self,
         namespace_path: Option<Vec<String>>,
@@ -204,6 +212,29 @@ impl Connection {
             op = op.limit(limit);
         }
         op.execute().await.default_error()
+    }
+
+    /// List a page of tables in the database.
+    #[napi(catch_unwind)]
+    pub async fn list_tables(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListTablesResponse> {
+        let mut op = self.get_inner()?.list_tables();
+        op = op.namespace(namespace_path.unwrap_or_default());
+        if let Some(page_token) = page_token {
+            op = op.page_token(page_token);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        let resp = op.execute().await.default_error()?;
+        Ok(ListTablesResponse {
+            tables: resp.tables,
+            page_token: resp.page_token,
+        })
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
