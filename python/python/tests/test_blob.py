@@ -617,3 +617,289 @@ def test_fetch_blobs_nested_path_survives_sort_after_query():
 def _identifiable_payload(size: int) -> bytes:
     block = 256
     return b"".join(bytes([i % 256]) * block for i in range(size // block))
+
+
+def test_merge_insert_binary_source_into_blob_v2_table(tmp_path):
+    # https://github.com/lancedb/lancedb/issues/3760
+    # merge_insert resupplies the whole row, including the blob column as raw
+    # binary, the same input shape add() accepts.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("merge_binary", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "image": pa.array([b"updated", b"two"], pa.large_binary()),
+        }
+    )
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(source)
+    )
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [b"updated", b"two"]
+
+
+def test_merge_insert_binary_source_nulls_into_blob_v2_table(tmp_path):
+    # The blob slot may be null or empty; neither may break the merge.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("merge_nulls", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "image": pa.array([None, b""], pa.large_binary()),
+        }
+    )
+    (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(source)
+    )
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [None, b""]
+
+
+@pytest.mark.parametrize("make_list", [pa.list_, pa.large_list])
+def test_merge_insert_binary_source_into_nested_blob_lists(tmp_path, make_list):
+    # Lance's blob rewrite plan accepts List and LargeList containers. This
+    # goes through the write boundary instead of only exercising the Python
+    # coercion helper.
+    db = lancedb.connect(tmp_path)
+    storage = lancedb.blob("photo").type.storage_type
+    photo = pa.field(
+        "photo",
+        storage,
+        metadata={b"ARROW:extension:name": b"lance.blob.v2"},
+    )
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("images", make_list(photo)),
+        ]
+    )
+    table = db.create_table("merge_nested_binary", schema=schema)
+    source = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "images": pa.array([[b"one", b"two"]], make_list(pa.large_binary())),
+        }
+    )
+
+    result = table.merge_insert("id").when_not_matched_insert_all().execute(source)
+    assert result.num_inserted_rows == 1
+
+
+def test_add_with_bad_vector_option_into_blob_v2_table(tmp_path):
+    # add() also routes through the Python cast when on_bad_vectors is set;
+    # a blob column must not turn that path into a cast failure.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("add_bad_vectors", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+    table.add([{"id": 2, "image": b"two"}], on_bad_vectors="drop")
+
+    rows = table.to_arrow().sort_by("id")
+    assert rows["id"].to_pylist() == [1, 2]
+    blobs = table.fetch_blobs("image", rows)
+    assert [blob.as_py() for blob in blobs] == [b"one", b"two"]
+
+
+def test_update_unrelated_column_on_blob_v2_table(tmp_path):
+    # https://github.com/lancedb/lancedb/issues/3760
+    # update() on a table with a blob v2 column must not depend on the blob
+    # column's storage representation.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("sid", pa.string()),
+            pa.field("body", pa.string()),
+            lancedb.blob("file"),
+        ]
+    )
+    table = db.create_table("update_unrelated", schema=schema)
+    table.add(
+        [
+            {"sid": "a", "body": "one", "file": b"DATA"},
+            {"sid": "b", "body": "two", "file": None},
+        ]
+    )
+
+    result = table.update(where="sid='a'", values={"body": "x"})
+    assert result.rows_updated == 1
+
+    rows = table.to_arrow().sort_by("sid")
+    assert rows["body"].to_pylist() == ["x", "two"]
+    blobs = table.fetch_blobs("file", rows)
+    assert [blob.as_py() for blob in blobs] == [b"DATA", None]
+
+
+def test_update_blob_v2_column_directly_is_rejected_cleanly(tmp_path):
+    # Updating the blob column itself is unsupported; it must surface as a
+    # user-facing error naming the column, not an internal schema-invariant
+    # error. Lance raises NotSupported, which pyo3 surfaces as RuntimeError.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("update_direct", schema=schema)
+    table.add([{"id": 1, "image": b"one"}])
+
+    with pytest.raises(RuntimeError, match="Direct updates to column 'image'"):
+        table.update(where="id=1", values={"image": b"two"})
+
+
+def test_merge_insert_binary_source_into_plain_struct_is_rejected(tmp_path):
+    # Only blob v2 columns coerce raw binary. An ordinary struct with a
+    # binary child named `data` must keep failing instead of silently
+    # dropping its other children.
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info",
+                pa.struct(
+                    [
+                        pa.field("data", pa.large_binary()),
+                        pa.field("label", pa.string()),
+                    ]
+                ),
+            ),
+        ]
+    )
+    table = db.create_table("plain_struct", schema=schema)
+    table.add([{"id": 1, "info": {"data": b"one", "label": "a"}}])
+
+    source = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "info": pa.array([b"two"], pa.large_binary()),
+        }
+    )
+    with pytest.raises(RuntimeError, match="Unsupported cast"):
+        (table.merge_insert("id").when_matched_update_all().execute(source))
+
+
+def test_coercion_spares_plain_struct_nested_beside_blob(tmp_path):
+    # Only the blob-tagged leaf may accept raw binary. A plain struct
+    # sibling inside the same top-level struct must not be silently
+    # reinterpreted as one of its possible children.
+    from lancedb.table import _coerce_blob_values
+
+    ordinary = pa.struct(
+        [pa.field("data", pa.large_binary()), pa.field("label", pa.string())]
+    )
+    target = pa.struct([lancedb.blob("image"), pa.field("ordinary", ordinary)])
+    source = pa.array(
+        [{"image": b"blob", "ordinary": b"plain"}],
+        pa.struct(
+            [
+                pa.field("image", pa.large_binary()),
+                pa.field("ordinary", pa.large_binary()),
+            ]
+        ),
+    )
+    with pytest.raises((pa.ArrowNotImplementedError, NotImplementedError)):
+        _coerce_blob_values(source, pa.field("outer", target))
+
+
+def test_coercion_of_sliced_list_selects_logical_window(tmp_path):
+    # When a sliced ListArray is rebuilt, the child values must come from
+    # the offsets window, not from position zero of the values buffer.
+    from lancedb.table import _coerce_blob_values
+
+    source = pa.array([[b"prefix"], [b"wanted"]], pa.list_(pa.large_binary()))
+    out = _coerce_blob_values(
+        source.slice(1, 1), pa.field("images", pa.list_(lancedb.blob("item")))
+    )
+    assert out.to_pylist() == [
+        [{"data": b"wanted", "uri": None, "position": None, "size": None}]
+    ]
+
+
+def test_blob_coercion_selected_for_metadata_marked_list_items():
+    # Lance tags nested blob list items with field metadata instead of the
+    # extension type; _needs_blob_coercion must honor that representation.
+    from lancedb.table import _needs_blob_coercion
+
+    storage = lancedb.blob("item").type.storage_type
+    item = pa.field("item", storage, metadata={"ARROW:extension:name": "lance.blob.v2"})
+    assert _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(item))
+    # Untagged storage struct below a list must not be selected.
+    untagged = pa.field("item", storage)
+    assert not _needs_blob_coercion(pa.list_(pa.large_binary()), pa.list_(untagged))
+
+
+def test_blob_coercion_excludes_fixed_size_lists():
+    # Lance's locked blob rewrite plan has List and LargeList branches only.
+    # Do not construct FixedSizeList blob arrays that the writer rejects.
+    from lancedb.table import _needs_blob_coercion
+
+    target = pa.list_(lancedb.blob("photo"), 2)
+    assert not _needs_blob_coercion(pa.list_(pa.binary(), 2), target)
+
+
+def test_cast_reader_aligns_blob_list_values_by_position():
+    from lancedb.table import _cast_to_target_schema
+
+    cases = [
+        (lambda field: pa.list_(field), [[b"a"]]),
+        (lambda field: pa.large_list(field), [[b"a"]]),
+    ]
+    for make_list, values in cases:
+        source_type = make_list(pa.binary())
+        target_type = make_list(lancedb.blob("photo"))
+        batch = pa.record_batch([pa.array(values, type=source_type)], names=["images"])
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+        target_schema = pa.schema([pa.field("images", target_type)])
+        result = _cast_to_target_schema(reader, target_schema).read_all()
+
+        assert result.schema.equals(target_schema, check_metadata=True)
+        actual_values = []
+        for images in result["images"].to_pylist():
+            assert images is not None
+            actual_values.append([blob["data"] for blob in images])
+        assert actual_values == values
+
+
+def test_cast_reader_skips_empty_batch_with_blob_column():
+    # A zero-row batch containing both a coerced blob column and a plain
+    # column must not abort the reader before later batches are consumed.
+    from lancedb.table import _cast_to_target_schema
+
+    source_schema = pa.schema(
+        [pa.field("id", pa.int64()), pa.field("image", pa.large_binary())]
+    )
+    empty = pa.RecordBatch.from_arrays(
+        [pa.array([], pa.int64()), pa.array([], pa.large_binary())],
+        schema=source_schema,
+    )
+    target_schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+
+    reader = pa.RecordBatchReader.from_batches(source_schema, [empty])
+    result = _cast_to_target_schema(reader, target_schema).read_all()
+    assert result.num_rows == 0
+
+    full = pa.RecordBatch.from_arrays(
+        [pa.array([1], pa.int64()), pa.array([b"x"], pa.large_binary())],
+        schema=source_schema,
+    )
+    reader = pa.RecordBatchReader.from_batches(source_schema, [empty, full])
+    result = _cast_to_target_schema(reader, target_schema).read_all()
+    assert result.num_rows == 1
+    assert result.column("id").to_pylist() == [1]

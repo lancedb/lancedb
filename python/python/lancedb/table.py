@@ -100,7 +100,7 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-from .schema import blob_v2_column_paths, schema_has_blob_field
+from .schema import blob_v2_column_paths, is_blob_v2_field, schema_has_blob_field
 
 
 def _should_push_down_query_table(
@@ -395,6 +395,157 @@ def _sanitize_data(
     return reader
 
 
+def _is_blob_descriptor(data_type: pa.DataType, field_metadata=None) -> bool:
+    """True for a blob v2 logical struct: the `lance.blob.v2` extension or a
+    struct marked as blob v2 by its field metadata."""
+    if isinstance(data_type, pa.ExtensionType):
+        return data_type.extension_name == "lance.blob.v2"
+    if not pa.types.is_struct(data_type):
+        return False
+    return is_blob_v2_field(pa.field("blob", data_type, metadata=field_metadata or {}))
+
+
+def _is_binary_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_binary(data_type)
+        or pa.types.is_large_binary(data_type)
+        or pa.types.is_binary_view(data_type)
+    )
+
+
+def _is_blob_list_container(data_type: pa.DataType) -> bool:
+    """True for list containers supported by Lance's blob rewrite plan."""
+    return pa.types.is_list(data_type) or pa.types.is_large_list(data_type)
+
+
+def _coerce_binary_to_blob_struct(
+    array: pa.Array, blob_type: pa.StructType
+) -> pa.Array:
+    """Coerce raw binary input into the blob v2 logical struct.
+
+    Mirrors the Rust write path: bytes land in `data` and every other
+    descriptor child is null. Nulls stay null.
+    """
+    data_field = next((f for f in blob_type if f.name == "data"), None)
+    children = [
+        pc.cast(array, data_field.type)
+        if f.name == "data"
+        else pa.nulls(len(array), f.type)
+        for f in blob_type
+    ]
+    return pa.StructArray.from_arrays(
+        children, fields=list(blob_type), mask=pc.is_null(array)
+    )
+
+
+def _coerce_blob_values(array: pa.Array, target_field: pa.Field) -> pa.Array:
+    """Coerce `array` towards the target field, handling blob v2 leaves.
+
+    Field-aware: only leaves that are actually marked blob v2 (the extension
+    type or the `ARROW:extension:name` field metadata) accept raw binary
+    input, so plain struct siblings keep their existing cast semantics.
+    Recurses through structs and lists like the Rust cast plan does. Binary
+    input at a blob v2 leaf becomes the logical blob struct; struct input is
+    aligned child-by-child so partial descriptors widen with nulls.
+    """
+    target_type = target_field.type
+    if isinstance(target_type, pa.ExtensionType):
+        # Propagate the extension identity as field metadata so the storage
+        # struct is still recognized as a blob v2 leaf during recursion.
+        storage_field = target_field.with_type(target_type.storage_type)
+        metadata: dict = dict(storage_field.metadata or {})
+        metadata.setdefault(b"ARROW:extension:name", target_type.extension_name)
+        coerced = _coerce_blob_values(array, storage_field.with_metadata(metadata))
+        return pa.ExtensionArray.from_storage(target_type, coerced)
+    if isinstance(array.type, pa.ExtensionType):
+        # Extension arrays do not expose .field(); recurse on their storage.
+        array = array.storage
+    if pa.types.is_struct(target_type):
+        if pa.types.is_struct(array.type):
+            names = set(array.type.names)
+            children = [
+                _coerce_blob_values(array.field(f.name), f)
+                if f.name in names
+                else pa.nulls(len(array), f.type)
+                for f in target_type
+            ]
+            return pa.StructArray.from_arrays(
+                children, fields=list(target_type), mask=array.is_null()
+            )
+        if _is_binary_like(array.type) and _is_blob_descriptor(
+            target_type, target_field.metadata
+        ):
+            return _coerce_binary_to_blob_struct(array, target_type)
+        return pc.cast(array, target_type)
+    if _is_blob_list_container(target_type) and _is_list_like(array.type):
+        return _coerce_blob_list(array, target_field)
+    if not array.type.equals(target_type):
+        return pc.cast(array, target_type)
+    return array
+
+
+def _coerce_blob_list(array: pa.Array, target_field: pa.Field) -> pa.Array:
+    """Rebuild a list of blob v2 leaves from the array's logical window."""
+    target_type = target_field.type
+    # Normalize the container to the target's list kind while keeping the
+    # input child type. Casting also compacts sliced buffers.
+    input_child = array.type.value_field
+    if pa.types.is_large_list(target_type):
+        kind_type = pa.large_list(input_child)
+    else:
+        kind_type = pa.list_(input_child)
+    if not array.type.equals(kind_type):
+        array = pc.cast(array, kind_type)
+    mask = array.is_null()
+    offsets = array.offsets
+    start = offsets[0].as_py()
+    # The values buffer may be longer than the offsets window when the array
+    # is a slice, so slice the child values from the window start (not zero)
+    # and rebase the offsets to match.
+    values = array.values.slice(start, offsets[-1].as_py() - start)
+    coerced = _coerce_blob_values(values, target_type.value_field)
+    if start != 0:
+        offsets = pc.subtract(offsets, pa.scalar(start, type=offsets.type))
+    if pa.types.is_large_list(target_type):
+        return pa.LargeListArray.from_arrays(offsets, coerced, mask=mask)
+    return pa.ListArray.from_arrays(offsets, coerced, mask=mask)
+
+
+def _needs_blob_coercion(
+    input_type: pa.DataType,
+    target_type: pa.DataType,
+    target_metadata: Optional[dict] = None,
+) -> bool:
+    """True when coercing input to target crosses a blob v2 binary leaf."""
+    if _is_binary_like(input_type):
+        return _is_blob_descriptor(target_type, target_metadata)
+    if pa.types.is_struct(input_type) and pa.types.is_struct(target_type):
+        names = input_type.names
+        return any(
+            _needs_blob_coercion(input_type.field(f.name).type, f.type, f.metadata)
+            for f in target_type
+            if f.name in names and f.type != input_type.field(f.name).type
+        )
+    if _is_list_like(input_type) and _is_blob_list_container(target_type):
+        value_field = target_type.value_field
+        return _needs_blob_coercion(
+            input_type.value_type, value_field.type, value_field.metadata
+        )
+    return False
+
+
+def _blob_coercions(
+    reader_schema: pa.Schema, target_schema: pa.Schema
+) -> Dict[str, bool]:
+    """Target columns whose input needs Python-side blob coercion."""
+    coercions = {}
+    for field in reader_schema:
+        target_field = target_schema.field(field.name)
+        if _needs_blob_coercion(field.type, target_field.type, target_field.metadata):
+            coercions[field.name] = True
+    return coercions
+
+
 def _cast_to_target_schema(
     reader: pa.RecordBatchReader,
     target_schema: pa.Schema,
@@ -420,8 +571,54 @@ def _cast_to_target_schema(
         )
         reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
 
+    blob_coercions = _blob_coercions(reader.schema, target_schema)
+
     def gen():
         for batch in reader:
+            if blob_coercions:
+                # pyarrow cannot cast binary into the blob v2 descriptor
+                # struct, and cannot cast through nested extension types at
+                # all, so blob columns are coerced here and excluded from the
+                # Table.cast below.
+                coerced = {}
+                plain_columns = []
+                plain_fields = []
+                for i, field in enumerate(reordered_schema):
+                    if field.name in blob_coercions:
+                        coerced[i] = _coerce_blob_values(batch.column(i), field)
+                    else:
+                        plain_columns.append(batch.column(i))
+                        plain_fields.append(field)
+                if plain_fields:
+                    plain_schema = pa.schema(
+                        plain_fields, metadata=target_schema.metadata
+                    )
+                    plain_batch = pa.RecordBatch.from_arrays(
+                        plain_columns, schema=plain_schema
+                    )
+                    # An empty batch casts to a zero-chunk table, so pull the
+                    # columns back out chunk-by-chunk instead of indexing the
+                    # (possibly empty) batch list.
+                    cast_columns = [
+                        col.combine_chunks()
+                        if isinstance(col, pa.ChunkedArray)
+                        else col
+                        for col in pa.Table.from_batches([plain_batch])
+                        .cast(plain_schema)
+                        .columns
+                    ]
+                else:
+                    cast_columns = []
+                columns = []
+                cast_iter = iter(cast_columns)
+                for i in range(len(reordered_schema)):
+                    if i in coerced:
+                        columns.append(coerced[i])
+                    else:
+                        columns.append(next(cast_iter))
+                batch = pa.RecordBatch.from_arrays(columns, schema=reordered_schema)
+                yield batch
+                continue
             # Table but not RecordBatch has cast.
             cast_batches = (
                 pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
@@ -480,37 +677,11 @@ def _align_field_types(
                 )
             else:
                 new_type = target_field.type
-        elif pa.types.is_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_large_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.large_list(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_fixed_size_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0],
-                    target_field.type.list_size,
-                )
-            else:
-                new_type = target_field.type
+        elif _is_list_like(target_field.type):
+            # A list has one positional child.  Its name is incidental
+            # (``item`` vs ``photo``), while the target value field carries
+            # the blob extension metadata needed by the coercion path.
+            new_type = target_field.type
         else:
             new_type = target_field.type
         new_fields.append(
