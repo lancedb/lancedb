@@ -77,6 +77,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+_SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
 
 @runtime_checkable
@@ -909,10 +910,12 @@ class LanceQueryBuilder(ABC):
                 fast_search=fast_search,
             )
 
-        if isinstance(query, list):
+        if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
         elif isinstance(query, np.ndarray):
             query = query.astype(np.float32)
+        elif isinstance(query, (pa.Array, pa.ChunkedArray)):
+            query = np.array(query.to_pylist(), dtype=np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
@@ -934,7 +937,7 @@ class LanceQueryBuilder(ABC):
             query = cls._query_to_vector(table, query, vector_column_name)
             return query, query_type
         elif query_type == "auto":
-            if isinstance(query, (list, np.ndarray)):
+            if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
                 return query, "vector"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
@@ -950,7 +953,7 @@ class LanceQueryBuilder(ABC):
 
     @classmethod
     def _query_to_vector(cls, table, query, vector_column_name):
-        if isinstance(query, (list, np.ndarray)):
+        if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
             return query
         conf = table.embedding_functions.get(vector_column_name)
         if conf is not None:

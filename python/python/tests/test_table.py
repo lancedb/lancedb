@@ -2949,6 +2949,42 @@ def test_multiple_vector_columns(mem_db: DBConnection):
     assert result1["text"][0] != result2["text"][0]
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        (0.0, 0.0),
+        pa.array([0.0, 0.0]),
+        pa.chunked_array([[0.0], [0.0]]),
+    ],
+)
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_sync_search_accepts_supported_vector_containers(
+    mem_db: DBConnection, query, query_type
+):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("small", pa.list_(pa.float32(), 2)),
+            pa.field("large", pa.list_(pa.float32(), 3)),
+        ]
+    )
+    table = mem_db.create_table(
+        "supported_vector_containers",
+        data=pa.table(
+            {
+                "id": [1, 2],
+                "small": [[0.0, 0.0], [1.0, 1.0]],
+                "large": [[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]],
+            },
+            schema=schema,
+        ),
+    )
+
+    result = table.search(query, query_type=query_type).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+
+
 def test_create_scalar_index(mem_db: DBConnection):
     vec_array = pa.array(
         [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2)
