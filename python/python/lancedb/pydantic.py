@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Pydantic (v1 / v2) adapter for LanceDB"""
+"""Pydantic adapter for LanceDB."""
 
 from __future__ import annotations
 
@@ -14,9 +14,6 @@ from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    Generator,
     List,
     Type,
     Union,
@@ -24,17 +21,9 @@ from typing import (
     GenericAlias,
 )
 
-import numpy as np
 import pyarrow as pa
 import pydantic
-from packaging.version import Version
-
-PYDANTIC_VERSION = Version(pydantic.__version__)
-try:
-    from pydantic_core import CoreSchema, core_schema
-except ImportError:
-    if PYDANTIC_VERSION.major >= 2:
-        raise
+from pydantic_core import CoreSchema, core_schema
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -131,25 +120,6 @@ def Vector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
-                raise TypeError("A list of numbers or numpy.ndarray is needed")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {"type": "number"}
-                field_schema["maxItems"] = dim
-                field_schema["minItems"] = dim
-
     return FixedSizeList
 
 
@@ -157,9 +127,8 @@ def _raise_bare_vector_error(*_args):
     raise TypeError("Vector must be parameterized with a dimension, e.g. Vector(128).")
 
 
-# Pydantic v1 and v2 otherwise treat the bare Vector factory as a field validator
-# and inspect its signature, which produces misleading errors about internal types.
-setattr(Vector, "__get_validators__", _raise_bare_vector_error)
+# Pydantic otherwise inspects the bare factory as a field type and produces
+# misleading errors about its internal annotations.
 setattr(Vector, "__get_pydantic_core_schema__", _raise_bare_vector_error)
 
 
@@ -233,31 +202,6 @@ def MultiVector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range)):
-                raise TypeError("A list of vectors is needed")
-            for vec in v:
-                if not isinstance(vec, (list, range, np.ndarray)) or len(vec) != dim:
-                    raise TypeError(f"Each vector must be a list of {dim} numbers")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": dim,
-                    "maxItems": dim,
-                }
-
     return MultiVectorList
 
 
@@ -303,20 +247,10 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     )
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field) for name, field in model.__fields__.items()
-        ]
-
-else:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field)
-            for name, field in model.model_fields.items()
-        ]
+def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+    return [
+        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+    ]
 
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
@@ -509,8 +443,6 @@ class LanceModel(pydantic.BaseModel):
 
     @classmethod
     def safe_get_fields(cls):
-        if PYDANTIC_VERSION.major < 2:
-            return cls.__fields__
         return cls.model_fields
 
     @classmethod
@@ -548,23 +480,9 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
     """
     Get the extra metadata from a Pydantic FieldInfo.
     """
-    if PYDANTIC_VERSION.major >= 2:
-        return (field_info.json_schema_extra or {}).get(key)
-    return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
+    return (field_info.json_schema_extra or {}).get(key)
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.dict()
-
-else:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.model_dump()
+def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
+    """Convert a Pydantic model to a dictionary."""
+    return model.model_dump()
