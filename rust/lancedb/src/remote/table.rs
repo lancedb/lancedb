@@ -2866,8 +2866,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({ "column": column });
         self.apply_branch_body(&mut body);
         let request = self
-            .client
-            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
+            .post_read(&format!("/v1/table/{}/backfill_column", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
