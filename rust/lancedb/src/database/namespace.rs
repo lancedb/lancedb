@@ -26,7 +26,9 @@ use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use crate::blob::{ensure_blob_storage_version, has_blob_columns};
 use crate::connection::NamespaceClientPushdownOperation;
 use crate::database::ReadConsistency;
-use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
+use crate::database::listing::{
+    LANCE_FILE_EXTENSION, NewTableConfig, take_request_creation_overrides,
+};
 use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
@@ -36,7 +38,7 @@ use lance::dataset::WriteMode;
 
 use super::{
     BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
-    Database, OpenTableRequest, TableNamesRequest,
+    Database, OpenTableRequest, RepairDatabaseResponse, TableNamesRequest,
 };
 
 /// Returns true if the given `lance::Error` (anywhere in its source chain) is a
@@ -225,6 +227,173 @@ impl LanceNamespaceDatabase {
         ensure_blob_storage_version(data_schema.as_ref(), params);
 
         Ok(())
+    }
+
+    /// Returns `true` if the table's storage location contains `.lance` data files.
+    ///
+    /// Defaults to `true` on any error (describe failure, storage access failure, etc.)
+    /// so that we never accidentally purge a table we simply couldn't inspect.
+    async fn table_has_raw_data(&self, table_name: &str, namespace_path: &[String]) -> bool {
+        use lance::io::ObjectStore;
+
+        let table_id = [namespace_path, &[table_name.to_string()]].concat();
+
+        let Ok(resp) = self
+            .namespace
+            .describe_table(DescribeTableRequest {
+                id: Some(table_id),
+                ..Default::default()
+            })
+            .await
+        else {
+            return true;
+        };
+
+        let Some(location) = resp.location else {
+            return true;
+        };
+
+        let storage_opts = resp
+            .storage_options
+            .unwrap_or_else(|| self.storage_options.clone());
+
+        let session = self
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+
+        let Ok((store, base)) = ObjectStore::from_uri_and_params(
+            session.store_registry(),
+            &location,
+            &ObjectStoreParams {
+                storage_options_accessor: (!storage_opts.is_empty())
+                    .then(|| Arc::new(StorageOptionsAccessor::with_static_options(storage_opts))),
+                ..Default::default()
+            },
+        )
+        .await
+        else {
+            return true;
+        };
+
+        use futures::StreamExt;
+
+        let mut stream = store.list(Some(base.join("data")));
+        while let Some(res) = stream.next().await {
+            match res {
+                Ok(m) => {
+                    if m.location.extension() == Some(LANCE_FILE_EXTENSION) && m.size > 0 {
+                        return true;
+                    }
+                }
+                Err(_) => return true,
+            }
+        }
+        false
+    }
+
+    pub(crate) async fn repair_namespace(&self, namespace_path: &[String]) -> Result<Vec<String>> {
+        let response = self
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path.to_vec()),
+                page_token: None,
+                limit: None,
+                ..Default::default()
+            })
+            .await?;
+
+        let mut purged = vec![];
+        for table in &response.tables {
+            let open_table_req = OpenTableRequest {
+                name: table.clone(),
+                namespace_path: namespace_path.to_vec(),
+                index_cache_size: Some(0),
+                ..Default::default()
+            };
+
+            match self.open_table(open_table_req).await {
+                Ok(table) => drop(table),
+                Err(Error::TableNotFound { .. })
+                | Err(Error::TableCorrupted { .. })
+                | Err(Error::Lance { .. }) => {
+                    let has_data = self.table_has_raw_data(table, namespace_path).await;
+                    if has_data {
+                        log::warn!(
+                            "Table '{}' in namespace '{:?}' is corrupted but contains raw files. Skipping automatic purge.",
+                            table,
+                            namespace_path
+                        );
+                    } else {
+                        match self.drop_table(table, namespace_path).await {
+                            Ok(_) => {
+                                let full_path = if namespace_path.is_empty() {
+                                    table.clone()
+                                } else {
+                                    format!("{}/{}", namespace_path.join("/"), table)
+                                };
+                                purged.push(full_path);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to drop table '{}' in namespace '{:?}': {}",
+                                    table,
+                                    namespace_path,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(other_err) => {
+                    log::warn!(
+                        "Unexpected error checking table '{}' in namespace '{:?}': {}",
+                        table,
+                        namespace_path,
+                        other_err
+                    );
+                }
+            }
+        }
+        Ok(purged)
+    }
+
+    pub(crate) async fn repair_child_namespaces(&self, parent: &[String]) -> Result<Vec<String>> {
+        let mut purged_tables = vec![];
+        let mut namespaces_to_visit = vec![];
+
+        if let Ok(resp) = self
+            .list_namespaces(ListNamespacesRequest {
+                id: Some(parent.to_vec()),
+                ..Default::default()
+            })
+            .await
+        {
+            namespaces_to_visit.extend(resp.namespaces.into_iter().map(|child| {
+                let mut path = parent.to_vec();
+                path.push(child);
+                path
+            }));
+        }
+
+        while let Some(ns_path) = namespaces_to_visit.pop() {
+            purged_tables.extend(self.repair_namespace(&ns_path).await?);
+
+            if let Ok(resp) = self
+                .list_namespaces(ListNamespacesRequest {
+                    id: Some(ns_path.clone()),
+                    ..Default::default()
+                })
+                .await
+            {
+                namespaces_to_visit.extend(resp.namespaces.into_iter().map(|child| {
+                    let mut next = ns_path.clone();
+                    next.push(child);
+                    next
+                }));
+            }
+        }
+
+        Ok(purged_tables)
     }
 }
 
@@ -563,6 +732,11 @@ impl Database for LanceNamespaceDatabase {
         Ok(())
     }
 
+    async fn repair(&self) -> Result<RepairDatabaseResponse> {
+        let mut purged_tables = self.repair_namespace(&[]).await?;
+        purged_tables.extend(self.repair_child_namespaces(&[]).await?);
+        Ok(RepairDatabaseResponse { purged_tables })
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -738,6 +912,63 @@ mod tests {
                 .unwrap()
                 .has_provider()
         );
+    }
+
+    /// Helper to create a temp directory and connect a directory-based namespace database
+    async fn setup_dir_conn() -> (tempfile::TempDir, crate::connection::Connection) {
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        (tmp_dir, conn)
+    }
+
+    /// Helper to simulate corruption by deleting `_versions/` (manifests)
+    /// and optionally `data/` (raw data files).
+    async fn corrupt_table_on_disk(
+        conn: &crate::connection::Connection,
+        table_id: Vec<String>,
+        remove_data: bool,
+    ) -> std::path::PathBuf {
+        let describe_res = conn
+            .database()
+            .namespace_client()
+            .await
+            .unwrap()
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(table_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let loc = describe_res.location.expect("table location not found");
+        let path = if let Ok(url) = url::Url::parse(&loc) {
+            url.to_file_path()
+                .unwrap_or_else(|_| std::path::PathBuf::from(&loc))
+        } else {
+            std::path::PathBuf::from(loc)
+        };
+
+        let versions_path = path.join("_versions");
+        if versions_path.exists() {
+            std::fs::remove_dir_all(versions_path).unwrap();
+        }
+        if remove_data {
+            let data_path = path.join("data");
+            if data_path.exists() {
+                std::fs::remove_dir_all(data_path).unwrap();
+            }
+        }
+        path
     }
 
     #[tokio::test]
@@ -1540,5 +1771,79 @@ mod tests {
         assert!(table_names.contains(&"table1".to_string()));
         assert!(table_names.contains(&"table2".to_string()));
         assert_eq!(table_names.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_repair() {
+        let (_tmp_dir, conn) = setup_dir_conn().await;
+        let test_data = create_test_data();
+
+        // 1. Root namespace: 1 valid table + 1 corrupted stub (to purge)
+        conn.create_table("root_valid", test_data.clone())
+            .execute()
+            .await
+            .unwrap();
+        conn.create_table("root_stub", test_data.clone())
+            .execute()
+            .await
+            .unwrap();
+        corrupt_table_on_disk(&conn, vec!["root_stub".to_string()], true).await;
+
+        // 2. Nested namespace: valid, empty stub (to purge), and corrupted with data (to preserve)
+        let ns_path = vec!["nested_ns".to_string()];
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(ns_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        conn.create_table("nested_valid", test_data.clone())
+            .namespace(ns_path.clone())
+            .execute()
+            .await
+            .unwrap();
+        conn.create_table("nested_stub", test_data.clone())
+            .namespace(ns_path.clone())
+            .execute()
+            .await
+            .unwrap();
+        conn.create_table("nested_with_data", test_data)
+            .namespace(ns_path.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        corrupt_table_on_disk(&conn, vec!["nested_ns".into(), "nested_stub".into()], true).await;
+        let preserved_path = corrupt_table_on_disk(
+            &conn,
+            vec!["nested_ns".into(), "nested_with_data".into()],
+            false,
+        )
+        .await;
+
+        // Run repair across all namespaces
+        let resp = conn.repair().await.expect("Failed to run repair");
+        assert_eq!(
+            resp.purged_tables,
+            vec!["root_stub".to_string(), "nested_ns/nested_stub".to_string()]
+        );
+        assert!(preserved_path.exists(), "Table with data must be preserved");
+
+        // Verify root tables post repair
+        let root_tables = conn.table_names().execute().await.unwrap();
+        assert_eq!(root_tables, vec!["root_valid".to_string()]);
+
+        // Verify nested tables post repair
+        let nested_tables = conn
+            .table_names()
+            .namespace(ns_path)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            nested_tables,
+            vec!["nested_valid".to_string(), "nested_with_data".to_string()]
+        );
     }
 }

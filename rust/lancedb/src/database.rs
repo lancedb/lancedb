@@ -56,7 +56,7 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct OpenTableRequest {
     pub name: String,
     /// The namespace path to open the table from. Empty list represents root namespace.
@@ -146,6 +146,11 @@ impl CreateTableRequest {
             namespace_client: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairDatabaseResponse {
+    pub purged_tables: Vec<String>,
 }
 
 /// Request to clone a table from a source table.
@@ -358,6 +363,9 @@ pub trait Database:
     }
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
+    /// Repair the database, purging corrupted table stubs across all namespaces
+    /// and logging warnings for tables that are corrupted but still contain raw data files.
+    async fn repair(&self) -> Result<RepairDatabaseResponse>;
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Get the equivalent namespace client of this database
