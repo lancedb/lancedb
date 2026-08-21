@@ -16,6 +16,13 @@ class BackgroundEventLoop:
     """
 
     def __init__(self):
+        # Guards `reset()` end-to-end (stop/join/close/_start as one unit) --
+        # without it, two concurrent `reset()` calls can both snapshot the
+        # same old loop/thread, both pass the join/close checks (`join()`
+        # releases the GIL, so both can be mid-wait at once), and then both
+        # call `_start()`, with the second overwriting `self.loop`/
+        # `self.thread` and orphaning the first's brand-new thread.
+        self._reset_lock = threading.Lock()
         self._start()
 
     def _start(self):
@@ -51,19 +58,24 @@ class BackgroundEventLoop:
         skipping `close()` would leave the old loop's resources (its
         Proactor/IOCP selector on Windows included) unreleased, defeating
         the whole point of calling this.
+
+        Thread-safe: concurrent `reset()` calls are serialized (see
+        `self._reset_lock`), so one always fully completes (or raises)
+        before the next one reads `self.loop`/`self.thread`.
         """
-        old_loop = self.loop
-        old_thread = self.thread
-        old_loop.call_soon_threadsafe(old_loop.stop)
-        old_thread.join(timeout=join_timeout)
-        if old_thread.is_alive():
-            msg = (
-                f"BackgroundEventLoop.reset: background thread did not "
-                f"stop within {join_timeout}s"
-            )
-            raise RuntimeError(msg)
-        old_loop.close()
-        self._start()
+        with self._reset_lock:
+            old_loop = self.loop
+            old_thread = self.thread
+            old_loop.call_soon_threadsafe(old_loop.stop)
+            old_thread.join(timeout=join_timeout)
+            if old_thread.is_alive():
+                msg = (
+                    f"BackgroundEventLoop.reset: background thread did not "
+                    f"stop within {join_timeout}s"
+                )
+                raise RuntimeError(msg)
+            old_loop.close()
+            self._start()
 
 
 LOOP = BackgroundEventLoop()

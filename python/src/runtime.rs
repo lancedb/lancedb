@@ -11,29 +11,32 @@
 //! We sidestep the global by routing every future through our own
 //! [`LanceRuntime`] (a [`pyo3_async_runtimes::generic::Runtime`] impl) backed
 //! by an [`arc_swap::ArcSwapOption`] slot holding an `Arc<tokio::runtime::
-//! Runtime>` that we own. A `pthread_atfork` child handler clears the slot
-//! (atomic-only — see [`atfork_child`]); the next `spawn` rebuilds the
-//! runtime in the child. This mirrors the pattern used in the Lance Python
-//! bindings.
+//! Runtime>` that we own.
 //!
-//! [`reset_runtime`] lets a long-running host process (there is no
-//! `fork()`-based reset on Windows — see that function's docs) publish a
-//! fresh runtime generation for *future* callers without disturbing
-//! in-flight work: `get_runtime()` returns an owned `Arc` clone, and
-//! [`LanceRuntime::spawn`]/[`LanceRuntime::spawn_blocking`] hold their own
-//! clone alive for the full lifetime of the spawned task (not just the
-//! synchronous call that submits it) — a retired generation's `Runtime`
-//! only actually shuts down once every such clone has been dropped, never
-//! out from under work that's still using it. `ArcSwapOption` provides this
-//! safely without a lock: reclamation of a retired generation is handled by
-//! the crate's own lock-free algorithm, so there is no use-after-free
-//! window between one thread swapping in a new generation and another
-//! thread mid-dereference of the old one.
+//! Two independent synchronization concerns, kept deliberately separate:
+//!
+//! - **Reads** (`get_runtime()`, called on every operation) are lock-free via
+//!   `ArcSwapOption::load_full`.
+//! - **Writes** (first install, and [`reset_runtime`]) are serialized by
+//!   [`INSTALL_LOCK`], a plain `Mutex` — safe here because neither is ever
+//!   called from the `pthread_atfork` child handler. Sharing one lock
+//!   between "build the first runtime" and "retire the current one" is what
+//!   closes the race where an install that started *before* a `reset_runtime`
+//!   call could otherwise publish its (now stale) result *after* the reset
+//!   returns.
+//!
+//! [`atfork_child`] (the child handler) touches neither the read path nor
+//! `INSTALL_LOCK` — it only does an `ArcSwapOption::swap` (which, unlike
+//! `store`, hands ownership of the retired value back to the caller instead
+//! of dropping it inline) followed by `mem::forget` on the result, so it
+//! never runs a `tokio::Runtime`'s `Drop` (which would try to join the
+//! child's now-dead worker threads and hang) from a context where only the
+//! forking thread survives.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwapOption;
 use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject, pyfunction};
@@ -44,7 +47,9 @@ use pyo3_async_runtimes::{
 use tokio::{runtime, task};
 
 static RUNTIME: ArcSwapOption<runtime::Runtime> = ArcSwapOption::const_empty();
-static INSTALLING: AtomicBool = AtomicBool::new(false);
+/// Serializes "build the first runtime" against [`reset_runtime`]. Never
+/// touched by [`atfork_child`] — see module docs.
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 static ATFORK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn create_runtime() -> runtime::Runtime {
@@ -56,21 +61,20 @@ fn create_runtime() -> runtime::Runtime {
 }
 
 fn get_runtime() -> Arc<runtime::Runtime> {
-    loop {
-        if let Some(rt) = RUNTIME.load_full() {
-            return rt;
-        }
-        if !INSTALLING.fetch_or(true, Ordering::SeqCst) {
-            break;
-        }
-        std::thread::yield_now();
+    if let Some(rt) = RUNTIME.load_full() {
+        return rt;
+    }
+    let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Someone else may have installed (or reset, right after installing)
+    // while we waited for the lock — check again under it.
+    if let Some(rt) = RUNTIME.load_full() {
+        return rt;
     }
     if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
         install_atfork();
     }
     let new_rt = Arc::new(create_runtime());
     RUNTIME.store(Some(new_rt.clone()));
-    INSTALLING.store(false, Ordering::SeqCst);
     new_rt
 }
 
@@ -84,23 +88,31 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 /// Runs after `fork()` in the child, in a context where only the forking
-/// thread survives. **Atomic-only** — any lock acquired here (even
-/// indirectly) can deadlock forever if a *different*, now-vanished thread
-/// held it at the moment of fork; the child inherits the lock's memory
-/// state as "held by a thread that no longer exists" and nothing can ever
-/// release it. `ArcSwapOption::store`/`AtomicBool::store` never take an OS
-/// lock, so they're safe here — unlike, say, a `std::sync::RwLock`.
+/// thread survives. **Atomic-only** — no lock, and no drop of a `Runtime`.
 ///
-/// We don't drop the inherited runtime here (its worker threads are dead;
-/// letting a `Runtime` actually shut down would try to join them and hang)
-/// — clearing the slot just makes the next `get_runtime()` call (from the
-/// one live thread, in a normal, safe context) build a fresh one and let
-/// the retired `Arc` drop wherever its last clone happens to go out of
-/// scope, same reclamation path as a normal [`reset_runtime`] call.
+/// Two separate hazards this must avoid, both demonstrated in review:
+///
+/// 1. Acquiring `INSTALL_LOCK` (or any lock) here can deadlock forever if a
+///    *different*, now-vanished thread held it at the moment of fork — the
+///    child inherits the lock's memory state as "held by a thread that no
+///    longer exists", and nothing can ever release it.
+/// 2. `ArcSwapOption::store(None)` is implemented as `drop(self.swap(val))` —
+///    if the slot holds the last `Arc`, that `drop` runs a `tokio::Runtime`'s
+///    `Drop` impl synchronously, which tries to join its (now-dead) worker
+///    threads and hangs just as badly as a stuck lock would.
+///
+/// `swap` alone (unlike `store`) hands the retired value back to us instead
+/// of dropping it, so we can `mem::forget` it — the runtime's *memory* is
+/// deliberately leaked (never joined, never freed), same trade-off the
+/// pre-mitigation code already made here. The next `get_runtime()` call
+/// (from the one live thread, in a normal, safe, lock-taking context) builds
+/// a fresh runtime.
 #[cfg_attr(windows, allow(dead_code))] // only wired up by install_atfork() on non-Windows
 extern "C" fn atfork_child() {
-    RUNTIME.store(None);
-    INSTALLING.store(false, Ordering::SeqCst);
+    let retired = RUNTIME.swap(None);
+    if let Some(rt) = retired {
+        std::mem::forget(rt);
+    }
 }
 
 #[cfg(not(windows))]
@@ -130,13 +142,17 @@ fn install_atfork() {}
 /// under LanceDB's control — it only gives callers a way to recycle around
 /// it. Safe to call at any point between operations, from any thread: a
 /// call already mid-`block_on`, or a `spawn`/`spawn_blocking`ed task still
-/// running, holds its own `Arc` clone of the *retired* runtime and keeps it
-/// alive until that specific call/task finishes — this function never
-/// blocks waiting for that, it only publishes the new generation so the
-/// *next* caller gets it.
+/// running, holds its own `Arc` clone of the *retired* runtime (captured
+/// inside the actual spawned future/closure — see [`LanceRuntime::spawn`])
+/// and keeps it alive until that specific call/task finishes — this
+/// function never blocks waiting for that, it only publishes the new
+/// generation so the *next* caller gets it. Serialized against a
+/// concurrent first-install via [`INSTALL_LOCK`] so a build that started
+/// before this call can never publish after it returns.
 #[pyfunction]
 pub fn reset_runtime(py: Python<'_>) -> PyResult<()> {
     py.detach(|| {
+        let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         RUNTIME.store(None);
     });
     Ok(())
@@ -166,17 +182,22 @@ impl Runtime for LanceRuntime {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // Keep our own `Arc` clone alive for the whole wrapper future, not
-        // just this synchronous `spawn()` call — otherwise a concurrent
-        // `reset_runtime()` could retire (and, once every other clone
-        // drops, shut down) the runtime while this task is still running
-        // on one of its worker threads, cancelling it out from under us.
+        // The `Arc` keepalive must live inside the future *actually handed
+        // to the runtime's scheduler*, not just inside the `JoinHandle`
+        // wrapper we return: `pyo3_async_runtimes` does not always await
+        // (or even keep) that wrapper, and once it's dropped, anything it
+        // alone was holding drops with it — including a runtime a
+        // concurrent `reset_runtime()` has already retired, cancelling the
+        // still-running task. Wrapping `fut` itself ties the clone's
+        // lifetime to the submitted task's real execution, which Tokio
+        // keeps alive regardless of what happens to the `JoinHandle`.
         let rt = get_runtime();
-        let handle = rt.spawn(fut);
-        Box::pin(async move {
-            let _rt_keepalive = rt;
-            handle.await.map_err(LanceJoinError)
-        })
+        let task_rt = rt.clone();
+        let handle = rt.spawn(async move {
+            let _rt_keepalive = task_rt;
+            fut.await
+        });
+        Box::pin(async move { handle.await.map_err(LanceJoinError) })
     }
 
     fn spawn_blocking<F>(f: F) -> Self::JoinHandle
@@ -184,11 +205,12 @@ impl Runtime for LanceRuntime {
         F: FnOnce() + Send + 'static,
     {
         let rt = get_runtime();
-        let handle = rt.spawn_blocking(f);
-        Box::pin(async move {
-            let _rt_keepalive = rt;
-            handle.await.map_err(LanceJoinError)
-        })
+        let task_rt = rt.clone();
+        let handle = rt.spawn_blocking(move || {
+            let _rt_keepalive = task_rt;
+            f()
+        });
+        Box::pin(async move { handle.await.map_err(LanceJoinError) })
     }
 }
 

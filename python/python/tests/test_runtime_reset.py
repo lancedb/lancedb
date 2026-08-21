@@ -11,6 +11,8 @@ Windows). See `background_loop.reset_background_loop` and
 
 import subprocess
 import sys
+import threading
+import time
 
 import lancedb
 import pyarrow as pa
@@ -56,6 +58,81 @@ def test_reset_background_loop_is_idempotent_and_safe_to_call_repeatedly():
     assert len(seen_threads) == 6
     alive = [t for t in seen_threads if t.is_alive()]
     assert alive == [LOOP.thread]
+
+
+def test_reset_closes_the_old_loop():
+    """The old loop must be genuinely `close()`d, not just have its thread
+    stopped -- an unclosed `ProactorEventLoop` keeps its IOCP selector
+    handle open, which is exactly the resource this mitigation exists to
+    release."""
+    old_loop = LOOP.loop
+
+    reset_background_loop()
+
+    assert old_loop.is_closed()
+
+
+def test_reset_timeout_raises_and_does_not_replace_the_loop():
+    """Erro/borda: se a thread antiga não parar dentro do `join_timeout`,
+    `reset()` levanta `RuntimeError` e NÃO troca `self.loop`/`self.thread`
+    -- nunca deixa dois loops vivos ao mesmo tempo nem finge sucesso."""
+    original_loop = LOOP.loop
+    original_thread = LOOP.thread
+
+    # Block the loop's own thread with a callback that runs synchronously
+    # for longer than the timeout -- it's already queued (and running)
+    # by the time `reset()` schedules `stop()`, so the thread can't react
+    # to `stop()` before the timeout elapses.
+    block_done = threading.Event()
+
+    def _block():
+        time.sleep(1.0)
+        block_done.set()
+
+    original_loop.call_soon_threadsafe(_block)
+
+    with pytest.raises(RuntimeError, match="did not stop"):
+        LOOP.reset(join_timeout=0.01)
+
+    assert LOOP.loop is original_loop
+    assert LOOP.thread is original_thread
+    assert original_thread.is_alive()
+
+    # Let the blocking callback finish, then do a real reset so this test
+    # doesn't leave a stuck thread behind for the rest of the suite.
+    block_done.wait(timeout=5.0)
+    reset_background_loop()
+
+
+def test_concurrent_resets_do_not_orphan_threads():
+    """Erro/borda (regressão do achado de review): dois `reset()`
+    concorrentes não podem deixar uma thread órfã -- `LOOP.reset()`
+    serializa a transição inteira (stop/join/close/`_start`) via
+    `self._reset_lock`, então um sempre termina (ou levanta) antes do
+    outro ler `self.loop`/`self.thread`."""
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def _reset():
+        barrier.wait(timeout=5.0)
+        try:
+            LOOP.reset()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_reset) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert not errors, errors
+    # Exactly one live LanceDBBackgroundEventLoop thread should remain --
+    # the current LOOP.thread -- with nothing orphaned from either reset.
+    live_bg_threads = [
+        t for t in threading.enumerate() if t.name == "LanceDBBackgroundEventLoop"
+    ]
+    assert live_bg_threads == [LOOP.thread]
 
 
 _STRESS_WORKLOAD = """
