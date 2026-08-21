@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use crate::runtime::future_into_py;
-use async_trait::async_trait;
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
 use serde::Serialize;
 
@@ -19,7 +18,7 @@ pub struct Job {
 /// result.
 #[pyclass]
 pub struct TypedJob {
-    inner: Arc<dyn TypedJobHandle>,
+    inner: Arc<lancedb::Job<std::result::Result<String, String>>>,
 }
 
 impl TypedJob {
@@ -28,50 +27,11 @@ impl TypedJob {
         T: Clone + Serialize + Send + Sync + 'static,
     {
         Self {
-            inner: Arc::new(TypedJobHandleImpl {
-                inner: Arc::new(inner),
-            }),
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_string(&result)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
-    }
-}
-
-#[async_trait]
-trait TypedJobHandle: Send + Sync {
-    fn id(&self) -> Option<&str>;
-    async fn status(&self) -> lancedb::Result<String>;
-    async fn wait_json(&self) -> lancedb::Result<String>;
-    async fn cancel(&self) -> lancedb::Result<()>;
-}
-
-struct TypedJobHandleImpl<T>
-where
-    T: Clone + Serialize + Send + Sync + 'static,
-{
-    inner: Arc<lancedb::Job<T>>,
-}
-
-#[async_trait]
-impl<T> TypedJobHandle for TypedJobHandleImpl<T>
-where
-    T: Clone + Serialize + Send + Sync + 'static,
-{
-    fn id(&self) -> Option<&str> {
-        self.inner.id()
-    }
-
-    async fn status(&self) -> lancedb::Result<String> {
-        self.inner.status().await
-    }
-
-    async fn wait_json(&self) -> lancedb::Result<String> {
-        let result = self.inner.wait().await?;
-        serde_json::to_string(&result).map_err(|error| lancedb::Error::Runtime {
-            message: format!("failed to serialize typed job result: {error}"),
-        })
-    }
-
-    async fn cancel(&self) -> lancedb::Result<()> {
-        self.inner.cancel().await
     }
 }
 
@@ -100,10 +60,12 @@ impl TypedJob {
 
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.wait_json().await.infer_error() },
-        )
+        future_into_py(self_.py(), async move {
+            let result = inner.wait().await.infer_error()?;
+            result
+                .map_err(|message| lancedb::Error::Runtime { message })
+                .infer_error()
+        })
     }
 
     pub fn cancel(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

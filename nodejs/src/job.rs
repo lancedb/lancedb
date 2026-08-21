@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
@@ -11,7 +10,7 @@ use crate::error::NapiErrorExt;
 /// A handle to an operation that may still be running.
 #[napi]
 pub struct Job {
-    inner: Arc<dyn JobHandle>,
+    inner: Arc<lancedb::Job>,
 }
 
 impl Job {
@@ -20,47 +19,8 @@ impl Job {
         T: Clone + Send + Sync + 'static,
     {
         Self {
-            inner: Arc::new(TypedJobHandle {
-                inner: Arc::new(inner),
-            }),
+            inner: Arc::new(inner.map(|_| ())),
         }
-    }
-}
-
-#[async_trait]
-trait JobHandle: Send + Sync {
-    fn id(&self) -> Option<&str>;
-    async fn status(&self) -> lancedb::Result<String>;
-    async fn wait(&self) -> lancedb::Result<()>;
-    async fn cancel(&self) -> lancedb::Result<()>;
-}
-
-struct TypedJobHandle<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    inner: Arc<lancedb::Job<T>>,
-}
-
-#[async_trait]
-impl<T> JobHandle for TypedJobHandle<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn id(&self) -> Option<&str> {
-        self.inner.id()
-    }
-
-    async fn status(&self) -> lancedb::Result<String> {
-        self.inner.status().await
-    }
-
-    async fn wait(&self) -> lancedb::Result<()> {
-        self.inner.wait().await.map(|_| ())
-    }
-
-    async fn cancel(&self) -> lancedb::Result<()> {
-        self.inner.cancel().await
     }
 }
 
