@@ -93,23 +93,16 @@ pub enum ShuffleStrategy {
 ///
 /// # Determinism
 ///
-/// Clients that build a permutation independently — the ranks of a distributed training job, say —
-/// have to arrive at the same one.  If they do not, their split boundaries disagree and they
-/// silently train on overlapping or missing data.
+/// Clients build their permutations independently and have to arrive at the same one, or their
+/// split boundaries disagree and they silently read overlapping or missing data.  Splitting and
+/// shuffling are both positional and no backend guarantees a scan order, so the builder sorts by
+/// row id first.
 ///
-/// Splitting and shuffling both work on the position of a row in the scan, and no backend
-/// guarantees that two scans return rows in the same order: a server is free to fan a scan out
-/// across nodes and return the rows in whatever order they arrive.  The builder therefore sorts by
-/// row id before anything positional runs, so the permutation depends only on the rows themselves.
-///
-/// Two things remain the caller's responsibility.  Seed the shuffle and any random split
-/// explicitly, or each client draws its own seed.  And use the same
-/// `LANCEDB_PERM_BUILDER_MEMORY_LIMIT` everywhere, because regrouping a shuffled permutation by
-/// split id is not a stable sort and where it spills decides how rows within a split are ordered.
-///
-/// This covers building a permutation, not reading one back.  [`PermutationReader`] slices a
-/// split by offset, so a permutation handed to [`Self::persist`] still depends on the scans of
-/// *that* backend being ordered.  The default in-memory destination is unaffected.
+/// The caller still has to seed the shuffle and any random split, and keep
+/// `LANCEDB_PERM_BUILDER_MEMORY_LIMIT` the same everywhere: regrouping by split id is not a stable
+/// sort, so where it spills decides the order within a split.  Reading is not covered —
+/// [`PermutationReader`] slices a split by offset, so a permutation given to [`Self::persist`]
+/// still needs that backend's scans to be ordered.
 ///
 /// [`PermutationReader`]: crate::dataloader::permutation::reader::PermutationReader
 pub struct PermutationBuilder {
@@ -286,21 +279,18 @@ impl PermutationBuilder {
 
         let scanned = rows.execute().await?;
 
-        // Apply splits.  Scans carry no ordering guarantee, so the row order has to be
-        // canonicalized before anything positional runs against it.
+        // Scans carry no ordering guarantee, so canonicalize before anything positional runs.
         let split_data = if splitter.assigns_split_by_position() {
             let canonical = self.sort_by(scanned, &[ROW_ID]).await?;
             splitter.apply(canonical, num_rows).await?
         } else {
-            // The split id does not depend on position here, so canonicalize afterwards, where
-            // the stream has narrowed to the row id and the split id.  Leading with the split id
-            // also groups the output, which the positional strategies get from `apply` itself.
+            // Order-independent, so sort after the split, where the stream is narrower.  Leading
+            // with the split id also groups the output.
             let split_data = splitter.apply(scanned, num_rows).await?;
             self.sort_by(split_data, &[SPLIT_ID_COLUMN, ROW_ID]).await?
         };
 
-        // Shuffle data if requested.  A shuffle is global, so it breaks the grouping by split id
-        // that the split established and the permutation has to be regrouped afterwards.
+        // A shuffle is global, so it breaks the grouping and the permutation has to be regrouped.
         let permutation = match self.config.shuffle_strategy {
             ShuffleStrategy::None => split_data,
             ShuffleStrategy::Random { seed, clump_size } => {
@@ -443,10 +433,8 @@ mod tests {
         );
     }
 
-    /// A scan carries no ordering guarantee, and a server is free to fan one out across nodes and
-    /// return the rows in whatever order they arrive.  Every client still has to build the same
-    /// permutation, so the builder canonicalizes by row id.  These tests drive the builder against
-    /// a mock server that serves the same rows in two different orders.
+    /// The builder canonicalizes by row id because a scan carries no ordering guarantee.  These
+    /// tests serve the same rows in two different orders and expect the same permutation.
     #[cfg(feature = "remote")]
     mod scan_order {
         use arrow::array::AsArray;
@@ -466,7 +454,7 @@ mod tests {
             (0..ROW_COUNT).collect()
         }
 
-        /// The same rows a fan-out scan might return: whole blocks arriving out of order.
+        /// Whole blocks arriving out of order, as a fan-out scan might return them.
         fn out_of_order_scan() -> Vec<u64> {
             let mut row_ids = Vec::with_capacity(ROW_COUNT as usize);
             for start in [20, 0, 30, 10] {
@@ -577,8 +565,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_positional_split_ignores_scan_order() {
-            // Two splits of 10 out of 40 rows, so the scan order decides both which rows land in
-            // which split and which 20 rows are dropped entirely.
+            // Two splits of 10 out of 40 rows: scan order decides both split membership and
+            // which 20 rows are dropped.
             let expected = (0..20u64)
                 .map(|row_id| (row_id, row_id / 10))
                 .collect::<Vec<_>>();
@@ -622,9 +610,8 @@ mod tests {
             .await;
 
             assert_eq!(in_order, out_of_order);
-            // Hashing a row's own values is order-independent, so what the scan order leaked into
-            // here was the permutation's order, which is what the reader slices by offset.  Rows
-            // come out grouped by split id and ascending by row id within a split.
+            // Hashing is order-independent, so what leaked here was the permutation's order,
+            // which is what the reader slices by offset.
             assert!(
                 in_order
                     .windows(2)

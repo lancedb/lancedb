@@ -377,16 +377,15 @@ impl Splitter {
 
     /// Whether the split id a row receives depends on where the row falls in the stream.
     ///
-    /// Positional strategies walk the stream handing out split ids, so the caller has to
-    /// establish a canonical row order before calling [`Self::apply`], and the rows come back
-    /// grouped by split id.  Value-based strategies derive the split id from the row itself, so
-    /// they are order-independent, but their output is interleaved rather than grouped.
+    /// Positional strategies hand out split ids by walking the stream, so the caller has to
+    /// canonicalize the row order before [`Self::apply`], and the output comes back grouped by
+    /// split id.  Value-based strategies derive it from the row, so they are order-independent
+    /// but their output is interleaved.
     pub fn assigns_split_by_position(&self) -> bool {
         match &self.strategy {
             SplitStrategy::NoSplit
             | SplitStrategy::Sequential { .. }
-            // It may be strange but for random we shuffle and then assign splits sequentially,
-            // which makes it positional like the others.
+            // Random shuffles first and then assigns sequentially, so it is positional too.
             | SplitStrategy::Random { .. } => true,
             SplitStrategy::Hash { .. } | SplitStrategy::Calculated { .. } => false,
         }
