@@ -345,7 +345,7 @@ class RemoteDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -361,8 +361,9 @@ class RemoteDBConnection(DBConnection):
             Empty list represents root namespace.
         page_token: str
             The last token to start the new page.
-        limit: int, default 10
-            The maximum number of tables to return for each page.
+        limit: int, optional
+            The maximum number of tables to return for each page. If not present,
+            all table names are returned.
 
         Returns
         -------
