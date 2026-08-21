@@ -575,7 +575,7 @@ impl Connection {
                 .create_function_async(request)
                 .await
                 .infer_error()
-                .map(crate::job::FunctionJob::new)
+                .map(crate::job::TypedJob::new)
         })
     }
 

@@ -29,6 +29,7 @@ from .functions import (
     FunctionRegistrationRequest as FunctionRegistrationRequest,
     FunctionVersion as FunctionVersion,
     PythonRuntimeSpec as PythonRuntimeSpec,
+    RefreshColumnResult as RefreshColumnResult,
     UdfDefinition as UdfDefinition,
     udf as udf,
 )

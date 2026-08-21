@@ -49,7 +49,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
-from lancedb.functions import FunctionApplication
+from lancedb.functions import FunctionApplication, RefreshColumnResult
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -972,7 +972,7 @@ class RemoteTable(Table):
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))
 
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnResult]:
         return Job(LOOP.run(self._table.refresh_column_async(column)))
 
     def alter_columns(

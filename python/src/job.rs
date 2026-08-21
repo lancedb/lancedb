@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::runtime::future_into_py;
 use pyo3::{Bound, PyAny, PyRef, PyResult, pyclass, pymethods};
+use serde::Serialize;
 
 use crate::error::PythonErrorExt;
 
@@ -13,19 +14,23 @@ pub struct Job {
     inner: Arc<lancedb::Job>,
 }
 
-/// Python bridge for a typed remote Function registration job.
-///
-/// The public Python layer decodes the canonical JSON returned by `wait`
-/// into its immutable `FunctionVersion` model.
+/// Type-erased Python bridge for any JSON-serializable Rust [`lancedb::Job`]
+/// result.
 #[pyclass]
-pub struct FunctionJob {
-    inner: Arc<lancedb::Job<lancedb::function::FunctionVersion>>,
+pub struct TypedJob {
+    inner: Arc<lancedb::Job<std::result::Result<String, String>>>,
 }
 
-impl FunctionJob {
-    pub(crate) fn new(inner: lancedb::Job<lancedb::function::FunctionVersion>) -> Self {
+impl TypedJob {
+    pub(crate) fn new<T>(inner: lancedb::Job<T>) -> Self
+    where
+        T: Clone + Serialize + Send + Sync + 'static,
+    {
         Self {
-            inner: Arc::new(inner),
+            inner: Arc::new(inner.map(|result| {
+                serde_json::to_string(&result)
+                    .map_err(|error| format!("failed to serialize typed job result: {error}"))
+            })),
         }
     }
 }
@@ -39,7 +44,7 @@ impl Job {
 }
 
 #[pymethods]
-impl FunctionJob {
+impl TypedJob {
     #[getter]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
@@ -56,11 +61,9 @@ impl FunctionJob {
     pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            inner
-                .wait()
-                .await
-                .infer_error()?
-                .to_canonical_json()
+            let result = inner.wait().await.infer_error()?;
+            result
+                .map_err(|message| lancedb::Error::Runtime { message })
                 .infer_error()
         })
     }

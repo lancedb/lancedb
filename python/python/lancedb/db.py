@@ -46,7 +46,7 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
-from .job import AsyncJob, Job, _function_job
+from .job import AsyncJob, Job, _typed_job
 from .table import (
     AsyncTable,
     LanceTable,
@@ -2071,7 +2071,7 @@ class AsyncConnection(object):
         inner = await self._inner.create_function_async(
             definition.registration_request.to_canonical_json()
         )
-        return _function_job(inner)
+        return _typed_job(inner, FunctionVersion.from_json)
 
     async def get_function(self, name: str, *, version: str) -> FunctionVersion:
         """Open one exact immutable Function version from the remote catalog."""
