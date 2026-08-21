@@ -6,14 +6,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use arrow_ipc::writer::StreamWriter;
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::TryStreamExt;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
     LanceNamespace,
     error::{ErrorCode, NamespaceError},
     models::{
-        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
+        CreateNamespaceRequest, CreateNamespaceResponse,
+        CreateTableRequest as NamespaceCreateTableRequest, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
         DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
         ListNamespacesResponse, ListTablesRequest, ListTablesResponse, RenameTableRequest,
@@ -270,6 +274,101 @@ impl LanceNamespaceDatabase {
 
         Ok(())
     }
+
+    fn has_new_table_config(&self) -> bool {
+        self.new_table_config.data_storage_version.is_some()
+            || self.new_table_config.enable_v2_manifest_paths.is_some()
+            || self.new_table_config.enable_stable_row_ids.is_some()
+    }
+
+    fn can_pushdown_create_table(&self, request: &DbCreateTableRequest) -> Result<bool> {
+        if !self
+            .pushdown_operations
+            .contains(&NamespaceClientPushdownOperation::CreateTable)
+        {
+            return Ok(false);
+        }
+
+        if !matches!(request.mode, CreateTableMode::Create)
+            || request.location.is_some()
+            || request.write_options.lance_write_params.is_some()
+            || self.has_new_table_config()
+            || !request.data.rescannable()
+            || request.data.num_rows().is_none()
+        {
+            return Ok(false);
+        }
+
+        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
+            self.extract_storage_overrides(request)?;
+        if storage_version_override.is_some()
+            || v2_manifest_override.is_some()
+            || stable_row_ids_override.is_some()
+            || has_blob_columns(request.data.schema().as_ref())
+        {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
+    async fn data_to_ipc_stream(
+        mut data: Box<dyn crate::data::scannable::Scannable>,
+    ) -> Result<Bytes> {
+        let mut stream = data.scan_as_stream();
+        let schema = stream.schema();
+        let mut buffer = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buffer, schema.as_ref())?;
+            while let Some(batch) = stream.try_next().await? {
+                writer.write(&batch)?;
+            }
+            writer.finish()?;
+        }
+        Ok(Bytes::from(buffer))
+    }
+
+    async fn create_table_with_pushdown(
+        &self,
+        request: DbCreateTableRequest,
+    ) -> Result<Arc<dyn BaseTable>> {
+        let mut table_id = request.namespace_path.clone();
+        table_id.push(request.name.clone());
+
+        let storage_options =
+            (!self.storage_options.is_empty()).then(|| self.storage_options.clone());
+        let namespace_request = NamespaceCreateTableRequest {
+            id: Some(table_id),
+            mode: Some("Create".to_string()),
+            storage_options,
+            ..Default::default()
+        };
+
+        let request_name = request.name.clone();
+        let namespace_path = request.namespace_path.clone();
+        let freshness = self.table_freshness(&namespace_path, &request_name);
+        let request_data = Self::data_to_ipc_stream(request.data).await?;
+        self.namespace
+            .create_table(namespace_request, request_data)
+            .await
+            .map_err(|e| map_namespace_lance_error(e, &request_name))?;
+        freshness.bump();
+
+        let native_table = NativeTable::open_from_namespace(
+            self.namespace.clone(),
+            &request_name,
+            namespace_path.clone(),
+            None,
+            None,
+            self.read_consistency_interval,
+            self.pushdown_operations.clone(),
+            self.session.clone(),
+        )
+        .await?
+        .with_freshness(freshness);
+
+        Ok(Arc::new(native_table))
+    }
 }
 
 impl std::fmt::Debug for LanceNamespaceDatabase {
@@ -349,6 +448,10 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if self.can_pushdown_create_table(&request)? {
+            return self.create_table_with_pushdown(request).await;
+        }
+
         let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let mut existing_table = None;
@@ -625,10 +728,16 @@ impl Database for LanceNamespaceDatabase {
 mod tests {
     use super::*;
     use crate::connect_namespace;
+    use crate::embeddings::MemoryRegistry;
     use crate::query::ExecutableQuery;
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
+    use lance_namespace::models::{
+        CreateTableResponse, DeclareTableResponse, DescribeTableResponse,
+    };
+    use lance_namespace_impls::DirectoryNamespaceBuilder;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     /// Helper function to create test data
@@ -642,6 +751,100 @@ mod tests {
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
         RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct CountingNamespace {
+        inner: Arc<dyn LanceNamespace>,
+        create_table_calls: AtomicUsize,
+        declare_table_calls: AtomicUsize,
+    }
+
+    impl CountingNamespace {
+        fn new(inner: Arc<dyn LanceNamespace>) -> Self {
+            Self {
+                inner,
+                create_table_calls: AtomicUsize::new(0),
+                declare_table_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn create_table_calls(&self) -> usize {
+            self.create_table_calls.load(Ordering::SeqCst)
+        }
+
+        fn declare_table_calls(&self) -> usize {
+            self.declare_table_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LanceNamespace for CountingNamespace {
+        fn namespace_id(&self) -> String {
+            self.inner.namespace_id()
+        }
+
+        async fn create_namespace(
+            &self,
+            request: CreateNamespaceRequest,
+        ) -> lance_core::Result<CreateNamespaceResponse> {
+            self.inner.create_namespace(request).await
+        }
+
+        async fn list_tables(
+            &self,
+            request: ListTablesRequest,
+        ) -> lance_core::Result<ListTablesResponse> {
+            self.inner.list_tables(request).await
+        }
+
+        async fn describe_table(
+            &self,
+            request: DescribeTableRequest,
+        ) -> lance_core::Result<DescribeTableResponse> {
+            self.inner.describe_table(request).await
+        }
+
+        async fn create_table(
+            &self,
+            request: NamespaceCreateTableRequest,
+            request_data: bytes::Bytes,
+        ) -> lance_core::Result<CreateTableResponse> {
+            self.create_table_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.create_table(request, request_data).await
+        }
+
+        async fn declare_table(
+            &self,
+            request: DeclareTableRequest,
+        ) -> lance_core::Result<DeclareTableResponse> {
+            self.declare_table_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.declare_table(request).await
+        }
+    }
+
+    async fn connect_counting_namespace(
+        root_path: String,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    ) -> (crate::connection::Connection, Arc<CountingNamespace>) {
+        let directory_namespace = DirectoryNamespaceBuilder::new(root_path)
+            .build()
+            .await
+            .expect("Failed to build directory namespace");
+        let counting_namespace = Arc::new(CountingNamespace::new(Arc::new(directory_namespace)));
+        let namespace_client: Arc<dyn LanceNamespace> = counting_namespace.clone();
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            namespace_client,
+            "dir".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            pushdown_operations,
+        );
+        let conn =
+            crate::connection::Connection::new(Arc::new(db), Arc::new(MemoryRegistry::new()));
+        (conn, counting_namespace)
     }
 
     #[tokio::test]
@@ -812,6 +1015,84 @@ mod tests {
             .await
             .expect("Failed to list tables");
         assert!(table_names.contains(&"test_table".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_pushdown_uses_namespace_create_table() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+        let pushdown_operations = HashSet::from([NamespaceClientPushdownOperation::CreateTable]);
+        let (conn, counting_namespace) =
+            connect_counting_namespace(root_path, pushdown_operations).await;
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let table = conn
+            .create_table("pushdown_test", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
+        assert_eq!(counting_namespace.create_table_calls(), 1);
+        assert_eq!(counting_namespace.declare_table_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_pushdown_skips_custom_write_options() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+        let pushdown_operations = HashSet::from([NamespaceClientPushdownOperation::CreateTable]);
+        let (conn, counting_namespace) =
+            connect_counting_namespace(root_path, pushdown_operations).await;
+
+        let write_options = crate::table::WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                max_rows_per_group: 2,
+                ..Default::default()
+            }),
+        };
+
+        let table = conn
+            .create_table("custom_write_options_test", create_test_data())
+            .write_options(write_options)
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
+        assert_eq!(counting_namespace.create_table_calls(), 0);
+        assert_eq!(counting_namespace.declare_table_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_pushdown_skips_streaming_input() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+        let pushdown_operations = HashSet::from([NamespaceClientPushdownOperation::CreateTable]);
+        let (conn, counting_namespace) =
+            connect_counting_namespace(root_path, pushdown_operations).await;
+
+        let batch = create_test_data();
+        let schema = batch.schema();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+
+        let table = conn
+            .create_table("streaming_input_test", reader)
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 5);
+        assert_eq!(counting_namespace.create_table_calls(), 0);
+        assert_eq!(counting_namespace.declare_table_calls(), 1);
     }
 
     #[tokio::test]
