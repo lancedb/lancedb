@@ -104,41 +104,29 @@ export class EmbeddingFunctionRegistry {
   async parseFunctions(
     this: EmbeddingFunctionRegistry,
     metadata: Map<string, string>,
-  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+  ): Promise<Map<string, ResolvedEmbeddingFunctionConfig>> {
     if (!metadata.has("embedding_functions")) {
       return new Map();
-    } else {
-      type FunctionConfig = {
-        name: string;
-        sourceColumn: string;
-        vectorColumn: string;
-        model: EmbeddingFunction["TOptions"];
-      };
-
-      const functions = <FunctionConfig[]>(
-        JSON.parse(metadata.get("embedding_functions")!)
-      );
-
-      const items: [string, EmbeddingFunctionConfig][] = await Promise.all(
-        functions.map(async (f) => {
-          const fn = this.get(f.name);
-          if (!fn) {
-            throw new Error(`Function "${f.name}" not found in registry`);
-          }
-          const func = await this.get(f.name)!.create(f.model);
-          return [
-            f.name,
-            {
-              sourceColumn: f.sourceColumn,
-              vectorColumn: f.vectorColumn,
-              function: func,
-            },
-          ];
-        }),
-      );
-
-      return new Map(items);
     }
+    const entries = parseEmbeddingMetadata(
+      metadata.get("embedding_functions")!,
+    );
+    const items = await Promise.all(
+      entries.map(async (f): Promise<ResolvedEmbeddingFunctionConfig> => {
+        const fn = this.get(f.name);
+        if (!fn) {
+          throw new Error(`Function "${f.name}" not found in registry`);
+        }
+        const func = await fn.create(f.model);
+        return {
+          sourceColumn: f.sourceColumn,
+          vectorColumn: f.vectorColumn,
+          function: func,
+        };
+      }),
+    );
+    // Keyed by output column: one function may serve several columns.
+    return new Map(items.map((config) => [config.vectorColumn, config]));
   }
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   functionToMetadata(conf: EmbeddingFunctionConfig): Record<string, any> {
@@ -217,4 +205,53 @@ export interface EmbeddingFunctionConfig {
   sourceColumn: string;
   vectorColumn?: string;
   function: EmbeddingFunction;
+}
+
+/** An [EmbeddingFunctionConfig] read back from table metadata, where the
+ * vector column is always recorded. */
+export type ResolvedEmbeddingFunctionConfig = EmbeddingFunctionConfig & {
+  vectorColumn: string;
+};
+
+/** One entry of the `embedding_functions` schema metadata, with the column
+ * keys normalized across the bindings' spellings. */
+export type EmbeddingMetadataEntry = {
+  name: string;
+  sourceColumn: string;
+  vectorColumn: string;
+  model: EmbeddingFunction["TOptions"];
+};
+
+/** The single parser for `embedding_functions` schema metadata: every reader
+ * goes through here, so the wire contract cannot fork between them. */
+export function parseEmbeddingMetadata(json: string): EmbeddingMetadataEntry[] {
+  // The wire format, honestly: the Python bindings write snake_case keys.
+  type Raw = {
+    name: string;
+    sourceColumn?: string;
+    // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+    source_column?: string;
+    vectorColumn?: string;
+    // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+    vector_column?: string;
+    model: EmbeddingFunction["TOptions"];
+  };
+  const entries = <Raw[]>JSON.parse(json);
+  const seen = new Set<string>();
+  return entries.map((f) => {
+    const sourceColumn = f.sourceColumn ?? f.source_column;
+    const vectorColumn = f.vectorColumn ?? f.vector_column;
+    if (sourceColumn === undefined || vectorColumn === undefined) {
+      throw new Error(
+        `Embedding function "${f.name}" metadata names no source or vector column`,
+      );
+    }
+    if (seen.has(vectorColumn)) {
+      throw new Error(
+        `Multiple embedding configs claim vector column "${vectorColumn}"`,
+      );
+    }
+    seen.add(vectorColumn);
+    return { name: f.name, sourceColumn, vectorColumn, model: f.model };
+  });
 }
