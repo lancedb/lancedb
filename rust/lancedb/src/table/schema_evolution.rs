@@ -101,6 +101,10 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
     // Declarations are admitted only through [`execute_declare`].
     match &transforms {
         NewColumnTransform::AllNulls(schema) => {
@@ -124,6 +128,10 @@ pub(crate) async fn execute_declare(
     // checked against latest committed state, not this handle's snapshot.
     // The catch-up flag outlives unset and marks retained SSTable rows.
     table.checkout_latest().await?;
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "schema evolution",
+    )?;
     let catchup = table.dataset.get().await?.manifest().reader_feature_flags
         & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
         != 0;
@@ -163,6 +171,10 @@ pub(crate) async fn execute_alter_columns(
     // Nullability is not part of what an expression resolves against, so only
     // a rename or a retype can invalidate a binding.
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        schema.as_ref(),
+        "schema evolution",
+    )?;
     let rebinding = alterations
         .iter()
         .filter(|alteration| alteration.rename.is_some() || alteration.data_type.is_some())
@@ -190,6 +202,10 @@ pub(crate) async fn execute_drop_columns(
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
+    computed_columns::ensure_no_function_bindings_for_mutation(
+        &ArrowSchema::from(dataset.schema()),
+        "schema evolution",
+    )?;
     computed_columns::ensure_not_an_input(
         &std::sync::Arc::new(ArrowSchema::from(dataset.schema())),
         columns,
@@ -215,6 +231,7 @@ pub(crate) async fn execute_update_field_metadata(
     // binding out from under a refresh. A replace on a declared column would
     // silently erase it.
     let schema = ArrowSchema::from(dataset.schema());
+    computed_columns::ensure_no_function_bindings_for_mutation(&schema, "schema evolution")?;
     let declared: Vec<String> = computed_columns::computed_columns(&schema)
         .into_iter()
         .map(|declaration| declaration.name)

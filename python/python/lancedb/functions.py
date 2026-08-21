@@ -34,15 +34,15 @@ from typing import (
     overload,
 )
 
-import pydantic
 import pyarrow as pa
-from pydantic import BaseModel, Field, conint
-
-_PYDANTIC_V2 = int(pydantic.VERSION.split(".", 1)[0]) >= 2
-if _PYDANTIC_V2:
-    from pydantic import field_validator, model_validator
-else:
-    from pydantic import root_validator, validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    conint,
+    field_validator,
+    model_validator,
+)
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
 _UInt32 = conint(strict=True, ge=0, le=2**32 - 1)
@@ -104,43 +104,25 @@ def _known_wire_value(value):
 
 
 class _RemoteValue(BaseModel):
-    if _PYDANTIC_V2:
-        model_config = {"extra": "ignore", "frozen": True}
-    else:
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
-        class Config:
-            allow_mutation = False
-            extra = "ignore"
-
-    if _PYDANTIC_V2:
-
-        @model_validator(mode="after")
-        def _freeze_mappings(self):
-            for name, value in self.__dict__.items():
-                object.__setattr__(self, name, _freeze_value(value))
-            return self
-
-    else:
-
-        @root_validator
-        def _freeze_mappings(cls, values):
-            return {name: _freeze_value(value) for name, value in values.items()}
+    @model_validator(mode="after")
+    def _freeze_mappings(self):
+        for name, value in self.__dict__.items():
+            object.__setattr__(self, name, _freeze_value(value))
+        return self
 
     @classmethod
     def from_json(cls, payload: str):
-        if _PYDANTIC_V2:
-            return cls.model_validate_json(payload)
-        return cls.parse_raw(payload)
+        return cls.model_validate_json(payload)
 
     def _known_dict(self) -> dict[str, Any]:
-        fields = self.__class__.model_fields if _PYDANTIC_V2 else self.__fields__
         known = {}
-        for name, field in fields.items():
+        for name, field in self.__class__.model_fields.items():
             value = getattr(self, name)
             if value is None:
                 continue
-            required = field.is_required() if _PYDANTIC_V2 else field.required
-            if not required:
+            if not field.is_required():
                 default_factory = field.default_factory
                 if default_factory is not None and value == default_factory():
                     continue
@@ -151,9 +133,7 @@ class _RemoteValue(BaseModel):
 
     def _copy(self, *, update: Mapping[str, Any]):
         update = {name: _freeze_value(value) for name, value in update.items()}
-        if _PYDANTIC_V2:
-            return self.model_copy(update=update)
-        return self.copy(update=update)
+        return self.model_copy(update=update)
 
     def to_canonical_json(self) -> str:
         return json.dumps(
@@ -163,6 +143,15 @@ class _RemoteValue(BaseModel):
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+class _OpenRemoteValue(_RemoteValue):
+    """Forward-readable value whose extras stay out of canonical encoding."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    def _unknown_field_names(self) -> set[str]:
+        return set((self.__pydantic_extra__ or {}).keys())
 
 
 class FunctionArtifact(_RemoteValue):
@@ -203,13 +192,13 @@ class FunctionParameter(_RemoteValue):
     nullable: bool
 
 
-class FunctionResultField(_RemoteValue):
+class FunctionResultField(_OpenRemoteValue):
     name: str
     arrow_type: str
     nullable: bool
 
 
-class FunctionOutput(_RemoteValue):
+class FunctionOutput(_OpenRemoteValue):
     """Scalar or ordered named-struct output; unknown kinds remain decodable."""
 
     kind: str
@@ -245,35 +234,18 @@ class PythonRuntimeSpec(_RemoteValue):
     environment: Optional[PythonEnvironmentSpec] = None
     env: Optional[Mapping[str, str]] = None
 
-    if _PYDANTIC_V2:
-
-        @model_validator(mode="after")
-        def _validate_runtime_kind(self):
-            if self.kind == "python":
-                if self.python_version is None:
-                    raise ValueError("python runtime requires python_version")
-                if self.environment is None:
-                    raise ValueError("python runtime requires environment")
-            else:
-                object.__setattr__(self, "python_version", None)
-                object.__setattr__(self, "environment", None)
-                object.__setattr__(self, "env", None)
-            return self
-
-    else:
-
-        @root_validator
-        def _validate_runtime_kind(cls, values):
-            if values.get("kind") == "python":
-                if values.get("python_version") is None:
-                    raise ValueError("python runtime requires python_version")
-                if values.get("environment") is None:
-                    raise ValueError("python runtime requires environment")
-            else:
-                values["python_version"] = None
-                values["environment"] = None
-                values["env"] = None
-            return values
+    @model_validator(mode="after")
+    def _validate_runtime_kind(self):
+        if self.kind == "python":
+            if self.python_version is None:
+                raise ValueError("python runtime requires python_version")
+            if self.environment is None:
+                raise ValueError("python runtime requires environment")
+        else:
+            object.__setattr__(self, "python_version", None)
+            object.__setattr__(self, "environment", None)
+            object.__setattr__(self, "env", None)
+        return self
 
 
 class FunctionVersion(_RemoteValue):
@@ -308,12 +280,12 @@ class FunctionRegistrationRequest(_RemoteValue):
     required_secrets: tuple[str, ...] = ()
 
 
-class FunctionVersionRef(_RemoteValue):
+class FunctionVersionRef(_OpenRemoteValue):
     name: str
     version: str
 
 
-class ApplicationInput(_RemoteValue):
+class ApplicationInput(_OpenRemoteValue):
     """One parameter value.
 
     Slice 1 freezes integers, strings, booleans, nulls, arrays, and objects.
@@ -325,21 +297,13 @@ class ApplicationInput(_RemoteValue):
     kind: str
     value: Any
 
-    if _PYDANTIC_V2:
-
-        @field_validator("value")
-        @classmethod
-        def _validate_value(cls, value):
-            return _validate_literal(value)
-
-    else:
-
-        @validator("value")
-        def _validate_value(cls, value):
-            return _validate_literal(value)
+    @field_validator("value")
+    @classmethod
+    def _validate_value(cls, value):
+        return _validate_literal(value)
 
 
-class FunctionApplication(_RemoteValue):
+class FunctionApplication(_OpenRemoteValue):
     """Immutable pre-declaration application of an exact Function version."""
 
     function: FunctionVersionRef
@@ -347,6 +311,33 @@ class FunctionApplication(_RemoteValue):
     output: FunctionOutput
     group_id: str
     columns: Mapping[str, str] = Field(default_factory=dict)
+
+    def _known_dict(self) -> dict[str, Any]:
+        value = super()._known_dict()
+        for name in self._unknown_field_names():
+            value.pop(name, None)
+        return value
+
+    def _ensure_declarable(self) -> None:
+        unknown = {f"application.{name}" for name in self._unknown_field_names()}
+        unknown.update(
+            f"function.{name}" for name in self.function._unknown_field_names()
+        )
+        for index, input_value in enumerate(self.inputs):
+            unknown.update(
+                f"inputs[{index}].{name}" for name in input_value._unknown_field_names()
+            )
+        unknown.update(f"output.{name}" for name in self.output._unknown_field_names())
+        for index, field in enumerate(self.output.fields):
+            unknown.update(
+                f"output.fields[{index}].{name}"
+                for name in field._unknown_field_names()
+            )
+        if unknown:
+            raise ValueError(
+                "Function application contains fields from a newer contract: "
+                f"{sorted(unknown)!r}"
+            )
 
     def rename(self, *, columns: Mapping[str, str]) -> FunctionApplication:
         """Return a copy with result-field to table-column aliases."""
@@ -398,6 +389,8 @@ class FunctionBinding(_RemoteValue):
     group_id: str
     inputs: tuple[InputBinding, ...]
     outputs: tuple[OutputMapping, ...]
+    input_schema: Optional[Mapping[str, Any]] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
 
 class RefreshColumnResult(_RemoteValue):

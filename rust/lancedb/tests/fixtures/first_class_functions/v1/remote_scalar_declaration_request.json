@@ -1,0 +1,41 @@
+{
+  "new_columns": [
+    {"name": "embedding", "all_null": true}
+  ],
+  "function": {
+    "application": {
+      "function": {"name": "embed", "version": "fv_01K3EXACT"},
+      "inputs": [
+        {"parameter": "text", "kind": "column", "value": {"path": "description"}}
+      ],
+      "output": {"kind": "scalar", "arrow_type": "list<float32>", "nullable": false},
+      "group_id": "fg_scalar"
+    },
+    "binding_metadata_version": 1,
+    "input_bindings": [
+      {"parameter": "text", "field_path": "description", "arrow_type": "utf8", "nullable": true}
+    ],
+    "input_schema": {
+      "fields": [
+        {"name": "text", "nullable": true, "type": {"type": "utf8"}}
+      ]
+    },
+    "output_schema": {
+      "fields": [
+        {
+          "name": "embedding",
+          "nullable": true,
+          "type": {
+            "type": "list",
+            "fields": [
+              {"name": "item", "nullable": false, "type": {"type": "float32"}}
+            ]
+          }
+        }
+      ]
+    },
+    "outputs": [
+      {"result_field": "$value", "output_name": "embedding", "output_ordinal": 0}
+    ]
+  }
+}
