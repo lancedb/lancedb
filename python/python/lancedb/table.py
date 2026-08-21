@@ -6951,7 +6951,9 @@ class AsyncBranches:
         """Diff a branch against main."""
         return await self._table.branches.diff(from_branch)
 
-    async def cherry_pick(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+    async def cherry_pick(
+        self, from_branch: str, dry_run: bool = False
+    ) -> Dict[str, Any]:
         """Cherry-pick a branch onto main, or dry-run.
 
         A failed cherry-pick returns ``status="failed"`` instead of raising.

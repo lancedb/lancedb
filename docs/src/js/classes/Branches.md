@@ -37,6 +37,31 @@ latest and stays writable.
 
 ***
 
+### cherryPick()
+
+```ts
+cherryPick(fromBranch, dryRun): Promise<CherryPickResult>
+```
+
+Cherry-pick a branch onto main.
+
+Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+with `status: "failed"` instead of throwing.
+
+#### Parameters
+
+* **fromBranch**: `string`
+    Branch to cherry-pick from.
+
+* **dryRun**: `boolean` = `false`
+    When true, only preview. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;[`CherryPickResult`](../interfaces/CherryPickResult.md)&gt;
+
+***
+
 ### create()
 
 ```ts
@@ -112,28 +137,3 @@ List all branches, mapping name to branch metadata.
 #### Returns
 
 `Promise`&lt;`Record`&lt;`string`, [`BranchContents`](BranchContents.md)&gt;&gt;
-
-***
-
-### cherryPick()
-
-```ts
-cherryPick(fromBranch, dryRun): Promise<CherryPickResult>
-```
-
-Cherry-pick a branch onto main.
-
-Set `dryRun` to `true` to preview. A failed cherry-pick resolves
-with `status: "failed"` instead of throwing.
-
-#### Parameters
-
-* **fromBranch**: `string`
-    Branch to cherry-pick from.
-
-* **dryRun**: `boolean` = `false`
-    When true, only preview. Defaults to false.
-
-#### Returns
-
-`Promise`&lt;[`CherryPickResult`](../interfaces/CherryPickResult.md)&gt;
