@@ -73,6 +73,10 @@ class MockPermutationServer:
                     },
                 },
             )
+        if path == f"/v1/table/{self.name}/get_lsm_write_spec/":
+            self._read_body(request)
+            # Null spec: this table has no LSM write path.
+            return self._json(request, {"lsm_write_spec": None})
         if path == f"/v1/table/{self.name}/count_rows/":
             self._read_body(request)
             return self._json(request, self.num_rows)
