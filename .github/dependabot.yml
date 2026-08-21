@@ -17,6 +17,18 @@ updates:
     # newer minimum versions.
     versioning-strategy: lockfile-only
     groups:
+      # The arrow-rs and datafusion crates are released in lockstep and have to
+      # move together, so keep them in one PR instead of one per sub-crate.
+      # Listed first: a dependency joins the first group it matches.
+      arrow-datafusion:
+        patterns:
+          - arrow
+          - arrow-*
+          - parquet
+          - parquet-*
+          - datafusion
+          - datafusion-*
+          - object_store
       rust-minor-patch:
         update-types:
           - minor
