@@ -3,10 +3,9 @@
 
 //! One-fragment publication for registered Function columns.
 //!
-//! This is an internal Enterprise integration boundary. It publishes one
-//! complete, physical-row-aligned sibling group with one `DataReplacement`
-//! transaction. Planning, execution, retry, and multi-fragment aggregation
-//! remain outside this module.
+//! This module publishes one complete, physical-row-aligned sibling group with
+//! one `DataReplacement` transaction. Planning, execution, retry, and
+//! multi-fragment aggregation remain outside this module.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -196,7 +195,7 @@ pub struct CommitReceipt {
     pub commit_outcome: CommitOutcome,
 }
 
-/// Internal one-fragment Function-column publisher.
+/// One-fragment Function-column publisher.
 #[derive(Debug, Clone)]
 pub struct FragmentPublisher {
     table: Table,
