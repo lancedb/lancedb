@@ -46,6 +46,7 @@ from utils import (
 torch = pytest.importorskip("torch")
 streaming = pytest.importorskip("lancedb.streaming")
 StreamingDataset = streaming.StreamingDataset
+StreamingDataLoader = streaming.StreamingDataLoader
 
 # ---------------------------------------------------------------------------
 # Dataset parameters
@@ -1008,6 +1009,74 @@ def test_multi_worker_elastic_det_across_worker_counts(lance_table):
 # ── Resumability with num_workers ─────────────────────────────────────────────
 
 
+def test_streaming_dataloader_commits_only_consumed_worker_batches(tmp_path):
+    """Prefetched worker state is committed only as the trainer receives it."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("worker_commit", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=4,
+    )
+    iterator = iter(loader)
+    try:
+        first = next(iterator)["id"].tolist()
+        checkpoint = dataset.state_dict()
+
+        assert first == [1, 2]
+        assert checkpoint["samples_consumed_per_split"] == [2, 0]
+        assert checkpoint["positions_consumed_per_split"] == [2, 0]
+
+        second = next(iterator)["id"].tolist()
+        assert second == [10, 20]
+        assert dataset.state_dict()["samples_consumed_per_split"] == [2, 2]
+    finally:
+        iterator._shutdown_workers()
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == [10, 20]
+
+
+def test_standard_dataloader_rejects_stale_parent_checkpoint(tmp_path):
+    """A standard DataLoader must not expose prefetched producer progress."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("untracked_workers", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [1, 2]
+        with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+            dataset.state_dict()
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_resume_from_partial_split_cycle_preserves_remaining_order(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("partial_cycle", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 1
+    checkpoint = dataset.state_dict()
+    iterator.close()
+    assert checkpoint["samples_consumed_per_split"] == [1, 0]
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == [10, 2, 20]
+
+
 def test_multi_worker_resumability_same_topology(lance_table):
     """Checkpoint with num_workers=2, resume with num_workers=2: exact continuation."""
     world_size = 1
@@ -1834,6 +1903,23 @@ def test_merge_state_dicts_validates_consistency(lance_table):
         StreamingDataset.merge_state_dicts([state, other])
     with pytest.raises(ValueError, match="at least one"):
         StreamingDataset.merge_state_dicts([])
+
+
+def test_merge_state_dicts_combines_nonuniform_consumer_progress(lance_table):
+    dataset = StreamingDataset(
+        lance_table, num_splits=2, shuffle=False, shuffle_seed=SHUFFLE_SEED
+    )
+    rank0 = dataset.state_dict()
+    rank0["samples_consumed_per_split"] = [2, 0]
+    rank0["positions_consumed_per_split"] = [2, 0]
+    rank1 = dataset.state_dict()
+    rank1["samples_consumed_per_split"] = [0, 2]
+    rank1["positions_consumed_per_split"] = [0, 2]
+
+    merged = StreamingDataset.merge_state_dicts([rank0, rank1])
+
+    assert merged["samples_consumed_per_split"] == [2, 2]
+    assert merged["positions_consumed_per_split"] == [2, 2]
 
 
 def test_load_state_dict_without_positions_key(lance_table):
