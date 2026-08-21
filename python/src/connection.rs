@@ -346,6 +346,23 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_table_async(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let ns_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_table_async(name, &ns_path)
+                .await
+                .infer_error()
+                .map(crate::job::Job::new)
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None,))]
     pub fn drop_all_tables(
         self_: PyRef<'_, Self>,
@@ -544,6 +561,38 @@ impl Connection {
     pub fn job(&self, job_id: String) -> PyResult<crate::job::Job> {
         let inner = self.get_inner()?.clone();
         Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
+    }
+
+    pub fn create_function_async(
+        self_: PyRef<'_, Self>,
+        request_json: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+            .infer_error()?;
+        future_into_py(self_.py(), async move {
+            inner
+                .create_function_async(request)
+                .await
+                .infer_error()
+                .map(crate::job::FunctionJob::new)
+        })
+    }
+
+    pub fn get_function(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .get_function(name, version)
+                .await
+                .infer_error()?
+                .to_canonical_json()
+                .infer_error()
+        })
     }
 
     pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

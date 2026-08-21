@@ -71,6 +71,14 @@ pub enum Error {
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
+    #[snafu(display("Column '{name}' was not found"))]
+    ColumnNotFound { name: String },
+    #[snafu(display("Column '{name}' already exists"))]
+    ColumnAlreadyExists { name: String },
+    #[snafu(display("Column '{name}' is not a computed column"))]
+    NotAComputedColumn { name: String },
+    #[snafu(display("Invalid expression for column '{column}': {message}"))]
+    InvalidExpression { column: String, message: String },
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
@@ -169,6 +177,12 @@ impl From<DataFusionError> for Error {
 
 impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
+        if has_unsupported_local_filesystem_source(&source) {
+            return Self::NotSupported {
+                message: "the filesystem does not support an operation required for safe Lance commits (such as atomic rename). Object-storage mounts such as Mountpoint for Amazon S3 are not supported; use the native object-store URI (for example, s3://bucket/path) instead".to_string(),
+            };
+        }
+
         // Try to unwrap external errors that were wrapped by lance
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
@@ -179,6 +193,27 @@ impl From<lance::Error> for Error {
             _ => Self::Lance { source },
         }
     }
+}
+
+fn has_unsupported_local_filesystem_source(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    let mut is_local_filesystem = false;
+    let mut is_unsupported = false;
+    while let Some(error) = current {
+        is_local_filesystem |= error
+            .downcast_ref::<object_store::Error>()
+            .is_some_and(|error| {
+                matches!(error, object_store::Error::Generic { store, .. } if *store == "LocalFileSystem")
+            });
+        is_unsupported |= error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::Unsupported);
+        if is_local_filesystem && is_unsupported {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 impl Error {
@@ -268,5 +303,48 @@ impl From<candle_core::Error> for Error {
             message: "Error in 'candle_core'.".to_string(),
             source: Some(Box::new(source)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_filesystem_operations_have_actionable_error() {
+        let object_store_error = object_store::Error::Generic {
+            store: "LocalFileSystem",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+        };
+        let lance_error = lance::Error::io_source(Box::new(object_store_error));
+
+        let error = Error::from(lance_error);
+
+        assert!(matches!(
+            error,
+            Error::NotSupported { message }
+                if message.contains("Mountpoint for Amazon S3")
+                    && message.contains("s3://bucket/path")
+        ));
+    }
+
+    #[test]
+    fn other_io_errors_remain_lance_errors() {
+        let object_store_error = object_store::Error::Generic {
+            store: "LocalFileSystem",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        };
+        let lance_error = lance::Error::io_source(Box::new(object_store_error));
+
+        assert!(matches!(Error::from(lance_error), Error::Lance { .. }));
+    }
+
+    #[test]
+    fn unsupported_non_filesystem_errors_remain_lance_errors() {
+        let lance_error = lance::Error::io_source(Box::new(std::io::Error::from(
+            std::io::ErrorKind::Unsupported,
+        )));
+
+        assert!(matches!(Error::from(lance_error), Error::Lance { .. }));
     }
 }
