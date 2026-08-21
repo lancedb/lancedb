@@ -223,10 +223,21 @@ fn install_atfork() {}
 /// of a single retired runtime generation — see the module docs for why
 /// this is per-generation rather than a shared long-lived reaper.
 fn retire(rt: Arc<runtime::Runtime>) {
+    // Box the Arc and hand the closure only a raw pointer to it: a raw
+    // pointer has no `Drop` impl of its own, so if `spawn` fails and the
+    // std library drops the still-unrun closure, nothing happens to the
+    // boxed `Arc` -- it is simply never reconstructed, not dropped. That
+    // is exactly the fallback we want (see below) rather than letting the
+    // normal move-into-closure ownership semantics drop the `Arc` --
+    // possibly the last reference -- on whatever thread called `retire()`.
+    let boxed: *mut Arc<runtime::Runtime> = Box::into_raw(Box::new(rt));
     let spawned = std::thread::Builder::new()
         .name("lancedb-runtime-reaper".to_string())
         .spawn(move || {
-            let mut retired = rt;
+            // SAFETY: `boxed` was produced by `Box::into_raw` just above,
+            // and this closure only ever runs if `spawn` succeeded, which
+            // is the sole path that reclaims it.
+            let mut retired = *unsafe { Box::from_raw(boxed) };
             // Poll until we're the sole owner -- any in-flight
             // `block_on`/`spawn`/`spawn_blocking` caller that took its own
             // clone before this generation was retired keeps it alive
@@ -249,12 +260,20 @@ fn retire(rt: Arc<runtime::Runtime>) {
                 }
             }
         });
-    // A failure to spawn here (extreme resource exhaustion) leaves the
-    // retired `Arc` to drop normally on the caller's thread instead --
-    // worse (it could panic if that's a Tokio worker) but not something we
-    // can improve on by panicking ourselves over a spawn failure.
-    if let Ok(handle) = spawned {
-        drop(handle);
+    if spawned.is_err() {
+        // Thread creation failed (extreme resource exhaustion). The closure
+        // above never ran, so `boxed` was never reclaimed -- explicitly
+        // reclaim and `mem::forget` it here rather than relying on that
+        // implicitly. Preserving a non-worker retirement owner is the
+        // point of this whole module; deliberately leaking the retired
+        // runtime (never shut down, never freed -- the same trade-off
+        // `atfork_child` already makes for the identical reason) is safer
+        // than letting it drop on an arbitrary caller's thread, which could
+        // be one of that very runtime's own workers and panic.
+        //
+        // SAFETY: `spawned` is `Err`, so the closure was dropped unrun and
+        // never reclaimed `boxed` -- we still exclusively own it here.
+        std::mem::forget(unsafe { Box::from_raw(boxed) });
     }
 }
 
