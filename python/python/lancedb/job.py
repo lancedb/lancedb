@@ -130,3 +130,27 @@ class _FunctionJobAdapter:
 
 def _function_job(inner: "_lancedb.FunctionJob") -> AsyncJob[FunctionVersion]:
     return AsyncJob(_FunctionJobAdapter(inner))
+
+
+class _RefreshJobAdapter:
+    def __init__(self, inner: "_lancedb.RefreshJob"):
+        self._inner = inner
+
+    @property
+    def id(self) -> Optional[str]:
+        return self._inner.id
+
+    async def status(self) -> str:
+        return await self._inner.status()
+
+    async def wait(self):
+        from .functions import RefreshColumnResult
+
+        return RefreshColumnResult.from_json(await self._inner.wait())
+
+    async def cancel(self):
+        await self._inner.cancel()
+
+
+def _refresh_job(inner: "_lancedb.RefreshJob") -> AsyncJob:
+    return AsyncJob(_RefreshJobAdapter(inner))
