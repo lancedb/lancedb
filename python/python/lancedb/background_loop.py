@@ -35,6 +35,21 @@ class BackgroundEventLoop:
             concurrent_future.cancel()
             raise
 
+    def reset(self, *, join_timeout: float = 5.0) -> None:
+        """Stop this loop's background thread and start a fresh one.
+
+        Unlike `_reset_after_fork` below (which runs after `fork()`, where
+        the old thread is already dead and must be leaked to avoid a hang),
+        this stops the old loop and actually joins its thread before
+        starting the new one -- the thread is alive here, so joining it is
+        safe. See `reset_background_loop` for why you'd want this.
+        """
+        old_loop = self.loop
+        old_thread = self.thread
+        old_loop.call_soon_threadsafe(old_loop.stop)
+        old_thread.join(timeout=join_timeout)
+        self._start()
+
 
 LOOP = BackgroundEventLoop()
 
@@ -88,3 +103,29 @@ def _reset_after_fork():
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_after_fork)
+
+
+def reset_background_loop() -> None:
+    """Recycle the shared background event loop, its embedding executor,
+    and the Rust-side Tokio runtime.
+
+    This is an explicit, opt-in mitigation for a Windows-specific issue:
+    the process-lifetime background loop and Tokio runtime are only ever
+    recycled automatically after `fork()`, and there is no `fork()` on
+    Windows -- so in a long-running Windows process (e.g. a test suite, or
+    an agent harness making many thousands of `connect_async`/table calls
+    in one process), neither ever gets a chance to recycle on its own. This
+    does not fix the underlying resource leak (tracked upstream in `mio`,
+    https://github.com/tokio-rs/mio/issues/1944) -- it just gives a host
+    application a way to periodically recycle around it, e.g. every N
+    operations.
+
+    Safe to call between operations; do not call while another thread may
+    still be using `LOOP.run(...)` or an in-flight lancedb operation.
+    """
+    LOOP.reset()
+    global _EMBEDDING_EXECUTOR
+    _EMBEDDING_EXECUTOR = _new_embedding_executor()
+    from . import _lancedb
+
+    _lancedb.reset_runtime()
