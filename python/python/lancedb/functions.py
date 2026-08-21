@@ -741,7 +741,11 @@ def _package_source(function: Callable[..., Any]) -> bytes:
     if globals_source:
         parts.extend(["", *globals_source])
     parts.extend(["", function_source, ""])
-    return "\n".join(parts).encode("utf-8")
+    try:
+        import cloudpickle
+    except ImportError as error:
+        raise RuntimeError("@udf remote registration requires cloudpickle") from error
+    return cloudpickle.dumps(function)
 
 
 class UdfDefinition:
