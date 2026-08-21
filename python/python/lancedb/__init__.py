@@ -22,6 +22,16 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector, BlobType
 from .job import AsyncJob, Job
+from .functions import (
+    FunctionArtifactRequest as FunctionArtifactRequest,
+    FunctionApplication as FunctionApplication,
+    FunctionBinding as FunctionBinding,
+    FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionVersion as FunctionVersion,
+    PythonRuntimeSpec as PythonRuntimeSpec,
+    UdfDefinition as UdfDefinition,
+    udf as udf,
+)
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session

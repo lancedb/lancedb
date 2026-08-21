@@ -563,6 +563,38 @@ impl Connection {
         Ok(crate::job::Job::new(inner.job(job_id).infer_error()?))
     }
 
+    pub fn create_function_async(
+        self_: PyRef<'_, Self>,
+        request_json: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let request = lancedb::function::FunctionRegistrationRequest::from_json(&request_json)
+            .infer_error()?;
+        future_into_py(self_.py(), async move {
+            inner
+                .create_function_async(request)
+                .await
+                .infer_error()
+                .map(crate::job::FunctionJob::new)
+        })
+    }
+
+    pub fn get_function(
+        self_: PyRef<'_, Self>,
+        name: String,
+        version: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .get_function(name, version)
+                .await
+                .infer_error()?
+                .to_canonical_json()
+                .infer_error()
+        })
+    }
+
     pub fn list_jobs(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {

@@ -24,8 +24,9 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
-use crate::remote::job::RemoteJob;
+use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
@@ -472,48 +473,6 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
-/// The server's account of why a job failed. Absent from older servers,
-/// which report only the terminal state.
-#[derive(serde::Deserialize)]
-struct RemoteReportedFailure {
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    retryable: Option<bool>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDescribeJobResponse {
-    job_id: String,
-    #[serde(default)]
-    job_type: String,
-    job_state: String,
-    #[serde(default)]
-    creation_ms: i64,
-    #[serde(default)]
-    spec: serde_json::Value,
-    #[serde(default)]
-    failure: Option<RemoteReportedFailure>,
-}
-
-/// Server job states -> the client vocabulary ("running" / "finished" /
-/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
-/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
-/// (in_progress / succeeded / failed / canceled / timed_out). States this
-/// client version does not know (e.g. created, queued) pass through as-is.
-fn job_state_to_client(state: &str) -> String {
-    match state {
-        "IN_PROGRESS" | "in_progress" => "running",
-        "DONE" | "done" | "succeeded" => "finished",
-        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
-        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
-        other => other,
-    }
-    .to_string()
-}
-
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -529,6 +488,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Getting the read consistency of a remote database is not yet supported"
                 .to_string(),
         })
+    }
+
+    async fn create_function_async(
+        &self,
+        request: FunctionRegistrationRequest,
+    ) -> Result<Job<FunctionVersion>> {
+        let req = self.client.post("/v1/function/create").json(&request);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "Function registration response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
+        let req = self
+            .client
+            .post("/v1/function/describe")
+            .json(&serde_json::json!({
+                "name": name,
+                "version": version,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
@@ -586,19 +578,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let body: RemoteDescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
         Ok(Some(JobDescription {
             job_id: body.job_id,
             job_type: body.job_type,
             state: job_state_to_client(&body.job_state),
             creation_ms: body.creation_ms,
             spec: body.spec,
-            failure: body.failure.map(|reported| crate::error::JobFailure {
-                phase: reported.phase,
-                message: reported.message,
-                retryable: reported.retryable,
-                source: None,
-            }),
+            failure: body.failure.map(|reported| reported.into_job_failure()),
         }))
     }
 
@@ -2494,6 +2481,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_function_async_sends_canonical_request_and_decodes_typed_job() {
+        const REQUEST: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        const FUNCTION_JOB: &str =
+            include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
+        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/function/create" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body, expected);
+                http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"job-function-1"}"#)
+                    .unwrap()
+            }
+            "/v1/jobs/describe" => http::Response::builder()
+                .status(200)
+                .body(FUNCTION_JOB)
+                .unwrap(),
+            path => panic!("unexpected path: {path}"),
+        });
+        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        let job = conn.create_function_async(request).await.unwrap();
+        assert_eq!(job.id(), Some("job-function-1"));
+        let version = job.wait().await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_get_function_requires_and_sends_exact_version() {
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            );
+            http::Response::builder().status(200).body(VERSION).unwrap()
+        });
+        let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
     async fn test_conn_job_waits_to_done() {
         let polls = Arc::new(AtomicUsize::new(0));
         let polls_ref = polls.clone();
@@ -2507,7 +2548,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .body(format!(
-                    r#"{{"job_id": "job-1", "job_type": "create_index", "job_state": "{}", "creation_ms": 1}}"#,
+                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "fv_1"}}}}"#,
                     state
                 ))
                 .unwrap()

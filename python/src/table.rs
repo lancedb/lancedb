@@ -262,7 +262,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
 /// MemWAL supports, resolved on install.
-#[pyclass(from_py_object)]
+#[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
     inner: lancedb::table::LsmWriteSpec,
@@ -1546,6 +1546,24 @@ impl Table {
             for (name, expression) in columns {
                 builder = builder.computed(name, expression);
             }
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn add_function_columns(
+        self_: PyRef<'_, Self>,
+        application_json: String,
+        output_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let application =
+            lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let builder = match output_name {
+                Some(name) => inner.add_columns().function_as(name, application),
+                None => inner.add_columns().function(application),
+            };
             let result = builder.execute().await.infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
