@@ -765,60 +765,13 @@ impl ListingDatabase {
         }
     }
 
-    /// Extract storage option overrides from the request
-    fn extract_storage_overrides(
-        &self,
-        request: &CreateTableRequest,
-    ) -> Result<(Option<LanceFileVersion>, Option<bool>, Option<bool>)> {
-        let storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options());
-
-        let storage_version_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<LanceFileVersion>())
-            .transpose()?;
-
-        let v2_manifest_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_v2_manifest_paths must be a boolean".to_string(),
-            })?;
-
-        let stable_row_ids_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_stable_row_ids must be a boolean".to_string(),
-            })?;
-
-        Ok((
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        ))
-    }
-
     /// Prepare write parameters for table creation
     fn prepare_write_params(
         &self,
         request: &CreateTableRequest,
-        storage_version_override: Option<LanceFileVersion>,
-        v2_manifest_override: Option<bool>,
-        stable_row_ids_override: Option<bool>,
+        mut write_params: lance::dataset::WriteParams,
+        overrides: NewTableConfig,
     ) -> lance::dataset::WriteParams {
-        let mut write_params = request
-            .write_options
-            .lance_write_params
-            .clone()
-            .unwrap_or_default();
-
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
         // storage_options=Some({}). Using storage_options=None will cause the
@@ -842,18 +795,21 @@ impl ListingDatabase {
             store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
-        write_params.data_storage_version = storage_version_override
+        write_params.data_storage_version = overrides
+            .data_storage_version
             .or(write_params.data_storage_version)
             .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) =
-            v2_manifest_override.or(self.new_table_config.enable_v2_manifest_paths)
+        if let Some(enable_v2_manifest_paths) = overrides
+            .enable_v2_manifest_paths
+            .or(self.new_table_config.enable_v2_manifest_paths)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
         let data_schema = request.data.arrow_schema();
-        if let Some(enable_stable_row_ids) = stable_row_ids_override
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
             .or(self.new_table_config.enable_stable_row_ids)
             .or(has_blob_columns(&data_schema).then_some(true))
         {
@@ -1048,15 +1004,13 @@ impl Database for ListingDatabase {
             .clone()
             .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
-        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
-            self.extract_storage_overrides(&request)?;
-
-        let write_params = self.prepare_write_params(
-            &request,
-            storage_version_override,
-            v2_manifest_override,
-            stable_row_ids_override,
-        );
+        let mut write_params = request
+            .write_options
+            .lance_write_params
+            .clone()
+            .unwrap_or_default();
+        let overrides = take_request_creation_overrides(&mut write_params)?;
+        let write_params = self.prepare_write_params(&request, write_params, overrides);
 
         let data_schema = request.data.arrow_schema();
 
@@ -1288,8 +1242,232 @@ impl Database for ListingDatabase {
     }
 }
 
+/// Parse the request-level `new_table_*` creation keys into overrides and
+/// strip them from the store options in one step: every create path that
+/// honors them must also keep them out of the object store.
+pub(crate) fn take_request_creation_overrides(
+    params: &mut lance::dataset::WriteParams,
+) -> Result<NewTableConfig> {
+    let storage_options = params
+        .store_params
+        .as_ref()
+        .and_then(|sp| sp.storage_options());
+    let overrides = NewTableConfig {
+        data_storage_version: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
+            .map(|s| s.parse::<LanceFileVersion>())
+            .transpose()?,
+        enable_v2_manifest_paths: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_v2_manifest_paths must be a boolean".to_string(),
+            })?,
+        enable_stable_row_ids: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?,
+    };
+    if let Some(store_params) = params.store_params.as_mut() {
+        strip_new_table_creation_keys(store_params);
+    }
+    Ok(overrides)
+}
+
+/// Strip the `new_table_*` creation keys from request store options: they are
+/// creation config, not credentials, and left in place they fork a fresh
+/// store connection for the request.
+fn strip_new_table_creation_keys(store_params: &mut ObjectStoreParams) {
+    let mut options = store_params.storage_options().cloned().unwrap_or_default();
+    let mut removed = false;
+    for key in [
+        OPT_NEW_TABLE_STORAGE_VERSION,
+        OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+        OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+    ] {
+        removed |= options.remove(key).is_some();
+    }
+    if !removed {
+        return;
+    }
+    let provider = store_params
+        .storage_options_accessor
+        .as_ref()
+        .and_then(|accessor| accessor.provider().cloned());
+    store_params.storage_options_accessor = match (options.is_empty(), provider) {
+        (true, None) => None,
+        (true, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(provider))),
+        (false, Some(provider)) => Some(Arc::new(
+            StorageOptionsAccessor::with_initial_and_provider(options, provider),
+        )),
+        (false, None) => Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            options,
+        ))),
+    };
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn request_level_creation_keys_do_not_fork_the_store() {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let batch = arrow_array::record_batch!(("x", Int32, [1, 2])).unwrap();
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        db.create_table("t", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 2, "the table must live in the session's store");
+    }
+
+    mod strip_new_table_creation_keys {
+        use super::super::*;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        fn params_with_static(options: &[(&str, &str)]) -> ObjectStoreParams {
+            ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_static_options(
+                        options
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
+                    ),
+                )),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn creation_keys_are_removed_and_store_keys_kept() {
+            let mut params = params_with_static(&[
+                ("region", "us-west-2"),
+                (OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true"),
+            ]);
+            strip_new_table_creation_keys(&mut params);
+            let options = params.storage_options().cloned().unwrap();
+            assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+            assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+
+            // Creation keys alone: no accessor survives to fork a store.
+            let mut params = params_with_static(&[(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")]);
+            strip_new_table_creation_keys(&mut params);
+            assert!(params.storage_options_accessor.is_none());
+        }
+
+        /// A provider must survive every shape of strip: untouched accessors
+        /// keep their identity, emptied ones still fetch, and residual
+        /// statics ride along.
+        #[test]
+        fn provider_accessors_survive_the_strip() {
+            let accessor = Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+                EmptyProvider,
+            )));
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(accessor.clone()),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            assert!(Arc::ptr_eq(
+                params.storage_options_accessor.as_ref().unwrap(),
+                &accessor
+            ));
+
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert_eq!(
+                accessor
+                    .initial_storage_options()
+                    .and_then(|o| o.get("region").cloned())
+                    .as_deref(),
+                Some("us-west-2")
+            );
+
+            // Emptied entirely: a first-fetch accessor, not one caching {}.
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([(
+                            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                            "true".to_string(),
+                        )]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert!(accessor.initial_storage_options().is_none());
+        }
+    }
+
     use super::*;
     use crate::Table;
     use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};

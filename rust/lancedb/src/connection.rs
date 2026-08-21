@@ -41,7 +41,7 @@ use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 
 mod create_table;
 
-fn merge_storage_options(
+pub(crate) fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
     pairs: impl IntoIterator<Item = (String, String)>,
 ) {
