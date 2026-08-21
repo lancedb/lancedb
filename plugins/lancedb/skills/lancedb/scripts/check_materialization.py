@@ -64,7 +64,9 @@ def scan_python(path: Path, text: str) -> list[Finding]:
 
 def statement_around(text: str, start: int, end: int) -> str:
     before = max(text.rfind(";", 0, start), text.rfind("\n\n", 0, start))
-    after_candidates = [pos for pos in (text.find(";", end), text.find("\n\n", end)) if pos != -1]
+    after_candidates = [
+        pos for pos in (text.find(";", end), text.find("\n\n", end)) if pos != -1
+    ]
     after = min(after_candidates) if after_candidates else len(text)
     return text[before + 1 : after].strip()
 

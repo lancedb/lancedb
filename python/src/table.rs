@@ -262,7 +262,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
 /// MemWAL supports, resolved on install.
-#[pyclass(from_py_object)]
+#[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
     inner: lancedb::table::LsmWriteSpec,
