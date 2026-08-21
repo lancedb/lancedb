@@ -239,7 +239,20 @@ impl PermutationBuilder {
     }
 
     /// Builds the permutation table and stores it in the given database.
-    pub async fn build(self) -> Result<Table> {
+    pub async fn build(mut self) -> Result<Table> {
+        // Remote tables resolve latest independently for each request. Use a
+        // separate pinned handle so count, projection, and scan all refer to one
+        // snapshot without changing the caller's table checkout state. Native
+        // tables return `None` here and retain their existing behavior.
+        if let Some(snapshot) = self
+            .base_table
+            .base_table()
+            .snapshot_at_current_version()
+            .await?
+        {
+            self.base_table = Table::from(snapshot);
+        }
+
         // Unflushed rows have no row id, so a permutation cannot address them.
         match self.base_table.base_table().get_lsm_write_spec().await {
             Ok(Some(_)) => {
@@ -258,7 +271,6 @@ impl PermutationBuilder {
 
         // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
         // every rank must scan the rows in the same order to build the same permutation.
-        // TODO: pin the version resolved here; remote does not implement Lazy.
         let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
@@ -407,6 +419,118 @@ mod tests {
 
         // Native tables skip the canonicalizing sort; remote does not.
         assert!(table.base_table().scan_order_is_deterministic());
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_remote_permutation_builder_pins_snapshot() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicU64, Ordering},
+        };
+
+        use arrow_array::{RecordBatch, UInt64Array};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let row_ids = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                ROW_ID,
+                DataType::UInt64,
+                false,
+            )])),
+            vec![Arc::new(UInt64Array::from(vec![100]))],
+        )
+        .unwrap();
+        let mut query_body = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::FileWriter::try_new(&mut query_body, &row_ids.schema()).unwrap();
+            writer.write(&row_ids).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let latest = Arc::new(AtomicU64::new(7));
+        let expected_snapshot = Arc::new(AtomicU64::new(7));
+        let planning_versions = Arc::new(Mutex::new(Vec::new()));
+        let latest_ref = latest.clone();
+        let expected_snapshot_ref = expected_snapshot.clone();
+        let planning_versions_ref = planning_versions.clone();
+        let table = Table::new_with_handler("remote_base", move |request| {
+            let path = request.url().path();
+            let body = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .map(|body| serde_json::from_slice::<serde_json::Value>(body).unwrap());
+
+            match path {
+                "/v1/table/remote_base/describe/" => {
+                    let requested = body.as_ref().and_then(|body| body["version"].as_u64());
+                    let version = requested.unwrap_or_else(|| latest_ref.load(Ordering::SeqCst));
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            format!(r#"{{"version":{version},"schema":{{"fields":[]}}}}"#)
+                                .into_bytes(),
+                        )
+                        .unwrap()
+                }
+                "/v1/table/remote_base/get_lsm_write_spec/" => http::Response::builder()
+                    .status(200)
+                    .body(br#"{"lsm_write_spec":null}"#.to_vec())
+                    .unwrap(),
+                "/v1/table/remote_base/count_rows/" => {
+                    let body = body.unwrap();
+                    let version = body["version"].as_u64().unwrap();
+                    assert_eq!(version, expected_snapshot_ref.load(Ordering::SeqCst));
+                    assert_eq!(body["predicate"], "value > 0");
+                    planning_versions_ref.lock().unwrap().push(version);
+
+                    // Simulate a concurrent append after count_rows. An unpinned
+                    // scan would now resolve version 8 and include different rows.
+                    latest_ref.store(8, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(200)
+                        .body(b"1".to_vec())
+                        .unwrap()
+                }
+                "/v1/table/remote_base/query/" => {
+                    let body = body.unwrap();
+                    let version = body["version"].as_u64().unwrap();
+                    assert_eq!(version, expected_snapshot_ref.load(Ordering::SeqCst));
+                    assert_eq!(body["filter"], "value > 0");
+                    assert_eq!(body["columns"], serde_json::json!([ROW_ID]));
+                    planning_versions_ref.lock().unwrap().push(version);
+                    http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/vnd.apache.arrow.file")
+                        .body(query_body.clone())
+                        .unwrap()
+                }
+                _ => panic!("unexpected request: {path}"),
+            }
+        });
+
+        let permutation = PermutationBuilder::new(table.clone())
+            .with_filter("value > 0".to_string())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(permutation.count_rows(None).await.unwrap(), 1);
+
+        // Building uses a separate handle and must not pin the caller's table.
+        assert_eq!(table.version().await.unwrap(), 8);
+
+        // An explicit checkout is copied as-is and remains checked out afterward.
+        expected_snapshot.store(6, Ordering::SeqCst);
+        table.checkout(6).await.unwrap();
+        let permutation = PermutationBuilder::new(table.clone())
+            .with_filter("value > 0".to_string())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(permutation.count_rows(None).await.unwrap(), 1);
+        assert_eq!(table.version().await.unwrap(), 6);
+        assert_eq!(*planning_versions.lock().unwrap(), vec![7, 7, 6, 6]);
     }
 
     #[tokio::test]
