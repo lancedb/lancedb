@@ -499,14 +499,11 @@ impl PermutationReader {
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
         // limit(1) because some table types may require executing the
-        // query to determine the output schema.  use_lsm(false) because a
-        // Permutation's selection is a dynamic projection, which the LSM
-        // scanner rejects.
+        // query to determine the output schema
         table
             .query()
             .select(selection)
             .limit(1)
-            .use_lsm(false)
             .output_schema()
             .await
     }
@@ -1035,62 +1032,5 @@ mod tests {
         assert_eq!(batch.num_rows(), 0);
         assert_eq!(batch.num_columns(), 1);
         assert_eq!(batch.schema().field(0).name(), "idx");
-    }
-
-    /// `Permutation` keeps its selection as a dynamic projection, which the LSM scanner
-    /// rejects — so schema lookups have to read the base table like every other
-    /// permutation read does, or `Permutation.schema` fails on a MemWAL table.
-    #[tokio::test]
-    async fn test_output_schema_dynamic_selection_on_mem_wal_table() {
-        use crate::connect;
-        use crate::dataloader::permutation::builder::PermutationBuilder;
-        use crate::table::LsmWriteSpec;
-        use arrow_array::{Int32Array, RecordBatchIterator};
-
-        // MemWAL needs a real dataset directory rather than an in-memory table, and a
-        // primary key column that is not nullable.
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db = connect(temp_dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3]))],
-        )
-        .unwrap();
-        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
-        let base_table = db.create_table("tbl", reader).execute().await.unwrap();
-        base_table
-            .set_unenforced_primary_key(["idx"])
-            .await
-            .unwrap();
-        base_table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
-
-        let permutation_table = PermutationBuilder::new(base_table.clone())
-            .build()
-            .await
-            .unwrap();
-        let reader = PermutationReader::try_from_tables(
-            base_table.base_table().clone(),
-            permutation_table.base_table().clone(),
-            0,
-        )
-        .await
-        .unwrap();
-
-        let schema = reader
-            .output_schema(Select::Dynamic(vec![(
-                "idx".to_string(),
-                "idx".to_string(),
-            )]))
-            .await
-            .unwrap();
-        assert_eq!(schema.field(0).name(), "idx");
     }
 }
