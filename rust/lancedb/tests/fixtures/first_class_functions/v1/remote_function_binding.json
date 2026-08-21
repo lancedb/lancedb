@@ -11,5 +11,17 @@
     {"result_field": "normalized_text", "output_name": "search_text", "output_field_id": 21, "output_ordinal": 0, "arrow_type": "utf8", "nullable": false},
     {"result_field": "token_count", "output_name": "search_token_count", "output_field_id": 22, "output_ordinal": 1, "arrow_type": "int64", "nullable": false}
   ],
+  "input_schema": {
+    "fields": [
+      {"name": "title", "nullable": true, "type": {"type": "utf8"}},
+      {"name": "body", "nullable": true, "type": {"type": "utf8"}}
+    ]
+  },
+  "output_schema": {
+    "fields": [
+      {"name": "search_text", "nullable": true, "type": {"type": "utf8"}},
+      {"name": "search_token_count", "nullable": true, "type": {"type": "int64"}}
+    ]
+  },
   "future_binding": {"metadata_revision": 1}
 }

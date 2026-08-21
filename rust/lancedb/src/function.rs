@@ -74,6 +74,46 @@ fn validate_literal(value: &Value) -> Result<()> {
     }
 }
 
+fn has_unknown_keys(value: &Value, allowed: &[&str]) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+}
+
+fn application_has_unknown_nested_fields(value: &Value) -> bool {
+    let Some(application) = value.as_object() else {
+        return false;
+    };
+    if application
+        .get("function")
+        .is_some_and(|value| has_unknown_keys(value, &["name", "version"]))
+    {
+        return true;
+    }
+    if application
+        .get("inputs")
+        .and_then(Value::as_array)
+        .is_some_and(|inputs| {
+            inputs
+                .iter()
+                .any(|input| has_unknown_keys(input, &["parameter", "kind", "value"]))
+        })
+    {
+        return true;
+    }
+    application.get("output").is_some_and(|output| {
+        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
+            || output
+                .get("fields")
+                .and_then(Value::as_array)
+                .is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+                })
+    })
+}
+
 macro_rules! impl_json {
     ($type:ty) => {
         impl $type {
@@ -329,6 +369,56 @@ impl FunctionVersion {
 
 impl_json!(FunctionVersion);
 
+/// Encoded artifact bytes uploaded with a Function registration request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactContent {
+    /// Encoding of `data`. V1 Python authoring uses `base64`.
+    pub encoding: String,
+    pub data: String,
+}
+
+/// Internal execution adapter selected for a Python callable artifact.
+///
+/// The adapter converts the public scalar callable to the Arrow batch ABI
+/// used by the remote executor. It is part of the request envelope, not a
+/// public batch-UDF authoring mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonAdapterSpec {
+    pub kind: String,
+    pub version: u32,
+}
+
+/// Python artifact uploaded while registering a Function.
+///
+/// Unlike [`FunctionArtifact`], which is the durable artifact identity
+/// returned by the catalog, this request value contains the encoded source
+/// bytes that Sophon must durably bake before publishing a FunctionVersion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactRequest {
+    pub kind: String,
+    pub digest: String,
+    pub entrypoint: String,
+    pub content: FunctionArtifactContent,
+    pub adapter: PythonAdapterSpec,
+}
+
+/// Stable request envelope for remote immutable Function registration.
+///
+/// Secret values deliberately have no field in this model. The only secret
+/// material the client may send is the ordered set of names Sophon resolves
+/// inside the remote runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRegistrationRequest {
+    pub name: String,
+    pub artifact: FunctionArtifactRequest,
+    pub signature: FunctionSignature,
+    pub runtime: PythonRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_secrets: Vec<String>,
+}
+
+impl_json!(FunctionRegistrationRequest);
+
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
@@ -358,6 +448,10 @@ pub struct FunctionApplication {
     group_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
+    #[serde(default, flatten, skip_serializing)]
+    unknown_fields: BTreeMap<String, Value>,
+    #[serde(default, skip)]
+    unknown_nested_fields: bool,
 }
 
 impl FunctionApplication {
@@ -380,10 +474,18 @@ impl FunctionApplication {
     pub fn columns(&self) -> &BTreeMap<String, String> {
         &self.columns
     }
+    /// Whether a newer writer attached application fields this client cannot
+    /// validate. Such applications remain readable but must not be declared.
+    pub fn has_unknown_fields(&self) -> bool {
+        !self.unknown_fields.is_empty() || self.unknown_nested_fields
+    }
 
     /// Decode a remote application after validating the Slice 1 literal domain.
     pub fn from_json(json: &str) -> Result<Self> {
-        let application: Self = from_json(json)?;
+        let value: Value = from_json(json)?;
+        let has_unknown_nested_fields = application_has_unknown_nested_fields(&value);
+        let mut application: Self = serde_json::from_value(value).map_err(invalid_json)?;
+        application.unknown_nested_fields = has_unknown_nested_fields;
         application
             .inputs
             .iter()
@@ -433,6 +535,13 @@ pub struct FunctionBinding {
     group_id: String,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
+    /// Exact Arrow schema presented to the Function, encoded with the Lance
+    /// Namespace Arrow JSON representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_schema: Option<Value>,
+    /// Exact physical Arrow schema of the grouped table outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
 }
 
 impl FunctionBinding {
@@ -458,6 +567,14 @@ impl FunctionBinding {
 
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
+    }
+
+    pub fn input_schema(&self) -> Option<&Value> {
+        self.input_schema.as_ref()
+    }
+
+    pub fn output_schema(&self) -> Option<&Value> {
+        self.output_schema.as_ref()
     }
 }
 

@@ -73,6 +73,7 @@ from .index import (
     FTS,
 )
 from .expr import Expr
+from .functions import FunctionApplication
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -2031,7 +2032,8 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str]
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
@@ -2044,13 +2046,21 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str], pa.Field, List[pa.Field], pa.Schema
+        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+
+            A mapping with one ``FunctionApplication`` value keeps its scalar
+            or named-struct result in the named table column. A bare
+            named-struct application expands its ordered result fields as one
+            atomic sibling group; aliases come from ``rename(columns=...)``.
+            Function columns are supported only on LanceDB Cloud and
+            Enterprise.
         computed: Dict[str, str], optional
             A map of column name to a SQL expression defining the column. The
             column's type and inputs are derived from the expression, so no
@@ -4152,9 +4162,10 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str]
-        | pa.field
-        | List[pa.field]
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
         | pa.Schema
         | None = None,
         *,
@@ -6088,9 +6099,10 @@ class AsyncTable:
 
     async def add_columns(
         self,
-        transforms: dict[str, str]
-        | pa.field
-        | List[pa.field]
+        transforms: dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | pa.Field
+        | List[pa.Field]
         | pa.Schema
         | None = None,
         *,
@@ -6101,12 +6113,19 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str]
+        transforms: Dict[str, str | FunctionApplication] or FunctionApplication
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+
+            A mapping with one ``FunctionApplication`` value keeps its scalar
+            or named-struct result in the named table column. A bare
+            named-struct application expands its ordered result fields as one
+            atomic sibling group; aliases come from ``rename(columns=...)``.
+            Function columns are supported only on LanceDB Cloud and
+            Enterprise.
         computed: Dict[str, str], optional
             A map of column name to a SQL expression defining the column. The
             column's type and inputs are derived from the expression.
@@ -6130,6 +6149,32 @@ class AsyncTable:
             version: the new version number of the table after adding columns.
 
         """
+        function_application = None
+        function_output_name = None
+        if isinstance(transforms, FunctionApplication):
+            function_application = transforms
+        elif isinstance(transforms, dict) and any(
+            isinstance(value, FunctionApplication) for value in transforms.values()
+        ):
+            if len(transforms) != 1 or not all(
+                isinstance(value, FunctionApplication) for value in transforms.values()
+            ):
+                raise ValueError(
+                    "one add_columns call declares exactly one Function sibling group"
+                )
+            function_output_name, function_application = next(iter(transforms.items()))
+
+        if function_application is not None:
+            if computed:
+                raise ValueError(
+                    "add_columns cannot mix a Function application with SQL "
+                    "computed columns"
+                )
+            function_application._ensure_declarable()
+            return await self._inner.add_function_columns(
+                function_application.to_canonical_json(), function_output_name
+            )
+
         if isinstance(transforms, pa.Field):
             transforms = [transforms]
         if isinstance(transforms, list) and all(

@@ -24,6 +24,7 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
 use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
@@ -487,6 +488,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Getting the read consistency of a remote database is not yet supported"
                 .to_string(),
         })
+    }
+
+    async fn create_function_async(
+        &self,
+        request: FunctionRegistrationRequest,
+    ) -> Result<Job<FunctionVersion>> {
+        let req = self.client.post("/v1/function/create").json(&request);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+            source: "Function registration response did not contain a valid job_id".into(),
+            request_id,
+            status_code: Some(status),
+        })?;
+        Ok(Job::new_typed(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id,
+        ))))
+    }
+
+    async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
+        let req = self
+            .client
+            .post("/v1/function/describe")
+            .json(&serde_json::json!({
+                "name": name,
+                "version": version,
+            }));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
     }
 
     fn job(&self, job_id: &str) -> Result<crate::job::Job> {
@@ -2444,6 +2478,60 @@ mod tests {
         let batches = conn.job_history(Some("job-1")).await.unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_create_function_async_sends_canonical_request_and_decodes_typed_job() {
+        const REQUEST: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+        );
+        const FUNCTION_JOB: &str =
+            include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
+        let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/function/create" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body, expected);
+                http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"job-function-1"}"#)
+                    .unwrap()
+            }
+            "/v1/jobs/describe" => http::Response::builder()
+                .status(200)
+                .body(FUNCTION_JOB)
+                .unwrap(),
+            path => panic!("unexpected path: {path}"),
+        });
+        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
+        let job = conn.create_function_async(request).await.unwrap();
+        assert_eq!(job.id(), Some("job-function-1"));
+        let version = job.wait().await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
+    }
+
+    #[tokio::test]
+    async fn test_get_function_requires_and_sends_exact_version() {
+        const VERSION: &str = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/function/describe");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"name": "embed", "version": "fv_01K3EXACT"})
+            );
+            http::Response::builder().status(200).body(VERSION).unwrap()
+        });
+        let version = conn.get_function("embed", "fv_01K3EXACT").await.unwrap();
+        assert_eq!(version.name(), "embed");
+        assert_eq!(version.version(), "fv_01K3EXACT");
     }
 
     #[tokio::test]
