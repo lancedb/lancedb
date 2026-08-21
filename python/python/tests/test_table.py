@@ -3947,7 +3947,7 @@ def test_refresh_column_async_returns_job(tmp_path):
 
     job = table.refresh_column_async("doubled")
     assert job.id is None  # in-process jobs have no server id
-    job.wait()
+    assert job.wait() is None
     assert job.status() == "finished"
     assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
 
@@ -3963,6 +3963,6 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     await table.add_columns(computed={"tripled": "x * 3"})
 
     job = await table.refresh_column_async("tripled")
-    await job.wait()
+    assert await job.wait() is None
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]

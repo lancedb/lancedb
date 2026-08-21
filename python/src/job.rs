@@ -93,7 +93,7 @@ impl Job {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner.wait().await.infer_error()?;
-            Ok(())
+            Ok(None::<()>)
         })
     }
 
