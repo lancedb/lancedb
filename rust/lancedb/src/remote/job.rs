@@ -3,12 +3,14 @@
 
 //! Tracking for server-side jobs through the `/v1/jobs` API.
 
+use std::marker::PhantomData;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::time::sleep;
 
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::error::{Error, JobFailure, Result};
 use crate::job::JobHandle;
@@ -27,12 +29,6 @@ enum JobState {
     /// A state this client version does not know; treated as still running
     /// and reported as-is if the job never settles.
     Other(String),
-}
-
-impl<'de> Deserialize<'de> for JobState {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        Ok(Self::from(String::deserialize(deserializer)?.as_str()))
-    }
 }
 
 impl JobState {
@@ -66,7 +62,7 @@ impl From<&str> for JobState {
 /// The server's account of why a job failed. Absent from older servers, which
 /// report only the terminal state.
 #[derive(Deserialize)]
-struct ReportedFailure {
+pub(super) struct ReportedFailure {
     #[serde(default)]
     phase: Option<String>,
     #[serde(default)]
@@ -75,25 +71,60 @@ struct ReportedFailure {
     retryable: Option<bool>,
 }
 
+/// Forward-compatible `/v1/jobs/describe` wire envelope.
 #[derive(Deserialize)]
-struct DescribeJobResponse {
-    job_state: JobState,
+pub(super) struct DescribeJobResponse {
+    pub(super) job_state: String,
     #[serde(default)]
-    failure: Option<ReportedFailure>,
+    result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(super) failure: Option<ReportedFailure>,
 }
 
-pub struct RemoteJob<S: HttpSend> {
+impl ReportedFailure {
+    pub(super) fn into_job_failure(self) -> JobFailure {
+        JobFailure {
+            phase: self.phase,
+            message: self.message,
+            retryable: self.retryable,
+            source: None,
+        }
+    }
+}
+
+impl DescribeJobResponse {
+    fn state(&self) -> JobState {
+        JobState::from(self.job_state.as_str())
+    }
+
+    fn decode_result<T: DeserializeOwned>(&self, request_id: &str) -> Result<T> {
+        serde_json::from_value(self.result.clone().unwrap_or(serde_json::Value::Null)).map_err(
+            |error| Error::Http {
+                source: format!("failed to parse typed job result: {error}").into(),
+                request_id: request_id.to_string(),
+                status_code: None,
+            },
+        )
+    }
+}
+
+pub struct RemoteJob<S: HttpSend, T = ()> {
     client: RestfulLanceDbClient<S>,
     job_id: String,
+    result: PhantomData<fn() -> T>,
 }
 
-impl<S: HttpSend> RemoteJob<S> {
+impl<S: HttpSend, T> RemoteJob<S, T> {
     pub fn new(client: RestfulLanceDbClient<S>, job_id: String) -> Self {
-        Self { client, job_id }
+        Self {
+            client,
+            job_id,
+            result: PhantomData,
+        }
     }
 
     /// One `/v1/jobs/describe` round trip.
-    async fn describe(&self) -> Result<DescribeJobResponse> {
+    async fn describe(&self) -> Result<(String, DescribeJobResponse)> {
         let request = self
             .client
             .post("/v1/jobs/describe")
@@ -104,40 +135,39 @@ impl<S: HttpSend> RemoteJob<S> {
         let description: DescribeJobResponse =
             serde_json::from_str(&body).map_err(|e| Error::Http {
                 source: format!("failed to parse job description: {}", e).into(),
-                request_id,
+                request_id: request_id.clone(),
                 status_code: None,
             })?;
-        Ok(description)
+        Ok((request_id, description))
     }
 }
 
 #[async_trait]
-impl<S: HttpSend> JobHandle for RemoteJob<S> {
+impl<S, T> JobHandle<T> for RemoteJob<S, T>
+where
+    S: HttpSend,
+    T: Clone + DeserializeOwned + Send + Sync + 'static,
+{
     fn id(&self) -> Option<&str> {
         Some(&self.job_id)
     }
 
     async fn status(&self) -> Result<String> {
-        Ok(self.describe().await?.job_state.client_label())
+        Ok(self.describe().await?.1.state().client_label())
     }
 
-    async fn wait(&self) -> Result<()> {
+    async fn wait(&self) -> Result<T> {
         let mut interval = INITIAL_POLL_INTERVAL;
         loop {
-            let description = self.describe().await?;
-            match description.job_state {
-                JobState::Done => return Ok(()),
+            let (request_id, description) = self.describe().await?;
+            match description.state() {
+                JobState::Done => return description.decode_result(&request_id),
                 JobState::Failed => {
                     return Err(Error::JobFailed {
                         job_id: Some(self.job_id.clone()),
                         failure: description
                             .failure
-                            .map(|reported| JobFailure {
-                                phase: reported.phase,
-                                message: reported.message,
-                                retryable: reported.retryable,
-                                source: None,
-                            })
+                            .map(ReportedFailure::into_job_failure)
                             .unwrap_or_default(),
                     });
                 }
@@ -166,5 +196,50 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
             .check_response(&request_id, response)
             .await
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::function::{FunctionVersion, RefreshColumnResult};
+
+    use super::DescribeJobResponse;
+
+    const FUNCTION_JOB: &str =
+        include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
+    const REFRESH_JOB: &str =
+        include_str!("../../tests/fixtures/first_class_functions/v1/remote_refresh_job.json");
+    const UNIT_JOB: &str =
+        include_str!("../../tests/fixtures/first_class_functions/v1/remote_unit_job.json");
+
+    #[test]
+    fn typed_remote_job_fixtures_decode_terminal_results() {
+        let function: DescribeJobResponse =
+            serde_json::from_str(FUNCTION_JOB).expect("function job fixture");
+        let result: FunctionVersion = function
+            .decode_result("fixture-request")
+            .expect("typed FunctionVersion result");
+        assert_eq!(result.version(), "fv_01K3EXACT");
+
+        let refresh: DescribeJobResponse =
+            serde_json::from_str(REFRESH_JOB).expect("refresh job fixture");
+        let result: RefreshColumnResult = refresh
+            .decode_result("fixture-request")
+            .expect("typed RefreshColumnResult");
+        assert_eq!(result.rows_assigned, 999_998_800);
+        assert_eq!(result.rows_filled(), result.rows_assigned);
+
+        let unit: DescribeJobResponse = serde_json::from_str(UNIT_JOB).expect("unit job fixture");
+        let result: () = unit
+            .decode_result("fixture-request")
+            .expect("missing unit result remains compatible");
+        assert_eq!(result, ());
+    }
+
+    #[test]
+    fn remote_wire_unknown_fields_are_forward_decodable() {
+        let response: DescribeJobResponse =
+            serde_json::from_str(FUNCTION_JOB).expect("function job fixture");
+        assert_eq!(response.job_state, "DONE");
     }
 }

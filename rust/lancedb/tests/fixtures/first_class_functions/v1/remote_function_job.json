@@ -1,0 +1,32 @@
+{
+  "job_id": "job_function_01K3",
+  "job_type": "create_function",
+  "job_state": "DONE",
+  "creation_ms": 1787270400000,
+  "spec": {"name": "embed"},
+  "result": {
+    "name": "embed",
+    "version": "fv_01K3EXACT",
+    "artifact": {
+      "kind": "python_callable",
+      "digest": "sha256:code",
+      "entrypoint": "embed"
+    },
+    "signature": {
+      "inputs": [{"name": "text", "arrow_type": "utf8", "nullable": true}],
+      "output": {"kind": "scalar", "arrow_type": "list<float32>", "nullable": false}
+    },
+    "runtime": {
+      "kind": "python",
+      "python_version": "3.12",
+      "environment": {"kind": "pip", "packages": ["sentence-transformers>=3"]},
+      "env": {"TOKENIZERS_PARALLELISM": "false"}
+    },
+    "runtime_digest": "sha256:runtime",
+    "environment_digest": "sha256:environment",
+    "required_secrets": ["HF_TOKEN"],
+    "resource_defaults": {"num_cpus": 4.0, "memory_bytes": 17179869184, "num_gpus": 1.0},
+    "created_at": "2026-08-21T00:00:00Z"
+  },
+  "future_job": {"trace_id": "trace-1"}
+}

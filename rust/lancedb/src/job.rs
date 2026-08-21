@@ -13,47 +13,66 @@ use crate::error::{Error, JobFailure, Result};
 
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
-pub(crate) trait JobHandle: Send + Sync {
+pub(crate) trait JobHandle<T>: Send + Sync
+where
+    T: Clone + Send + Sync + 'static,
+{
     /// Server-assigned id, when the backend has one.
     fn id(&self) -> Option<&str> {
         None
     }
     async fn status(&self) -> Result<String>;
-    async fn wait(&self) -> Result<()>;
+    async fn wait(&self) -> Result<T>;
     async fn cancel(&self) -> Result<()>;
 }
 
 /// A handle to an operation that may still be running.
 ///
 /// The operation may already be complete when the handle is created.
-pub struct Job {
-    handle: Option<Box<dyn JobHandle>>,
+pub struct Job<T = ()>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    handle: Option<Box<dyn JobHandle<T>>>,
+    completed: Option<T>,
 }
 
-impl std::fmt::Debug for Job {
+impl<T> std::fmt::Debug for Job<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
             .field("id", &self.id())
-            .field("done", &self.handle.is_none())
+            .field("done", &self.completed.is_some())
             .finish()
     }
 }
 
-impl Job {
+impl Job<()> {
     /// A job whose operation finished before the handle was created.
     pub(crate) fn new_done() -> Self {
-        Self { handle: None }
-    }
-
-    pub(crate) fn new(handle: Box<dyn JobHandle>) -> Self {
         Self {
-            handle: Some(handle),
+            handle: None,
+            completed: Some(()),
         }
     }
 
-    /// A job running as a task in this process.
+    /// A unit-result job running as a task in this process.
     pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
         Self::new(Box::new(SpawnedJob::new(task)))
+    }
+}
+
+impl<T> Job<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub(crate) fn new(handle: Box<dyn JobHandle<T>>) -> Self {
+        Self {
+            handle: Some(handle),
+            completed: None,
+        }
     }
 
     /// Identifies the operation on the server that is running it.
@@ -83,9 +102,12 @@ impl Job {
     ///
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
-    pub async fn wait(&self) -> Result<()> {
+    pub async fn wait(&self) -> Result<T> {
         match &self.handle {
-            None => Ok(()),
+            None => Ok(self
+                .completed
+                .clone()
+                .expect("a Job without a handle must contain its completed result")),
             Some(handle) => handle.wait().await,
         }
     }
@@ -151,7 +173,7 @@ impl SpawnedJob {
 }
 
 #[async_trait]
-impl JobHandle for SpawnedJob {
+impl JobHandle<()> for SpawnedJob {
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",

@@ -54,6 +54,22 @@ listing a storage directory.
 
 ::: lancedb.LsmWriteSpec
 
+## Functions and Jobs
+
+::: lancedb.functions.FunctionVersion
+
+::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.FunctionBinding
+
+::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.job.Job
+
+::: lancedb.job.AsyncJob
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead

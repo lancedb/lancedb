@@ -1,0 +1,8 @@
+{
+  "job_id": "job_index_01K3",
+  "job_type": "create_index",
+  "job_state": "DONE",
+  "creation_ms": 1787270400002,
+  "spec": {"column": "vector"},
+  "future_job": {"trace_id": "trace-2"}
+}

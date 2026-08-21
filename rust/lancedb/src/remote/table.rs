@@ -153,7 +153,7 @@ struct FreshnessJob<S: HttpSend> {
 }
 
 #[async_trait]
-impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
+impl<S: HttpSend> crate::job::JobHandle<()> for FreshnessJob<S> {
     fn id(&self) -> Option<&str> {
         crate::job::JobHandle::id(&self.inner)
     }
