@@ -66,18 +66,10 @@ mainVersion: number;
 
 ***
 
-### mergeBlockers
+### errors
 
 ```ts
-mergeBlockers: MergeBlocker[];
-```
-
-***
-
-### mergeable
-
-```ts
-mergeable: boolean;
+errors: CherryPickError[];
 ```
 
 ***

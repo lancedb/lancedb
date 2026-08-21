@@ -1885,7 +1885,7 @@ impl Branches {
     }
 
     #[pyo3(signature = (from_branch, dry_run=false))]
-    pub fn merge(
+    pub fn cherry_pick(
         self_: PyRef<'_, Self>,
         from_branch: String,
         dry_run: bool,
@@ -1893,7 +1893,7 @@ impl Branches {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let result = inner
-                .merge_branch(&from_branch, dry_run)
+                .cherry_pick(&from_branch, dry_run)
                 .await
                 .infer_error()?;
             Python::attach(|py| struct_to_wire_py(py, &result))

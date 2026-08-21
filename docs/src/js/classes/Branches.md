@@ -115,25 +115,25 @@ List all branches, mapping name to branch metadata.
 
 ***
 
-### merge()
+### cherryPick()
 
 ```ts
-merge(fromBranch, dryRun): Promise<MergeBranchResult>
+cherryPick(fromBranch, dryRun): Promise<CherryPickResult>
 ```
 
-Merge a branch into main.
+Cherry-pick a branch onto main.
 
-Set `dryRun` to `true` to preview the merge. A rejected merge resolves
-with `status: "rejected"` instead of throwing.
+Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+with `status: "failed"` instead of throwing.
 
 #### Parameters
 
 * **fromBranch**: `string`
-    Branch to merge from.
+    Branch to cherry-pick from.
 
 * **dryRun**: `boolean` = `false`
-    When true, only preview the merge. Defaults to false.
+    When true, only preview. Defaults to false.
 
 #### Returns
 
-`Promise`&lt;[`MergeBranchResult`](../interfaces/MergeBranchResult.md)&gt;
+`Promise`&lt;[`CherryPickResult`](../interfaces/CherryPickResult.md)&gt;

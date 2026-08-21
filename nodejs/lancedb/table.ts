@@ -1557,8 +1557,8 @@ export interface BranchRowCountSummary {
   deltaAvailable: boolean;
 }
 
-/** A reason why a branch cannot currently be merged. */
-export interface MergeBlocker {
+/** A reason why a cherry-pick cannot currently land. */
+export interface CherryPickError {
   code: string;
   message: string;
 }
@@ -1578,20 +1578,19 @@ export interface BranchDiff {
   changedColumns: BranchColumnChange[];
   addedIndexes: BranchIndexSummary[];
   removedIndexes: BranchIndexSummary[];
-  mergeable: boolean;
-  mergeBlockers: MergeBlocker[];
+  errors: CherryPickError[];
 }
 
-/** Changes that would be, or were, promoted by a branch merge. */
-export interface MergePreview {
+/** Changes that would be, or were, promoted by a cherry-pick. */
+export interface CherryPickPreview {
   promotedColumns: string[];
 }
 
-/** Result of previewing or attempting a branch merge. */
-export interface MergeBranchResult {
-  status: "ready" | "rejected" | "notImplemented" | "merged" | "unknown";
+/** Result of previewing or attempting a cherry-pick. */
+export interface CherryPickResult {
+  status: "ready" | "failed" | "notImplemented" | "cherryPicked" | "unknown";
   diff: BranchDiff;
-  preview: MergePreview;
+  preview: CherryPickPreview;
   mainVersionAfter?: number;
 }
 
@@ -1654,21 +1653,21 @@ export class Branches {
   }
 
   /**
-   * Merge a branch into main.
+   * Cherry-pick a branch onto main.
    *
-   * Set `dryRun` to `true` to preview the merge. A rejected merge resolves
-   * with `status: "rejected"` instead of throwing.
+   * Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+   * with `status: "failed"` instead of throwing.
    *
-   * @param fromBranch Branch to merge from.
-   * @param dryRun When true, only preview the merge. Defaults to false.
+   * @param fromBranch Branch to cherry-pick from.
+   * @param dryRun When true, only preview. Defaults to false.
    */
-  async merge(
+  async cherryPick(
     fromBranch: string,
     dryRun: boolean = false,
-  ): Promise<MergeBranchResult> {
-    return (await this.#inner.merge(
+  ): Promise<CherryPickResult> {
+    return (await this.#inner.cherryPick(
       fromBranch,
       dryRun,
-    )) as unknown as MergeBranchResult;
+    )) as unknown as CherryPickResult;
   }
 }
