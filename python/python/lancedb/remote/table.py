@@ -50,7 +50,7 @@ from lancedb.index import (
 )
 from lancedb.job import Job
 from lancedb.remote.db import LOOP
-from lancedb.table import IndexConfigType, KNOWN_METRICS
+from lancedb.table import IndexConfigType, KNOWN_METRICS, TableBase
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -1081,6 +1081,13 @@ class RemoteTable(Table):
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
+
+    def add_bases(
+        self,
+        bases: Union[str, TableBase, Iterable[Union[str, TableBase]]],
+    ) -> None:
+        """Register additional storage bases for this table."""
+        LOOP.run(self._table.add_bases(bases))
 
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]

@@ -22,6 +22,7 @@ use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    TableBase as LanceTableBase,
 };
 use lancedb::tokenize as lancedb_tokenize;
 use pyo3::{
@@ -92,6 +93,13 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
     }
     out.set_item("buckets", buckets)?;
     Ok(out.unbind())
+}
+
+#[derive(FromPyObject)]
+pub(crate) struct PyTableBase {
+    path: String,
+    name: Option<String>,
+    is_dataset_root: bool,
 }
 
 #[derive(FromPyObject)]
@@ -1235,6 +1243,25 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.blob_columns().await.infer_error()
+        })
+    }
+
+    #[pyo3(signature = (bases))]
+    pub fn add_bases(
+        self_: PyRef<'_, Self>,
+        bases: Vec<PyTableBase>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let bases: Vec<LanceTableBase> = bases
+            .into_iter()
+            .map(|base| LanceTableBase {
+                path: base.path,
+                name: base.name,
+                is_dataset_root: base.is_dataset_root,
+            })
+            .collect();
+        future_into_py(self_.py(), async move {
+            inner.add_bases(bases).await.infer_error()
         })
     }
 

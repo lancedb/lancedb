@@ -214,7 +214,7 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 /// a built-in pull-based adapter.
 #[cfg(feature = "metrics")]
 pub use metrics;
-pub use table::{FtsToken, Table};
+pub use table::{FtsToken, Table, TableBase};
 
 /// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
 ///

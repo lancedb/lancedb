@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+pub mod bases;
 pub mod blobs;
 pub mod insert;
 
@@ -2244,6 +2245,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.blob_columns_impl().await
     }
 
+    async fn add_bases(&self, bases: &[crate::table::TableBase]) -> Result<()> {
+        self.add_bases_impl(bases).await
+    }
+
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
         self.fetch_blobs_impl(column, row_ids).await
     }
@@ -4087,6 +4092,42 @@ mod tests {
             .status(200)
             .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_add_bases_posts_the_bases_array() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/bases/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body["bases"],
+                serde_json::json!([{
+                    "path": "s3://bucket/media/",
+                    "isDatasetRoot": false
+                }])
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 4}"#)
+                .unwrap()
+        });
+
+        table.add_bases(["s3://bucket/media/"]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_add_bases_rejects_empty_response() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let err = table.add_bases(["s3://bucket/media/"]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid response while registering table bases"),
+            "{err}"
+        );
     }
 
     #[rstest]

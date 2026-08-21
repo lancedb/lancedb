@@ -34,7 +34,7 @@ use lance_index::scalar::inverted::query::collect_query_tokens;
 use lance_namespace::LanceNamespace;
 use lance_namespace::error::NamespaceError;
 use lance_namespace::models::DescribeTableRequest;
-use lance_table::format::Manifest;
+use lance_table::format::{BasePath, Manifest};
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
@@ -711,6 +711,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "blob_columns is not supported on this table type".into(),
         })
     }
+    /// Register additional storage bases for this table.
+    async fn add_bases(&self, _bases: &[TableBase]) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "Registering table bases is not supported for this table type.".into(),
+        })
+    }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
     async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
         Err(Error::NotSupported {
@@ -886,6 +892,54 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         Err(Error::NotSupported {
             message: "update_field_metadata is not supported on this table type".into(),
         })
+    }
+}
+
+/// An extra storage prefix registered on a table.
+///
+/// `path` is an object-store URI. `name` is an optional alias. `is_dataset_root`
+/// is true when `path` points to a Lance dataset root. When false, `path`
+/// points directly to the directory containing the referenced files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableBase {
+    /// Object store URI such as `s3://bucket/media/`.
+    pub path: String,
+    /// Optional alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// True when `path` is a Lance dataset root. When false, `path` is the
+    /// directory containing the referenced files.
+    #[serde(default)]
+    pub is_dataset_root: bool,
+}
+
+impl TableBase {
+    /// A non-root base with no alias.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            name: None,
+            is_dataset_root: false,
+        }
+    }
+}
+
+impl From<&str> for TableBase {
+    fn from(path: &str) -> Self {
+        Self::new(path)
+    }
+}
+
+impl From<&String> for TableBase {
+    fn from(path: &String) -> Self {
+        Self::new(path.as_str())
+    }
+}
+
+impl From<String> for TableBase {
+    fn from(path: String) -> Self {
+        Self::new(path)
     }
 }
 
@@ -1124,6 +1178,25 @@ impl Table {
     /// [`Error::NotSupported`] on table types without blob support.
     pub async fn blob_columns(&self) -> Result<Vec<String>> {
         self.inner.blob_columns().await
+    }
+
+    /// Register additional storage bases for this table.
+    ///
+    /// A URI string is a non-root base with no alias.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn register(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table.add_bases(["s3://bucket/media/"]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn add_bases(
+        &self,
+        bases: impl IntoIterator<Item = impl Into<TableBase>>,
+    ) -> Result<()> {
+        let bases: Vec<TableBase> = bases.into_iter().map(Into::into).collect();
+        self.inner.add_bases(&bases).await
     }
 
     /// Materialize blob bytes for the given row ids.
@@ -3362,6 +3435,25 @@ impl BaseTable for NativeTable {
     async fn blob_columns(&self) -> Result<Vec<String>> {
         let schema = self.schema().await?;
         Ok(crate::blob::blob_column_names(schema.as_ref()))
+    }
+
+    async fn add_bases(&self, bases: &[TableBase]) -> Result<()> {
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
+        let new_bases = bases
+            .iter()
+            .map(|base| {
+                BasePath::new(
+                    0,
+                    base.path.clone(),
+                    base.name.clone(),
+                    base.is_dataset_root,
+                )
+            })
+            .collect();
+        let dataset = dataset.add_bases(new_bases, None).await?;
+        self.dataset.update(dataset);
+        Ok(())
     }
 
     async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {

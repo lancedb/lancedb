@@ -10,6 +10,7 @@ use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
+    TableBase as LanceTableBase,
 };
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -447,6 +448,18 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn add_bases(&self, bases: Vec<TableBase>) -> napi::Result<()> {
+        self.inner_ref()?
+            .add_bases(bases.into_iter().map(|base| LanceTableBase {
+                path: base.path,
+                name: base.name,
+                is_dataset_root: base.is_dataset_root,
+            }))
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
         let res = self
@@ -698,6 +711,18 @@ impl Table {
             .await
             .default_error()
     }
+}
+
+#[napi(object)]
+/// An extra storage prefix registered on a table.
+pub struct TableBase {
+    /// Object store URI such as `s3://bucket/media/`.
+    pub path: String,
+    /// Optional alias.
+    pub name: Option<String>,
+    /// True when `path` is a Lance dataset root. When false, `path` is the
+    /// directory containing the referenced files.
+    pub is_dataset_root: bool,
 }
 
 #[napi(object)]

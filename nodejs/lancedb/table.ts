@@ -79,6 +79,25 @@ export interface WriteProgress {
 }
 
 /**
+ * An extra storage prefix registered on a table.
+ *
+ * `path` is an object-store URI. `name` is an optional alias. `isDatasetRoot`
+ * is true when `path` points to a Lance dataset root. When false, `path`
+ * points directly to the directory containing the referenced files.
+ */
+export interface TableBase {
+  /** Object store URI such as `s3://bucket/media/`. */
+  path: string;
+  /** Optional alias. */
+  name?: string;
+  /**
+   * True when `path` is a Lance dataset root. When false, `path` is the
+   * directory containing the referenced files.
+   */
+  isDatasetRoot?: boolean;
+}
+
+/**
  * Options for adding data to a table.
  */
 export interface AddDataOptions {
@@ -562,6 +581,15 @@ export abstract class Table {
       | Schema
       | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Register additional storage bases for this table.
+   *
+   * A URI string is a non-root base with no alias.
+   */
+  abstract addBases(
+    bases: string | TableBase | Array<string | TableBase>,
+  ): Promise<void>;
 
   /**
    * Fill the rows of a computed column that hold no value yet.
@@ -1196,6 +1224,12 @@ export class LocalTable extends Table {
     throw new Error("Invalid input type for addColumns");
   }
 
+  async addBases(
+    bases: string | TableBase | Array<string | TableBase>,
+  ): Promise<void> {
+    await this.inner.addBases(normalizeBases(bases));
+  }
+
   async refreshColumn(column: string): Promise<RefreshColumnResult> {
     return await this.inner.refreshColumn(column);
   }
@@ -1394,6 +1428,21 @@ export class LocalTable extends Table {
   async migrateManifestPathsV2(): Promise<void> {
     await this.inner.migrateManifestPathsV2();
   }
+}
+
+function normalizeBases(
+  bases: string | TableBase | Array<string | TableBase>,
+): TableBase[] {
+  const baseInputs = Array.isArray(bases) ? bases : [bases];
+  return baseInputs.map((base) =>
+    typeof base === "string"
+      ? { path: base, isDatasetRoot: false }
+      : {
+          path: base.path,
+          name: base.name,
+          isDatasetRoot: base.isDatasetRoot ?? false,
+        },
+  );
 }
 
 /**

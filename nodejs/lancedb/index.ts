@@ -130,6 +130,7 @@ export {
 
 export {
   Table,
+  TableBase,
   Branches,
   BranchColumnSummary,
   BranchColumnChange,

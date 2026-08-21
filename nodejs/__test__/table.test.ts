@@ -4,6 +4,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
+import { pathToFileURL } from "url";
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -3402,5 +3403,24 @@ describe("computed columns", () => {
 
     const rows = await table.query().toArray();
     expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
+  });
+});
+
+describe("table bases", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("addBases accepts a file uri", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "photos",
+      new arrow.Schema([new arrow.Field("id", new arrow.Int64(), false)]),
+    );
+    const media = path.join(tmpDir.name, "media");
+    fs.mkdirSync(media);
+    await table.addBases(pathToFileURL(media).toString());
   });
 });

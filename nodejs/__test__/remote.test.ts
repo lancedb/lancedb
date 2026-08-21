@@ -1001,4 +1001,49 @@ describe("remote connection jobs surface", () => {
       },
     );
   });
+
+  it("addBases posts the bases array", async () => {
+    const postedBodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "photos",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path.endsWith("/bases/")) {
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            postedBodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: 2 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("photos");
+        await table.addBases({ path: "s3://bucket/media/" });
+      },
+    );
+    expect(postedBodies).toEqual([
+      {
+        bases: [
+          {
+            path: "s3://bucket/media/",
+            isDatasetRoot: false,
+          },
+        ],
+      },
+    ]);
+  });
 });

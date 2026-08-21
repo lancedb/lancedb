@@ -2306,3 +2306,36 @@ def test_remote_connection_jobs_surface():
         assert job.status() == "failed"
         with pytest.raises(JobFailedError, match="worker died"):
             job.wait(timeout=timedelta(seconds=5))
+
+
+def test_remote_add_bases_posts_the_bases_array():
+    captured_body = {}
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+        elif request.path == "/v1/table/test/bases/":
+            content_len = int(request.headers.get("Content-Length", 0))
+            captured_body.update(json.loads(request.rfile.read(content_len)))
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 2}')
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.add_bases(lancedb.TableBase(path="s3://bucket/media/"))
+
+    assert captured_body["bases"] == [
+        {
+            "path": "s3://bucket/media/",
+            "isDatasetRoot": False,
+        }
+    ]
+

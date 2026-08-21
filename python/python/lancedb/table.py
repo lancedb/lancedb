@@ -19,6 +19,7 @@ from typing import (
     Iterable,
     List,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -708,6 +709,21 @@ def _normalize_progress(progress):
     if progress is False or progress is None:
         return None, False
     return progress, False
+
+
+@dataclass
+class TableBase:
+    """An extra storage prefix registered on a table.
+
+    ``path`` is an object-store URI. ``name`` is an optional alias.
+    ``is_dataset_root`` is true when ``path`` points to a Lance dataset
+    root. When false, ``path`` points directly to the directory containing
+    the referenced files.
+    """
+
+    path: str
+    name: Optional[str] = None
+    is_dataset_root: bool = False
 
 
 class Table(ABC):
@@ -1568,6 +1584,18 @@ class Table(ABC):
     def blob_columns(self) -> list[str]:
         """Names of the blob v2 columns declared on this table."""
 
+    def add_bases(
+        self,
+        bases: Union[str, TableBase, Iterable[Union[str, TableBase]]],
+    ) -> None:
+        """Register additional storage bases for this table.
+
+        A URI string is a non-root base with no alias::
+
+            table.add_bases("s3://bucket/media/")
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -2413,6 +2441,12 @@ class LanceTable(Table):
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
+
+    def add_bases(
+        self,
+        bases: Union[str, TableBase, Iterable[Union[str, TableBase]]],
+    ) -> None:
+        LOOP.run(self._table.add_bases(bases))
 
     def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
@@ -6266,6 +6300,18 @@ class AsyncTable:
     async def blob_columns(self) -> list[str]:
         return await self._inner.blob_columns()
 
+    async def add_bases(
+        self,
+        bases: Union[str, TableBase, Iterable[Union[str, TableBase]]],
+    ) -> None:
+        """Register additional storage bases for this table.
+
+        A URI string is a non-root base with no alias::
+
+            await table.add_bases("s3://bucket/media/")
+        """
+        await self._inner.add_bases(_normalize_bases(bases))
+
     async def fetch_blobs(
         self, column: str, row_ids: Union[list[int], pa.Table]
     ) -> pa.LargeBinaryArray:
@@ -6482,6 +6528,30 @@ class AsyncTable:
             The new metadata to set
         """
         await self._inner.replace_field_metadata(field_name, new_metadata)
+
+
+def _normalize_bases(
+    base_inputs: Union[str, TableBase, Iterable[Union[str, TableBase]]],
+) -> list[TableBase]:
+    if isinstance(base_inputs, (str, TableBase)):
+        items: Iterable[Union[str, TableBase]] = [base_inputs]
+    elif isinstance(base_inputs, Mapping):
+        raise TypeError(
+            "Expected a URI string, TableBase, or an iterable of those values"
+        )
+    else:
+        items = base_inputs
+    normalized_bases: list[TableBase] = []
+    for base in items:
+        if isinstance(base, str):
+            normalized_bases.append(TableBase(path=base))
+        elif isinstance(base, TableBase):
+            normalized_bases.append(base)
+        else:
+            raise TypeError(
+                f"Expected a URI string or TableBase, got {type(base).__name__}"
+            )
+    return normalized_bases
 
 
 @dataclass
