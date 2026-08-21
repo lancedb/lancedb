@@ -106,6 +106,12 @@ pub enum ShuffleStrategy {
 /// explicitly, or each client draws its own seed.  And use the same
 /// `LANCEDB_PERM_BUILDER_MEMORY_LIMIT` everywhere, because regrouping a shuffled permutation by
 /// split id is not a stable sort and where it spills decides how rows within a split are ordered.
+///
+/// This covers building a permutation, not reading one back.  [`PermutationReader`] slices a
+/// split by offset, so a permutation handed to [`Self::persist`] still depends on the scans of
+/// *that* backend being ordered.  The default in-memory destination is unaffected.
+///
+/// [`PermutationReader`]: crate::dataloader::permutation::reader::PermutationReader
 pub struct PermutationBuilder {
     config: PermutationConfig,
     base_table: Table,
