@@ -172,6 +172,8 @@
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]
 
+#[doc(hidden)]
+pub mod _internal;
 pub mod arrow;
 pub mod blob;
 pub mod connection;

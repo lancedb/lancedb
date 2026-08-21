@@ -83,7 +83,10 @@ pub(crate) async fn execute_refresh_column(
         }
         rows_filled += gained;
         let values = fill_stream(&dataset, &fragment, bound.clone(), column).await?;
-        replacements.push(fragment.write_columns(values, &column_schema).await?);
+        replacements.push(
+            super::fragment_publication::stage_fragment_columns(&fragment, values, &column_schema)
+                .await?,
+        );
     }
 
     if replacements.is_empty() {
@@ -140,7 +143,7 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
 /// Refresh enumerates base fragments, and a write spec keeps visible rows in
 /// un-compacted MemWAL tiers it cannot reach -- success would silently omit
 /// readable rows.
-async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
+pub(crate) async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
     // The catch-up flag outlives unset and marks retained SSTable rows.
     let catchup = table.dataset.get().await?.manifest().reader_feature_flags
         & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP

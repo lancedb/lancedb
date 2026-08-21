@@ -69,6 +69,7 @@ regex = "1.10"
 semver = "1.0.25"
 serde = "1"
 serde_json = "1"
+sha2 = "0.10.9"
 tempfile = "3.5.0"
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 uuid = { version = "1.7.0", features = ["v4"] }

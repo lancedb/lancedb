@@ -73,6 +73,7 @@ mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub(crate) mod fragment_publication;
 pub mod lsm_stats;
 pub mod merge;
 pub mod optimize;
