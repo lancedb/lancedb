@@ -1489,9 +1489,9 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given offsets, you will
-        need to add the row offset column to the output and align it yourself.
+        Results are returned in the same order as the given offsets. Repeated offsets
+        produce repeated rows, which makes this method suitable for sampling with
+        replacement.
 
         Parameters
         ----------
@@ -6290,6 +6290,9 @@ class AsyncTable:
 
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
+
+        Results are returned in the same order as the given offsets, including repeated
+        occurrences.
 
         Parameters
         ----------

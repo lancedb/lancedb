@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
+use arrow_array::{
+    Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt64Array,
+    cast::AsArray,
+    make_array,
+    types::{Int64Type, UInt64Type},
+};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_plan::ExecutionPlan;
@@ -14,6 +20,7 @@ use half::f16;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
+use lance::io::RecordBatchStream;
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::FullTextSearchQuery;
@@ -1531,6 +1538,7 @@ impl HasQuery for VectorQuery {
 pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
+    offsets: Option<Vec<u64>>,
 }
 
 impl TakeQuery {
@@ -1538,7 +1546,13 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_offsets`] for more details.
     pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
-        let in_list: Vec<Expr> = offsets.iter().map(|o| lit(*o)).collect();
+        let mut seen = HashSet::with_capacity(offsets.len());
+        let in_list: Vec<Expr> = offsets
+            .iter()
+            .copied()
+            .filter(|offset| seen.insert(*offset))
+            .map(lit)
+            .collect();
         Self {
             parent,
             request: QueryRequest {
@@ -1547,6 +1561,7 @@ impl TakeQuery {
                 )),
                 ..Default::default()
             },
+            offsets: Some(offsets),
         }
     }
 
@@ -1561,7 +1576,143 @@ impl TakeQuery {
                 filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
                 ..Default::default()
             },
+            offsets: None,
         }
+    }
+
+    async fn request_with_row_offset(&self) -> Result<(QueryRequest, String, bool)> {
+        const ROW_OFFSET: &str = "_rowoffset";
+        const INTERNAL_ROW_OFFSET: &str = "__lancedb_take_row_offset";
+
+        let mut request = self.request.clone();
+        let (ordering_column, drop_ordering_column) = match &mut request.select {
+            Select::All => {
+                let mut columns = self
+                    .parent
+                    .schema()
+                    .await?
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>();
+                columns.push(ROW_OFFSET.to_string());
+                request.select = Select::Columns(columns);
+                (ROW_OFFSET.to_string(), true)
+            }
+            Select::Columns(columns) => {
+                if columns.iter().any(|column| column == ROW_OFFSET) {
+                    (ROW_OFFSET.to_string(), false)
+                } else {
+                    columns.push(ROW_OFFSET.to_string());
+                    (ROW_OFFSET.to_string(), true)
+                }
+            }
+            Select::Dynamic(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), ROW_OFFSET.to_string()));
+                (ordering_column, true)
+            }
+            Select::Expr(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), col(ROW_OFFSET)));
+                (ordering_column, true)
+            }
+        };
+
+        Ok((request, ordering_column, drop_ordering_column))
+    }
+
+    async fn execute_offsets(
+        &self,
+        offsets: &[u64],
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        let max_batch_length = options.max_batch_length as usize;
+        let (request, ordering_column, drop_ordering_column) =
+            self.request_with_row_offset().await?;
+        let query = AnyQuery::Query(request);
+        let data = self
+            .parent
+            .clone()
+            .query(&query, options.without_output_batch_length_limit())
+            .await?;
+        let schema = data.schema();
+        let batches = data.try_collect::<Vec<_>>().await?;
+        let batch = if batches.is_empty() {
+            RecordBatch::new_empty(schema)
+        } else {
+            concat_batches(&schema, &batches)?
+        };
+
+        let actual_offsets =
+            batch
+                .column_by_name(&ordering_column)
+                .ok_or_else(|| Error::Schema {
+                    message: format!(
+                        "take query result did not include ordering column '{ordering_column}'"
+                    ),
+                })?;
+        let actual_offsets = match actual_offsets.data_type() {
+            DataType::UInt64 => actual_offsets
+                .as_primitive::<UInt64Type>()
+                .values()
+                .to_vec(),
+            DataType::Int64 => actual_offsets
+                .as_primitive::<Int64Type>()
+                .values()
+                .iter()
+                .map(|offset| {
+                    u64::try_from(*offset).map_err(|_| Error::Schema {
+                        message: format!(
+                            "take query ordering column '{ordering_column}' contained a negative offset"
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            data_type => {
+                return Err(Error::Schema {
+                    message: format!(
+                        "take query ordering column '{ordering_column}' had unsupported type {data_type}"
+                    ),
+                });
+            }
+        };
+
+        let ordering = actual_offsets
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, offset)| (offset, index as u64))
+            .collect::<HashMap<_, _>>();
+        // Missing offsets retain the filter-based behavior of returning no row.  Every
+        // occurrence of an offset that was found is restored in the requested order.
+        let desired_order = offsets
+            .iter()
+            .filter_map(|offset| ordering.get(offset).copied())
+            .collect::<Vec<_>>();
+
+        let mut ordered_batch = if desired_order.len() == batch.num_rows()
+            && desired_order
+                .iter()
+                .enumerate()
+                .all(|(index, desired)| *desired == index as u64)
+        {
+            batch
+        } else {
+            arrow_select::take::take_record_batch(&batch, &UInt64Array::from(desired_order))?
+        };
+
+        if drop_ordering_column {
+            ordered_batch = ordered_batch.drop_column(&ordering_column)?;
+        }
+
+        Ok(single_batch_stream(ordered_batch, max_batch_length))
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -1624,6 +1775,10 @@ impl ExecutableQuery for TakeQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        if let Some(offsets) = &self.offsets {
+            return self.execute_offsets(offsets, options).await;
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         Ok(SendableRecordBatchStream::from(
             self.parent.clone().query(&query, options).await?,
@@ -2655,6 +2810,40 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 3);
         assert_eq!(results[0].num_columns(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserves_duplicate_order() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|batch| batch.num_columns() == 1));
+        let ids = results
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![5, 1, 5, 17]);
     }
 
     #[tokio::test]

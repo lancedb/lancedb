@@ -480,24 +480,49 @@ def test_remote_permutation_is_picklable():
                 match = re.search(
                     r"_rowoffset\s+in\s+\((.*?)\)", body["filter"], re.IGNORECASE
                 )
-                offsets = [int(o.strip()) for o in match.group(1).split(",")]
+                offsets = list(
+                    dict.fromkeys(int(o.strip()) for o in match.group(1).split(","))
+                )
             else:
                 offsets = list(range(len(rows)))
-            table = pa.table({"a": [rows[offset] for offset in offsets]})
+            columns = body.get("columns") or ["a"]
+            table = pa.table(
+                {
+                    column: (
+                        [rows[offset] for offset in offsets]
+                        if column == "a"
+                        else offsets
+                    )
+                    for column in columns
+                }
+            )
 
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, schema=table.schema) as writer:
-                writer.write_table(table)
+                writer.write_table(table, max_chunksize=2)
         else:
             request.send_response(404)
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        permutation = Permutation.identity(db.open_table("test"))
+        table = db.open_table("test")
+        assert table.take_offsets([0, 2, 0, 4]).to_list() == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
+
+        permutation = Permutation.identity(table)
         restored = pickle.loads(pickle.dumps(permutation))
-        assert restored.__getitems__([0, 2, 4]) == [{"a": 0}, {"a": 2}, {"a": 4}]
+        assert restored.__getitems__([0, 2, 0, 4]) == [
+            {"a": 0},
+            {"a": 2},
+            {"a": 0},
+            {"a": 4},
+        ]
 
 
 def test_create_table_exist_ok():
