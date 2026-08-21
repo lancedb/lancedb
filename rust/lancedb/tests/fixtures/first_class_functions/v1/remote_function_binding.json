@@ -1,0 +1,15 @@
+{
+  "binding_id": "fb_01K3TEXT",
+  "revision": 3,
+  "function": {"name": "text_features", "version": "fv_01K3TEXT"},
+  "group_id": "fg_01K3TEXT",
+  "inputs": [
+    {"parameter": "title", "field_id": 11, "field_path": "title", "arrow_type": "utf8", "nullable": true},
+    {"parameter": "body", "field_id": 12, "field_path": "body", "arrow_type": "utf8", "nullable": true}
+  ],
+  "outputs": [
+    {"result_field": "normalized_text", "output_name": "search_text", "output_field_id": 21, "output_ordinal": 0, "arrow_type": "utf8", "nullable": false},
+    {"result_field": "token_count", "output_name": "search_token_count", "output_field_id": 22, "output_ordinal": 1, "arrow_type": "int64", "nullable": false}
+  ],
+  "future_binding": {"metadata_revision": 1}
+}

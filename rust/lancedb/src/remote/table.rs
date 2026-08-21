@@ -162,13 +162,13 @@ impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
         crate::job::JobHandle::status(&self.inner).await
     }
 
-    async fn wait(&self) -> Result<()> {
-        crate::job::JobHandle::wait(&self.inner).await?;
+    async fn wait(&self) -> Result<crate::job::TerminalResult> {
+        let result = crate::job::JobHandle::wait(&self.inner).await?;
         let version = self.version.read().await;
         if version.is_none() {
             self.freshness.lock().unwrap().checkout_baseline = Some(SystemTime::now());
         }
-        Ok(())
+        Ok(result)
     }
 
     async fn cancel(&self) -> Result<()> {
