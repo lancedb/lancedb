@@ -496,6 +496,33 @@ impl Connection {
         )
     }
 
+    /// Register a Python callable as a new immutable Function version.
+    ///
+    /// Registration is remote-only and always asynchronous. Waiting on the
+    /// returned typed job yields the durable [`crate::function::FunctionVersion`].
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn create_function_async(
+        &self,
+        request: crate::function::FunctionRegistrationRequest,
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        self.internal.create_function_async(request).await
+    }
+
+    /// Look up one exact immutable Function version in the remote catalog.
+    ///
+    /// Both the logical name and server-assigned version id are required;
+    /// mutable aliases and latest-version lookup are intentionally absent.
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn get_function(
+        &self,
+        name: impl AsRef<str>,
+        version: impl AsRef<str>,
+    ) -> Result<crate::function::FunctionVersion> {
+        self.internal
+            .get_function(name.as_ref(), version.as_ref())
+            .await
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
