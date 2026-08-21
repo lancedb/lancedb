@@ -2866,8 +2866,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({ "column": column });
         self.apply_branch_body(&mut body);
         let request = self
-            .client
-            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
+            .post_read(&format!("/v1/table/{}/backfill_column", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -6821,6 +6820,45 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_submission_uses_add_columns_version_fence() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 7}"#.to_string())
+                .unwrap(),
+            "/v1/table/my_table/backfill_column" => {
+                let min_version = request
+                    .headers()
+                    .get("x-lancedb-min-version")
+                    .and_then(|value| value.to_str().ok());
+                if min_version != Some("7") {
+                    return http::Response::builder()
+                        .status(400)
+                        .body(r#"{"error":"Column not found: doubled"}"#.to_string())
+                        .unwrap();
+                }
+                http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-43"}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("unexpected request: {path}"),
+        });
+
+        let result = table
+            .add_columns()
+            .computed("doubled", "a * 2")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 7);
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        assert_eq!(job.id(), Some("j-43"));
     }
 
     /// The gate's reproducer: after a successful wait, a same-handle read
