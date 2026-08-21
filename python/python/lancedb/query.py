@@ -32,8 +32,6 @@ from typing_extensions import Annotated
 
 from lancedb._lancedb import fts_query_to_json
 from lancedb.background_loop import LOOP
-from lancedb.pydantic import PYDANTIC_VERSION
-
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -827,12 +825,7 @@ class Query(pydantic.BaseModel):
 
     # This tells pydantic to allow custom types (needed for the `vector` query since
     # pa.Array wouln't be allowed otherwise)
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            arbitrary_types_allowed = True
-    else:
-        model_config = {"arbitrary_types_allowed": True}
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
 
 
 class LanceQueryBuilder(ABC):
@@ -3251,12 +3244,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         if ordering is None:
             self._inner.order_by(None)
         else:
-            self._inner.order_by(
-                [
-                    o.model_dump() if hasattr(o, "model_dump") else o.dict()
-                    for o in ordering
-                ]
-            )
+            self._inner.order_by([o.model_dump() for o in ordering])
         return self
 
     def fast_search(self) -> Self:
