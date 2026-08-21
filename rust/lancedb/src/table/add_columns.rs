@@ -9,6 +9,7 @@ use lance::dataset::NewColumnTransform;
 
 use super::BaseTable;
 use super::schema_evolution::AddColumnsResult;
+use crate::function::FunctionApplication;
 use crate::{Error, Result};
 
 /// Adds columns to a table. See [`Table::add_columns`](super::Table::add_columns).
@@ -16,6 +17,7 @@ pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
     computed: Vec<(String, String)>,
+    function: Option<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
 }
 
@@ -25,6 +27,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
             .field("parent", &self.parent)
             .field("has_transform", &self.transform.is_some())
             .field("computed", &self.computed)
+            .field("has_function", &self.function.is_some())
             .field("read_columns", &self.read_columns)
             .finish()
     }
@@ -36,6 +39,7 @@ impl AddColumnsBuilder {
             parent,
             transform: None,
             computed: Vec::new(),
+            function: None,
             read_columns: None,
         }
     }
@@ -83,6 +87,48 @@ impl AddColumnsBuilder {
         self
     }
 
+    /// Declare every field of a named-struct Function result as one atomic
+    /// sibling group. Result-field aliases come from
+    /// [`FunctionApplication::columns`](crate::function::FunctionApplication::columns).
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # use lancedb::function::FunctionApplication;
+    /// # async fn declare(table: &Table, application: FunctionApplication) -> lancedb::Result<()> {
+    /// table.add_columns().function(application).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn function(mut self, application: FunctionApplication) -> Self {
+        self.function = Some((application, None));
+        self
+    }
+
+    /// Declare a scalar or entire named-struct Function result as one table
+    /// column. The physical column starts all-null and is materialized by the
+    /// remote Function refresh path.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # use lancedb::function::FunctionApplication;
+    /// # async fn declare(table: &Table, application: FunctionApplication) -> lancedb::Result<()> {
+    /// table
+    ///     .add_columns()
+    ///     .function_as("embedding", application)
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn function_as(
+        mut self,
+        name: impl Into<String>,
+        application: FunctionApplication,
+    ) -> Self {
+        self.function = Some((application, Some(name.into())));
+        self
+    }
+
     /// Limit which existing columns a [`NewColumnTransform::BatchUDF`] mapper
     /// receives. Every other transform, and a computed column, determines what
     /// it reads, so setting this alongside one is an error rather than a silent
@@ -98,21 +144,23 @@ impl AddColumnsBuilder {
             parent,
             transform,
             computed,
+            function,
             read_columns,
         } = self;
 
-        match (transform, computed.is_empty()) {
-            (None, true) => Err(Error::InvalidInput {
+        let declaration_count = usize::from(!computed.is_empty()) + usize::from(function.is_some());
+        if transform.is_some() && declaration_count != 0 || declaration_count > 1 {
+            return Err(Error::InvalidInput {
+                message: "add_columns cannot mix transforms, SQL computed columns, and a Function application; they cannot be added atomically in one call"
+                    .into(),
+            });
+        }
+
+        match (transform, computed.is_empty(), function) {
+            (None, true, None) => Err(Error::InvalidInput {
                 message: "add_columns requires a transform or a computed column".into(),
             }),
-            // The two commit through different transforms, so one call covering
-            // both would be two commits and could half-apply.
-            (Some(_), false) => Err(Error::InvalidInput {
-                message: "add_columns cannot mix a transform with computed columns; \
-                          they cannot be added atomically in one call"
-                    .into(),
-            }),
-            (Some(transform), true) => {
+            (Some(transform), true, None) => {
                 if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -122,7 +170,7 @@ impl AddColumnsBuilder {
                 }
                 parent.add_columns(transform, read_columns).await
             }
-            (None, false) => {
+            (None, false, None) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -132,6 +180,18 @@ impl AddColumnsBuilder {
                 }
                 parent.add_computed_columns(&computed).await
             }
+            (None, true, Some((application, output_name))) => {
+                if read_columns.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "read_columns does not apply to a Function application; its inputs are already bound"
+                            .into(),
+                    });
+                }
+                parent
+                    .add_function_columns(&application, output_name.as_deref())
+                    .await
+            }
+            _ => unreachable!("mixed add_columns modes were rejected above"),
         }
     }
 }

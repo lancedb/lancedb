@@ -88,6 +88,8 @@ fn application_and_binding_match_shared_remote_goldens() {
     assert_eq!(binding.function().version, "fv_01K3TEXT");
     assert_eq!(binding.outputs()[0].output_ordinal, 0);
     assert_eq!(binding.outputs()[1].output_ordinal, 1);
+    assert!(binding.input_schema().is_some());
+    assert!(binding.output_schema().is_some());
     assert_eq!(
         binding.to_canonical_json().expect("canonical JSON"),
         fixture("remote_function_binding.canonical.json").trim()

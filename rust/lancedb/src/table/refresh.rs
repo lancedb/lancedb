@@ -169,6 +169,9 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
         })?;
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
+        ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
+            message: "registered Function columns are refreshed only by a remote server Job".into(),
+        }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(
                 "computed column '{column}' is defined by '{kind}', which this version of \

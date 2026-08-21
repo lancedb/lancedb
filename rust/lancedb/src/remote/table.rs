@@ -2147,6 +2147,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let table_schema = self.schema().await?;
+        crate::table::computed_columns::ensure_supported_function_metadata(table_schema.as_ref())?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
         let num_partitions = if self.server_version.support_multipart_write() {
@@ -2698,6 +2699,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         _read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
+        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+            self.schema().await?.as_ref(),
+            "schema evolution",
+        )?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
                 let body = expressions
@@ -2746,6 +2751,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
+        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+            self.schema().await?.as_ref(),
+            "schema evolution",
+        )?;
         // The server plans the declaration: expression validation, type
         // inference and the persisted binding all happen there.
         let entries = columns
@@ -2782,6 +2791,63 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.invalidate_schema_cache();
         self.track_write_version(result.version);
 
+        Ok(result)
+    }
+
+    async fn add_function_columns(
+        &self,
+        application: &crate::function::FunctionApplication,
+        output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        self.check_mutable().await?;
+        let schema = self.schema().await?;
+        let plan = crate::table::computed_columns::plan_function_application(
+            schema.as_ref(),
+            application,
+            output_name,
+        )?;
+        let new_columns = plan
+            .outputs
+            .iter()
+            .map(|output| {
+                serde_json::json!({
+                    "name": output.output_name,
+                    "all_null": true,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut body = serde_json::json!({
+            "new_columns": new_columns,
+            "function": {
+                "application": plan.application,
+                "binding_metadata_version": plan.binding_metadata_version,
+                "input_bindings": plan.input_bindings,
+                "input_schema": plan.input_schema,
+                "output_schema": plan.output_schema,
+                "outputs": plan.outputs,
+            },
+        });
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() {
+            return Ok(AddColumnsResult { version: 0 });
+        }
+
+        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add Function columns response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(result.version);
         Ok(result)
     }
 
@@ -3810,11 +3876,14 @@ mod tests {
                 assert_eq!(rename, "y");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -3945,11 +4014,14 @@ mod tests {
                 assert_eq!(predicate, "id in (1, 2, 3)");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -6516,7 +6588,9 @@ mod tests {
     #[tokio::test]
     async fn test_add_columns(#[case] old_server: bool) {
         let table = Table::new_with_handler("my_table", move |request| {
-            if request.url().path() == "/v1/table/my_table/add_columns/" {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                simple_describe_response()
+            } else if request.url().path() == "/v1/table/my_table/add_columns/" {
                 assert_eq!(request.method(), "POST");
                 assert_eq!(
                     request.headers().get("Content-Type").unwrap(),
@@ -6540,11 +6614,14 @@ mod tests {
                 assert_eq!(expression, "cast(NULL as int32)");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -6569,19 +6646,22 @@ mod tests {
     /// plan; the client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/add_columns/");
-            let body = request.body().unwrap().as_bytes().unwrap();
-            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(
-                value["new_columns"],
-                serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
-            );
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"version": 7}"#)
-                .unwrap()
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => {
+                assert_eq!(request.method(), "POST");
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(
+                    value["new_columns"],
+                    serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
+                );
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 7}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
         });
 
         let result = table
@@ -6591,6 +6671,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 7);
+    }
+
+    #[tokio::test]
+    async fn test_add_scalar_function_column_sends_atomic_null_declaration() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"description","nullable":true,"type":{"type":"string"}}]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value = serde_json::from_slice(
+                    request.body().unwrap().as_bytes().unwrap(),
+                )
+                .unwrap();
+                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/first_class_functions/v1/remote_scalar_declaration_request.json"
+                ))
+                .unwrap();
+                assert_eq!(actual, expected);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":8}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        }
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
+                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false},
+                "group_id":"fg_scalar"
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function_as("embedding", application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 8);
+    }
+
+    #[tokio::test]
+    async fn test_add_named_struct_function_expands_one_atomic_sibling_group() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[
+                        {"name":"title","nullable":true,"type":{"type":"string"}},
+                        {"name":"body","nullable":true,"type":{"type":"string"}}
+                    ]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/first_class_functions/v1/remote_grouped_declaration_request.json"
+                ))
+                .unwrap();
+                assert_eq!(actual, expected);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":9}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "inputs":[
+                    {"parameter":"title","kind":"column","value":{"path":"title"}},
+                    {"parameter":"body","kind":"column","value":{"path":"body"}}
+                ],
+                "output":{"kind":"named_struct","fields":[
+                    {"name":"normalized_text","arrow_type":"utf8","nullable":false},
+                    {"name":"token_count","arrow_type":"int64","nullable":false}
+                ]},
+                "group_id":"fg_01K3TEXT",
+                "columns":{"normalized_text":"search_text"}
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function(application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 9);
+    }
+
+    #[tokio::test]
+    async fn test_add_columns_fails_closed_on_newer_function_binding_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":2,\"bindings\":[]}"}}}"#,
+                )
+                .unwrap(),
+            path => panic!("mutation request must not be sent: {path}"),
+        }
+        });
+
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }));
     }
 
     /// A remote refresh is a server job: the async form returns its handle,
@@ -10911,6 +11114,7 @@ mod tests {
                     .status(200)
                     .body("{}".to_string())
                     .unwrap(),
+                "/v1/table/my_table/describe/" => simple_describe_response(),
                 "/v1/table/my_table/add_columns/"
                 | "/v1/table/my_table/alter_columns/"
                 | "/v1/table/my_table/drop_columns/" => {

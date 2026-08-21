@@ -14,6 +14,7 @@ from lancedb.functions import (
     PythonRuntimeSpec,
     RefreshColumnResult,
 )
+from lancedb.table import AsyncTable
 
 
 FIXTURES = (
@@ -166,6 +167,8 @@ def test_binding_and_refresh_result_keep_stable_remote_fields():
     assert binding.revision == 3
     assert binding.function.version == "fv_01K3TEXT"
     assert [output.output_ordinal for output in binding.outputs] == [0, 1]
+    assert binding.input_schema is not None
+    assert binding.output_schema is not None
 
     result = RefreshColumnResult.from_json(
         json.dumps(job_result("remote_refresh_job.json"))
@@ -223,3 +226,86 @@ def test_canonical_client_values_contain_secret_names_only():
     canonical = json.loads(version.to_canonical_json())
     assert canonical["required_secrets"] == ["HF_TOKEN"]
     assert_no_secret_values(canonical)
+
+
+class _FunctionDeclarationInner:
+    def __init__(self):
+        self.calls = []
+
+    async def add_function_columns(self, application_json, output_name):
+        self.calls.append((json.loads(application_json), output_name))
+        return "declared"
+
+
+def known_application() -> FunctionApplication:
+    value = json.loads(fixture("remote_function_application.json"))
+    value.pop("future_application")
+    return FunctionApplication(**value)
+
+
+@pytest.mark.asyncio
+async def test_add_columns_routes_struct_as_one_and_grouped_expansion_atomically():
+    inner = _FunctionDeclarationInner()
+    table = AsyncTable(inner)
+    application = known_application()
+
+    result = await table.add_columns(
+        {"features": application._copy(update={"columns": {}})}
+    )
+    assert result == "declared"
+    assert inner.calls[-1][1] == "features"
+
+    bare = application._copy(update={"columns": {}}).rename(
+        columns={"normalized_text": "search_text"}
+    )
+    result = await table.add_columns(bare)
+    assert result == "declared"
+    assert inner.calls[-1][1] is None
+    assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
+
+
+@pytest.mark.asyncio
+async def test_add_columns_rejects_mixed_groups_and_unknown_newer_application():
+    inner = _FunctionDeclarationInner()
+    table = AsyncTable(inner)
+    application = known_application()
+
+    with pytest.raises(ValueError, match="exactly one Function sibling group"):
+        await table.add_columns({"a": application, "b": application})
+
+    future = json.loads(fixture("remote_function_application.json"))
+    application = FunctionApplication(**future)
+    with pytest.raises(ValueError, match="newer contract"):
+        await table.add_columns(application)
+
+    future.pop("future_application")
+    future["output"]["assignment"] = "cell_flag"
+    application = FunctionApplication(**future)
+    assert "assignment" not in json.loads(application.to_canonical_json())["output"]
+    with pytest.raises(ValueError, match="output.assignment"):
+        await table.add_columns(application)
+    assert inner.calls == []
+
+
+def test_rename_requires_named_struct_and_keeps_partial_mapping_immutable():
+    scalar = FunctionApplication.from_json(
+        json.dumps(
+            {
+                "function": {"name": "embed", "version": "fv_exact"},
+                "inputs": [],
+                "output": {
+                    "kind": "scalar",
+                    "arrow_type": "list<float32>",
+                    "nullable": False,
+                },
+                "group_id": "fg_scalar",
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="named-struct"):
+        scalar.rename(columns={"value": "embedding"})
+
+    application = known_application()._copy(update={"columns": {}})
+    renamed = application.rename(columns={"normalized_text": "search_text"})
+    assert dict(application.columns) == {}
+    assert dict(renamed.columns) == {"normalized_text": "search_text"}

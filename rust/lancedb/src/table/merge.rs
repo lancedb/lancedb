@@ -233,6 +233,10 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        table.schema().await?.as_ref(),
+        "merge_insert",
+    )?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
             let future =

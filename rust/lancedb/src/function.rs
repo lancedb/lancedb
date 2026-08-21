@@ -74,6 +74,46 @@ fn validate_literal(value: &Value) -> Result<()> {
     }
 }
 
+fn has_unknown_keys(value: &Value, allowed: &[&str]) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
+}
+
+fn application_has_unknown_nested_fields(value: &Value) -> bool {
+    let Some(application) = value.as_object() else {
+        return false;
+    };
+    if application
+        .get("function")
+        .is_some_and(|value| has_unknown_keys(value, &["name", "version"]))
+    {
+        return true;
+    }
+    if application
+        .get("inputs")
+        .and_then(Value::as_array)
+        .is_some_and(|inputs| {
+            inputs
+                .iter()
+                .any(|input| has_unknown_keys(input, &["parameter", "kind", "value"]))
+        })
+    {
+        return true;
+    }
+    application.get("output").is_some_and(|output| {
+        has_unknown_keys(output, &["kind", "arrow_type", "nullable", "fields"])
+            || output
+                .get("fields")
+                .and_then(Value::as_array)
+                .is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|field| has_unknown_keys(field, &["name", "arrow_type", "nullable"]))
+                })
+    })
+}
+
 macro_rules! impl_json {
     ($type:ty) => {
         impl $type {
@@ -358,6 +398,10 @@ pub struct FunctionApplication {
     group_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
+    #[serde(default, flatten, skip_serializing)]
+    unknown_fields: BTreeMap<String, Value>,
+    #[serde(default, skip)]
+    unknown_nested_fields: bool,
 }
 
 impl FunctionApplication {
@@ -380,10 +424,18 @@ impl FunctionApplication {
     pub fn columns(&self) -> &BTreeMap<String, String> {
         &self.columns
     }
+    /// Whether a newer writer attached application fields this client cannot
+    /// validate. Such applications remain readable but must not be declared.
+    pub fn has_unknown_fields(&self) -> bool {
+        !self.unknown_fields.is_empty() || self.unknown_nested_fields
+    }
 
     /// Decode a remote application after validating the Slice 1 literal domain.
     pub fn from_json(json: &str) -> Result<Self> {
-        let application: Self = from_json(json)?;
+        let value: Value = from_json(json)?;
+        let has_unknown_nested_fields = application_has_unknown_nested_fields(&value);
+        let mut application: Self = serde_json::from_value(value).map_err(invalid_json)?;
+        application.unknown_nested_fields = has_unknown_nested_fields;
         application
             .inputs
             .iter()
@@ -433,6 +485,13 @@ pub struct FunctionBinding {
     group_id: String,
     inputs: Vec<InputBinding>,
     outputs: Vec<OutputMapping>,
+    /// Exact Arrow schema presented to the Function, encoded with the Lance
+    /// Namespace Arrow JSON representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_schema: Option<Value>,
+    /// Exact physical Arrow schema of the grouped table outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
 }
 
 impl FunctionBinding {
@@ -458,6 +517,14 @@ impl FunctionBinding {
 
     pub fn outputs(&self) -> &[OutputMapping] {
         &self.outputs
+    }
+
+    pub fn input_schema(&self) -> Option<&Value> {
+        self.input_schema.as_ref()
+    }
+
+    pub fn output_schema(&self) -> Option<&Value> {
+        self.output_schema.as_ref()
     }
 }
 

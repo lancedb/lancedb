@@ -1551,6 +1551,24 @@ impl Table {
         })
     }
 
+    pub fn add_function_columns(
+        self_: PyRef<'_, Self>,
+        application_json: String,
+        output_name: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let application =
+            lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let builder = match output_name {
+                Some(name) => inner.add_columns().function_as(name, application),
+                None => inner.add_columns().function(application),
+            };
+            let result = builder.execute().await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
     pub fn refresh_column(self_: PyRef<'_, Self>, column: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
