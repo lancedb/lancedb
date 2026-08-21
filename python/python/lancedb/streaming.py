@@ -27,6 +27,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from multiprocessing import RawArray
 from typing import Any, Callable, Iterator, NamedTuple, Optional, Union
 
@@ -50,6 +51,10 @@ _EPOCH_PRIME = 100003
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
 
+_CONSUMER_CHECKPOINT_DATASET: ContextVar[Optional[object]] = ContextVar(
+    "lancedb_streaming_consumer_checkpoint_dataset", default=None
+)
+
 
 class _WorkerSample(NamedTuple):
     data: Any
@@ -68,15 +73,20 @@ class _CheckpointCollate:
         self._collate_fn = collate_fn
 
     def __call__(self, samples):
-        if isinstance(samples, list):
-            if not samples:
-                return _WorkerBatch(self._collate_fn(samples), {})
-            worker_samples = samples
-            data = self._collate_fn([sample.data for sample in worker_samples])
-            dataset = worker_samples[-1].dataset
-        else:
-            data = self._collate_fn(samples.data)
-            dataset = samples.dataset
+        try:
+            if isinstance(samples, list):
+                if not samples:
+                    return _WorkerBatch(self._collate_fn(samples), {})
+                worker_samples = samples
+                data = self._collate_fn([sample.data for sample in worker_samples])
+                dataset = worker_samples[-1].dataset
+            else:
+                data = self._collate_fn(samples.data)
+                dataset = samples.dataset
+        except StopIteration as exc:
+            raise RuntimeError(
+                "collate_fn raised StopIteration before returning a batch"
+            ) from exc
         return _WorkerBatch(data, dataset._checkpoint_snapshot())
 
 
@@ -88,8 +98,12 @@ class _StreamingDatasetAdapter(IterableDataset):
         self.dataset = dataset
 
     def __iter__(self):
-        for sample in self.dataset._iter(consumer_checkpoint_transport=True):
-            yield _WorkerSample(sample, self.dataset)
+        token = _CONSUMER_CHECKPOINT_DATASET.set(self.dataset)
+        try:
+            for sample in self.dataset:
+                yield _WorkerSample(sample, self.dataset)
+        finally:
+            _CONSUMER_CHECKPOINT_DATASET.reset(token)
 
     def __getattr__(self, name):
         dataset = self.__dict__.get("dataset")
@@ -429,7 +443,9 @@ class StreamingDataset(IterableDataset):
         return self._rank_splits[start : start + splits_per_worker]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
-        return self._iter()
+        return self._iter(
+            consumer_checkpoint_transport=_CONSUMER_CHECKPOINT_DATASET.get() is self
+        )
 
     def _iter(
         self, *, consumer_checkpoint_transport: bool = False
@@ -938,12 +954,13 @@ class StreamingDataset(IterableDataset):
             )
         state = self._checkpoint_snapshot()
         samples = state["samples_consumed_per_split"]
-        if self._consumer_checkpoint_requires_uniform and len(set(samples)) > 1:
+        rank_samples = [samples[split] for split in self._rank_splits]
+        if self._consumer_checkpoint_requires_uniform and len(set(rank_samples)) > 1:
             raise RuntimeError(
                 "StreamingDataLoader checkpointing with multiple workers is only "
-                "safe at a complete logical step boundary, when every split has "
-                "the same consumed-sample count. Consume more batches before "
-                "calling state_dict()."
+                "safe at a complete logical step boundary, when every split "
+                "assigned to this rank has the same consumed-sample count. "
+                "Consume more batches before calling state_dict()."
             )
         return state
 
@@ -1124,11 +1141,12 @@ class StreamingDataLoader(DataLoader):
     standard ``torch.utils.data.DataLoader``.
 
     With more than one worker, ``state_dict()`` is available only at complete
-    logical step boundaries, when every split has the same consumed-sample
-    count.  ``persistent_workers=True`` is not supported because prefetched
-    worker copies cannot be restored from parent-committed state.  If batch
-    collation raises, checkpointing remains invalid for that dataset instance;
-    restore the last valid checkpoint into a fresh dataset before continuing.
+    logical step boundaries, when every split assigned to the rank has the same
+    consumed-sample count.  ``persistent_workers=True`` is not supported because
+    prefetched worker copies cannot be restored from parent-committed state.  If
+    batch collation raises, checkpointing remains invalid for that dataset
+    instance; restore the last valid checkpoint into a fresh dataset before
+    continuing.
 
     Parameters are the same as ``torch.utils.data.DataLoader`` except that
     ``dataset`` must be a
@@ -1164,11 +1182,14 @@ class StreamingDataLoader(DataLoader):
             samples = self._streaming_dataset._checkpoint_snapshot()[
                 "samples_consumed_per_split"
             ]
-            if len(set(samples)) > 1:
+            rank_samples = [
+                samples[split] for split in self._streaming_dataset._rank_splits
+            ]
+            if len(set(rank_samples)) > 1:
                 raise RuntimeError(
                     "StreamingDataLoader cannot start multiple workers from a "
                     "partial logical step; resume from a checkpoint whose splits "
-                    "have equal consumed-sample counts"
+                    "assigned to this rank have equal consumed-sample counts"
                 )
         return _ConsumerCommitIterator(
             super().__iter__(),
