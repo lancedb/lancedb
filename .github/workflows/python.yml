@@ -229,7 +229,8 @@ jobs:
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
-  pydantic1x:
+  min-deps:
+    name: "Minimum dependencies"
     timeout-minutes: 60
     runs-on: "ubuntu-24.04"
     defaults:
@@ -259,8 +260,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install lancedb
         run: |
-          pip install "pydantic<2"
-          pip install pyarrow==16
+          pip install "pydantic==2.7.4" "pyarrow==16"
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
       - name: Run tests
         run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests

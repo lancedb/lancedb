@@ -386,6 +386,29 @@ Drop an existing table.
 
 ***
 
+### dropTableAsync()
+
+```ts
+abstract dropTableAsync(name, namespacePath?): Promise<Job>
+```
+
+Start dropping a table and return its cleanup job.
+
+The table may become unavailable before its data files are removed. Wait
+on the returned job to know when cleanup has finished.
+
+#### Parameters
+
+* **name**: `string`
+
+* **namespacePath?**: `string`[]
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
 ### getJob()
 
 ```ts

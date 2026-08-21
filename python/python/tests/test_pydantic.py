@@ -10,11 +10,10 @@ import pyarrow as pa
 import pydantic
 import pytest
 from lancedb.pydantic import (
-    PYDANTIC_VERSION,
     LanceModel,
+    MultiVector,
     Vector,
     pydantic_to_schema,
-    MultiVector,
 )
 from pydantic import BaseModel
 from pydantic import Field
@@ -415,22 +414,27 @@ def test_nullable_vector():
     assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
 
 
+def test_bare_vector_raises_clear_error():
+    namespace = {
+        "__name__": "test_model_without_pyarrow",
+        "LanceModel": LanceModel,
+        "Vector": Vector,
+    }
+
+    with pytest.raises(TypeError, match=r"Vector must be parameterized.*Vector\(128\)"):
+        exec("class TestModel(LanceModel):\n    vector: Vector", namespace)
+
+
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
         vec: Vector(16)
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    if PYDANTIC_VERSION.major >= 2:
-        assert json.loads(data.model_dump_json()) == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
-    else:
-        assert data.dict() == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
+    assert json.loads(data.model_dump_json()) == {
+        "vec": list(range(16)),
+        "li": [1, 2, 3],
+    }
 
     schema = pydantic_to_schema(TestModel)
     assert schema == pa.schema(
@@ -440,10 +444,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION.major >= 2:
-        json_schema = TestModel.model_json_schema()
-    else:
-        json_schema = TestModel.schema()
+    json_schema = TestModel.model_json_schema()
 
     assert json_schema == {
         "properties": {

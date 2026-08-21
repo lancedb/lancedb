@@ -9,6 +9,7 @@ use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use lance_namespace_impls::{DynamicContextProvider, OperationInfo};
 use moka::future::Cache;
+use reqwest::Response;
 use reqwest::header::CONTENT_TYPE;
 
 use lance_namespace::models::{
@@ -23,15 +24,17 @@ use crate::database::{
     JobDescription, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::job::Job;
+use crate::remote::job::{DescribeJobResponse, RemoteJob, job_state_to_client};
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 
-use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::{
     ClientConfig, HeaderProvider, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender,
 };
 use super::table::RemoteTable;
 use super::util::parse_server_version;
+use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -326,6 +329,22 @@ impl RemoteDatabase {
     }
 }
 
+impl<S: HttpSend> RemoteDatabase<S> {
+    async fn submit_drop_table(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<(String, Response)> {
+        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let cache_key = build_cache_key(name, namespace_path);
+        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+        self.table_cache.remove(&cache_key).await;
+        Ok((request_id, resp))
+    }
+}
+
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
@@ -453,48 +472,6 @@ struct RemoteListJobsResponse {
     page_token: Option<String>,
 }
 
-/// The server's account of why a job failed. Absent from older servers,
-/// which report only the terminal state.
-#[derive(serde::Deserialize)]
-struct RemoteReportedFailure {
-    #[serde(default)]
-    phase: Option<String>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    retryable: Option<bool>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDescribeJobResponse {
-    job_id: String,
-    #[serde(default)]
-    job_type: String,
-    job_state: String,
-    #[serde(default)]
-    creation_ms: i64,
-    #[serde(default)]
-    spec: serde_json::Value,
-    #[serde(default)]
-    failure: Option<RemoteReportedFailure>,
-}
-
-/// Server job states -> the client vocabulary ("running" / "finished" /
-/// "failed" / "cancelled"). Covers both the describe enum (IN_PROGRESS /
-/// DONE / FAILED / CANCELLED) and the registry's lowercase list-row states
-/// (in_progress / succeeded / failed / canceled / timed_out). States this
-/// client version does not know (e.g. created, queued) pass through as-is.
-fn job_state_to_client(state: &str) -> String {
-    match state {
-        "IN_PROGRESS" | "in_progress" => "running",
-        "DONE" | "done" | "succeeded" => "finished",
-        "FAILED" | "failed" | "TIMED_OUT" | "timed_out" => "failed",
-        "CANCELLED" | "cancelled" | "canceled" => "cancelled",
-        other => other,
-    }
-    .to_string()
-}
-
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
 const MAX_LIST_JOBS_PAGES: usize = 100;
@@ -567,19 +544,14 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let body: RemoteDescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
+        let body: DescribeJobResponse = rsp.json().await.err_to_http(request_id)?;
         Ok(Some(JobDescription {
             job_id: body.job_id,
             job_type: body.job_type,
             state: job_state_to_client(&body.job_state),
             creation_ms: body.creation_ms,
             spec: body.spec,
-            failure: body.failure.map(|reported| crate::error::JobFailure {
-                phase: reported.phase,
-                message: reported.message,
-                retryable: reported.retryable,
-                source: None,
-            }),
+            failure: body.failure.map(|reported| reported.into_job_failure()),
         }))
     }
 
@@ -894,13 +866,28 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
-        let cache_key = build_cache_key(name, namespace_path);
-        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
-        let (request_id, resp) = self.client.send(req).await?;
-        self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(&cache_key).await;
-        Ok(())
+        self.submit_drop_table(name, namespace_path)
+            .await
+            .map(|_| ())
+    }
+
+    async fn drop_table_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
+        let (request_id, response) = self.submit_drop_table(name, namespace_path).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let job_id = extract_job_id(&body);
+        Ok(match job_id {
+            Some(job_id) => Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id))),
+            None if status == StatusCode::ACCEPTED => {
+                return Err(Error::Http {
+                    source: "asynchronous drop-table response did not contain a valid job_id"
+                        .into(),
+                    request_id,
+                    status_code: Some(status),
+                });
+            }
+            None => Job::new_done(),
+        })
     }
 
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
@@ -1490,6 +1477,67 @@ mod tests {
         });
         conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_does_not_read_response_body() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(vec![0xff])
+                .unwrap()
+        });
+
+        conn.drop_table("table1", &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_returns_job() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/drop/");
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"drop-job-123"}"#)
+                .unwrap()
+        });
+
+        let job = conn.drop_table_async("table1", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("drop-job-123"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_old_server_returns_done_job() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let job = conn.drop_table_async("table1", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_rejects_accepted_response_without_job_id() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder().status(202).body("{}").unwrap()
+        });
+
+        let error = conn.drop_table_async("table1", &[]).await.err().unwrap();
+        assert!(error.to_string().contains("valid job_id"));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_async_rejects_empty_job_id() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":""}"#)
+                .unwrap()
+        });
+
+        let error = conn.drop_table_async("table1", &[]).await.err().unwrap();
+        assert!(error.to_string().contains("valid job_id"));
     }
 
     #[tokio::test]
@@ -2412,7 +2460,7 @@ mod tests {
             http::Response::builder()
                 .status(200)
                 .body(format!(
-                    r#"{{"job_id": "job-1", "job_type": "create_index", "job_state": "{}", "creation_ms": 1}}"#,
+                    r#"{{"job_id": "job-1", "job_type": "create_function", "job_state": "{}", "creation_ms": 1, "result": {{"name": "embed", "version": "fv_1"}}}}"#,
                     state
                 ))
                 .unwrap()

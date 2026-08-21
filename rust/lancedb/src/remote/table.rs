@@ -8,7 +8,7 @@ use self::insert::{RemoteWriteExec, WriteOp};
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE};
+use super::{ARROW_FILE_CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 use crate::blob::BlobFile;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::expr::expr_to_sql_string;
@@ -23,15 +23,19 @@ use crate::table::AddResult;
 use crate::table::BranchDiff;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
+use crate::table::LsmStats;
 use crate::table::LsmWriteSpec;
 use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
+use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::write_progress::FinishOnDrop;
-use crate::table::{AlterColumnsResult, FieldMetadataUpdate, UpdateFieldMetadataResult};
+use crate::table::{
+    AlterColumnsResult, FieldMetadataUpdate, RefreshColumnResult, UpdateFieldMetadataResult,
+};
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
@@ -135,6 +139,40 @@ impl FreshnessHeaders {
             request = request.header(MIN_READ_VERSION_HEADER, v.to_string());
         }
         request
+    }
+}
+
+/// A backfill job whose successful wait establishes a read-freshness
+/// baseline on the submitting handle, so a later read cannot be served
+/// from a cache older than the completed fill. A handle pinned by checkout
+/// at completion keeps its time-travel view instead.
+struct FreshnessJob<S: HttpSend> {
+    inner: RemoteJob<S>,
+    freshness: Arc<Mutex<FreshnessState>>,
+    version: Arc<RwLock<Option<u64>>>,
+}
+
+#[async_trait]
+impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
+    fn id(&self) -> Option<&str> {
+        crate::job::JobHandle::id(&self.inner)
+    }
+
+    async fn status(&self) -> Result<String> {
+        crate::job::JobHandle::status(&self.inner).await
+    }
+
+    async fn wait(&self) -> Result<crate::job::TerminalResult> {
+        let result = crate::job::JobHandle::wait(&self.inner).await?;
+        let version = self.version.read().await;
+        if version.is_none() {
+            self.freshness.lock().unwrap().checkout_baseline = Some(SystemTime::now());
+        }
+        Ok(result)
+    }
+
+    async fn cancel(&self) -> Result<()> {
+        crate::job::JobHandle::cancel(&self.inner).await
     }
 }
 
@@ -272,10 +310,10 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     identifier: String,
     server_version: ServerVersion,
 
-    version: RwLock<Option<u64>>,
+    version: Arc<RwLock<Option<u64>>>,
     location: RwLock<Option<String>>,
     schema_cache: BackgroundCache<SchemaRef, Error>,
-    freshness: Mutex<FreshnessState>,
+    freshness: Arc<Mutex<FreshnessState>>,
     /// The branch this handle is scoped to, or `None` for the main branch.
     /// Stamped onto every branch-accepting request so reads and writes resolve
     /// on the branch's own version chain rather than main's.
@@ -390,13 +428,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .text()
             .await
             .ok()
-            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-            .and_then(|value| {
-                value
-                    .get("job_id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_string)
-            });
+            .and_then(|body| extract_job_id(&body));
 
         if let Some(wait_timeout) = index.wait_timeout {
             let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
@@ -419,10 +451,10 @@ impl<S: HttpSend> RemoteTable<S> {
             namespace,
             identifier,
             server_version,
-            version: RwLock::new(None),
+            version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            freshness: Mutex::new(FreshnessState::default()),
+            freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch: None,
         }
     }
@@ -451,10 +483,10 @@ impl<S: HttpSend> RemoteTable<S> {
             namespace: self.namespace.clone(),
             identifier: self.identifier.clone(),
             server_version: self.server_version.clone(),
-            version: RwLock::new(None),
+            version: Arc::new(RwLock::new(None)),
             location: RwLock::new(None),
             schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-            freshness: Mutex::new(FreshnessState::default()),
+            freshness: Arc::new(Mutex::new(FreshnessState::default())),
             branch,
         }
     }
@@ -991,6 +1023,18 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    /// Send an LSM operator request with the transport retry layer **off**.
+    ///
+    /// Retry policy on these routes belongs to the checkpoint loop, which
+    /// reads the status and can tell contention from a lost claim. Leaving the
+    /// transport layer on would re-ask on its own schedule first, and surface
+    /// an `Error::Retry` whose status the loop would then have to unwrap.
+    async fn send_lsm_route(&self, request: RequestBuilder) -> Result<(String, reqwest::Response)> {
+        let (request_id, response) = self.send(request, false).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        Ok((request_id, response))
+    }
+
     /// Build a POST request and attach the read-freshness headers
     /// (`x-lancedb-min-version`, `x-lancedb-min-timestamp`).
     fn post_read(&self, uri: &str) -> RequestBuilder {
@@ -1261,10 +1305,10 @@ mod test_utils {
                 namespace: vec![],
                 identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
-                version: RwLock::new(None),
+                version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                freshness: Mutex::new(FreshnessState::default()),
+                freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
         }
@@ -1285,10 +1329,10 @@ mod test_utils {
                 namespace: vec![],
                 identifier: name,
                 server_version: ServerVersion::default(),
-                version: RwLock::new(None),
+                version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                freshness: Mutex::new(FreshnessState::default()),
+                freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
         }
@@ -1318,10 +1362,10 @@ mod test_utils {
                 namespace: vec![],
                 identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
-                version: RwLock::new(None),
+                version: Arc::new(RwLock::new(None)),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
-                freshness: Mutex::new(FreshnessState::default()),
+                freshness: Arc::new(Mutex::new(FreshnessState::default())),
                 branch: None,
             }
         }
@@ -2104,6 +2148,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let table_schema = self.schema().await?;
+        crate::table::computed_columns::ensure_supported_function_metadata(table_schema.as_ref())?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
         let num_partitions = if self.server_version.support_multipart_write() {
@@ -2471,13 +2516,47 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
+    async fn flush_lsm(&self) -> Result<()> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/flush_lsm/", self.identifier));
+        self.send_lsm_route(request).await?;
+        Ok(())
+    }
+
+    async fn compact_lsm(&self) -> Result<()> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/compact_lsm/", self.identifier));
+        self.send_lsm_route(request).await?;
+        Ok(())
+    }
+
+    async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
+        // Read-semantics POST, like `get_lsm_write_spec`.
+        let request = self
+            .post_read(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
+            .json(&serde_json::json!({
+                "include_generation_rows": include_generation_rows,
+            }));
+        let (request_id, response) = self.send_lsm_route(request).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let parsed: GetLsmStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_lsm_stats response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
+        // `null` — and only — when the table has no LSM write path.
+        Ok(parsed.lsm_stats)
+    }
+
     async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
-        // tagged on `mode` to mirror sophon's `Sharding` enum; `maintained_indexes`
-        // and `writer_config_defaults` are sent verbatim (an empty list means "no
-        // maintained indexes", not "default to all").
+        // tagged on `mode` to mirror sophon's `Sharding` enum. A null
+        // `maintained_indexes` asks the server to resolve every maintainable
+        // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
             LsmWriteSpec::Bucket {
                 column,
@@ -2623,6 +2702,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         _read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
+        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+            self.schema().await?.as_ref(),
+            "schema evolution",
+        )?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
                 let body = expressions
@@ -2667,6 +2750,147 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 });
             }
         }
+    }
+
+    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+        self.check_mutable().await?;
+        crate::table::computed_columns::ensure_no_function_bindings_for_mutation(
+            self.schema().await?.as_ref(),
+            "schema evolution",
+        )?;
+        // The server plans the declaration: expression validation, type
+        // inference and the persisted binding all happen there.
+        let entries = columns
+            .iter()
+            .map(
+                |(name, expression)| lance_namespace::models::AddColumnsEntry {
+                    name: name.clone(),
+                    computed: Some(Some(expression.clone())),
+                    ..Default::default()
+                },
+            )
+            .collect::<Vec<_>>();
+        let mut body = serde_json::json!({ "new_columns": entries });
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() {
+            // Backward compatible with old servers
+            return Ok(AddColumnsResult { version: 0 });
+        }
+
+        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(result.version);
+
+        Ok(result)
+    }
+
+    async fn add_function_columns(
+        &self,
+        application: &crate::function::FunctionApplication,
+        output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        self.check_mutable().await?;
+        let schema = self.schema().await?;
+        let plan = crate::table::computed_columns::plan_function_application(
+            schema.as_ref(),
+            application,
+            output_name,
+        )?;
+        let new_columns = plan
+            .outputs
+            .iter()
+            .map(|output| {
+                serde_json::json!({
+                    "name": output.output_name,
+                    "all_null": true,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut body = serde_json::json!({
+            "new_columns": new_columns,
+            "function": {
+                "application": plan.application,
+                "binding_metadata_version": plan.binding_metadata_version,
+                "input_bindings": plan.input_bindings,
+                "input_schema": plan.input_schema,
+                "output_schema": plan.output_schema,
+                "outputs": plan.outputs,
+            },
+        });
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/add_columns/", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() {
+            return Ok(AddColumnsResult { version: 0 });
+        }
+
+        let result: AddColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add Function columns response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        self.invalidate_schema_cache();
+        self.track_write_version(result.version);
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        // The server runs a refresh as a job and does not report a fill
+        // count, so the blocking form has no honest result to return.
+        Err(Error::NotSupported {
+            message: "a remote refresh runs as a server job; use refresh_column_async and \
+                      wait on the returned handle"
+                .into(),
+        })
+    }
+
+    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+        self.check_mutable().await?;
+        let mut body = serde_json::json!({ "column": column });
+        self.apply_branch_body(&mut body);
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
+            .json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        #[derive(serde::Deserialize)]
+        struct BackfillResponse {
+            job_id: String,
+        }
+        let response: BackfillResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse backfill_column response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(Job::new(Box::new(FreshnessJob {
+            inner: RemoteJob::new(self.client.clone(), response.job_id),
+            freshness: self.freshness.clone(),
+            version: self.version.clone(),
+        })))
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
@@ -2794,9 +3018,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let encoded_name = urlencoding::encode(index_name);
         let mut request = self.post_read(&format!(
-            "/v1/table/{}/index/{}/stats/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/stats/",
+            self.identifier
         ));
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version });
@@ -2823,9 +3048,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
+        let encoded_name = urlencoding::encode(index_name);
         let request = self.apply_branch_query(self.client.post(&format!(
-            "/v1/table/{}/index/{}/drop/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/drop/",
+            self.identifier
         )));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -2838,9 +3064,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
+        let encoded_name = urlencoding::encode(index_name);
         let request = self.client.post(&format!(
-            "/v1/table/{}/index/{}/prewarm/",
-            self.identifier, index_name
+            "/v1/table/{}/index/{encoded_name}/prewarm/",
+            self.identifier
         ));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -2942,7 +3169,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub(crate) struct MergeInsertRequest {
+pub struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
     when_matched_update_all_filt: Option<String>,
@@ -3654,11 +3881,14 @@ mod tests {
                 assert_eq!(rename, "y");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -3787,11 +4017,14 @@ mod tests {
                 assert_eq!(predicate, "`ID` in (1, 2, 3)");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -5916,16 +6149,18 @@ mod tests {
             .await
             .unwrap();
 
+        // Positions are relative to the first retained token, so dropping the
+        // leading "hello" stop word does not shift the remaining tokens.
         assert_eq!(
             tokens,
             vec![
                 FtsToken {
                     text: "こんにちは".to_string(),
-                    position: 1,
+                    position: 0,
                 },
                 FtsToken {
                     text: "世界".to_string(),
-                    position: 2,
+                    position: 1,
                 },
             ]
         );
@@ -6365,7 +6600,9 @@ mod tests {
     #[tokio::test]
     async fn test_add_columns(#[case] old_server: bool) {
         let table = Table::new_with_handler("my_table", move |request| {
-            if request.url().path() == "/v1/table/my_table/add_columns/" {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                simple_describe_response()
+            } else if request.url().path() == "/v1/table/my_table/add_columns/" {
                 assert_eq!(request.method(), "POST");
                 assert_eq!(
                     request.headers().get("Content-Type").unwrap(),
@@ -6389,11 +6626,14 @@ mod tests {
                 assert_eq!(expression, "cast(NULL as int32)");
 
                 if old_server {
-                    http::Response::builder().status(200).body("{}").unwrap()
+                    http::Response::builder()
+                        .status(200)
+                        .body("{}".to_string())
+                        .unwrap()
                 } else {
                     http::Response::builder()
                         .status(200)
-                        .body(r#"{"version": 43}"#)
+                        .body(r#"{"version": 43}"#.to_string())
                         .unwrap()
                 }
             } else {
@@ -6412,6 +6652,472 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    /// A declaration is sent as `{name, computed}` entries for the server to
+    /// plan; the client never types the expression itself.
+    #[tokio::test]
+    async fn test_add_computed_columns_sends_the_expression() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => {
+                assert_eq!(request.method(), "POST");
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(
+                    value["new_columns"],
+                    serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
+                );
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 7}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        });
+
+        let result = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 7);
+    }
+
+    #[tokio::test]
+    async fn test_add_scalar_function_column_sends_atomic_null_declaration() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"description","nullable":true,"type":{"type":"string"}}]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value = serde_json::from_slice(
+                    request.body().unwrap().as_bytes().unwrap(),
+                )
+                .unwrap();
+                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/first_class_functions/v1/remote_scalar_declaration_request.json"
+                ))
+                .unwrap();
+                assert_eq!(actual, expected);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":8}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        }
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"embed","version":"fv_01K3EXACT"},
+                "inputs":[{"parameter":"text","kind":"column","value":{"path":"description"}}],
+                "output":{"kind":"scalar","arrow_type":"list<float32>","nullable":false},
+                "group_id":"fg_scalar"
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function_as("embedding", application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 8);
+    }
+
+    #[tokio::test]
+    async fn test_add_named_struct_function_expands_one_atomic_sibling_group() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[
+                        {"name":"title","nullable":true,"type":{"type":"string"}},
+                        {"name":"body","nullable":true,"type":{"type":"string"}}
+                    ]}}"#,
+                )
+                .unwrap(),
+            "/v1/table/my_table/add_columns/" => {
+                let actual: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/first_class_functions/v1/remote_grouped_declaration_request.json"
+                ))
+                .unwrap();
+                assert_eq!(actual, expected);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version":9}"#)
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {path}"),
+        });
+        let application = crate::function::FunctionApplication::from_json(
+            r#"{
+                "function":{"name":"text_features","version":"fv_01K3TEXT"},
+                "inputs":[
+                    {"parameter":"title","kind":"column","value":{"path":"title"}},
+                    {"parameter":"body","kind":"column","value":{"path":"body"}}
+                ],
+                "output":{"kind":"named_struct","fields":[
+                    {"name":"normalized_text","arrow_type":"utf8","nullable":false},
+                    {"name":"token_count","arrow_type":"int64","nullable":false}
+                ]},
+                "group_id":"fg_01K3TEXT",
+                "columns":{"normalized_text":"search_text"}
+            }"#,
+        )
+        .unwrap();
+
+        let result = table
+            .add_columns()
+            .function(application)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 9);
+    }
+
+    #[tokio::test]
+    async fn test_add_columns_fails_closed_on_newer_function_binding_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            match request.url().path() {
+            "/v1/table/my_table/describe/" => http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version":1,"schema":{"fields":[{"name":"x","nullable":true,"type":{"type":"int32"}}],"metadata":{"lancedb::function_bindings":"{\"version\":2,\"bindings\":[]}"}}}"#,
+                )
+                .unwrap(),
+            path => panic!("mutation request must not be sent: {path}"),
+        }
+        });
+
+        let err = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }));
+    }
+
+    /// A remote refresh is a server job: the async form returns its handle,
+    /// and the blocking form refuses rather than invent a fill count.
+    #[tokio::test]
+    async fn test_refresh_column_async_submits_a_backfill_job() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/backfill_column");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(value["column"], "doubled");
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id": "j-42"}"#)
+                .unwrap()
+        });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        assert_eq!(job.id(), Some("j-42"));
+
+        let err = table.refresh_column("doubled").await.unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message }
+                if message.contains("refresh_column_async")),
+            "{err:?}"
+        );
+    }
+
+    /// The gate's reproducer: after a successful wait, a same-handle read
+    /// must carry a freshness baseline so a stale server cache cannot serve
+    /// the pre-backfill snapshot.
+    #[tokio::test]
+    async fn test_backfill_wait_establishes_read_freshness() {
+        let saw_min_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = saw_min_timestamp.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/backfill_column" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-7"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-7", "job_state": "DONE"}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => {
+                    saw.store(
+                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        job.wait().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        assert!(
+            saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
+            "read after wait carried no freshness baseline"
+        );
+    }
+
+    /// A checkout after submission wins over the completion fence: the
+    /// pinned view must not regain a timestamp floor from the job.
+    #[tokio::test]
+    async fn test_checkout_after_submit_beats_the_completion_fence() {
+        let saw_min_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = saw_min_timestamp.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/backfill_column" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-8"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-8", "job_state": "DONE"}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("x", DataType::Int32, true)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    saw.store(
+                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        table.checkout(3).await.unwrap();
+        job.wait().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        assert!(
+            !saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
+            "completion fence overrode an explicit checkout"
+        );
+    }
+
+    /// Tag checkout resets freshness state wholesale; the fence must not
+    /// survive it.
+    #[tokio::test]
+    async fn test_tag_checkout_after_submit_beats_the_completion_fence() {
+        let saw_min_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = saw_min_timestamp.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/backfill_column" => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-9"}"#.to_string())
+                    .unwrap(),
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-9", "job_state": "DONE"}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/tags/version/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 5}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("x", DataType::Int32, true)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    saw.store(
+                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        table.checkout_tag("v1").await.unwrap();
+        job.wait().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        assert!(
+            !saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
+            "completion fence overrode a tag checkout"
+        );
+    }
+
+    /// A checkout landing while the submission request is in flight advances
+    /// the epoch past the token captured at submit.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_checkout_during_submission_beats_the_completion_fence() {
+        let saw_min_timestamp = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = saw_min_timestamp.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let arrived_tx = Arc::new(std::sync::Mutex::new(arrived_tx));
+        let table = Table::new_with_handler("my_table", move |request| {
+            match request.url().path() {
+                "/v1/table/my_table/backfill_column" => {
+                    // Signal arrival, then hold the response until the
+                    // test's checkout completes.
+                    arrived_tx.lock().unwrap().send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    http::Response::builder()
+                        .status(202)
+                        .body(r#"{"job_id": "j-10"}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-10", "job_state": "DONE"}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![Field::new("x", DataType::Int32, true)]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/count_rows/" => {
+                    saw.store(
+                        request.headers().contains_key("x-lancedb-min-timestamp"),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            }
+        });
+
+        let submit = tokio::spawn({
+            let table = table.clone();
+            async move { table.refresh_column_async("doubled").await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        table.checkout(7).await.unwrap();
+        release_tx.send(()).unwrap();
+
+        let job = submit.await.unwrap().unwrap();
+        job.wait().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        assert!(
+            !saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
+            "completion fence overrode a checkout that landed mid-submission"
+        );
+    }
+
+    /// checkout_latest keeps the handle on latest, so a completed backfill
+    /// must still establish its post-fill baseline -- strictly later than the
+    /// checkout's own, or a pre-fill cache could still serve.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_checkout_latest_during_submission_keeps_the_fence() {
+        let seen_min_timestamp = Arc::new(std::sync::Mutex::new(None::<String>));
+        let saw = seen_min_timestamp.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(release_rx));
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel::<()>();
+        let arrived_tx = Arc::new(std::sync::Mutex::new(arrived_tx));
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/backfill_column" => {
+                    arrived_tx.lock().unwrap().send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    http::Response::builder()
+                        .status(202)
+                        .body(r#"{"job_id": "j-11"}"#.to_string())
+                        .unwrap()
+                }
+                "/v1/jobs/describe" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"job_id": "j-11", "job_state": "DONE"}"#.to_string())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => {
+                    *saw.lock().unwrap() = request
+                        .headers()
+                        .get("x-lancedb-min-timestamp")
+                        .map(|v| v.to_str().unwrap().to_string());
+                    http::Response::builder()
+                        .status(200)
+                        .body("1".to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+
+        let submit = tokio::spawn({
+            let table = table.clone();
+            async move { table.refresh_column_async("doubled").await }
+        });
+        tokio::task::spawn_blocking(move || {
+            arrived_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        table.checkout_latest().await.unwrap();
+        let after_checkout = SystemTime::now();
+        // Real separation between the checkout baseline and completion.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        release_tx.send(()).unwrap();
+
+        let job = submit.await.unwrap().unwrap();
+        job.wait().await.unwrap();
+        table.count_rows(None).await.unwrap();
+        let header = seen_min_timestamp
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("no baseline");
+        let sent: SystemTime = chrono::DateTime::parse_from_rfc3339(&header)
+            .unwrap()
+            .into();
+        assert!(
+            sent > after_checkout,
+            "baseline {header} did not advance past the checkout"
+        );
     }
 
     #[tokio::test]
@@ -6501,6 +7207,41 @@ mod tests {
         assert!(matches!(e, Error::IndexNotFound { .. }));
     }
 
+    /// Index names are unvalidated, so reserved characters must be
+    /// percent-encoded or they restructure the request path.
+    #[tokio::test]
+    async fn test_per_index_paths_encode_reserved_characters() {
+        const NAME: &str = "my/index?a#b c";
+        const PREFIX: &str = "/v1/table/my_table/index/my%2Findex%3Fa%23b%20c";
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/stats/"));
+            let body = serde_json::json!({
+              "num_indexed_rows": 1,
+              "num_unindexed_rows": 0,
+              "index_type": "IVF_PQ",
+              "distance_type": "l2"
+            });
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&body).unwrap())
+                .unwrap()
+        });
+        assert!(table.index_stats(NAME).await.unwrap().is_some());
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/drop/"));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.drop_index(NAME).await.unwrap();
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), format!("{PREFIX}/prewarm/"));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.prewarm_index(NAME).await.unwrap();
+    }
+
     #[tokio::test]
     async fn test_set_lsm_write_spec_unsharded() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -6523,7 +7264,7 @@ mod tests {
                 .unwrap()
         });
         let spec = crate::table::LsmWriteSpec::unsharded()
-            .with_maintained_indexes(["id_idx"])
+            .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
         table.set_lsm_write_spec(spec).await.unwrap();
     }
@@ -6542,11 +7283,29 @@ mod tests {
                 body["sharding"],
                 serde_json::json!({ "mode": "bucket", "column": "id", "num_buckets": 16 })
             );
-            assert_eq!(body["maintained_indexes"], serde_json::json!([]));
+            // An unpinned maintained set sends null: resolve server-side.
+            assert_eq!(body["maintained_indexes"], serde_json::Value::Null);
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
             .set_lsm_write_spec(crate::table::LsmWriteSpec::bucket("id", 16))
+            .await
+            .unwrap();
+    }
+
+    /// `[]` (none) must stay distinguishable on the wire from null (all).
+    #[tokio::test]
+    async fn test_set_lsm_write_spec_no_maintained_indexes() {
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["maintained_indexes"], serde_json::json!([]));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table
+            .set_lsm_write_spec(
+                crate::table::LsmWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
+            )
             .await
             .unwrap();
     }
@@ -6625,7 +7384,7 @@ mod tests {
             } => {
                 assert_eq!(column, "id");
                 assert_eq!(num_buckets, 4);
-                assert_eq!(maintained_indexes, vec!["id_idx".to_string()]);
+                assert_eq!(maintained_indexes, Some(vec!["id_idx".to_string()]));
                 assert_eq!(
                     writer_config_defaults
                         .get("durable_write")
@@ -6652,6 +7411,499 @@ mod tests {
                 .unwrap()
         });
         assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+    }
+
+    /// Build a `get_lsm_stats` body for one bucket holding `generations`.
+    fn stats_body(generations: &[u64], compacting: bool) -> String {
+        serde_json::json!({
+            "lsm_stats": {
+                "buckets": [{
+                    "shard_id": "b0",
+                    "status": "Active",
+                    "writer_epoch": 1,
+                    "manifest_version": 1,
+                    "current_generation": generations.iter().max().copied().unwrap_or(0) + 1,
+                    "replay_after_wal_entry_position": 0,
+                    "wal_entry_position_last_seen": 0,
+                    "generations": generations.iter()
+                        .map(|g| serde_json::json!({ "generation": g, "bytes": 1 }))
+                        .collect::<Vec<_>>(),
+                    "compacting": compacting,
+                    "memtables": [],
+                }],
+            }
+        })
+        .to_string()
+    }
+
+    /// `flush_lsm` / `compact_lsm` answer 202 with no body at all.
+    fn accepted() -> http::Response<String> {
+        http::Response::builder()
+            .status(202)
+            .body(String::new())
+            .unwrap()
+    }
+
+    fn ok_json(body: String) -> http::Response<String> {
+        http::Response::builder().status(200).body(body).unwrap()
+    }
+
+    /// A flush landing in an empty L0 finishes on the opening stats read
+    /// alone. Asserting zero compacts is the point: "it returned Ok" is also
+    /// true of a loop that ran a pointless pass.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_short_circuits_on_empty_l0() {
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("compact_lsm") {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("an already-converged table must issue no compact calls");
+            }
+            if path.contains("flush_lsm") {
+                return accepted();
+            }
+            assert_eq!(path, "/v1/table/my_table/get_lsm_stats/");
+            ok_json(stats_body(&[], false))
+        });
+
+        table.checkpoint_lsm().await.unwrap();
+        assert_eq!(compacts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// The loop triggers compaction until every generation that existed at
+    /// the start is gone, one bounded prefix per pass.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_triggers_until_targets_are_drained() {
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return accepted();
+            }
+            // Each pass drains the oldest generation.
+            let drained = seen.load(std::sync::atomic::Ordering::SeqCst);
+            let left: Vec<u64> = [1u64, 2, 3].into_iter().skip(drained).collect();
+            ok_json(stats_body(&left, false))
+        });
+
+        table.checkpoint_lsm().await.unwrap();
+        assert_eq!(
+            compacts.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "one trigger per generation prefix, then stop"
+        );
+    }
+
+    /// Generations created *during* the checkpoint are not waited on, which
+    /// is what lets the loop terminate on a table taking writes where "L0 is
+    /// empty" never becomes true.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_ignores_generations_created_while_it_runs() {
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return accepted();
+            }
+            // Target is 5. One pass drains it; a writer keeps adding above.
+            let n = seen.load(std::sync::atomic::Ordering::SeqCst);
+            let body = if n == 0 {
+                stats_body(&[5], false)
+            } else {
+                stats_body(&[6, 7], false)
+            };
+            ok_json(body)
+        });
+
+        table.checkpoint_lsm().await.unwrap();
+        assert_eq!(
+            compacts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the loop must not chase generations written after it started"
+        );
+    }
+
+    /// Contention is a 429 and must be retried. The server keeps it off 503
+    /// precisely so the client can act on the status alone — reading it as
+    /// terminal stops the checkpoint early on a healthy node.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_retries_contention() {
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                // First two triggers: every bucket already latched.
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                    return http::Response::builder()
+                        .status(429)
+                        .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                        .unwrap();
+                }
+                return accepted();
+            }
+            let accepted_triggers = seen
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .saturating_sub(2);
+            let left: Vec<u64> = if accepted_triggers == 0 {
+                vec![1]
+            } else {
+                vec![]
+            };
+            ok_json(stats_body(&left, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("contention must not abort the checkpoint");
+        assert_eq!(
+            compacts.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "assert the retry count, not just the outcome"
+        );
+    }
+
+    /// A transient fault on the poll must not abort the checkpoint. This route
+    /// meets the most contention — it runs every `POLL_INTERVAL` for the
+    /// checkpoint's whole life, with the transport retry layer disabled — yet
+    /// was the one call reached with a bare `?`.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_retries_a_contended_stats_poll() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+                return accepted();
+            }
+            // The opening read lands; the next two polls are latched out.
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if (1..3).contains(&n) {
+                return http::Response::builder()
+                    .status(429)
+                    .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                    .unwrap();
+            }
+            ok_json(stats_body(if n < 4 { &[1] } else { &[] }, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a contended poll must be retried, not surfaced");
+        assert_eq!(
+            polls.load(std::sync::atomic::Ordering::SeqCst),
+            5,
+            "the two rejected polls must be re-issued, not skipped"
+        );
+    }
+
+    /// Contention and a lost claim draw on separate budgets: five straight
+    /// 429s on `flush`, more than `MAX_REISSUES`, must still converge. On one
+    /// shared counter this spent the re-issue cap and then reported a lost
+    /// claim nothing had ever reported.
+    #[tokio::test(start_paused = true)]
+    async fn test_contention_does_not_exhaust_the_reissue_budget() {
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = flushes.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5 {
+                    return http::Response::builder()
+                        .status(429)
+                        .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                        .unwrap();
+                }
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                return accepted();
+            }
+            ok_json(stats_body(&[], false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("contention must not be reported as a lost claim");
+        assert_eq!(
+            flushes.load(std::sync::atomic::Ordering::SeqCst),
+            6,
+            "five retries against one seal, then it lands"
+        );
+    }
+
+    /// An exhausted retry budget surfaces the fault that consumed it, not a
+    /// message the loop invented: "429, nine times" points an operator at a
+    /// saturated pool, a generic runtime error points them nowhere.
+    #[tokio::test(start_paused = true)]
+    async fn test_exhausted_retries_surface_the_underlying_fault() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(429)
+                .body(r#"{"code":21,"error":"Too many concurrent writes"}"#.to_string())
+                .unwrap()
+        });
+
+        let err = table.checkpoint_lsm().await.unwrap_err();
+        assert!(
+            matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 429),
+            "the fault that spent the budget must be the one reported: {err:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            9,
+            "one call plus MAX_RETRIES — the re-issue budget is not spent on top"
+        );
+    }
+
+    /// A draining node is terminal, but the client does not know that from the
+    /// status: draining and a proxy blip are both 503, and telling them apart
+    /// takes parsing the body for a namespace code. So it spends the retry
+    /// budget and then reports what the server said — the drain gate never
+    /// releases, so the answer does not change, and the operator still reads
+    /// "WAL node draining" in the error.
+    #[tokio::test(start_paused = true)]
+    async fn test_draining_surfaces_after_the_retry_budget() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(503)
+                .body(r#"{"code":19,"error":"WAL node draining"}"#.to_string())
+                .unwrap()
+        });
+
+        let err = table.checkpoint_lsm().await.unwrap_err();
+        let message = err.to_string();
+        assert!(
+            matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 503),
+            "the 503 must surface as itself: {err:?}"
+        );
+        assert!(
+            message.contains("WAL node draining"),
+            "the server's own diagnosis must survive to the caller: {message}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            9,
+            "one call plus MAX_RETRIES, then it reports rather than spinning"
+        );
+    }
+
+    /// A long stall with nothing compacting must keep waiting, not fail. The
+    /// client cannot judge this: a checkpoint queued behind unrelated tables
+    /// on the pod-wide compactor pool reports exactly these numbers — flat
+    /// generations, an idle latch — as one whose merges are failing. The
+    /// deadline is the caller's.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_waits_out_a_long_stall_rather_than_failing() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+                return accepted();
+            }
+            // Flat for far longer than any bound this loop ever had, with
+            // `compacting: false` throughout — then it drains.
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ok_json(stats_body(if n < 40 { &[1, 2] } else { &[] }, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a stall is the server being slow, not the client's call to make");
+        assert!(
+            polls.load(std::sync::atomic::Ordering::SeqCst) > 40,
+            "the loop must have kept polling well past the old ten-poll bound"
+        );
+    }
+
+    /// A pass already owns the latch on every outstanding bucket, so the loop
+    /// waits rather than piling on triggers it would only refuse. This is the
+    /// sole thing `compacting` is read for.
+    #[tokio::test(start_paused = true)]
+    async fn test_checkpoint_waits_while_a_pass_is_running() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let compacts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_polls = polls.clone();
+        let seen_compacts = compacts.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            if path.contains("flush_lsm") {
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                seen_compacts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return accepted();
+            }
+            // Latched for many polls, then done.
+            let n = seen_polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ok_json(if n > 15 {
+                stats_body(&[], false)
+            } else {
+                stats_body(&[1], true)
+            })
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a running pass is progress, not a stall");
+        assert_eq!(
+            compacts.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "never trigger against a bucket already compacting"
+        );
+    }
+
+    /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
+    /// defaulting to a zero it did not measure. `include_generation_rows`
+    /// rides in the body and is off unless asked for.
+    #[tokio::test]
+    async fn test_get_lsm_stats_round_trip() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_lsm_stats/");
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                body["include_generation_rows"], true,
+                "the flag must reach the server, not be silently dropped"
+            );
+            let response = serde_json::json!({
+                "lsm_stats": {
+                    "buckets": [{
+                        "shard_id": "b0",
+                        "status": "Active",
+                        "writer_epoch": 3,
+                        "manifest_version": 11,
+                        "current_generation": 9,
+                        "replay_after_wal_entry_position": 100,
+                        "wal_entry_position_last_seen": 140,
+                        "generations": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
+                        "compacting": false,
+                        "memtables": [
+                            { "generation": 9, "rows": 12, "bytes": 900, "batches": 2,
+                              "indexes": ["vec_idx"] }
+                        ],
+                    }],
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let stats = table
+            .get_lsm_stats(true)
+            .await
+            .unwrap()
+            .expect("a WAL-backed table reports Some");
+        let bucket = &stats.buckets[0];
+        assert_eq!(bucket.replay_after_wal_entry_position, 100);
+        assert_eq!(bucket.wal_entry_position_last_seen, 140);
+        assert!(!bucket.compacting);
+        assert_eq!(bucket.generations[0].generation, 8);
+        assert_eq!(bucket.generations[0].rows, Some(30));
+        // The line that answers "why is my fresh-tier vector search
+        // brute-force" — an absent index name is the whole explanation.
+        let memtables = bucket.memtables.as_ref().unwrap();
+        assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
+    }
+
+    /// A 404 arrives as `TableNotFound`, not as a lost claim the loop
+    /// re-issues from flush until its cap. The two are distinguished by
+    /// status: 404 is "no such table", 421 is "this node holds no claim".
+    /// They shared 404 once, and the loop chased a name that never existed.
+    #[tokio::test(start_paused = true)]
+    async fn test_missing_table_is_not_read_as_a_lost_claim() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |_request| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            http::Response::builder()
+                .status(404)
+                .body(r#"{"code":4,"error":"Not found: Table not found: my_table"}"#.to_string())
+                .unwrap()
+        });
+
+        let err = table.checkpoint_lsm().await.unwrap_err();
+        assert!(
+            matches!(err, Error::TableNotFound { .. }),
+            "a missing table must say so: {err:?}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no point re-claiming a table that does not exist"
+        );
+    }
+
+    /// A lost claim — 421, not 404 — does re-issue from flush, the call that
+    /// re-claims and replays.
+    #[tokio::test(start_paused = true)]
+    async fn test_registry_miss_reissues_from_flush() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path().to_string();
+            let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if path.contains("flush_lsm") {
+                // First flush lands; the claim is then lost, and the
+                // re-issued flush succeeds.
+                return accepted();
+            }
+            if path.contains("compact_lsm") {
+                if n < 4 {
+                    return http::Response::builder()
+                        .status(421)
+                        .body(r#"{"code":19,"error":"table not claimed"}"#.to_string())
+                        .unwrap();
+                }
+                return accepted();
+            }
+            ok_json(stats_body(if n < 6 { &[1] } else { &[] }, false))
+        });
+
+        table
+            .checkpoint_lsm()
+            .await
+            .expect("a lost claim must be recovered by re-flushing, not surfaced");
+    }
+
+    #[tokio::test]
+    async fn test_get_lsm_stats_absent_when_wal_off() {
+        let table = Table::new_with_handler("my_table", |_request| {
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::json!({ "lsm_stats": null }).to_string())
+                .unwrap()
+        });
+        assert!(table.get_lsm_stats(false).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -9874,6 +11126,7 @@ mod tests {
                     .status(200)
                     .body("{}".to_string())
                     .unwrap(),
+                "/v1/table/my_table/describe/" => simple_describe_response(),
                 "/v1/table/my_table/add_columns/"
                 | "/v1/table/my_table/alter_columns/"
                 | "/v1/table/my_table/drop_columns/" => {

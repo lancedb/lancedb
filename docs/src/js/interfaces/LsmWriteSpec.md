@@ -34,7 +34,9 @@ Bucket and identity variants: the sharding column.
 optional maintainedIndexes: string[];
 ```
 
-Names of indexes the MemWAL should keep up to date during writes.
+Indexes the MemWAL keeps up to date. Omit to maintain every supported
+index, resolved on install — a snapshot, so indexes created later are not
+maintained. Pass `[]` for none.
 
 ***
 

@@ -31,7 +31,7 @@ is also an [asynchronous API client](#connections-asynchronous).
 ## Namespaces (Synchronous)
 
 A namespace-backed connection resolves tables through a
-[Lance namespace](https://lancedb.github.io/lance-namespace/) service instead of
+[Lance namespace](https://lance-format.github.io/lance-namespace/) service instead of
 listing a storage directory.
 
 ::: lancedb.connect_namespace
@@ -51,6 +51,44 @@ listing a storage directory.
 ::: lancedb.table.Tags
 
 ::: lancedb.table.Branches
+
+::: lancedb.LsmWriteSpec
+
+## Functions and Jobs
+
+::: lancedb.functions.FunctionArtifact
+
+::: lancedb.functions.FunctionParameter
+
+::: lancedb.functions.FunctionResultField
+
+::: lancedb.functions.FunctionOutput
+
+::: lancedb.functions.FunctionSignature
+
+::: lancedb.functions.PythonEnvironmentSpec
+
+::: lancedb.functions.FunctionVersion
+
+::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.FunctionVersionRef
+
+::: lancedb.functions.ApplicationInput
+
+::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.InputBinding
+
+::: lancedb.functions.OutputMapping
+
+::: lancedb.functions.FunctionBinding
+
+::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.job.Job
+
+::: lancedb.job.AsyncJob
 
 ## Expressions
 
@@ -151,8 +189,9 @@ The same option is available on `lancedb.tokenize(...)` and the deprecated
 ```python
 import lancedb
 
-tokens = list(lancedb.tokenize("acme makes searchable data",
-                               custom_stop_words=["acme"]))
+tokens = list(
+    lancedb.tokenize("acme makes searchable data", custom_stop_words=["acme"])
+)
 ```
 
 ::: lancedb.tokenize
