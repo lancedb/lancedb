@@ -21,6 +21,11 @@ SCHEMA = pa.schema(
 )
 
 
+def test_lsm_write_spec_module_metadata():
+    assert lancedb.LsmWriteSpec is LsmWriteSpec
+    assert LsmWriteSpec.__module__ == "lancedb._lancedb"
+
+
 def _batch(ids, vs):
     return pa.RecordBatch.from_arrays(
         [pa.array(ids, type=pa.utf8()), pa.array(vs, type=pa.int32())],
