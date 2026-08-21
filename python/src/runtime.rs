@@ -10,21 +10,32 @@
 //!
 //! We sidestep the global by routing every future through our own
 //! [`LanceRuntime`] (a [`pyo3_async_runtimes::generic::Runtime`] impl) backed
-//! by an `Arc<tokio::runtime::Runtime>` that we own. A `pthread_atfork`
-//! child handler clears the slot; the next `spawn` rebuilds the runtime in
-//! the child. This mirrors the pattern used in the Lance Python bindings.
+//! by an [`arc_swap::ArcSwapOption`] slot holding an `Arc<tokio::runtime::
+//! Runtime>` that we own. A `pthread_atfork` child handler clears the slot
+//! (atomic-only — see [`atfork_child`]); the next `spawn` rebuilds the
+//! runtime in the child. This mirrors the pattern used in the Lance Python
+//! bindings.
 //!
-//! The runtime handle is reference-counted (not a bare pointer) so that
-//! [`reset_runtime`] can swap in a fresh runtime for future callers without
-//! invalidating a handle an in-flight `block_on`/`spawn` call is still
-//! using on another thread — the old runtime is only actually shut down
-//! once its last reference is dropped.
+//! [`reset_runtime`] lets a long-running host process (there is no
+//! `fork()`-based reset on Windows — see that function's docs) publish a
+//! fresh runtime generation for *future* callers without disturbing
+//! in-flight work: `get_runtime()` returns an owned `Arc` clone, and
+//! [`LanceRuntime::spawn`]/[`LanceRuntime::spawn_blocking`] hold their own
+//! clone alive for the full lifetime of the spawned task (not just the
+//! synchronous call that submits it) — a retired generation's `Runtime`
+//! only actually shuts down once every such clone has been dropped, never
+//! out from under work that's still using it. `ArcSwapOption` provides this
+//! safely without a lock: reclamation of a retired generation is handled by
+//! the crate's own lock-free algorithm, so there is no use-after-free
+//! window between one thread swapping in a new generation and another
+//! thread mid-dereference of the old one.
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
 
+use arc_swap::ArcSwapOption;
 use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject, pyfunction};
 use pyo3_async_runtimes::{
     TaskLocals,
@@ -32,7 +43,8 @@ use pyo3_async_runtimes::{
 };
 use tokio::{runtime, task};
 
-static RUNTIME: RwLock<Option<Arc<runtime::Runtime>>> = RwLock::new(None);
+static RUNTIME: ArcSwapOption<runtime::Runtime> = ArcSwapOption::const_empty();
+static INSTALLING: AtomicBool = AtomicBool::new(false);
 static ATFORK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn create_runtime() -> runtime::Runtime {
@@ -44,22 +56,21 @@ fn create_runtime() -> runtime::Runtime {
 }
 
 fn get_runtime() -> Arc<runtime::Runtime> {
-    if let Some(rt) = RUNTIME.read().expect("runtime lock poisoned").as_ref() {
-        return rt.clone();
+    loop {
+        if let Some(rt) = RUNTIME.load_full() {
+            return rt;
+        }
+        if !INSTALLING.fetch_or(true, Ordering::SeqCst) {
+            break;
+        }
+        std::thread::yield_now();
     }
-
-    let mut guard = RUNTIME.write().expect("runtime lock poisoned");
-    // Another thread may have installed a runtime while we waited for the
-    // write lock — check again before building a second one.
-    if let Some(rt) = guard.as_ref() {
-        return rt.clone();
-    }
-
     if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
         install_atfork();
     }
     let new_rt = Arc::new(create_runtime());
-    *guard = Some(new_rt.clone());
+    RUNTIME.store(Some(new_rt.clone()));
+    INSTALLING.store(false, Ordering::SeqCst);
     new_rt
 }
 
@@ -72,16 +83,24 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     get_runtime().block_on(fut)
 }
 
-/// Runs in async-signal context after `fork()` in the child.  We can only
-/// touch atomics/locks here; we deliberately leak the previous runtime
-/// (rather than let its `Drop` run) because dropping a tokio `Runtime`
-/// would try to join its (now-dead) worker threads and hang.
+/// Runs after `fork()` in the child, in a context where only the forking
+/// thread survives. **Atomic-only** — any lock acquired here (even
+/// indirectly) can deadlock forever if a *different*, now-vanished thread
+/// held it at the moment of fork; the child inherits the lock's memory
+/// state as "held by a thread that no longer exists" and nothing can ever
+/// release it. `ArcSwapOption::store`/`AtomicBool::store` never take an OS
+/// lock, so they're safe here — unlike, say, a `std::sync::RwLock`.
+///
+/// We don't drop the inherited runtime here (its worker threads are dead;
+/// letting a `Runtime` actually shut down would try to join them and hang)
+/// — clearing the slot just makes the next `get_runtime()` call (from the
+/// one live thread, in a normal, safe context) build a fresh one and let
+/// the retired `Arc` drop wherever its last clone happens to go out of
+/// scope, same reclamation path as a normal [`reset_runtime`] call.
+#[cfg_attr(windows, allow(dead_code))] // only wired up by install_atfork() on non-Windows
 extern "C" fn atfork_child() {
-    if let Ok(mut guard) = RUNTIME.write() {
-        if let Some(old) = guard.take() {
-            std::mem::forget(old);
-        }
-    }
+    RUNTIME.store(None);
+    INSTALLING.store(false, Ordering::SeqCst);
 }
 
 #[cfg(not(windows))]
@@ -92,9 +111,9 @@ fn install_atfork() {
 #[cfg(windows)]
 fn install_atfork() {}
 
-/// Closes the process's current Tokio runtime (if nothing else is using it)
-/// and forces the next `get_runtime()` call (`block_on`/`spawn`/
-/// `future_into_py`) to build a fresh one.
+/// Publishes a fresh Tokio runtime generation for *future* `get_runtime()`
+/// callers (`block_on`/`spawn`/`future_into_py`), without disturbing
+/// in-flight work on the current one.
 ///
 /// This exists as an explicit, opt-in mitigation for a Windows-specific
 /// issue: the fork-reset hook above only fires on POSIX (there is no
@@ -109,21 +128,16 @@ fn install_atfork() {}
 /// This does **not** fix the underlying resource leak — that is tracked
 /// upstream in `mio` (<https://github.com/tokio-rs/mio/issues/1944>), not
 /// under LanceDB's control — it only gives callers a way to recycle around
-/// it. Safe to call at any point between operations; if another thread is
-/// still mid-`block_on`/`spawn` with its own clone of the runtime handle,
-/// that in-flight call keeps its runtime alive until it finishes — this
-/// function never blocks waiting for that, it only swaps the slot so the
-/// *next* caller gets a fresh runtime.
+/// it. Safe to call at any point between operations, from any thread: a
+/// call already mid-`block_on`, or a `spawn`/`spawn_blocking`ed task still
+/// running, holds its own `Arc` clone of the *retired* runtime and keeps it
+/// alive until that specific call/task finishes — this function never
+/// blocks waiting for that, it only publishes the new generation so the
+/// *next* caller gets it.
 #[pyfunction]
 pub fn reset_runtime(py: Python<'_>) -> PyResult<()> {
-    py.allow_threads(|| {
-        let mut guard = RUNTIME.write().expect("runtime lock poisoned");
-        // Dropping our reference here shuts the runtime down for real
-        // (worker threads are alive in this path, unlike the fork case
-        // above, so joining them is safe) once it's the last reference —
-        // if another thread still holds a clone, the actual shutdown
-        // happens on whichever thread drops that last clone instead.
-        guard.take();
+    py.detach(|| {
+        RUNTIME.store(None);
     });
     Ok(())
 }
@@ -152,16 +166,29 @@ impl Runtime for LanceRuntime {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let handle = get_runtime().spawn(fut);
-        Box::pin(async move { handle.await.map_err(LanceJoinError) })
+        // Keep our own `Arc` clone alive for the whole wrapper future, not
+        // just this synchronous `spawn()` call — otherwise a concurrent
+        // `reset_runtime()` could retire (and, once every other clone
+        // drops, shut down) the runtime while this task is still running
+        // on one of its worker threads, cancelling it out from under us.
+        let rt = get_runtime();
+        let handle = rt.spawn(fut);
+        Box::pin(async move {
+            let _rt_keepalive = rt;
+            handle.await.map_err(LanceJoinError)
+        })
     }
 
     fn spawn_blocking<F>(f: F) -> Self::JoinHandle
     where
         F: FnOnce() + Send + 'static,
     {
-        let handle = get_runtime().spawn_blocking(f);
-        Box::pin(async move { handle.await.map_err(LanceJoinError) })
+        let rt = get_runtime();
+        let handle = rt.spawn_blocking(f);
+        Box::pin(async move {
+            let _rt_keepalive = rt;
+            handle.await.map_err(LanceJoinError)
+        })
     }
 }
 

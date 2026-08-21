@@ -338,3 +338,11 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true
+
+## Runtime lifecycle (advanced)
+
+Advanced, opt-in maintenance for long-running host processes (test suites,
+agent harnesses) that perform very high volumes of operations in a single
+process — not needed for typical usage.
+
+::: lancedb.background_loop.reset_background_loop

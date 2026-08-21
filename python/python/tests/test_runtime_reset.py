@@ -9,8 +9,8 @@ Windows). See `background_loop.reset_background_loop` and
 `_lancedb.reset_runtime` docstrings for the full explanation.
 """
 
+import subprocess
 import sys
-import time
 
 import lancedb
 import pyarrow as pa
@@ -58,58 +58,73 @@ def test_reset_background_loop_is_idempotent_and_safe_to_call_repeatedly():
     assert alive == [LOOP.thread]
 
 
+_STRESS_WORKLOAD = """
+import asyncio
+import sys
+
+import lancedb
+import pyarrow as pa
+from lancedb.background_loop import reset_background_loop
+
+
+async def main(tmp_dir: str, n: int, reset_every: int) -> None:
+    schema = pa.schema([pa.field("id", pa.string())])
+    for i in range(n):
+        db = await lancedb.connect_async(f"{tmp_dir}/db{i}")
+        table = await db.create_table("t", schema=schema)
+        await table.add([{"id": "1"}])
+        await table.count_rows()
+        if (i + 1) % reset_every == 0:
+            reset_background_loop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main(sys.argv[1], int(sys.argv[2]), int(sys.argv[3])))
+"""
+
+
 @pytest.mark.skipif(
     sys.platform != "win32",
     reason="Regression target is Windows-specific (IOCP resource pressure); "
-    "this is a stress/watchdog test, not worth the runtime cost elsewhere.",
+    "this is a stress test, not worth the runtime cost elsewhere.",
 )
-@pytest.mark.asyncio
-async def test_many_connections_with_periodic_reset_does_not_hang(tmp_path):
+def test_many_connections_with_periodic_reset_does_not_hang(tmp_path):
     """Regression guard for the Windows hang this mitigation exists for:
     opens/closes many `connect_async` connections and tables in a single
-    process, calling `reset_background_loop()` every `_RESET_EVERY`
-    connections, with a watchdog that fails the test loudly instead of
-    hanging forever if something regresses.
+    process, calling `reset_background_loop()` every N connections.
+
+    Runs the workload in a **child process** that this test can actually
+    time out and kill (`subprocess.run(..., timeout=...)`): a same-process
+    daemon-thread watchdog can flag a hang but can't do anything about a
+    stuck main thread, so it wouldn't actually stop a hung test -- pytest
+    would just hang anyway.
 
     This does not reproduce the original hang on its own (a bare loop like
     this was confirmed clean even against the affected lancedb release) --
     it exists so that *if* the real trigger is narrowed down later, there's
-    already a watchdog-protected place to plug it in without the test
-    suite silently hanging CI.
+    already a place to plug it in without the test suite silently hanging
+    CI.
     """
-    import faulthandler
-    import threading
-
-    _N = 300
-    _RESET_EVERY = 20
-    _TIMEOUT_S = 60.0
-
-    done = threading.Event()
-
-    def _watchdog():
-        if done.wait(timeout=_TIMEOUT_S):
-            return
-        faulthandler.dump_traceback(all_threads=True)
-        pytest.fail(f"hang detected after {_TIMEOUT_S}s", pytrace=False)
-
-    watchdog = threading.Thread(target=_watchdog, daemon=True)
-    watchdog.start()
+    script = tmp_path / "_stress_workload.py"
+    script.write_text(_STRESS_WORKLOAD)
+    workload_dir = tmp_path / "dbs"
+    workload_dir.mkdir()
 
     try:
-        start = time.monotonic()
-        for i in range(_N):
-            db = await lancedb.connect_async(str(tmp_path / f"db{i}"))
-            schema = pa.schema([pa.field("id", pa.string())])
-            table = await db.create_table("t", schema=schema)
-            await table.add([{"id": "1"}])
-            await table.count_rows()
-            if (i + 1) % _RESET_EVERY == 0:
-                reset_background_loop()
-        elapsed = time.monotonic() - start
-    finally:
-        done.set()
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(script), str(workload_dir), "300", "20"],
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f"hang detected: workload did not finish within 60s "
+            f"(stdout={exc.stdout!r} stderr={exc.stderr!r})",
+            pytrace=False,
+        )
 
-    assert elapsed < _TIMEOUT_S, (
-        f"completed but suspiciously slow ({elapsed:.1f}s) -- investigate "
-        "before trusting this as a clean pass"
+    assert result.returncode == 0, (
+        f"workload subprocess failed: stdout={result.stdout!r} "
+        f"stderr={result.stderr!r}"
     )

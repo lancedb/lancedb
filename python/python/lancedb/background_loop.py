@@ -36,18 +36,33 @@ class BackgroundEventLoop:
             raise
 
     def reset(self, *, join_timeout: float = 5.0) -> None:
-        """Stop this loop's background thread and start a fresh one.
+        """Stop this loop's background thread, close the loop, and start a
+        fresh one.
 
         Unlike `_reset_after_fork` below (which runs after `fork()`, where
         the old thread is already dead and must be leaked to avoid a hang),
         this stops the old loop and actually joins its thread before
         starting the new one -- the thread is alive here, so joining it is
         safe. See `reset_background_loop` for why you'd want this.
+
+        Raises `RuntimeError` (without starting a second loop) if the old
+        thread doesn't stop within `join_timeout` -- proceeding anyway
+        would risk two live background loops at once, and silently
+        skipping `close()` would leave the old loop's resources (its
+        Proactor/IOCP selector on Windows included) unreleased, defeating
+        the whole point of calling this.
         """
         old_loop = self.loop
         old_thread = self.thread
         old_loop.call_soon_threadsafe(old_loop.stop)
         old_thread.join(timeout=join_timeout)
+        if old_thread.is_alive():
+            msg = (
+                f"BackgroundEventLoop.reset: background thread did not "
+                f"stop within {join_timeout}s"
+            )
+            raise RuntimeError(msg)
+        old_loop.close()
         self._start()
 
 
