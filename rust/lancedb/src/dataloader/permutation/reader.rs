@@ -97,8 +97,11 @@ impl PermutationReader {
         Self::inner_new(base_table, Some(permutation_table), split).await
     }
 
-    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Self {
-        Self::inner_new(base_table, None, 0).await.unwrap()
+    /// A reader over the base table in storage order, with no permutation.
+    ///
+    /// Fallible because construction counts the base table, which can fail.
+    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
+        Self::inner_new(base_table, None, 0).await
     }
 
     /// Validates the limit and offset and returns the number of rows that will be read
@@ -487,7 +490,14 @@ impl PermutationReader {
 
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
-        table.query().select(selection).output_schema().await
+        // limit(1) because some table types may require executing the
+        // query to determine the output schema
+        table
+            .query()
+            .select(selection)
+            .limit(1)
+            .output_schema()
+            .await
     }
 
     pub fn count_rows(&self) -> u64 {
@@ -779,7 +789,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         // With no permutation table, take_offsets uses the base table directly
         let offsets = vec![0, 2, 4, 6];
@@ -961,7 +973,9 @@ mod tests {
             .into_mem_table("tbl", RowCount::from(10), BatchCount::from(1))
             .await;
 
-        let reader = PermutationReader::identity(base_table.base_table().clone()).await;
+        let reader = PermutationReader::identity(base_table.base_table().clone())
+            .await
+            .unwrap();
 
         let batch = reader.take_offsets(&[], Select::All).await.unwrap();
 

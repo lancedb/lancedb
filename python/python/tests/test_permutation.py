@@ -8,6 +8,11 @@ import pytest
 from lancedb import DBConnection, Table, connect
 from lancedb.background_loop import LOOP
 from lancedb.permutation import Permutation, Permutations, permutation_builder
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
 
 
 def test_split_random_ratios(mem_db):
@@ -1214,3 +1219,37 @@ def test_remove_rowid_after_select(some_permutation: Permutation):
     perm_without_rowid = perm_with_rowid.remove_columns(["_rowid"])
     assert "_rowid" not in perm_without_rowid.column_names
     assert perm_without_rowid.column_names == ["id"]
+
+
+def test_permutation_over_remote_table():
+    """The permutation API accepts a remote table (LanceDB Cloud / Enterprise).
+
+    It used to reject one outright, which meant a remote table could not be used for
+    training at all.  Rows are addressed by `_rowid` here exactly as `take_row_ids`
+    does, so this also pins the request shapes sent to the server.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        permutation_tbl = permutation_builder(table).split_sequential(fixed=2).execute()
+        assert permutation_tbl.count_rows() == server.num_rows
+
+        permutation = Permutation.from_tables(table, permutation_tbl, 0)
+        assert permutation.num_rows == server.num_rows // 2
+
+        # Compare against the permutation's own order rather than assuming one: the
+        # builder sorts by split id, and that sort is not guaranteed to be stable.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        split0 = [
+            row_id
+            for row_id, split in zip(rows["row_id"], rows["split_id"])
+            if not split
+        ]
+        # The mock table's `id` equals its `_rowid`. Offsets are resolved to row ids
+        # client-side, then taken back in the order asked for.
+        assert permutation.take_offsets([2, 0]) == [
+            {"id": split0[2]},
+            {"id": split0[0]},
+        ]
+
+    assert_server_safe_row_id_requests(server)

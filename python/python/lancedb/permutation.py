@@ -41,21 +41,16 @@ class PermutationBuilder:
     The permutation is stored in memory and will be lost when the program exits.
     """
 
-    def __init__(self, table: LanceTable):
+    def __init__(self, table: Table):
         """
         Creates a new permutation builder for the given table.
 
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
+
+        Tables with an LSM write spec are rejected: rows that have not been flushed
+        to the base table have no row id yet, so a permutation cannot reference them.
         """
-        if not hasattr(table, "_inner"):
-            raise TypeError(
-                f"PermutationBuilder requires a local LanceTable, "
-                f"got {type(table).__name__}. "
-                "The permutation API is not supported on remote tables. "
-                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
-                "direct access to the underlying Lance dataset needed for permutations."
-            )
         self._async = async_permutation_builder(table)
 
     def split_random(
@@ -231,7 +226,7 @@ class PermutationBuilder:
         return LOOP.run(do_execute())
 
 
-def permutation_builder(table: LanceTable) -> PermutationBuilder:
+def permutation_builder(table: Table) -> PermutationBuilder:
     return PermutationBuilder(table)
 
 
@@ -248,7 +243,7 @@ class Permutations:
 
     Attributes
     ----------
-    base_table: LanceTable
+    base_table: Table
         The base table that the permutations are based on.
     permutation_table: LanceTable
         The permutation table that defines the splits.
@@ -282,7 +277,7 @@ class Permutations:
     {'train': 0, 'test': 1}
     """
 
-    def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
+    def __init__(self, base_table: Table, permutation_table: LanceTable):
         self.base_table = base_table
         self.permutation_table = permutation_table
 

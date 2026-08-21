@@ -238,7 +238,26 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
-        // First pass, apply filter and load row ids
+        // Rows that have not been flushed to the base table have no row id yet, so a
+        // permutation cannot address them.  Reading the base table alone would leave
+        // them out of training silently, so refuse the table instead.
+        match self.base_table.base_table().get_lsm_write_spec().await {
+            Ok(Some(_)) => {
+                return Err(Error::NotSupported {
+                    message: "the data loader does not support tables with an LSM write \
+                              spec: rows that have not been flushed to the base table \
+                              have no row id, so a permutation cannot reference them"
+                        .to_string(),
+                });
+            }
+            Ok(None) => {}
+            // Table types with no LSM write path cannot have a spec.
+            Err(Error::NotSupported { .. }) => {}
+            Err(err) => return Err(err),
+        }
+
+        // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
+        // every rank must scan the rows in the same order to build the same permutation.
         let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
@@ -414,6 +433,50 @@ mod tests {
                 .await
                 .unwrap(),
             283
+        );
+    }
+
+    /// Rows that have not been flushed to the base table have no row id, so a
+    /// permutation cannot reference them.  Reading the base table alone would drop
+    /// them from training without saying so, so the table is refused instead.
+    #[tokio::test]
+    async fn test_permutation_rejects_lsm_write_spec() {
+        use crate::table::LsmWriteSpec;
+        use arrow_array::{Int32Array, RecordBatchIterator};
+        use arrow_schema::{DataType, Field, Schema};
+
+        // MemWAL needs a real dataset directory and a non-nullable primary key.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int32, false)]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let table = db.create_table("tbl", reader).execute().await.unwrap();
+
+        // Without a spec the build succeeds.
+        PermutationBuilder::new(table.clone())
+            .build()
+            .await
+            .unwrap();
+
+        table.set_unenforced_primary_key(["idx"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let err = PermutationBuilder::new(table).build().await.unwrap_err();
+        assert!(
+            err.to_string().contains("LSM write spec"),
+            "expected the pre-check to refuse the table, got: {err}"
         );
     }
 }
