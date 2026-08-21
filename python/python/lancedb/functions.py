@@ -281,7 +281,7 @@ class FunctionVersion(_RemoteValue):
         Examples
         --------
         >>> from lancedb import col
-        >>> application = function(
+        >>> application = function(  # doctest: +SKIP
         ...     title=col("title"),
         ...     body=col("body"),
         ... ).rename(columns={
