@@ -49,11 +49,25 @@ pub struct RefreshColumnResult {
     pub version: u64,
 }
 
+struct RefreshExecution {
+    result: RefreshColumnResult,
+    source_version: u64,
+}
+
 /// Internal implementation of the refresh logic.
 pub(crate) async fn execute_refresh_column(
     table: &NativeTable,
     column: &str,
 ) -> Result<RefreshColumnResult> {
+    Ok(execute_refresh_column_with_source(table, column)
+        .await?
+        .result)
+}
+
+async fn execute_refresh_column_with_source(
+    table: &NativeTable,
+    column: &str,
+) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
     ensure_no_lsm_write_spec(table).await?;
     let dataset = table.dataset.get().await?;
@@ -87,9 +101,13 @@ pub(crate) async fn execute_refresh_column(
     }
 
     if replacements.is_empty() {
-        return Ok(RefreshColumnResult {
-            rows_filled: 0,
-            version: dataset.version().version,
+        let source_version = dataset.version().version;
+        return Ok(RefreshExecution {
+            result: RefreshColumnResult {
+                rows_filled: 0,
+                version: source_version,
+            },
+            source_version,
         });
     }
 
@@ -110,14 +128,20 @@ pub(crate) async fn execute_refresh_column(
 
     let version = new_dataset.version().version;
     table.dataset.update(new_dataset);
-    Ok(RefreshColumnResult {
-        rows_filled,
-        version,
+    Ok(RefreshExecution {
+        result: RefreshColumnResult {
+            rows_filled,
+            version,
+        },
+        source_version: read_version,
     })
 }
 
 /// Run the refresh as a [`Job`] in this process.
-pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &str) -> Result<Job> {
+pub(crate) async fn execute_refresh_column_async(
+    table: &NativeTable,
+    column: &str,
+) -> Result<Job<crate::function::RefreshColumnResult>> {
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
@@ -129,9 +153,16 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
     let table = table.clone();
     let column = column.to_string();
     Ok(Job::spawned(tokio::spawn(async move {
-        execute_refresh_column(&table, &column).await?;
+        let execution = execute_refresh_column_with_source(&table, &column).await?;
         table.bump_freshness();
-        Ok(())
+        Ok(crate::function::RefreshColumnResult {
+            rows_assigned: execution.result.rows_filled,
+            rows_failed: 0,
+            rows_remaining: 0,
+            source_version: execution.source_version,
+            published_version: (execution.result.rows_filled > 0)
+                .then_some(execution.result.version),
+        })
     })))
 }
 
@@ -396,6 +427,17 @@ mod tests {
             read(&table, "doubled").await,
             vec![Some(2), Some(4), Some(6)]
         );
+
+        let no_op = table
+            .refresh_column_async("doubled")
+            .await
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(no_op.rows_assigned, 0);
+        assert_eq!(no_op.source_version, 3);
+        assert_eq!(no_op.published_version, None);
     }
 
     /// Values written after the last refresh must be reachable by another one.
@@ -646,7 +688,12 @@ mod tests {
 
         let job = table.refresh_column_async("doubled").await.unwrap();
         assert!(job.id().is_none(), "in-process jobs have no server id");
-        job.wait().await.unwrap();
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_assigned, 3);
+        assert_eq!(result.rows_failed, 0);
+        assert_eq!(result.rows_remaining, 0);
+        assert_eq!(result.source_version, 2);
+        assert_eq!(result.published_version, Some(3));
         assert_eq!(job.status().await.unwrap(), "finished");
         assert_eq!(
             read(&table, "doubled").await,
@@ -672,9 +719,9 @@ mod tests {
         declare_doubled(&table).await.unwrap();
 
         let job = table.refresh_column_async("doubled").await.unwrap();
-        job.wait().await.unwrap();
+        let first = job.wait().await.unwrap();
         // A second wait after completion observes the same outcome.
-        job.wait().await.unwrap();
+        assert_eq!(job.wait().await.unwrap(), first);
         assert_eq!(job.status().await.unwrap(), "finished");
     }
 

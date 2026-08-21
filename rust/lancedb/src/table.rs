@@ -771,7 +771,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
     /// the operation.
-    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
         })
@@ -1696,7 +1699,9 @@ impl Table {
     /// operation instead of blocking until it completes.
     ///
     /// The job may already be complete when returned, and callers must not
-    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. On local tables the job runs as an
     /// in-process task; on LanceDB Cloud and Enterprise it is the server's
@@ -1707,11 +1712,15 @@ impl Table {
     /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let job = table.refresh_column_async("doubled").await?;
     /// println!("refresh running: {:?}", job.status().await?);
-    /// job.wait().await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
@@ -3411,7 +3420,10 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         refresh::execute_refresh_column_async(self, column).await
     }
 

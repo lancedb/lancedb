@@ -25,25 +25,13 @@ pub(crate) trait JobHandle: Send + Sync {
     async fn cancel(&self) -> Result<()>;
 }
 
-/// A backend-neutral successful terminal result.
-///
-/// Local operations do not carry a value. Remote operations may carry JSON
-/// that the public [`Job`] decodes according to its result type.
+/// A successful remote terminal result.
 pub(crate) struct TerminalResult {
-    #[allow(dead_code)] // Typed remote submit endpoints consume this after Slice 1.
     value: Option<Value>,
-    #[allow(dead_code)] // Preserved so typed decode errors retain request correlation.
     request_id: Option<String>,
 }
 
 impl TerminalResult {
-    pub(crate) fn local() -> Self {
-        Self {
-            value: None,
-            request_id: None,
-        }
-    }
-
     pub(crate) fn remote(value: Option<Value>, request_id: String) -> Self {
         Self {
             value,
@@ -51,7 +39,6 @@ impl TerminalResult {
         }
     }
 
-    #[allow(dead_code)] // Exercised by the remote typed-result fixtures in Slice 1.
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let request_id = self.request_id.unwrap_or_default();
         let value = self.value.ok_or_else(|| Error::Http {
@@ -74,12 +61,15 @@ enum JobInner<T> {
         handle: Box<dyn JobHandle>,
         decode: ResultDecoder<T>,
     },
+    Spawned(SpawnedJob<T>),
     Completed(T),
 }
 
 /// A handle to an operation that may still be running.
 ///
-/// The operation may already be complete when the handle is created.
+/// The operation may already be complete when the handle is created. `T` is
+/// the endpoint's successful terminal result; unit-result operations use the
+/// default `Job<()>`.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -92,9 +82,11 @@ where
     T: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let done = matches!(&self.inner, JobInner::Completed(_))
+            || matches!(&self.inner, JobInner::Spawned(job) if job.is_done());
         f.debug_struct("Job")
             .field("id", &self.id())
-            .field("done", &matches!(self.inner, JobInner::Completed(_)))
+            .field("done", &done)
             .finish()
     }
 }
@@ -114,11 +106,6 @@ impl Job<()> {
                 decode: |_| Ok(()),
             },
         }
-    }
-
-    /// A unit-result job running as a task in this process.
-    pub(crate) fn spawned(task: JoinHandle<Result<()>>) -> Self {
-        Self::new(Box::new(SpawnedJob::new(task)))
     }
 }
 
@@ -141,6 +128,13 @@ impl<T> Job<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    /// A typed job running as a task in this process.
+    pub(crate) fn spawned(task: JoinHandle<Result<T>>) -> Self {
+        Self {
+            inner: JobInner::Spawned(SpawnedJob::new(task)),
+        }
+    }
+
     /// Identifies the operation on the server that is running it.
     ///
     /// Returned for correlating with server logs or the jobs API. Operations
@@ -150,6 +144,7 @@ where
     pub fn id(&self) -> Option<&str> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
+            JobInner::Spawned(_) => None,
             JobInner::Completed(_) => None,
         }
     }
@@ -163,17 +158,21 @@ where
     pub async fn status(&self) -> Result<String> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.status().await,
+            JobInner::Spawned(job) => Ok(job.status()),
             JobInner::Completed(_) => Ok("finished".to_string()),
         }
     }
 
     /// Waits until the operation reaches a terminal state.
     ///
+    /// Returns the endpoint's typed result. Unit-result jobs return `()`.
+    ///
     /// Returns [`crate::Error::JobFailed`] if the operation failed and
     /// [`crate::Error::JobCancelled`] if it was cancelled.
     pub async fn wait(&self) -> Result<T> {
         match &self.inner {
             JobInner::Handle { handle, decode } => decode(handle.wait().await?),
+            JobInner::Spawned(job) => job.wait().await,
             JobInner::Completed(result) => Ok(result.clone()),
         }
     }
@@ -184,6 +183,10 @@ where
     pub async fn cancel(&self) -> Result<()> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.cancel().await,
+            JobInner::Spawned(job) => {
+                job.cancel();
+                Ok(())
+            }
             JobInner::Completed(_) => Ok(()),
         }
     }
@@ -192,16 +195,16 @@ where
 /// How an in-process operation ended. Cloneable so every waiter can be given
 /// the outcome; [`Error`] is not, so failures share one behind an [`Arc`].
 #[derive(Clone)]
-enum Outcome {
-    Succeeded,
+enum Outcome<T> {
+    Succeeded(T),
     Failed(Arc<Error>),
     Cancelled,
 }
 
-impl Outcome {
-    fn into_result(self) -> Result<()> {
+impl<T> Outcome<T> {
+    fn into_result(self) -> Result<T> {
         match self {
-            Self::Succeeded => Ok(()),
+            Self::Succeeded(result) => Ok(result),
             Self::Failed(source) => Err(Error::JobFailed {
                 job_id: None,
                 failure: JobFailure::from_source(source),
@@ -214,18 +217,21 @@ impl Outcome {
 /// Tracks an operation running as a task in this process. A second task
 /// watches the first so that aborting it still produces an outcome, and so
 /// that every caller of `wait` observes the same one.
-struct SpawnedJob {
-    outcome: watch::Receiver<Option<Outcome>>,
+struct SpawnedJob<T> {
+    outcome: watch::Receiver<Option<Outcome<T>>>,
     abort: AbortHandle,
 }
 
-impl SpawnedJob {
-    fn new(task: JoinHandle<Result<()>>) -> Self {
+impl<T> SpawnedJob<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn new(task: JoinHandle<Result<T>>) -> Self {
         let abort = task.abort_handle();
         let (tx, outcome) = watch::channel(None);
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(Ok(())) => Outcome::Succeeded,
+                Ok(Ok(result)) => Outcome::Succeeded(result),
                 Ok(Err(err)) => Outcome::Failed(Arc::new(err)),
                 Err(err) if err.is_cancelled() => Outcome::Cancelled,
                 Err(err) => Outcome::Failed(Arc::new(Error::Runtime {
@@ -236,36 +242,35 @@ impl SpawnedJob {
         });
         Self { outcome, abort }
     }
-}
 
-#[async_trait]
-impl JobHandle for SpawnedJob {
-    async fn status(&self) -> Result<String> {
+    fn is_done(&self) -> bool {
+        self.outcome.borrow().is_some()
+    }
+
+    fn status(&self) -> String {
         let label = match &*self.outcome.borrow() {
             None => "running",
-            Some(Outcome::Succeeded) => "finished",
+            Some(Outcome::Succeeded(_)) => "finished",
             Some(Outcome::Failed(_)) => "failed",
             Some(Outcome::Cancelled) => "cancelled",
         };
-        Ok(label.to_string())
+        label.to_string()
     }
 
-    async fn wait(&self) -> Result<TerminalResult> {
+    async fn wait(&self) -> Result<T> {
         let mut outcome = self.outcome.clone();
         let settled = outcome
             .wait_for(|outcome| outcome.is_some())
             .await
             .map_err(|_| Error::Runtime {
-                message: "index job outcome was dropped before it completed".to_string(),
+                message: "job outcome was dropped before it completed".to_string(),
             })?
             .clone()
             .expect("wait_for returns once an outcome is set");
-        settled.into_result()?;
-        Ok(TerminalResult::local())
+        settled.into_result()
     }
 
-    async fn cancel(&self) -> Result<()> {
+    fn cancel(&self) {
         self.abort.abort();
-        Ok(())
     }
 }

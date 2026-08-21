@@ -40,7 +40,7 @@ from ._blob import (
 from .types import BlobMode
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP, embedding_executor
-from lancedb.job import AsyncJob, Job
+from lancedb.job import AsyncJob, Job, _typed_job
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
@@ -72,7 +72,10 @@ from .index import (
     FTS,
 )
 from .expr import Expr
-from .functions import FunctionApplication
+from .functions import (
+    FunctionApplication,
+    RefreshColumnResult as RefreshColumnJobResult,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -2039,7 +2042,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -2050,6 +2053,12 @@ class Table(ABC):
         than failing the job. On local tables the job runs in-process; on
         LanceDB Cloud and Enterprise it is the server's backfill job.
 
+        Returns
+        -------
+        Job[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import lancedb
@@ -2058,7 +2067,9 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> job = table.refresh_column_async("doubled")
-        >>> job.wait()
+        >>> result = job.wait()
+        >>> result.rows_assigned
+        2
         >>> job.status()
         'finished'
         """
@@ -4082,7 +4093,7 @@ class LanceTable(Table):
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
-    def refresh_column_async(self, column: str) -> Job:
+    def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
         """Fill a computed column's unfilled rows, returning a handle to the
         refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -6122,7 +6133,9 @@ class AsyncTable:
         """
         return await self._inner.refresh_column(column)
 
-    async def refresh_column_async(self, column: str) -> AsyncJob:
+    async def refresh_column_async(
+        self, column: str
+    ) -> AsyncJob[RefreshColumnJobResult]:
         """
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
@@ -6134,6 +6147,12 @@ class AsyncTable:
         in-process; on LanceDB Cloud and Enterprise it is the server's
         backfill job.
 
+        Returns
+        -------
+        AsyncJob[RefreshColumnResult]
+            A job whose successful ``wait`` returns row counts plus the source
+            and published table versions.
+
         Examples
         --------
         >>> import asyncio
@@ -6143,12 +6162,16 @@ class AsyncTable:
         ...     table = await db.create_table("computed_job_async_demo", [{"x": 1}])
         ...     await table.add_columns(computed={"doubled": "x * 2"})
         ...     job = await table.refresh_column_async("doubled")
-        ...     await job.wait()
+        ...     result = await job.wait()
+        ...     assert result.rows_assigned == 1
         ...     return await job.status()
         >>> asyncio.run(refresh_in_background())
         'finished'
         """
-        return AsyncJob(await self._inner.refresh_column_async(column))
+        return _typed_job(
+            await self._inner.refresh_column_async(column),
+            RefreshColumnJobResult.from_json,
+        )
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Canonical values exchanged with LanceDB Enterprise Function services.
+"""Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
 environment bake, secret resolution, and execution are owned by Sophon.
+``RefreshColumnResult`` is also the backend-neutral result of a local
+expression-backed refresh job.
 """
 
 from __future__ import annotations
@@ -460,7 +462,11 @@ class FunctionBinding(_RemoteValue):
 
 
 class RefreshColumnResult(_RemoteValue):
-    """Terminal result of a remote Function-column refresh Job."""
+    """Terminal result of an expression-backed or Function-backed refresh Job.
+
+    Local jobs produce this value in process. LanceDB Cloud and Enterprise
+    decode the same value from the durable server-job terminal payload.
+    """
 
     rows_assigned: _UInt64
     rows_failed: _UInt64

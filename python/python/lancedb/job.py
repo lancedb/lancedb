@@ -5,12 +5,11 @@
 
 import asyncio
 from datetime import timedelta
-from typing import Any, Generic, Optional, TypeVar, cast
+from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
 from lancedb.background_loop import LOOP
 
 from . import _lancedb
-from .functions import FunctionVersion
 
 T = TypeVar("T")
 
@@ -18,11 +17,18 @@ T = TypeVar("T")
 class AsyncJob(Generic[T]):
     """A handle to an operation that may still be running.
 
-    The operation may already be complete when the handle is created.
+    The operation may already be complete when the handle is created. ``T``
+    is the endpoint's terminal result type; unit-result jobs resolve to
+    ``None``.
     """
 
-    def __init__(self, inner: Optional[Any]):
+    def __init__(
+        self,
+        inner: Optional[Any],
+        result_decoder: Optional[Callable[[Any], T]] = None,
+    ):
         self._inner = inner
+        self._result_decoder = result_decoder
 
     @property
     def id(self) -> Optional[str]:
@@ -50,17 +56,21 @@ class AsyncJob(Generic[T]):
     async def wait(self, timeout: Optional[timedelta] = None) -> T:
         """Wait until the operation reaches a terminal state.
 
+        Returns the endpoint's typed result, or ``None`` for a unit-result
+        job.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
         if self._inner is None:
             return cast(T, None)
         if timeout is None:
-            return cast(T, await self._inner.wait())
-        return cast(
-            T,
-            await asyncio.wait_for(self._inner.wait(), timeout.total_seconds()),
-        )
+            result = await self._inner.wait()
+        else:
+            result = await asyncio.wait_for(self._inner.wait(), timeout.total_seconds())
+        if self._result_decoder is not None:
+            return self._result_decoder(result)
+        return cast(T, result)
 
     async def cancel(self):
         """Request cancellation. Cancelling a finished operation is a no-op."""
@@ -70,7 +80,7 @@ class AsyncJob(Generic[T]):
 
 
 class Job(Generic[T]):
-    """Synchronous counterpart of `AsyncJob`."""
+    """Synchronous counterpart of `AsyncJob` with the same result type."""
 
     def __init__(self, inner: Optional[AsyncJob[T]]):
         self._inner = inner
@@ -96,6 +106,9 @@ class Job(Generic[T]):
     def wait(self, timeout: Optional[timedelta] = None) -> T:
         """Block until the operation reaches a terminal state.
 
+        Returns the endpoint's typed result, or ``None`` for a unit-result
+        job.
+
         Raises `JobFailedError` if the operation failed, `JobCancelledError`
         if it was cancelled, and `TimeoutError` if `timeout` elapses first.
         """
@@ -110,23 +123,8 @@ class Job(Generic[T]):
         LOOP.run(self._inner.cancel())
 
 
-class _FunctionJobAdapter:
-    def __init__(self, inner: "_lancedb.FunctionJob"):
-        self._inner = inner
-
-    @property
-    def id(self) -> Optional[str]:
-        return self._inner.id
-
-    async def status(self) -> str:
-        return await self._inner.status()
-
-    async def wait(self) -> FunctionVersion:
-        return FunctionVersion.from_json(await self._inner.wait())
-
-    async def cancel(self):
-        await self._inner.cancel()
-
-
-def _function_job(inner: "_lancedb.FunctionJob") -> AsyncJob[FunctionVersion]:
-    return AsyncJob(_FunctionJobAdapter(inner))
+def _typed_job(
+    inner: "_lancedb.TypedJob", result_decoder: Callable[[str], T]
+) -> AsyncJob[T]:
+    """Bind an internal JSON-producing job to its public result model."""
+    return AsyncJob(inner, result_decoder)
