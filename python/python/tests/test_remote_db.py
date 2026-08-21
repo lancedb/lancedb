@@ -363,6 +363,24 @@ def test_remote_connection_serializes():
         assert restored.table_names() == []
 
 
+def test_table_names_sends_no_default_limit():
+    paths = []
+
+    def handler(request):
+        paths.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"tables": ["a", "b"]}')
+
+    with mock_lancedb_connection(handler) as db:
+        assert db.table_names() == ["a", "b"]
+
+    # No limit query parameter: the server decides the page size, as it does for
+    # list_tables().
+    assert paths == ["/v1/table/"]
+
+
 def test_remote_table_is_picklable():
     def handler(request):
         request.close_connection = True
