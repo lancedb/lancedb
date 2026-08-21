@@ -223,58 +223,63 @@ fn install_atfork() {}
 /// of a single retired runtime generation — see the module docs for why
 /// this is per-generation rather than a shared long-lived reaper.
 fn retire(rt: Arc<runtime::Runtime>) {
-    // Box the Arc and hand the closure only a raw pointer to it: a raw
-    // pointer has no `Drop` impl of its own, so if `spawn` fails and the
-    // std library drops the still-unrun closure, nothing happens to the
-    // boxed `Arc` -- it is simply never reconstructed, not dropped. That
-    // is exactly the fallback we want (see below) rather than letting the
-    // normal move-into-closure ownership semantics drop the `Arc` --
-    // possibly the last reference -- on whatever thread called `retire()`.
-    let boxed: *mut Arc<runtime::Runtime> = Box::into_raw(Box::new(rt));
-    let spawned = std::thread::Builder::new()
-        .name("lancedb-runtime-reaper".to_string())
-        .spawn(move || {
-            // SAFETY: `boxed` was produced by `Box::into_raw` just above,
-            // and this closure only ever runs if `spawn` succeeded, which
-            // is the sole path that reclaims it.
-            let mut retired = *unsafe { Box::from_raw(boxed) };
-            // Poll until we're the sole owner -- any in-flight
-            // `block_on`/`spawn`/`spawn_blocking` caller that took its own
-            // clone before this generation was retired keeps it alive
-            // until that specific call/task finishes, same as `Arc` always
-            // works. Once we're the last owner, shut it down explicitly
-            // and non-blockingly from *this* thread -- never let an
-            // arbitrary caller's `Arc` drop trigger the runtime's default
-            // (blocking-join) `Drop` on its own worker, which Tokio
-            // forbids and panics on.
-            loop {
-                match Arc::try_unwrap(retired) {
-                    Ok(rt) => {
-                        rt.shutdown_background();
-                        return;
-                    }
-                    Err(still_shared) => {
-                        retired = still_shared;
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
+    retire_with(rt, |name, body| {
+        std::thread::Builder::new()
+            .name(name)
+            .spawn(body)
+            .map(|_handle| ())
+    });
+}
+
+/// The actual retirement logic behind [`retire`], parameterized over how a
+/// thread gets spawned so tests can simulate `spawn` failing (exhausted OS
+/// thread limits are not something a test can trigger deterministically or
+/// portably) and assert on the fallback behavior below without needing to
+/// actually exhaust threads.
+fn retire_with<S>(rt: Arc<runtime::Runtime>, spawn: S)
+where
+    S: FnOnce(String, Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+{
+    // `ManuallyDrop` never runs `Arc<Runtime>`'s destructor on its own,
+    // whether or not the closure below ever executes. If `spawn` fails, the
+    // still-unrun closure is dropped by the caller -- which drops this
+    // `ManuallyDrop` wrapper as a no-op, deliberately leaking the retired
+    // runtime instead of letting it drop (possibly running
+    // `Runtime::drop()` for real) on whatever thread called `retire()`,
+    // which could be one of that very runtime's own workers. A raw pointer
+    // would leak identically but isn't `Send`, so `Builder::spawn` (which
+    // requires `F: Send`) would refuse to compile it.
+    let carrier = std::mem::ManuallyDrop::new(rt);
+    let body = move || {
+        let mut retired = std::mem::ManuallyDrop::into_inner(carrier);
+        // Poll until we're the sole owner -- any in-flight
+        // `block_on`/`spawn`/`spawn_blocking` caller that took its own
+        // clone before this generation was retired keeps it alive until
+        // that specific call/task finishes, same as `Arc` always works.
+        // Once we're the last owner, shut it down explicitly and
+        // non-blockingly from *this* thread -- never let an arbitrary
+        // caller's `Arc` drop trigger the runtime's default
+        // (blocking-join) `Drop` on its own worker, which Tokio forbids
+        // and panics on.
+        loop {
+            match Arc::try_unwrap(retired) {
+                Ok(rt) => {
+                    rt.shutdown_background();
+                    return;
+                }
+                Err(still_shared) => {
+                    retired = still_shared;
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             }
-        });
-    if spawned.is_err() {
-        // Thread creation failed (extreme resource exhaustion). The closure
-        // above never ran, so `boxed` was never reclaimed -- explicitly
-        // reclaim and `mem::forget` it here rather than relying on that
-        // implicitly. Preserving a non-worker retirement owner is the
-        // point of this whole module; deliberately leaking the retired
-        // runtime (never shut down, never freed -- the same trade-off
-        // `atfork_child` already makes for the identical reason) is safer
-        // than letting it drop on an arbitrary caller's thread, which could
-        // be one of that very runtime's own workers and panic.
-        //
-        // SAFETY: `spawned` is `Err`, so the closure was dropped unrun and
-        // never reclaimed `boxed` -- we still exclusively own it here.
-        std::mem::forget(unsafe { Box::from_raw(boxed) });
-    }
+        }
+    };
+    // If `spawn` fails (extreme resource exhaustion), `body` -- and the
+    // `ManuallyDrop` carrier it captured -- is simply dropped by the
+    // caller without ever running, which (per above) leaks the retired
+    // runtime rather than dropping it here. Nothing further to do either
+    // way.
+    drop(spawn("lancedb-runtime-reaper".to_string(), Box::new(body)));
 }
 
 /// Publishes a fresh Tokio runtime generation for *future* `get_runtime()`
@@ -436,6 +441,35 @@ where
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    /// Regression for the exact defect the gatekeeper found two revisions
+    /// prior: `retire()` moved the retired `Arc` directly into the spawned
+    /// closure, so a failed `Builder::spawn` -- whose contract drops the
+    /// still-unrun closure -- dropped the `Arc` right there on the caller's
+    /// thread, which could be one of the runtime's own workers and panic.
+    /// Simulates the failure deterministically (exhausting real OS thread
+    /// limits is neither reliable nor portable in a test) by injecting a
+    /// `spawn` that drops the body unrun and reports an error, exactly
+    /// mirroring what `std::thread::Builder::spawn` itself does on failure.
+    #[test]
+    fn retire_leaks_instead_of_dropping_on_spawn_failure() {
+        let rt = Arc::new(create_runtime());
+        let weak = Arc::downgrade(&rt);
+
+        retire_with(rt, |_name, body| {
+            drop(body);
+            Err(std::io::Error::other("simulated spawn failure"))
+        });
+
+        // If the retired `Arc` had been dropped here (on this test thread)
+        // instead of leaked, its strong count would already be zero and
+        // this upgrade would fail.
+        assert!(
+            weak.upgrade().is_some(),
+            "retired runtime was dropped on spawn failure instead of \
+             being leaked via the ManuallyDrop carrier"
+        );
+    }
 
     /// Regression for the exact defect the gatekeeper found in the prior
     /// revision: a `Box<Arc<Runtime>>`-wrapper design that permanently held
