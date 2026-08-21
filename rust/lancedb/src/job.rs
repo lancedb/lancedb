@@ -54,15 +54,15 @@ impl TerminalResult {
     #[allow(dead_code)] // Exercised by the remote typed-result fixtures in Slice 1.
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let request_id = self.request_id.unwrap_or_default();
-        let value = self.value.ok_or_else(|| Error::Http {
-            source: "successful typed job response did not contain a result".into(),
-            request_id: request_id.clone(),
-            status_code: None,
+        let value = self.value.ok_or_else(|| Error::Other {
+            message: format!(
+                "successful typed job response did not contain a result (request_id={request_id})"
+            ),
+            source: None,
         })?;
-        serde_json::from_value(value).map_err(|error| Error::Http {
-            source: format!("failed to parse typed job result: {error}").into(),
-            request_id,
-            status_code: None,
+        serde_json::from_value(value).map_err(|error| Error::Other {
+            message: format!("failed to parse typed job result (request_id={request_id})"),
+            source: Some(Box::new(error)),
         })
     }
 }
