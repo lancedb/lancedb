@@ -2133,9 +2133,7 @@ def test_doc_example_checkpoint(lance_table):
 def test_streaming_dataset_over_remote_table():
     """StreamingDataset reads a remote table, with server-safe requests.
 
-    The permutation API used to reject RemoteTable outright, so this is the whole
-    feature end to end: build a permutation over a remote table, then fetch batches
-    from it by row id.
+    Builds a permutation over a remote table, then fetches batches from it by row id.
     """
     server = MockPermutationServer()
 

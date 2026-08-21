@@ -238,9 +238,7 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
-        // Rows that have not been flushed to the base table have no row id yet, so a
-        // permutation cannot address them.  Reading the base table alone would leave
-        // them out of training silently, so refuse the table instead.
+        // Unflushed rows have no row id, so a permutation cannot address them.
         match self.base_table.base_table().get_lsm_write_spec().await {
             Ok(Some(_)) => {
                 return Err(Error::NotSupported {
@@ -251,17 +249,15 @@ impl PermutationBuilder {
                 });
             }
             Ok(None) => {}
-            // Table types with no LSM write path cannot have a spec.
+            // No LSM write path means no spec.
             Err(Error::NotSupported { .. }) => {}
             Err(err) => return Err(err),
         }
 
         // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
         // every rank must scan the rows in the same order to build the same permutation.
-        // TODO: this assumes the server returns a stable order for identical requests;
-        // make that an actual guarantee.
-        // TODO: pin the version resolved here so later takes of these row ids cannot
-        // land on a compacted table.  Remote does not implement Lazy consistency.
+        // TODO: make the stable order an actual server guarantee.
+        // TODO: pin the version resolved here; remote does not implement Lazy.
         let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {

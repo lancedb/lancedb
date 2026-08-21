@@ -98,8 +98,7 @@ impl PermutationReader {
     }
 
     /// A reader over the base table in storage order, with no permutation.
-    ///
-    /// Fallible because construction counts the base table, which can fail.
+    /// Fallible because construction counts the base table.
     pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
         Self::inner_new(base_table, None, 0).await
     }
@@ -490,8 +489,7 @@ impl PermutationReader {
 
     pub async fn output_schema(&self, selection: Select) -> Result<SchemaRef> {
         let table = Table::from(self.base_table.clone());
-        // limit(1) because some table types may require executing the
-        // query to determine the output schema
+        // limit(1) because some table types execute the query to get its schema
         table
             .query()
             .select(selection)

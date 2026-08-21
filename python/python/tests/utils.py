@@ -24,8 +24,7 @@ def exception_output(e_info: pytest.ExceptionInfo):
 def parse_in_list(filter_sql: str) -> list[int]:
     """Pull the integers out of a `<col> IN (a, b, c)` predicate.
 
-    Scoped to the parenthesised list rather than scanning the whole predicate, so a
-    cast or a type name in the rendered SQL cannot contribute phantom values.
+    Scoped to the parenthesised list so a cast in the SQL adds no phantom values.
     """
     match = re.search(r"\bIN\s*\(([^)]*)\)", filter_sql, re.IGNORECASE)
     assert match is not None, f"expected an IN list, got: {filter_sql}"
@@ -48,10 +47,8 @@ def arrow_file_bytes(table: pa.Table) -> bytes:
 class MockPermutationServer:
     """A stand-in LanceDB server hosting one table whose ``id`` equals its ``_rowid``.
 
-    Serves the three routes the permutation API and the streaming data loader touch
-    (``describe``, ``count_rows``, ``query``) and records every ``/query/`` body, so a
-    test can assert on the request shapes sent to the server — the part that has to
-    stay compatible rather than merely round-trip locally.
+    Records every ``/query/`` body so tests can assert on the request shapes sent to
+    the server, which is the part that has to stay compatible.
     """
 
     def __init__(self, name="remote_data", num_rows=8):
@@ -83,8 +80,7 @@ class MockPermutationServer:
         if path == f"/v1/table/{self.name}/query/":
             return self._query(request, self._read_body(request))
 
-        # Drain before answering, so an unexpected route cannot desync a
-        # keep-alive connection.
+        # Drain first, so an unexpected route cannot desync a keep-alive connection.
         self._read_body(request)
         request.send_response(404)
         request.end_headers()
@@ -98,8 +94,7 @@ class MockPermutationServer:
     def takes(self):
         """Bodies of the row-id takes the loader fetches batches with.
 
-        Keyed on `_rowid` rather than "has a filter": the schema probe carries a
-        never-true predicate so it ships no rows, and it is not a take.
+        Keyed on `_rowid`, not "has a filter": the schema probe also has a predicate.
         """
         return [b for b in self.query_bodies if is_row_id_take(b)]
 
@@ -128,8 +123,7 @@ class MockPermutationServer:
         self.query_bodies.append(body)
 
         if is_row_id_take(body):
-            # A row-id take. Answer in ascending row-id order regardless of the order
-            # asked for, so tests prove the client restores the requested order.
+            # A row-id take. Answer ascending, so tests prove the client reorders.
             row_ids = sorted(parse_in_list(body["filter"]))
             return self._arrow(
                 request,
@@ -148,8 +142,7 @@ class MockPermutationServer:
                 pa.table({"_rowid": pa.array(range(self.num_rows), pa.uint64())}),
             )
 
-        # The schema probe: bounded and filtered to nothing, so it carries the schema
-        # and no rows.
+        # The schema probe: filtered to nothing, so it carries schema and no rows.
         return self._arrow(request, pa.table({"id": pa.array([], pa.int64())}))
 
 
@@ -171,9 +164,8 @@ def _make_handler(serve):
 def mock_remote_table(server):
     """Run ``server`` on a local port and yield an open remote table against it.
 
-    Threading, because the loader fans out ``num_splits * prefetch_batches`` fetch
-    threads; a single-threaded server would serialize them in the accept backlog and
-    hide the prefetch overlap being exercised.
+    Threading: the loader fans out fetch threads a single-threaded server would
+    serialize, hiding the prefetch overlap under test.
     """
     with http.server.ThreadingHTTPServer(
         ("localhost", 0), _make_handler(server)
@@ -196,21 +188,16 @@ def mock_remote_table(server):
 def assert_server_safe_row_id_requests(server):
     """Assert the loader fetched rows by row id and bounded everything else.
 
-    `.get`, not `[...]`: a dropped field should read as the assertion message these
-    are written for, not as a KeyError.
+    `.get`, not `[...]`, so a dropped field reads as the assertion, not a KeyError.
     """
     for body in server.takes:
         # The fetch needs the row id back to restore the requested order.
         assert body.get("with_row_id") is True, body
         assert "_rowid" in body["filter"], body
 
-    # A filterless query with no effective bound asks the server for the whole table.
-    # Only the one-off permutation scan may do that — notably not the schema probe,
-    # which is built once per split per epoch. Takes carry their own bound in the
-    # `IN` list, so their k is irrelevant.
-    #
-    # `k == 0` counts as unbounded: lance reads a zero limit as "no limit" rather than
-    # "no rows", so a probe sending 0 is an open scan wearing a small number.
+    # Only the one-off permutation scan may scan the whole table; the schema probe is
+    # built once per split per epoch. `k == 0` counts as unbounded: lance reads a zero
+    # limit as "no limit".
     def is_unbounded(body):
         if is_row_id_take(body):
             return False

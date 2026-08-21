@@ -48,8 +48,7 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
 
-        Tables with an LSM write spec are rejected: rows that have not been flushed
-        to the base table have no row id yet, so a permutation cannot reference them.
+        Tables with an LSM write spec are rejected: unflushed rows have no row id.
         """
         self._async = async_permutation_builder(table)
 
