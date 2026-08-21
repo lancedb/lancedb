@@ -88,8 +88,7 @@ class _StreamingDatasetAdapter(IterableDataset):
         self.dataset = dataset
 
     def __iter__(self):
-        self.dataset._consumer_checkpoint_transport = True
-        for sample in self.dataset:
+        for sample in self.dataset._iter(consumer_checkpoint_transport=True):
             yield _WorkerSample(sample, self.dataset)
 
     def __getattr__(self, name):
@@ -100,20 +99,34 @@ class _StreamingDatasetAdapter(IterableDataset):
 
 
 class _ConsumerCommitIterator:
-    def __init__(self, iterator, dataset: "StreamingDataset"):
+    def __init__(self, iterator, dataset: "StreamingDataset", *, require_uniform: bool):
         self._iterator = iterator
         self._dataset = dataset
+        self._require_uniform = require_uniform
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        batch = next(self._iterator)
+        try:
+            batch = next(self._iterator)
+        except StopIteration:
+            raise
+        except Exception as exc:
+            self._dataset._invalidate_checkpoint(
+                f"a DataLoader batch failed before it was returned: {exc}"
+            )
+            raise
         if not isinstance(batch, _WorkerBatch):
+            self._dataset._invalidate_checkpoint(
+                "worker checkpoint metadata was missing from a returned batch"
+            )
             raise RuntimeError(
                 "StreamingDataLoader did not receive worker checkpoint metadata"
             )
-        self._dataset._commit_worker_state(batch.state)
+        self._dataset._commit_worker_state(
+            batch.state, require_uniform=self._require_uniform
+        )
         return batch.data
 
     def __getattr__(self, name):
@@ -335,7 +348,13 @@ class StreamingDataset(IterableDataset):
         # shared flag so state_dict() can reject a stale parent checkpoint
         # unless StreamingDataLoader installed the consumer-commit transport.
         self._untracked_worker_iteration: RawArray = RawArray(ctypes.c_int64, 1)
-        self._consumer_checkpoint_transport = False
+
+        # Parent-side checkpoint lifecycle.  A failed DataLoader task creates
+        # a permanent hole in that iterator's delivery stream, while a
+        # multi-worker checkpoint is safe to restore only after all splits
+        # reach the same logical step boundary.
+        self._checkpoint_invalid_reason: Optional[str] = None
+        self._consumer_checkpoint_requires_uniform = False
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -410,13 +429,18 @@ class StreamingDataset(IterableDataset):
         return self._rank_splits[start : start + splits_per_worker]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
+        return self._iter()
+
+    def _iter(
+        self, *, consumer_checkpoint_transport: bool = False
+    ) -> Iterator[dict[str, Any]]:
         if self._raw_batches_ref is not None:
             raise RuntimeError(
                 "StreamingDataset does not support concurrent iteration. "
                 "Only one active iterator per dataset instance is allowed."
             )
         real_worker = get_worker_info() is not None
-        if real_worker and not self._consumer_checkpoint_transport:
+        if real_worker and not consumer_checkpoint_transport:
             self._untracked_worker_iteration[0] = 1
 
         my_splits = self._resolve_my_splits()
@@ -663,20 +687,23 @@ class StreamingDataset(IterableDataset):
                     # exact canonical sequence continues without replaying
                     # already-consumed rows.
                     if len(set(initial_samples)) > 1:
+                        catch_up_to = max(initial_samples)
                         pending = [
-                            (initial_samples[i], my_splits[i], i) for i in range(n)
+                            (initial_samples[i], my_splits[i], i)
+                            for i in range(n)
+                            if initial_samples[i] < catch_up_to
                         ]
                         heapq.heapify(pending)
                         while pending:
                             consumed, _, i = heapq.heappop(pending)
                             _ensure_cooked(i)
                             if not cooked[i]:
-                                continue
+                                return
                             row = _yield_row(i)
-                            heapq.heappush(pending, (consumed + 1, my_splits[i], i))
+                            if consumed + 1 < catch_up_to:
+                                heapq.heappush(pending, (consumed + 1, my_splits[i], i))
                             _update_progress_stats()
                             yield row
-                        return
 
                     while True:
                         # A cycle only runs if every split can still produce a
@@ -897,17 +924,28 @@ class StreamingDataset(IterableDataset):
         to recover the exact value for every split before resuming on a
         different topology.
         """
-        if (
-            self._untracked_worker_iteration[0]
-            and not self._consumer_checkpoint_transport
-            and get_worker_info() is None
-        ):
+        if self._untracked_worker_iteration[0] and get_worker_info() is None:
             raise RuntimeError(
                 "StreamingDataset cannot checkpoint a standard DataLoader with "
                 "num_workers > 0 because prefetched worker progress is not "
                 "consumer-committed. Use StreamingDataLoader instead."
             )
-        return self._checkpoint_snapshot()
+        if self._checkpoint_invalid_reason is not None:
+            raise RuntimeError(
+                "StreamingDataset checkpointing is invalid because "
+                f"{self._checkpoint_invalid_reason}. Load the last valid "
+                "checkpoint into a fresh dataset before continuing."
+            )
+        state = self._checkpoint_snapshot()
+        samples = state["samples_consumed_per_split"]
+        if self._consumer_checkpoint_requires_uniform and len(set(samples)) > 1:
+            raise RuntimeError(
+                "StreamingDataLoader checkpointing with multiple workers is only "
+                "safe at a complete logical step boundary, when every split has "
+                "the same consumed-sample count. Consume more batches before "
+                "calling state_dict()."
+            )
+        return state
 
     def _checkpoint_snapshot(self) -> dict:
         samples = [
@@ -926,7 +964,11 @@ class StreamingDataset(IterableDataset):
             "positions_consumed_per_split": positions,
         }
 
-    def _commit_worker_state(self, state: dict) -> None:
+    def _invalidate_checkpoint(self, reason: str) -> None:
+        if self._checkpoint_invalid_reason is None:
+            self._checkpoint_invalid_reason = reason
+
+    def _commit_worker_state(self, state: dict, *, require_uniform: bool) -> None:
         """Merge one trainer-consumed worker batch into parent state."""
         for key, expected in (
             ("shuffle_seed", self._shuffle_seed),
@@ -952,6 +994,7 @@ class StreamingDataset(IterableDataset):
             self._resume_samples.get(split, self._resume_offset)
             for split in range(self._num_splits)
         )
+        self._consumer_checkpoint_requires_uniform |= require_uniform
 
     def load_state_dict(self, state: dict) -> None:
         """Resume from a previously snapshotted state.
@@ -970,6 +1013,7 @@ class StreamingDataset(IterableDataset):
                 f"shuffle_seed mismatch: checkpoint has {state['shuffle_seed']}, "
                 f"current dataset has {self._shuffle_seed}"
             )
+        self._consumer_checkpoint_requires_uniform = False
         consumed = state["samples_consumed_per_split"]
         if isinstance(consumed, list):
             self._resume_offset = min(consumed) if consumed else 0
@@ -1079,6 +1123,13 @@ class StreamingDataLoader(DataLoader):
     The trainer receives the same collated batch it would receive from a
     standard ``torch.utils.data.DataLoader``.
 
+    With more than one worker, ``state_dict()`` is available only at complete
+    logical step boundaries, when every split has the same consumed-sample
+    count.  ``persistent_workers=True`` is not supported because prefetched
+    worker copies cannot be restored from parent-committed state.  If batch
+    collation raises, checkpointing remains invalid for that dataset instance;
+    restore the last valid checkpoint into a fresh dataset before continuing.
+
     Parameters are the same as ``torch.utils.data.DataLoader`` except that
     ``dataset`` must be a
     [StreamingDataset][lancedb.streaming.StreamingDataset].
@@ -1099,10 +1150,28 @@ class StreamingDataLoader(DataLoader):
                 "StreamingDataLoader requires in_order=True for deterministic "
                 "consumer checkpoints"
             )
-        dataset._consumer_checkpoint_transport = True
+        if kwargs.get("persistent_workers", False):
+            raise ValueError(
+                "StreamingDataLoader does not support persistent_workers=True "
+                "because worker prefetch state cannot be reset from a checkpoint"
+            )
         self._streaming_dataset = dataset
         super().__init__(_StreamingDatasetAdapter(dataset), *args, **kwargs)
         self.collate_fn = _CheckpointCollate(self.collate_fn)
 
     def __iter__(self):
-        return _ConsumerCommitIterator(super().__iter__(), self._streaming_dataset)
+        if self.num_workers > 1:
+            samples = self._streaming_dataset._checkpoint_snapshot()[
+                "samples_consumed_per_split"
+            ]
+            if len(set(samples)) > 1:
+                raise RuntimeError(
+                    "StreamingDataLoader cannot start multiple workers from a "
+                    "partial logical step; resume from a checkpoint whose splits "
+                    "have equal consumed-sample counts"
+                )
+        return _ConsumerCommitIterator(
+            super().__iter__(),
+            self._streaming_dataset,
+            require_uniform=self.num_workers > 1,
+        )
