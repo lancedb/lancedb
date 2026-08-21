@@ -27,7 +27,6 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar
 from multiprocessing import RawArray
 from typing import Any, Callable, Iterator, NamedTuple, Optional, Union
 
@@ -50,10 +49,6 @@ _EPOCH_PRIME = 100003
 
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
-
-_CONSUMER_CHECKPOINT_DATASET: ContextVar[Optional[object]] = ContextVar(
-    "lancedb_streaming_consumer_checkpoint_dataset", default=None
-)
 
 
 class _WorkerSample(NamedTuple):
@@ -98,12 +93,8 @@ class _StreamingDatasetAdapter(IterableDataset):
         self.dataset = dataset
 
     def __iter__(self):
-        token = _CONSUMER_CHECKPOINT_DATASET.set(self.dataset)
-        try:
-            for sample in self.dataset:
-                yield _WorkerSample(sample, self.dataset)
-        finally:
-            _CONSUMER_CHECKPOINT_DATASET.reset(token)
+        for sample in self.dataset._iter(consumer_checkpoint_transport=True):
+            yield _WorkerSample(sample, self.dataset)
 
     def __getattr__(self, name):
         dataset = self.__dict__.get("dataset")
@@ -126,7 +117,7 @@ class _ConsumerCommitIterator:
             batch = next(self._iterator)
         except StopIteration:
             raise
-        except Exception as exc:
+        except BaseException as exc:
             self._dataset._invalidate_checkpoint(
                 f"a DataLoader batch failed before it was returned: {exc}"
             )
@@ -443,9 +434,7 @@ class StreamingDataset(IterableDataset):
         return self._rank_splits[start : start + splits_per_worker]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
-        return self._iter(
-            consumer_checkpoint_transport=_CONSUMER_CHECKPOINT_DATASET.get() is self
-        )
+        return self._iter()
 
     def _iter(
         self, *, consumer_checkpoint_transport: bool = False
@@ -1151,6 +1140,9 @@ class StreamingDataLoader(DataLoader):
     Parameters are the same as ``torch.utils.data.DataLoader`` except that
     ``dataset`` must be a
     [StreamingDataset][lancedb.streaming.StreamingDataset].
+    Subclasses that override ``StreamingDataset.__iter__`` are not supported
+    because the custom iterator cannot provide the exact per-yield checkpoint
+    snapshots required by this loader.
 
     Examples
     --------
@@ -1163,6 +1155,12 @@ class StreamingDataLoader(DataLoader):
     def __init__(self, dataset: StreamingDataset, *args, **kwargs):
         if not isinstance(dataset, StreamingDataset):
             raise TypeError("StreamingDataLoader requires a StreamingDataset")
+        if type(dataset).__iter__ is not StreamingDataset.__iter__:
+            raise TypeError(
+                "StreamingDataLoader does not support StreamingDataset subclasses "
+                "that override __iter__ because they cannot provide exact "
+                "per-yield checkpoint state"
+            )
         if kwargs.get("in_order", True) is False:
             raise ValueError(
                 "StreamingDataLoader requires in_order=True for deterministic "

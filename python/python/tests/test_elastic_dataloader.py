@@ -107,6 +107,13 @@ def _collate_with_first_batch_stop(samples):
     return ids
 
 
+def _collate_with_first_batch_interrupt(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise KeyboardInterrupt("first batch interrupted")
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1194,7 +1201,27 @@ def test_collate_stop_iteration_invalidates_consumer_checkpoint(tmp_path):
     assert list(iterator) == [[2, 3], [4, 5]]
 
 
-def test_streaming_dataloader_preserves_dataset_iter_override(tmp_path):
+def test_batch_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("collate_interrupt", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=_collate_with_first_batch_interrupt,
+    )
+    iterator = iter(loader)
+
+    with pytest.raises(KeyboardInterrupt, match="first batch interrupted"):
+        next(iterator)
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+    assert list(iterator) == [[2, 3], [4, 5]]
+
+
+def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
     class CustomizedDataset(StreamingDataset):
         def __iter__(self):
             return iter([1000, 1001])
@@ -1204,13 +1231,42 @@ def test_streaming_dataloader_preserves_dataset_iter_override(tmp_path):
     dataset = CustomizedDataset(table, num_splits=1, shuffle=False)
 
     assert list(dataset) == [1000, 1001]
-    loader = StreamingDataLoader(
-        dataset,
-        batch_size=2,
-        num_workers=0,
-        collate_fn=list,
-    )
-    assert list(loader) == [[1000, 1001]]
+    with pytest.raises(TypeError, match="override __iter__"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=0,
+            collate_fn=list,
+        )
+
+
+def test_interleaved_adapters_do_not_authorize_plain_iteration(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table_a = db.create_table("adapter_a", pa.table({"id": [0, 1]}))
+    table_b = db.create_table("adapter_b", pa.table({"id": [10, 11]}))
+    dataset_a = StreamingDataset(table_a, num_splits=1, shuffle=False)
+    dataset_b = StreamingDataset(table_b, num_splits=1, shuffle=False)
+    initial_state = dataset_a.state_dict()
+
+    iterator_a = iter(streaming._StreamingDatasetAdapter(dataset_a))
+    iterator_b = iter(streaming._StreamingDatasetAdapter(dataset_b))
+    assert next(iterator_a).data["id"] == 0
+    assert next(iterator_b).data["id"] == 10
+    assert [sample.data["id"] for sample in iterator_a] == [1]
+    assert [sample.data["id"] for sample in iterator_b] == [11]
+
+    dataset_a.load_state_dict(initial_state)
+    with patch(
+        "lancedb.streaming.get_worker_info",
+        return_value=FakeWorkerInfo(id=0, num_workers=1),
+    ):
+        plain_iterator = iter(dataset_a)
+        assert next(plain_iterator)["id"] == 0
+        plain_iterator.close()
+
+    assert dataset_a._untracked_worker_iteration[0] == 1
+    with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+        dataset_a.state_dict()
 
 
 def test_resume_from_partial_split_cycle_preserves_remaining_order(tmp_path):
