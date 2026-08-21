@@ -99,6 +99,24 @@ class TestOAuthProvider:
         headers2 = provider.get_headers()
         assert headers2 == {"Authorization": "Bearer permanent_token"}
 
+    def test_zero_lifetime_token_is_refreshed(self):
+        """A token that expires immediately must not be cached indefinitely."""
+        call_count = 0
+
+        def fetcher():
+            nonlocal call_count
+            call_count += 1
+            return {
+                "access_token": f"token{call_count}",
+                "expires_in": 0,
+            }
+
+        provider = OAuthProvider(fetcher, refresh_buffer_seconds=0)
+
+        assert provider.get_headers() == {"Authorization": "Bearer token1"}
+        assert provider.get_headers() == {"Authorization": "Bearer token2"}
+        assert call_count == 2
+
     def test_missing_access_token(self):
         """Test error handling when access_token is missing."""
 
