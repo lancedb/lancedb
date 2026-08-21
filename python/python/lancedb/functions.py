@@ -143,6 +143,23 @@ class _RemoteValue(BaseModel):
         )
 
 
+class _OpenRemoteValue(_RemoteValue):
+    """Forward-readable value whose extras stay out of canonical encoding."""
+
+    if _PYDANTIC_V2:
+        model_config = {"extra": "allow", "frozen": True}
+    else:
+
+        class Config:
+            allow_mutation = False
+            extra = "allow"
+
+    def _unknown_field_names(self) -> set[str]:
+        if _PYDANTIC_V2:
+            return set((self.__pydantic_extra__ or {}).keys())
+        return set(self.__dict__) - set(self.__fields__)
+
+
 class FunctionArtifact(_RemoteValue):
     """Content-addressed Python artifact identity."""
 
@@ -157,13 +174,13 @@ class FunctionParameter(_RemoteValue):
     nullable: bool
 
 
-class FunctionResultField(_RemoteValue):
+class FunctionResultField(_OpenRemoteValue):
     name: str
     arrow_type: str
     nullable: bool
 
 
-class FunctionOutput(_RemoteValue):
+class FunctionOutput(_OpenRemoteValue):
     """Scalar or ordered named-struct output; unknown kinds remain decodable."""
 
     kind: str
@@ -248,12 +265,12 @@ class FunctionVersion(_RemoteValue):
     created_at: str
 
 
-class FunctionVersionRef(_RemoteValue):
+class FunctionVersionRef(_OpenRemoteValue):
     name: str
     version: str
 
 
-class ApplicationInput(_RemoteValue):
+class ApplicationInput(_OpenRemoteValue):
     """One parameter value.
 
     Slice 1 freezes integers, strings, booleans, nulls, arrays, and objects.
@@ -279,7 +296,7 @@ class ApplicationInput(_RemoteValue):
             return _validate_literal(value)
 
 
-class FunctionApplication(_RemoteValue):
+class FunctionApplication(_OpenRemoteValue):
     """Immutable pre-declaration application of an exact Function version."""
 
     function: FunctionVersionRef
@@ -287,6 +304,33 @@ class FunctionApplication(_RemoteValue):
     output: FunctionOutput
     group_id: str
     columns: Mapping[str, str] = Field(default_factory=dict)
+
+    def _known_dict(self) -> dict[str, Any]:
+        value = super()._known_dict()
+        for name in self._unknown_field_names():
+            value.pop(name, None)
+        return value
+
+    def _ensure_declarable(self) -> None:
+        unknown = {f"application.{name}" for name in self._unknown_field_names()}
+        unknown.update(
+            f"function.{name}" for name in self.function._unknown_field_names()
+        )
+        for index, input_value in enumerate(self.inputs):
+            unknown.update(
+                f"inputs[{index}].{name}" for name in input_value._unknown_field_names()
+            )
+        unknown.update(f"output.{name}" for name in self.output._unknown_field_names())
+        for index, field in enumerate(self.output.fields):
+            unknown.update(
+                f"output.fields[{index}].{name}"
+                for name in field._unknown_field_names()
+            )
+        if unknown:
+            raise ValueError(
+                "Function application contains fields from a newer contract: "
+                f"{sorted(unknown)!r}"
+            )
 
     def rename(self, *, columns: Mapping[str, str]) -> FunctionApplication:
         """Return a copy with result-field to table-column aliases."""
@@ -338,6 +382,8 @@ class FunctionBinding(_RemoteValue):
     group_id: str
     inputs: tuple[InputBinding, ...]
     outputs: tuple[OutputMapping, ...]
+    input_schema: Optional[Mapping[str, Any]] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
 
 class RefreshColumnResult(_RemoteValue):

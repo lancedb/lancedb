@@ -760,6 +760,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "computed columns are not supported on this table type".into(),
         })
     }
+    /// Declare one immutable registered-Function output group.
+    async fn add_function_columns(
+        &self,
+        _application: &crate::function::FunctionApplication,
+        _output_name: Option<&str>,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
+        })
+    }
     /// Fill a computed column's unfilled rows.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
@@ -3158,6 +3168,7 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_supported_function_metadata(&table_schema)?;
         computed_columns::ensure_not_written(
             &table_schema,
             add.data.schema().fields().iter().map(|f| f.name().as_str()),
