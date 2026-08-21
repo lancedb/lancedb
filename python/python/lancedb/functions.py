@@ -862,6 +862,7 @@ def udf(
     -------
     UdfDefinition
         A callable definition accepted by
+        :meth:`lancedb.db.DBConnection.create_function`,
         :meth:`lancedb.db.AsyncConnection.create_function_async` and
         :meth:`lancedb.db.DBConnection.create_function_async`.
 

@@ -617,6 +617,14 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("serialize is not supported for this connection type")
 
+    def create_function(self, definition: UdfDefinition) -> FunctionVersion:
+        """Register a scalar Python UDF and wait for its immutable version.
+
+        This is the blocking counterpart of :meth:`create_function_async`.
+        Local connections raise ``NotImplementedError``.
+        """
+        return self.create_function_async(definition).wait()
+
     def create_function_async(self, definition: UdfDefinition) -> Job[FunctionVersion]:
         """Register a scalar Python UDF through the remote Function catalog.
 

@@ -142,6 +142,8 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     db = lancedb.connect(tmp_path)
     message = "Function catalog operations are not supported by this database"
     with pytest.raises(NotImplementedError, match=message):
+        db.create_function(normalize_score)
+    with pytest.raises(NotImplementedError, match=message):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version="fv_exact")
@@ -232,3 +234,21 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
         normalize_score.registration_request.to_canonical_json()
     )
     _assert_no_secret_values(create_request)
+
+
+def test_blocking_remote_registration_returns_function_version():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(normalize_score)
+
+    assert created.name == "normalize_score"
+    assert created.version == "fv_exact"
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/create",
+        "/v1/jobs/describe",
+    ]
