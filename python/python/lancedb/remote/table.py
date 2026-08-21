@@ -49,6 +49,7 @@ from lancedb.index import (
     LabelList,
 )
 from lancedb.job import Job
+from lancedb.functions import FunctionApplication
 from lancedb.remote.db import LOOP
 from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
@@ -960,7 +961,9 @@ class RemoteTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str] | None = None,
+        transforms: Dict[str, str | FunctionApplication]
+        | FunctionApplication
+        | None = None,
         *,
         computed: Dict[str, str] | None = None,
     ) -> AddColumnsResult:

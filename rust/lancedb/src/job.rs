@@ -126,8 +126,7 @@ impl<T> Job<T>
 where
     T: Clone + DeserializeOwned + Send + Sync + 'static,
 {
-    /// Construct a typed remote Job before result-specific submit APIs are added.
-    #[allow(dead_code)]
+    /// Construct a typed remote Job for a result-specific submit API.
     pub(crate) fn new_typed(handle: Box<dyn JobHandle>) -> Self {
         Self {
             inner: JobInner::Handle {

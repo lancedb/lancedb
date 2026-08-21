@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-// Release benchmark for opening a missing table as sibling-table cardinality grows.
+// Benchmark for opening a missing table as sibling-table cardinality grows.
 //
 // The fixture uses real `.lance` directories and marker files. Fixture creation is
 // outside the timed section. Defaults intentionally cover 1k, 10k, and 100k siblings
 // with 10 warmups and 100 distinct missing-table opens per scale:
 //
 // ```text
-// cargo run --release -p lancedb --example bench_open_missing_table
+// cargo run --profile release-no-lto -p lancedb --example bench_open_missing_table
 // ```
 //
 // `BENCH_SIBLINGS`, `BENCH_WARMUPS`, and `BENCH_TRIALS` override those defaults.
