@@ -102,6 +102,14 @@ _FORK_WARNED = False
 
 
 def _reset_after_fork():
+    # A `threading.Lock` held by a *different* thread at fork time is
+    # inherited by the child in a possibly-locked state that thread can
+    # never release (it doesn't exist in the child) -- same hazard class as
+    # the Rust-side runtime slot's own atfork handling. Give the child a
+    # fresh, definitely-unlocked lock before anything else touches it,
+    # rather than reusing whatever `LOOP._reset_lock` was doing in the
+    # parent at the moment of fork.
+    LOOP._reset_lock = threading.Lock()
     # Threads do not survive fork(), so the asyncio loop in LOOP.thread is
     # dead in the child. Re-initialize the singleton in place so existing
     # `from .background_loop import LOOP` references in other modules see

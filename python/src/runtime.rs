@@ -8,37 +8,45 @@
 //! survive `fork()`, so once a child inherits a "frozen" runtime, every
 //! `future_into_py` call hangs forever.
 //!
-//! We sidestep the global by routing every future through our own
-//! [`LanceRuntime`] (a [`pyo3_async_runtimes::generic::Runtime`] impl) backed
-//! by an [`arc_swap::ArcSwapOption`] slot holding an `Arc<tokio::runtime::
-//! Runtime>` that we own.
+//! We sidestep the global with our own [`LanceRuntime`] (a
+//! [`pyo3_async_runtimes::generic::Runtime`] impl) backed by a raw
+//! `AtomicPtr<Arc<tokio::runtime::Runtime>>` "current generation" slot.
 //!
-//! Two independent synchronization concerns, kept deliberately separate:
+//! Three deliberately separate concerns, each solved with the narrowest
+//! mechanism that's actually safe for it:
 //!
-//! - **Reads** (`get_runtime()`, called on every operation) are lock-free via
-//!   `ArcSwapOption::load_full`.
+//! - **Reads** (`get_runtime()`, the hot path, called on every operation)
+//!   are lock-free: load the pointer, dereference, `.clone()` the `Arc`
+//!   behind it. This is sound because **published pointers are never
+//!   freed** — see [`retire`] — so a reader can always safely dereference
+//!   whatever it just loaded, no matter what a concurrent writer does.
 //! - **Writes** (first install, and [`reset_runtime`]) are serialized by
-//!   [`INSTALL_LOCK`], a plain `Mutex` — safe here because neither is ever
-//!   called from the `pthread_atfork` child handler. Sharing one lock
-//!   between "build the first runtime" and "retire the current one" is what
-//!   closes the race where an install that started *before* a `reset_runtime`
-//!   call could otherwise publish its (now stale) result *after* the reset
-//!   returns.
+//!   [`INSTALL_LOCK`], a hand-rolled atomic spinlock (not a
+//!   `std::sync::Mutex`) — because [`atfork_child`] needs to be able to
+//!   force it back to "unlocked" after `fork()` with a single atomic store,
+//!   which an OS mutex's opaque internal state doesn't let you do safely.
+//! - **Final disposal** of a retired generation never happens inline on
+//!   whichever thread's `Arc` clone happens to be the last one dropped —
+//!   that could be one of the very Tokio worker threads the `Runtime` owns,
+//!   and Tokio panics if you try to drop a runtime from inside itself. A
+//!   dedicated, permanently-idle-otherwise reaper thread (never a Tokio
+//!   worker) polls a retired `Arc` until it's the sole owner, then shuts it
+//!   down explicitly from there.
 //!
-//! [`atfork_child`] (the child handler) touches neither the read path nor
-//! `INSTALL_LOCK` — it only does an `ArcSwapOption::swap` (which, unlike
-//! `store`, hands ownership of the retired value back to the caller instead
-//! of dropping it inline) followed by `mem::forget` on the result, so it
-//! never runs a `tokio::Runtime`'s `Drop` (which would try to join the
-//! child's now-dead worker threads and hang) from a context where only the
-//! forking thread survives.
+//! [`atfork_child`] touches **only** plain atomics: no lock, no allocation,
+//! no thread-local access, and (critically) no `Arc`/`ArcSwap` reclamation
+//! logic — even `arc_swap`'s own internal bookkeeping does TLS/allocator
+//! work unsafe to run in a post-fork child, which is why this module uses a
+//! raw `AtomicPtr` instead.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
 use pyo3::{Bound, PyAny, PyResult, Python, conversion::IntoPyObject, pyfunction};
 use pyo3_async_runtimes::{
     TaskLocals,
@@ -46,11 +54,28 @@ use pyo3_async_runtimes::{
 };
 use tokio::{runtime, task};
 
-static RUNTIME: ArcSwapOption<runtime::Runtime> = ArcSwapOption::const_empty();
-/// Serializes "build the first runtime" against [`reset_runtime`]. Never
-/// touched by [`atfork_child`] — see module docs.
-static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+static RUNTIME: AtomicPtr<Arc<runtime::Runtime>> = AtomicPtr::new(ptr::null_mut());
+/// Hand-rolled spinlock (not `std::sync::Mutex`) guarding "build the first
+/// runtime" / [`reset_runtime`] against each other. Never touched from
+/// [`atfork_child`] itself, but — unlike a `Mutex`, whose internal OS state
+/// a fork can leave permanently "owned by a vanished thread" — this is
+/// reset by a single atomic store in the handler, so the child's first
+/// normal (non-handler) call to acquire it always succeeds.
+static INSTALL_LOCK: AtomicBool = AtomicBool::new(false);
 static ATFORK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+fn acquire_install_lock() {
+    while INSTALL_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        std::thread::yield_now();
+    }
+}
+
+fn release_install_lock() {
+    INSTALL_LOCK.store(false, Ordering::Release);
+}
 
 fn create_runtime() -> runtime::Runtime {
     runtime::Builder::new_multi_thread()
@@ -61,20 +86,26 @@ fn create_runtime() -> runtime::Runtime {
 }
 
 fn get_runtime() -> Arc<runtime::Runtime> {
-    if let Some(rt) = RUNTIME.load_full() {
-        return rt;
+    let ptr = RUNTIME.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        // SAFETY: published pointers are never freed (see `retire`), so
+        // dereferencing whatever we just loaded is always valid.
+        return unsafe { (*ptr).clone() };
     }
-    let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Someone else may have installed (or reset, right after installing)
-    // while we waited for the lock — check again under it.
-    if let Some(rt) = RUNTIME.load_full() {
-        return rt;
+    acquire_install_lock();
+    // Someone else may have installed while we were spinning for the lock.
+    let ptr = RUNTIME.load(Ordering::Acquire);
+    if !ptr.is_null() {
+        release_install_lock();
+        return unsafe { (*ptr).clone() };
     }
     if !ATFORK_INSTALLED.fetch_or(true, Ordering::SeqCst) {
         install_atfork();
     }
     let new_rt = Arc::new(create_runtime());
-    RUNTIME.store(Some(new_rt.clone()));
+    let boxed = Box::new(new_rt.clone());
+    RUNTIME.store(Box::into_raw(boxed), Ordering::Release);
+    release_install_lock();
     new_rt
 }
 
@@ -88,31 +119,31 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 /// Runs after `fork()` in the child, in a context where only the forking
-/// thread survives. **Atomic-only** — no lock, and no drop of a `Runtime`.
+/// thread survives. **Atomic-only, nothing else** — two plain stores,
+/// deliberately abandoning whatever the parent's generation/lock state was:
 ///
-/// Two separate hazards this must avoid, both demonstrated in review:
+/// - `RUNTIME.store(null)`: never touches whatever the pointer used to
+///   point to. We do **not** try to reclaim, clone through, or otherwise
+///   read the retired generation here — any of that (even via `ArcSwap`,
+///   which does its own TLS/allocator work internally) can deadlock if a
+///   *different*, now-vanished thread held an allocator or bookkeeping lock
+///   at the moment of fork.
+/// - `INSTALL_LOCK.store(false)`: unconditionally "unlocks" it, regardless
+///   of whether some vanished thread held it at fork time — a
+///   `std::sync::Mutex` can't be reset this way (its internal state isn't a
+///   plain bool we're allowed to poke), which is exactly why this module
+///   uses a hand-rolled spinlock instead.
 ///
-/// 1. Acquiring `INSTALL_LOCK` (or any lock) here can deadlock forever if a
-///    *different*, now-vanished thread held it at the moment of fork — the
-///    child inherits the lock's memory state as "held by a thread that no
-///    longer exists", and nothing can ever release it.
-/// 2. `ArcSwapOption::store(None)` is implemented as `drop(self.swap(val))` —
-///    if the slot holds the last `Arc`, that `drop` runs a `tokio::Runtime`'s
-///    `Drop` impl synchronously, which tries to join its (now-dead) worker
-///    threads and hangs just as badly as a stuck lock would.
-///
-/// `swap` alone (unlike `store`) hands the retired value back to us instead
-/// of dropping it, so we can `mem::forget` it — the runtime's *memory* is
-/// deliberately leaked (never joined, never freed), same trade-off the
-/// pre-mitigation code already made here. The next `get_runtime()` call
-/// (from the one live thread, in a normal, safe, lock-taking context) builds
-/// a fresh runtime.
+/// The next `get_runtime()` call (from the one live thread, in a normal,
+/// safe, lock-taking context) builds a fresh runtime; the abandoned
+/// generation's memory is simply never touched again by this process (a
+/// deliberate, permanent, tiny leak — see [`retire`] for why that's the
+/// standing trade-off this whole module makes, not something special-cased
+/// for the fork path).
 #[cfg_attr(windows, allow(dead_code))] // only wired up by install_atfork() on non-Windows
 extern "C" fn atfork_child() {
-    let retired = RUNTIME.swap(None);
-    if let Some(rt) = retired {
-        std::mem::forget(rt);
-    }
+    RUNTIME.store(ptr::null_mut(), Ordering::SeqCst);
+    INSTALL_LOCK.store(false, Ordering::SeqCst);
 }
 
 #[cfg(not(windows))]
@@ -122,6 +153,55 @@ fn install_atfork() {
 
 #[cfg(windows)]
 fn install_atfork() {}
+
+/// Dedicated, permanently-idle-otherwise thread that owns final disposal of
+/// retired runtime generations — **never** a Tokio worker thread, so it's
+/// always safe for it to actually shut one down. Lazily started on first
+/// [`retire`] call.
+fn reaper_sender() -> &'static mpsc::Sender<Arc<runtime::Runtime>> {
+    static REAPER: OnceLock<mpsc::Sender<Arc<runtime::Runtime>>> = OnceLock::new();
+    REAPER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Arc<runtime::Runtime>>();
+        std::thread::Builder::new()
+            .name("lancedb-runtime-reaper".to_string())
+            .spawn(move || {
+                for mut retired in rx {
+                    // Poll until we're the sole owner -- any in-flight
+                    // `block_on`/`spawn`/`spawn_blocking` caller that took
+                    // its own clone before this generation was retired
+                    // keeps it alive until that specific call/task
+                    // finishes, same as `Arc` always works. Once we're the
+                    // last owner, shut it down explicitly and
+                    // non-blockingly from *this* thread -- never let an
+                    // arbitrary caller's `Arc` drop trigger the runtime's
+                    // default (blocking-join) `Drop` on its own worker,
+                    // which Tokio forbids and panics on.
+                    loop {
+                        match Arc::try_unwrap(retired) {
+                            Ok(rt) => {
+                                rt.shutdown_background();
+                                break;
+                            }
+                            Err(still_shared) => {
+                                retired = still_shared;
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn lancedb-runtime-reaper thread");
+        tx
+    })
+}
+
+fn retire(rt: Arc<runtime::Runtime>) {
+    // The reaper thread never exits (its channel sender is a `'static`
+    // singleton with no other owners to drop), so a send failure here
+    // would mean the reaper thread itself panicked -- fall back to a
+    // normal drop rather than panicking ourselves over it.
+    let _ = reaper_sender().send(rt);
+}
 
 /// Publishes a fresh Tokio runtime generation for *future* `get_runtime()`
 /// callers (`block_on`/`spawn`/`future_into_py`), without disturbing
@@ -144,16 +224,29 @@ fn install_atfork() {}
 /// call already mid-`block_on`, or a `spawn`/`spawn_blocking`ed task still
 /// running, holds its own `Arc` clone of the *retired* runtime (captured
 /// inside the actual spawned future/closure — see [`LanceRuntime::spawn`])
-/// and keeps it alive until that specific call/task finishes — this
-/// function never blocks waiting for that, it only publishes the new
-/// generation so the *next* caller gets it. Serialized against a
-/// concurrent first-install via [`INSTALL_LOCK`] so a build that started
-/// before this call can never publish after it returns.
+/// and keeps it alive until that specific call/task finishes; the retired
+/// runtime's actual shutdown is handled by a dedicated reaper thread once
+/// every such clone is gone, never inline on whatever thread happens to
+/// drop the last one. Serialized against a concurrent first-install via
+/// [`INSTALL_LOCK`] so a build that started before this call can never
+/// publish after it returns.
 #[pyfunction]
 pub fn reset_runtime(py: Python<'_>) -> PyResult<()> {
     py.detach(|| {
-        let _guard = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        RUNTIME.store(None);
+        acquire_install_lock();
+        let old_ptr = RUNTIME.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !old_ptr.is_null() {
+            // SAFETY: we never free a published pointer (see module docs)
+            // — a concurrent lock-free reader may still be mid-dereference
+            // of `old_ptr` right now. We only read through it once more
+            // ourselves (to clone the `Arc` for the reaper) and then
+            // permanently leak the tiny `Box` wrapper itself; only the
+            // `Runtime` payload it pointed to (handed to the reaper as an
+            // owned `Arc` clone) ever actually gets freed.
+            let retired: Arc<runtime::Runtime> = unsafe { (*old_ptr).clone() };
+            retire(retired);
+        }
+        release_install_lock();
     });
     Ok(())
 }
@@ -185,12 +278,12 @@ impl Runtime for LanceRuntime {
         // The `Arc` keepalive must live inside the future *actually handed
         // to the runtime's scheduler*, not just inside the `JoinHandle`
         // wrapper we return: `pyo3_async_runtimes` does not always await
-        // (or even keep) that wrapper, and once it's dropped, anything it
-        // alone was holding drops with it — including a runtime a
-        // concurrent `reset_runtime()` has already retired, cancelling the
-        // still-running task. Wrapping `fut` itself ties the clone's
-        // lifetime to the submitted task's real execution, which Tokio
-        // keeps alive regardless of what happens to the `JoinHandle`.
+        // (or even keep) that wrapper. Dropping this clone at task
+        // completion is always safe now regardless of which thread does
+        // it — even if it happens to be the last reference — because
+        // actual runtime shutdown is handled exclusively by the reaper
+        // thread (see `retire`/`reaper_sender`), never by an ordinary
+        // `Arc` drop.
         let rt = get_runtime();
         let task_rt = rt.clone();
         let handle = rt.spawn(async move {

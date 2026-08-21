@@ -9,6 +9,7 @@ Windows). See `background_loop.reset_background_loop` and
 `_lancedb.reset_runtime` docstrings for the full explanation.
 """
 
+import os
 import subprocess
 import sys
 import threading
@@ -203,5 +204,84 @@ def test_many_connections_with_periodic_reset_does_not_hang(tmp_path):
 
     assert result.returncode == 0, (
         f"workload subprocess failed: stdout={result.stdout!r} "
+        f"stderr={result.stderr!r}"
+    )
+
+
+_FORK_LOCK_SCRIPT = """
+import os
+import sys
+import threading
+
+from lancedb.background_loop import LOOP
+
+held = threading.Event()
+release = threading.Event()
+
+
+def holder():
+    with LOOP._reset_lock:
+        held.set()
+        release.wait()
+
+
+t = threading.Thread(target=holder)
+t.start()
+held.wait(timeout=5)
+
+pid = os.fork()
+if pid == 0:
+    # Child: the lock above is inherited in a possibly-"locked" state --
+    # the thread holding it in the parent doesn't exist here.
+    # _reset_after_fork (registered via os.register_at_fork) must have
+    # already replaced LOOP._reset_lock with a fresh one, or this hangs.
+    try:
+        LOOP.reset()
+    except Exception as exc:
+        print(f"CHILD_FAIL: {exc!r}", flush=True)
+        os._exit(1)
+    print("CHILD_OK", flush=True)
+    os._exit(0)
+else:
+    release.set()
+    t.join(timeout=5)
+    _, status = os.waitpid(pid, 0)
+    sys.exit(0 if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else 1)
+"""
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "fork"),
+    reason="fork() doesn't exist on Windows -- this regresses the POSIX "
+    "at-fork lock-reset path specifically.",
+)
+def test_reset_lock_is_fresh_in_forked_child_even_if_held_by_a_vanished_thread(
+    tmp_path,
+):
+    """Regression: a `threading.Lock` held by a *different* thread at
+    `fork()` time is inherited by the child in a possibly-locked state
+    that thread can never release -- `_reset_after_fork` must replace
+    `LOOP._reset_lock` with a fresh one, or every `reset()` call in the
+    child (including this test's own, run in an actual forked child
+    process) blocks forever."""
+    script = tmp_path / "_fork_lock_script.py"
+    script.write_text(_FORK_LOCK_SCRIPT)
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, str(script)],
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f"hang detected: fork+reset did not finish within 30s "
+            f"(stdout={exc.stdout!r} stderr={exc.stderr!r})",
+            pytrace=False,
+        )
+
+    assert result.returncode == 0, (
+        f"fork+reset script failed: stdout={result.stdout!r} "
         f"stderr={result.stderr!r}"
     )

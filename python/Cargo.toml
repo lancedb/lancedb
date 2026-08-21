@@ -39,7 +39,6 @@ serde_json.workspace = true
 snafu.workspace = true
 tokio.workspace = true
 libc = "0.2"
-arc-swap = "1.9"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = [
