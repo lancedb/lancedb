@@ -1221,6 +1221,29 @@ def test_batch_base_exception_invalidates_consumer_checkpoint(tmp_path):
     assert list(iterator) == [[2, 3], [4, 5]]
 
 
+def test_parent_commit_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("commit_interrupt", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    iterator = iter(loader)
+    real_commit = dataset._commit_worker_state
+
+    def interrupt_after_commit(state, *, require_uniform):
+        real_commit(state, require_uniform=require_uniform)
+        raise KeyboardInterrupt("after parent commit")
+
+    with patch.object(
+        dataset, "_commit_worker_state", side_effect=interrupt_after_commit
+    ):
+        with pytest.raises(KeyboardInterrupt, match="after parent commit"):
+            next(iterator)
+
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+
+
 def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
     class CustomizedDataset(StreamingDataset):
         def __iter__(self):

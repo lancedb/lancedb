@@ -122,17 +122,20 @@ class _ConsumerCommitIterator:
                 f"a DataLoader batch failed before it was returned: {exc}"
             )
             raise
-        if not isinstance(batch, _WorkerBatch):
+        try:
+            if not isinstance(batch, _WorkerBatch):
+                raise RuntimeError(
+                    "StreamingDataLoader did not receive worker checkpoint metadata"
+                )
+            self._dataset._commit_worker_state(
+                batch.state, require_uniform=self._require_uniform
+            )
+            return batch.data
+        except BaseException as exc:
             self._dataset._invalidate_checkpoint(
-                "worker checkpoint metadata was missing from a returned batch"
+                f"a DataLoader batch failed before it was returned: {exc}"
             )
-            raise RuntimeError(
-                "StreamingDataLoader did not receive worker checkpoint metadata"
-            )
-        self._dataset._commit_worker_state(
-            batch.state, require_uniform=self._require_uniform
-        )
-        return batch.data
+            raise
 
     def __getattr__(self, name):
         return getattr(self._iterator, name)
