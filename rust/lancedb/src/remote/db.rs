@@ -494,7 +494,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         request: FunctionRegistrationRequest,
     ) -> Result<Job<FunctionVersion>> {
-        let req = self.client.post("/v1/function/create").json(&request);
+        let req = self.client.post("/v1/functions/create").json(&request);
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
         let status = response.status();
@@ -513,7 +513,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
         let req = self
             .client
-            .post("/v1/function/describe")
+            .post("/v1/functions/get")
             .json(&serde_json::json!({
                 "name": name,
                 "version": version,
@@ -2489,7 +2489,7 @@ mod tests {
             include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
         let expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
         let conn = Connection::new_with_handler(move |request| match request.url().path() {
-            "/v1/function/create" => {
+            "/v1/functions/create" => {
                 assert_eq!(request.method(), &reqwest::Method::POST);
                 let body: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
@@ -2520,7 +2520,7 @@ mod tests {
         );
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/function/describe");
+            assert_eq!(request.url().path(), "/v1/functions/get");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
             assert_eq!(
