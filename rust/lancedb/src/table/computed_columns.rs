@@ -2151,7 +2151,6 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
             .unwrap();
-        table.require_mem_wal_index_catchup().await.unwrap();
 
         let mut merge = table.merge_insert(&["id"]);
         merge

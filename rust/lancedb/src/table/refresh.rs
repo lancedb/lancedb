@@ -141,11 +141,19 @@ pub(crate) async fn execute_refresh_column_async(table: &NativeTable, column: &s
 /// un-compacted MemWAL tiers it cannot reach -- success would silently omit
 /// readable rows.
 async fn ensure_no_lsm_write_spec(table: &NativeTable) -> Result<()> {
-    // The catch-up flag outlives unset and marks retained SSTable rows.
-    let catchup = table.dataset.get().await?.manifest().reader_feature_flags
-        & lance_table::feature_flags::FLAG_MEM_WAL_INDEX_CATCHUP
-        != 0;
-    if catchup || table.get_lsm_write_spec().await?.is_some() {
+    use lance::dataset::mem_wal::DatasetMemWalExt;
+
+    // Unset drops the MemWAL index, so the spec alone stops describing a table
+    // whose SSTables still hold rows. The shard directories outlive it and are
+    // the durable evidence.
+    let retained_sstables = !table
+        .dataset
+        .get()
+        .await?
+        .list_mem_wal_latest_shard_ids()
+        .await?
+        .is_empty();
+    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "refresh_column is not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -921,7 +929,6 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
             .unwrap();
-        table.require_mem_wal_index_catchup().await.unwrap();
         let mut merge = table.merge_insert(&["x"]);
         merge
             .when_matched_update_all(None)
