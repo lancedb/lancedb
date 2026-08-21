@@ -369,6 +369,56 @@ impl FunctionVersion {
 
 impl_json!(FunctionVersion);
 
+/// Encoded artifact bytes uploaded with a Function registration request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactContent {
+    /// Encoding of `data`. V1 Python authoring uses `base64`.
+    pub encoding: String,
+    pub data: String,
+}
+
+/// Internal execution adapter selected for a Python callable artifact.
+///
+/// The adapter converts the public scalar callable to the Arrow batch ABI
+/// used by the remote executor. It is part of the request envelope, not a
+/// public batch-UDF authoring mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonAdapterSpec {
+    pub kind: String,
+    pub version: u32,
+}
+
+/// Python artifact uploaded while registering a Function.
+///
+/// Unlike [`FunctionArtifact`], which is the durable artifact identity
+/// returned by the catalog, this request value contains the encoded source
+/// bytes that Sophon must durably bake before publishing a FunctionVersion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionArtifactRequest {
+    pub kind: String,
+    pub digest: String,
+    pub entrypoint: String,
+    pub content: FunctionArtifactContent,
+    pub adapter: PythonAdapterSpec,
+}
+
+/// Stable request envelope for remote immutable Function registration.
+///
+/// Secret values deliberately have no field in this model. The only secret
+/// material the client may send is the ordered set of names Sophon resolves
+/// inside the remote runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRegistrationRequest {
+    pub name: String,
+    pub artifact: FunctionArtifactRequest,
+    pub signature: FunctionSignature,
+    pub runtime: PythonRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_secrets: Vec<String>,
+}
+
+impl_json!(FunctionRegistrationRequest);
+
 /// Exact FunctionVersion reference embedded in applications and bindings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
