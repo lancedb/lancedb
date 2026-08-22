@@ -780,15 +780,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None))]
+    #[pyo3(signature = (data, mode, progress=None, write_parallelism=None, allow_external_blob_outside_bases=false))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
         progress: Option<Py<PyAny>>,
         write_parallelism: Option<usize>,
+        allow_external_blob_outside_bases: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let mut op = self_.inner_ref()?.add(data);
+        let mut op = self_
+            .inner_ref()?
+            .add(data)
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {
