@@ -2,11 +2,11 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / MergeBlocker
+[@lancedb/lancedb](../globals.md) / CherryPickError
 
-# Interface: MergeBlocker
+# Interface: CherryPickError
 
-A reason why a branch cannot currently be merged.
+A reason why a cherry-pick cannot currently land.
 
 ## Properties
 

@@ -1605,18 +1605,18 @@ impl Branches {
     }
 
     #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
-    pub async fn merge(
+    pub async fn cherry_pick(
         &self,
         from_branch: String,
         dry_run: Option<bool>,
     ) -> napi::Result<serde_json::Value> {
         let result = self
             .inner
-            .merge_branch(&from_branch, dry_run.unwrap_or(false))
+            .cherry_pick(&from_branch, dry_run.unwrap_or(false))
             .await
             .default_error()?;
         serde_json::to_value(result).map_err(|err| {
-            napi::Error::from_reason(format!("failed to serialize branch merge result: {err}"))
+            napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
         })
     }
 }
