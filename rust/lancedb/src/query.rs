@@ -1174,12 +1174,12 @@ impl VectorQuery {
 
     /// Add another query vector to the search.
     ///
-    /// Multiple searches will be dispatched as part of the query.
-    /// This is a convenience method for adding multiple query vectors
-    /// to the search. It is not expected to be faster than issuing
-    /// multiple queries concurrently.
+    /// Multiple searches will be dispatched as a batch. Flat searches share
+    /// one table scan across the query vectors, avoiding the scan and memory
+    /// amplification of issuing the searches concurrently. Indexed searches
+    /// may still perform per-vector index work.
     ///
-    /// The output data will contain an additional columns `query_index` which
+    /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
@@ -2331,7 +2331,8 @@ mod tests {
             .limit(1);
 
         let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"));
+        assert!(plan.contains("KNNVectorDistance: queries=2"));
+        assert!(!plan.contains("UnionExec"));
 
         let results = query
             .execute()
@@ -2346,6 +2347,38 @@ mod tests {
         // We don't guarantee order.
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
+
+        // Batch KNN does not support a per-query offset, so offset queries keep
+        // the legacy per-vector plan to preserve their result semantics.
+        let offset_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1)
+            .offset(1);
+        assert!(
+            offset_query
+                .explain_plan(true)
+                .await
+                .unwrap()
+                .contains("UnionExec")
+        );
+        let offset_results = offset_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            offset_results
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>(),
+            2
+        );
     }
 
     #[tokio::test]

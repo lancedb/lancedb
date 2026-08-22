@@ -21,7 +21,6 @@ use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use futures::future::try_join_all;
 use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
@@ -167,6 +166,7 @@ pub async fn create_plan(
     let mut column = query.column.clone();
 
     let mut query_vector = query.query_vector.first().cloned();
+    let mut is_batch_query = false;
     if query.query_vector.len() > 1 {
         if column.is_none() {
             // Infer a vector column with the same dimension of the query vector.
@@ -177,16 +177,34 @@ pub async fn create_plan(
             )?);
         }
         let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
-        if let DataType::List(_) = vector_field.data_type() {
-            // Multivector handling: concatenate into FixedSizeList<FixedSizeList<_>>
+        if matches!(vector_field.data_type(), DataType::List(_))
+            || query.base.offset.unwrap_or(0) == 0
+        {
+            // Lance distinguishes these cases from the vector column type: a
+            // list-like query against a List column is one multivector query,
+            // while the same query against a FixedSizeList column is a batch of
+            // independent queries. The batch path shares a single flat scan and
+            // bounds retained candidate data instead of running one scan per
+            // query vector.
             let vectors = query
                 .query_vector
                 .iter()
                 .map(|arr| arr.as_ref())
                 .collect::<Vec<_>>();
             let dim = vectors[0].len();
+            if let Some((query_index, actual_dim)) = vectors
+                .iter()
+                .enumerate()
+                .find_map(|(index, vector)| (vector.len() != dim).then_some((index, vector.len())))
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "query vector at index {query_index} has dimension {actual_dim}, expected {dim}"
+                    ),
+                });
+            }
             let mut fsl_builder = FixedSizeListBuilder::with_capacity(
-                Float32Builder::with_capacity(dim),
+                Float32Builder::with_capacity(dim * vectors.len()),
                 dim as i32,
                 vectors.len(),
             );
@@ -197,8 +215,11 @@ pub async fn create_plan(
                 fsl_builder.append(true);
             }
             query_vector = Some(Arc::new(fsl_builder.finish()));
+            is_batch_query = !matches!(vector_field.data_type(), DataType::List(_));
         } else {
-            // Multiple query vectors: create a plan for each and union them
+            // Lance's batch path has no per-query offset. Keep the prior plan
+            // shape for offset queries so the offset is applied to each query,
+            // rather than globally across the combined results.
             let query_vecs = query.query_vector.clone();
             let plan_futures = query_vecs
                 .into_iter()
@@ -211,7 +232,7 @@ pub async fn create_plan(
                     }
                 })
                 .collect::<Vec<_>>();
-            let plans = try_join_all(plan_futures).await?;
+            let plans = futures::future::try_join_all(plan_futures).await?;
             return create_multi_vector_plan(plans);
         }
     }
@@ -248,10 +269,14 @@ pub async fn create_plan(
         }
     }
 
-    scanner.limit(
-        query.base.limit.map(|limit| limit as i64),
-        query.base.offset.map(|offset| offset as i64),
-    )?;
+    // For a batch query, `nearest` already applies k to each query vector.
+    // Adding Scanner's global limit would truncate the combined result to k rows.
+    if !is_batch_query {
+        scanner.limit(
+            query.base.limit.map(|limit| limit as i64),
+            query.base.offset.map(|offset| offset as i64),
+        )?;
+    }
 
     if let Some(ef) = query.ef {
         scanner.ef(ef);
@@ -1007,7 +1032,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_plan_multivector_structure() {
+    async fn test_create_plan_batch_vector_uses_shared_scan() {
         use arrow_array::{Float32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema};
         use datafusion_physical_plan::display::DisplayableExecutionPlan;
@@ -1034,11 +1059,18 @@ mod tests {
             .unwrap();
         let native_table = table.as_native().unwrap();
 
-        // This triggers the "create_multi_vector_plan" logic branch
+        // A batch of vectors against a fixed-size vector column should use
+        // Lance's native batch KNN path instead of independent scan plans.
         let q1 = Arc::new(Float32Array::from(vec![1.0, 2.0]));
         let q2 = Arc::new(Float32Array::from(vec![3.0, 4.0]));
 
         let req = VectorQueryRequest {
+            base: QueryRequest {
+                filter: Some(QueryFilter::Sql("id >= 0".to_string())),
+                limit: Some(1),
+                select: Select::Columns(vec!["id".to_string()]),
+                ..Default::default()
+            },
             column: Some("vector".to_string()),
             query_vector: vec![q1, q2],
             ..Default::default()
@@ -1055,19 +1087,17 @@ mod tests {
             .indent(true)
             .to_string();
 
-        // We expect a RepartitionExec wrapping a UnionExec
         assert!(
-            display.contains("RepartitionExec"),
-            "Plan should include Repartitioning"
+            display.contains("KNNVectorDistance: queries=2"),
+            "plan should use native batch KNN, got:\n{display}"
         );
         assert!(
-            display.contains("UnionExec"),
-            "Plan should include a Union of multiple searches"
+            !display.contains("UnionExec"),
+            "flat batch KNN should share one scan, got:\n{display}"
         );
-        // We expect the projection to add the 'query_index' column (logic inside multi_vector_plan)
         assert!(
             display.contains("query_index"),
-            "Plan should add query_index column"
+            "plan should add query_index column, got:\n{display}"
         );
     }
 
