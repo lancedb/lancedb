@@ -1648,8 +1648,8 @@ mod tests {
     use super::*;
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
-        types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, ListArray, RecordBatch, StringArray,
+        cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -2256,6 +2256,91 @@ mod tests {
                 .to_string()
                 .contains("No vector column found to match with the query vector dimension: 3")
         );
+    }
+
+    #[tokio::test]
+    async fn vector_search_infers_dimension_from_list_array() {
+        let tmp_dir = tempdir().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new(
+                "vec",
+                DataType::List(Arc::new(ArrowField::new("item", DataType::Float32, true))),
+                true,
+            ),
+        ]));
+        let vectors = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some([Some(0.0), Some(0.0)]),
+            Some([Some(1.0), Some(1.0)]),
+        ]);
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(vectors)],
+        )
+        .unwrap();
+        let table = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .create_table("vectors", batch)
+            .execute()
+            .await
+            .unwrap();
+        assert!(matches!(
+            table.schema().await.unwrap().field(1).data_type(),
+            DataType::FixedSizeList(_, 2)
+        ));
+
+        let results = table
+            .vector_search(&[0.0, 0.0])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results[0]["id"].as_primitive::<Int32Type>().value(0), 0);
+    }
+
+    #[tokio::test]
+    async fn inferred_vector_dimension_is_validated_across_batches() {
+        let tmp_dir = tempdir().unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new(
+            "vec",
+            DataType::List(Arc::new(ArrowField::new("item", DataType::Float32, true))),
+            true,
+        )]));
+        let first = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float32Type, _, _>([Some([Some(0.0), Some(0.0)])]),
+            )],
+        )
+        .unwrap();
+        let wrong_dimension = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float32Type, _, _>([Some([
+                    Some(1.0),
+                    Some(1.0),
+                    Some(1.0),
+                ])]),
+            )],
+        )
+        .unwrap();
+
+        let result = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .create_table("vectors", vec![first, wrong_dimension])
+            .execute()
+            .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

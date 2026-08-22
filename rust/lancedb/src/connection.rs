@@ -425,6 +425,11 @@ impl Connection {
     ///
     /// * `name` - The name of the table
     /// * `initial_data` - The initial data to write to the table
+    ///
+    /// Floating-point `List` columns named `vec`, or with `vector` or `embedding`
+    /// in their name, are inferred as vector columns when the first batch has a
+    /// uniform, non-zero list length. The inferred dimension is validated for all
+    /// subsequent batches and stored as a `FixedSizeList`.
     pub fn create_table<T: Scannable + 'static>(
         &self,
         name: impl Into<String>,
