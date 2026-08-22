@@ -1126,11 +1126,12 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn prepare_query_bodies(&self, query: &AnyQuery) -> Result<Vec<serde_json::Value>> {
+        let query = query.canonicalized()?;
         let version = self.current_version().await;
         let mut base_body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut base_body);
 
-        match query {
+        match &query {
             AnyQuery::Query(query) => {
                 let mut body = base_body.clone();
                 self.apply_query_params(&mut body, query)?;
@@ -2115,7 +2116,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let mut body = if let Some(filter) = filter {
             let filter_sql = match filter {
-                Filter::Sql(sql) => sql.clone(),
+                Filter::Sql(sql) => crate::expr::canonicalize_sql_predicate(&sql)?,
                 Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
             };
             serde_json::json!({ "predicate": filter_sql, "version": version })
@@ -2350,7 +2351,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(final_analyze)
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
+    async fn update(&self, mut update: UpdateBuilder) -> Result<UpdateResult> {
+        update.canonicalize_filter()?;
         self.check_mutable().await?;
         let request = self
             .client
@@ -2394,7 +2396,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
         self.check_mutable().await?;
         let predicate_sql = match predicate {
-            Predicate::String(s) => s.to_string(),
+            Predicate::String(s) => crate::expr::canonicalize_sql_predicate(s)?,
             Predicate::Expr(expr) => expr_to_sql_string(expr)?,
         };
         let mut body = serde_json::json!({ "predicate": predicate_sql });
@@ -2442,9 +2444,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn merge_insert(
         &self,
-        params: MergeInsertBuilder,
+        mut params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        params.canonicalize_filters()?;
         self.check_mutable().await?;
 
         let timeout = params.timeout;
@@ -3419,13 +3422,17 @@ mod tests {
             );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
-                br#"{"predicate":"a > 10","version":null}"#
+                br#"{"predicate":"`A` > 10","version":null}"#
             );
 
             http::Response::builder().status(200).body("42").unwrap()
         });
 
-        let count = table.count_rows(Some("a > 10".into())).await.unwrap();
+        let count = table
+            .base_table()
+            .count_rows(Some(Filter::Sql(r#""A" > 10"#.into())))
+            .await
+            .unwrap();
         assert_eq!(count, 42);
     }
 
@@ -3817,7 +3824,7 @@ mod tests {
                     assert_eq!(expression, "b - 1");
 
                     let only_if = value.get("predicate").unwrap().as_str().unwrap();
-                    assert_eq!(only_if, "b > 10");
+                    assert_eq!(only_if, "`B` > 10");
                 }
 
                 if old_server {
@@ -3833,14 +3840,12 @@ mod tests {
             }
         });
 
-        let result = table
+        let update = table
             .update()
             .column("a", "a + 1")
             .column("b", "b - 1")
-            .only_if("b > 10")
-            .execute()
-            .await
-            .unwrap();
+            .only_if(r#""B" > 10"#);
+        let result = table.base_table().update(update).await.unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
         assert_eq!(result.rows_updated, if old_server { 0 } else { 5 });
@@ -3927,10 +3932,10 @@ mod tests {
 
                 let params = request.url().query_pairs().collect::<HashMap<_, _>>();
                 assert_eq!(params["on"], "some_col");
-                assert_eq!(params["when_matched_update_all"], "false");
+                assert_eq!(params["when_matched_update_all"], "true");
                 assert_eq!(params["when_not_matched_insert_all"], "false");
                 assert_eq!(params["when_not_matched_by_source_delete"], "false");
-                assert!(!params.contains_key("when_matched_update_all_filt"));
+                assert_eq!(params["when_matched_update_all_filt"], "target.`A` > 0");
                 assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
                 assert!(!params.contains_key("use_index"));
 
@@ -3947,11 +3952,9 @@ mod tests {
             }
         });
 
-        let result = table
-            .merge_insert(&["some_col"])
-            .execute(data)
-            .await
-            .unwrap();
+        let mut merge = table.merge_insert(&["some_col"]);
+        merge.when_matched_update_all(Some(r#"target."A" > 0"#.into()));
+        let result = table.base_table().merge_insert(merge, data).await.unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
         if !old_server {
@@ -4013,7 +4016,7 @@ mod tests {
                 let body = request.body().unwrap().as_bytes().unwrap();
                 let body: serde_json::Value = serde_json::from_slice(body).unwrap();
                 let predicate = body.get("predicate").unwrap().as_str().unwrap();
-                assert_eq!(predicate, "id in (1, 2, 3)");
+                assert_eq!(predicate, "`ID` in (1, 2, 3)");
 
                 if old_server {
                     http::Response::builder()
@@ -4031,7 +4034,11 @@ mod tests {
             }
         });
 
-        let result = table.delete("id in (1, 2, 3)").await.unwrap();
+        let result = table
+            .base_table()
+            .delete(Predicate::String(r#""ID" in (1, 2, 3)"#))
+            .await
+            .unwrap();
         assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
@@ -4123,6 +4130,7 @@ mod tests {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let expected_body = serde_json::json!({
+                "filter": "`A` > 0",
                 "k": isize::MAX as usize,
                 "prefilter": true,
                 "vector": [], // Empty vector means no vector query.
@@ -4138,9 +4146,13 @@ mod tests {
                 .unwrap()
         });
 
+        let query = AnyQuery::Query(QueryRequest {
+            filter: Some(QueryFilter::Sql(r#""A" > 0"#.into())),
+            ..Default::default()
+        });
         let data = table
-            .query()
-            .execute()
+            .base_table()
+            .query(&query, Default::default())
             .await
             .unwrap()
             .collect::<Vec<_>>()
