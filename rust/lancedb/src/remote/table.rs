@@ -10476,6 +10476,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_materialized_view_refused_without_a_request() {
+        // Materialized views are local-only. The table-level entry the
+        // bindings use must refuse a remote table before reading its schema,
+        // so the panicking handler is the assertion.
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+        let err = crate::MaterializedView::from_table(table)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
     async fn test_create_branch_empty_name_rejected_client_side() {
         use lance::dataset::refs::Ref;
         // The empty name is rejected before any request is sent.
