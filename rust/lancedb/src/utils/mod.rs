@@ -14,6 +14,7 @@ use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_io::object_store::ChainedWrappingObjectStore;
 use std::pin::Pin;
 
 use crate::error::{Error, Result};
@@ -37,13 +38,13 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
         wrapper: Arc<dyn WrappingObjectStore>,
     ) -> Result<Option<ObjectStoreParams>> {
         let mut params = self.unwrap_or_default();
-        if params.object_store_wrapper.is_some() {
-            return Err(Error::Other {
-                message: "can not patch param because object store is already set".into(),
-                source: None,
-            });
-        }
-        params.object_store_wrapper = Some(wrapper);
+        params.object_store_wrapper = Some(match params.object_store_wrapper.take() {
+            // The wrapper being patched in is connection-level compatibility
+            // behavior. Keep it closest to the target store so an existing
+            // caller wrapper remains outermost and can observe every operation.
+            Some(existing) => Arc::new(ChainedWrappingObjectStore::new(vec![wrapper, existing])),
+            None => wrapper,
+        });
 
         Ok(Some(params))
     }
@@ -472,13 +473,59 @@ impl Stream for MaxBatchLengthStream {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use arrow_array::Int32Array;
     use arrow_schema::Field;
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
     use futures::{StreamExt, stream};
+    use object_store::{ObjectStore, memory::InMemory};
     use tokio::time::sleep;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct OrderedStoreWrapper {
+        name: &'static str,
+        order: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl WrappingObjectStore for OrderedStoreWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn ObjectStore>,
+        ) -> Arc<dyn ObjectStore> {
+            self.order.lock().unwrap().push(self.name);
+            original
+        }
+    }
+
+    #[test]
+    fn test_patch_store_param_keeps_caller_wrapper_outermost() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let params = Some(ObjectStoreParams {
+            object_store_wrapper: Some(Arc::new(OrderedStoreWrapper {
+                name: "caller",
+                order: order.clone(),
+            })),
+            ..Default::default()
+        });
+
+        let params = params
+            .patch_with_store_wrapper(Arc::new(OrderedStoreWrapper {
+                name: "compatibility",
+                order: order.clone(),
+            }))
+            .unwrap()
+            .unwrap();
+        params
+            .object_store_wrapper
+            .unwrap()
+            .wrap("memory", Arc::new(InMemory::new()) as Arc<dyn ObjectStore>);
+
+        assert_eq!(*order.lock().unwrap(), vec!["compatibility", "caller"]);
+    }
 
     #[test]
     fn test_guess_default_column() {
