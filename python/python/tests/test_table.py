@@ -2873,26 +2873,42 @@ def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
     assert "s-2" in expected["text"].to_pylist()
 
 
-def test_create_f16_table(mem_db: DBConnection):
+@pytest.mark.parametrize("accelerator", [None, "cuda"])
+def test_create_f16_table(tmp_path, accelerator):
+    if accelerator == "cuda":
+        torch = pytest.importorskip("torch")
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
     rng = np.random.default_rng(42)
+    vectors = rng.standard_normal((512, 32)).astype(np.float16)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
+            "vector": list(vectors),
         }
     )
-    table = mem_db.create_table(
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
         "f16_tbl",
         schema=MyTable,
     )
     table.add(df)
-    table.create_index(num_partitions=2, num_sub_vectors=2)
+    table.create_index(
+        "vector",
+        config=IvfPq(
+            num_partitions=2,
+            num_sub_vectors=2,
+            accelerator=accelerator,
+        ),
+    )
 
-    query = df["vector"][2].as_py()
+    # Match the issue's float64 query against an explicitly typed float16 column.
+    query = vectors[2].astype(np.float64)
     expected = table.search(query).limit(2).to_arrow()
 
     assert "s-2" in expected["text"].to_pylist()
