@@ -203,6 +203,47 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("a") == 1
 
 
+@pytest.mark.asyncio
+async def test_async_hybrid_query_offset(table: AsyncTable):
+    # The offset window of a hybrid query must be a suffix of the same query
+    # run without an offset. Skipping the first rows of each sub-query instead
+    # of the first rows of the fused result silently changes which rows land in
+    # the window.
+    full = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(4)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert len(full) == 4
+
+    second_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .offset(2)
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert second_page["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+    first_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    # Paging through the result must visit every row exactly once: no row
+    # repeated from the previous page and none dropped between the two.
+    paged = first_page["_rowid"].to_pylist() + second_page["_rowid"].to_pylist()
+    assert sorted(paged) == sorted(full["_rowid"].to_pylist())
+
+
 def test_hybrid_query_offset(sync_table: Table):
     # The offset window of a hybrid query must be a suffix of the same query
     # run without an offset -- it must not be silently ignored.

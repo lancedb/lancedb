@@ -3885,6 +3885,19 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         fts_query.with_row_id()
         vec_query.with_row_id()
 
+        limit = self._inner.get_limit()
+        offset = req.offset or 0
+        if offset:
+            # offset() pushes the offset down into both sub-queries, which would
+            # make each of them skip its own first `offset` rows. The window has
+            # to be taken out of the combined, reranked results instead, so
+            # fetch the skipped prefix here too and slice it off afterwards.
+            if limit:
+                fts_query.limit(limit + offset)
+                vec_query.limit(limit + offset)
+            fts_query.offset(0)
+            vec_query.offset(0)
+
         fts_results, vector_results = await asyncio.gather(
             fts_query.to_arrow(timeout=timeout),
             vec_query.to_arrow(timeout=timeout),
@@ -3896,8 +3909,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             norm=self._norm,
             fts_query=fts_query.get_query(),
             reranker=self._reranker,
-            limit=self._inner.get_limit(),
+            limit=limit,
             with_row_ids=True,
+            offset=offset,
         )
         if (
             not self._user_requested_row_id()
