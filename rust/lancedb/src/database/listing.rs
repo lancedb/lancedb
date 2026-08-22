@@ -662,20 +662,22 @@ impl ListingDatabase {
 
     /// Try to create a local directory to store the lancedb dataset
     fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
-        // Strip file:// or file:/ scheme if present to get the actual filesystem path
-        // Note: file:///path becomes file:/path after url.to_string(), so we need to handle both
-        let fs_path = if let Some(stripped) = path.strip_prefix("file://") {
-            // file:///path or file://host/path format
-            stripped
-        } else if let Some(stripped) = path.strip_prefix("file:") {
-            // file:/path format (from url.to_string() on file:///path)
-            // The path after "file:" should already start with "/" for absolute paths
-            stripped
-        } else {
-            path
+        // Stripping the scheme textually loses the URL authority, so
+        // `file://server/share/db` becomes the cwd-relative `server/share/db`
+        // instead of the UNC path `\\server\share\db`. `to_file_path` keeps the
+        // authority, and also handles the `file:/C:/...` form that
+        // `Url::to_string` produces on Windows.
+        let filesystem_path = match url::Url::parse(path) {
+            Ok(url) if url.scheme() == "file" => url.to_file_path().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unable to convert URL '{url}' to a local path"),
+                )
+            })?,
+            _ => Path::new(path).to_path_buf(),
         };
 
-        let path = Path::new(fs_path);
+        let path = filesystem_path.as_path();
         if !path.try_exists()? {
             create_dir_all(path)?;
         }
@@ -1485,6 +1487,107 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::Barrier;
     use tokio::time::timeout;
+
+    #[test]
+    fn try_create_dir_resolves_absolute_file_uris() {
+        let tempdir = tempdir().unwrap();
+        let target = tempdir.path().join("db");
+        let uri = url::Url::from_directory_path(&target).unwrap().to_string();
+
+        ListingDatabase::try_create_dir(&uri).unwrap();
+
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn try_create_dir_does_not_drop_a_file_uri_authority() {
+        // `file://host/share/database` is a UNC path, not the relative path
+        // `host/share/database`. Creating the latter would silently place the
+        // database somewhere else entirely. The `.invalid` host keeps the
+        // Windows share lookup from reaching the network.
+        let relative = Path::new("server.invalid").join("share").join("database");
+
+        assert!(ListingDatabase::try_create_dir("file://server.invalid/share/database").is_err());
+        assert!(!relative.exists());
+    }
+
+    /// Regression for #2623: a database opened through a UNC authority must keep
+    /// that authority for every later operation, including reopening a table.
+    ///
+    /// Deliberately not skipped when the administrative share is missing: a
+    /// silent skip is what let this bug survive. It uses the machine's real
+    /// network name because `url` treats `localhost` as an empty authority,
+    /// which would turn `file://localhost/C$/…` back into a drive-relative URI.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_reopen_table_through_a_unc_authority() {
+        use std::path::{Component, Prefix};
+
+        let tempdir = tempdir().unwrap();
+        let drive = match tempdir.path().components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+                other => panic!("expected a drive-backed temporary directory, got {other:?}"),
+            },
+            other => panic!("expected an absolute Windows temporary directory, got {other:?}"),
+        };
+        let drive_root = PathBuf::from(format!("{}:\\", drive as char));
+        let relative = tempdir.path().strip_prefix(&drive_root).unwrap();
+        let computer_name =
+            std::env::var("COMPUTERNAME").expect("COMPUTERNAME is required to build a UNC path");
+        let unc_path = PathBuf::from(format!(r"\\{}\{}$", computer_name, drive as char))
+            .join(relative)
+            .join("db");
+        let uri = url::Url::from_directory_path(&unc_path)
+            .unwrap()
+            .to_string();
+
+        let request = ConnectRequest {
+            uri,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "unc_reopen".to_string(),
+                namespace_path: vec![],
+                data: Box::new(
+                    RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+                        .unwrap(),
+                ) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        drop(table);
+
+        let reopened = db
+            .open_table(OpenTableRequest {
+                name: "unc_reopen".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(reopened.count_rows(None).await.unwrap(), 3);
+    }
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
@@ -2847,18 +2950,14 @@ mod tests {
     /// as `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.
-    ///
-    /// Skipped on Windows: `try_create_dir` does not understand
-    /// `file:///C:/…` paths so `connect_with_options` fails before
-    /// even reaching the URL-mutation logic. The pure URL-mutation
-    /// invariant is covered by
-    /// `test_capture_query_treats_empty_as_none` above, which runs
-    /// on all platforms.
-    #[cfg(not(windows))]
     #[tokio::test]
     async fn test_table_uri_url_path_has_no_trailing_question_mark() {
         let tempdir = tempdir().unwrap();
-        let uri = format!("file://{}", tempdir.path().to_str().unwrap());
+        let uri = url::Url::from_directory_path(tempdir.path())
+            .unwrap()
+            .to_string()
+            .trim_end_matches('/')
+            .to_string();
 
         let request = ConnectRequest {
             uri: uri.clone(),
