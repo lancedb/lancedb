@@ -4317,6 +4317,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_checkout_branch_pins_without_touching_the_original() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(br#"{"version": 42, "schema": {"fields": []}}"#.to_vec())
+                    .unwrap(),
+                "/v1/table/my_table/count_rows/" => {
+                    let body = request_body_json(&request);
+                    recorder.lock().unwrap().push(body["version"].clone());
+                    http::Response::builder()
+                        .status(200)
+                        .body(b"0".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request path: {path}"),
+            },
+        );
+
+        let pinned = table.checkout_branch("main", Some(42)).await.unwrap();
+        pinned.count_rows(None).await.unwrap();
+        table.count_rows(None).await.unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0], 42, "the pinned handle must send its version");
+        assert!(
+            seen[1].is_null(),
+            "the original handle must still track latest, got {:?}",
+            seen[1]
+        );
+    }
+
+    #[tokio::test]
     async fn test_fetch_blobs_sends_the_checked_out_version() {
         let ipc = one_row_blob_ipc_stream("image");
         let table = Table::new_with_handler_version(

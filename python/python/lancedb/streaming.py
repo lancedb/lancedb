@@ -35,6 +35,7 @@ from .permutation import (
     Permutation,
     Transforms,
     permutation_builder,
+    _drop_base_version,
     _table_from_pickle_state,
     _table_to_pickle_state,
 )
@@ -758,6 +759,9 @@ class StreamingDataset(IterableDataset):
             self._table = self._connection_factory(table_name)
         else:
             self._table = _table_from_pickle_state(table_state)
+            if table_state["kind"] == "memory":
+                # Rebuilt from Arrow, so the recorded pin cannot resolve on it.
+                perm_data = _drop_base_version(perm_data)
         self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
 
     def state_dict(self) -> dict:
