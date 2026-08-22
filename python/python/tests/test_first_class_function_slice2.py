@@ -162,7 +162,7 @@ def _mock_remote_function_catalog():
             body = json.loads(self.rfile.read(length) or b"{}")
             state["requests"].append((self.path, body))
             status = 200
-            if self.path == "/v1/function/create":
+            if self.path == "/v1/functions/create":
                 state["version"] = {
                     "name": body["name"],
                     "version": "fv_exact",
@@ -187,7 +187,7 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/function/describe":
+            elif self.path == "/v1/functions/get":
                 assert body == {
                     "name": "normalize_score",
                     "version": "fv_exact",
@@ -249,6 +249,6 @@ def test_blocking_remote_registration_returns_function_version():
     assert created.name == "normalize_score"
     assert created.version == "fv_exact"
     assert [path for path, _ in state["requests"]] == [
-        "/v1/function/create",
+        "/v1/functions/create",
         "/v1/jobs/describe",
     ]

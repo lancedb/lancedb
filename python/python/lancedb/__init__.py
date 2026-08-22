@@ -32,6 +32,11 @@ from .functions import (
     UdfDefinition as UdfDefinition,
     udf as udf,
 )
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
+)
 from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -506,6 +511,9 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
     "connect",
     "connect_async",
     "tokenize",

@@ -651,17 +651,20 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
                 input.field_path
             )));
         }
-        if field.is_nullable() != input.nullable {
+        // A non-null source is within a nullable parameter's domain. The
+        // reverse can pass nulls to a Function that does not accept them.
+        if field.is_nullable() && !input.nullable {
             return Err(invalid_function(format!(
-                "Function input '{}' no longer matches binding '{}'",
+                "Function input column '{}' is nullable, but parameter '{}' in binding '{}' is non-nullable",
                 input.field_path,
+                input.parameter,
                 binding.binding_id()
             )));
         }
         let parameter_field = ArrowField::new(
             input.parameter.clone(),
             field.data_type().clone(),
-            field.is_nullable(),
+            input.nullable,
         )
         .with_metadata(field.metadata().clone());
         let json = lance_namespace::schema::arrow_schema_to_json(&ArrowSchema::new(vec![
@@ -2151,7 +2154,6 @@ mod tests {
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
             .unwrap();
-        table.require_mem_wal_index_catchup().await.unwrap();
 
         let mut merge = table.merge_insert(&["id"]);
         merge
@@ -2209,6 +2211,47 @@ mod tests {
             }}"#
         ))
         .unwrap()
+    }
+
+    fn function_binding_schema(title_nullable: bool, body_nullable: bool) -> ArrowSchema {
+        ArrowSchema::new(vec![
+            ArrowField::new("title", DataType::Utf8, title_nullable),
+            ArrowField::new("body", DataType::Utf8, body_nullable),
+            ArrowField::new("search_text", DataType::Utf8, true),
+            ArrowField::new("search_token_count", DataType::Int64, true),
+        ])
+    }
+
+    #[test]
+    fn test_non_nullable_function_inputs_can_bind_to_nullable_parameters() {
+        let binding = FunctionBinding::from_json(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+
+        ensure_binding_matches_schema(&function_binding_schema(false, false), &binding).unwrap();
+    }
+
+    #[test]
+    fn test_nullable_function_input_cannot_bind_to_non_nullable_parameter() {
+        let mut raw_binding: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        ))
+        .unwrap();
+        raw_binding["inputs"][0]["nullable"] = Value::Bool(false);
+        raw_binding["input_schema"]["fields"][0]["nullable"] = Value::Bool(false);
+        let binding: FunctionBinding = serde_json::from_value(raw_binding).unwrap();
+
+        let err = ensure_binding_matches_schema(&function_binding_schema(true, false), &binding)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidInput { message }
+                if message.contains("input column 'title' is nullable")
+                    && message.contains("parameter 'title'")
+                    && message.contains("binding 'fb_01K3TEXT'")
+                    && message.contains("non-nullable")),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -2866,8 +2866,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({ "column": column });
         self.apply_branch_body(&mut body);
         let request = self
-            .client
-            .post(&format!("/v1/table/{}/backfill_column", self.identifier))
+            .post_read(&format!("/v1/table/{}/backfill_column", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -4302,6 +4301,19 @@ mod tests {
 
     fn one_row_blob_ipc_stream(column: &str) -> Vec<u8> {
         write_ipc_stream_uncompressed(&one_row_blob_batch(column))
+    }
+
+    #[tokio::test]
+    async fn test_remote_scan_order_is_not_deterministic() {
+        // A distributed scan answers in no fixed order, so callers that assign meaning
+        // to row position have to sort for themselves.
+        let table = Table::new_with_handler("my_table", |_| {
+            http::Response::builder()
+                .status(200)
+                .body(Vec::new())
+                .unwrap()
+        });
+        assert!(!table.base_table().scan_order_is_deterministic());
     }
 
     #[tokio::test]
@@ -6821,6 +6833,45 @@ mod tests {
                 if message.contains("refresh_column_async")),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_submission_uses_add_columns_version_fence() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => simple_describe_response(),
+            "/v1/table/my_table/add_columns/" => http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 7}"#.to_string())
+                .unwrap(),
+            "/v1/table/my_table/backfill_column" => {
+                let min_version = request
+                    .headers()
+                    .get("x-lancedb-min-version")
+                    .and_then(|value| value.to_str().ok());
+                if min_version != Some("7") {
+                    return http::Response::builder()
+                        .status(400)
+                        .body(r#"{"error":"Column not found: doubled"}"#.to_string())
+                        .unwrap();
+                }
+                http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id": "j-43"}"#.to_string())
+                    .unwrap()
+            }
+            path => panic!("unexpected request: {path}"),
+        });
+
+        let result = table
+            .add_columns()
+            .computed("doubled", "a * 2")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, 7);
+
+        let job = table.refresh_column_async("doubled").await.unwrap();
+        assert_eq!(job.id(), Some("j-43"));
     }
 
     /// The gate's reproducer: after a successful wait, a same-handle read
@@ -10357,6 +10408,20 @@ mod tests {
             matches!(err, Error::TableAlreadyExists { .. }),
             "409 should map to AlreadyExists, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_materialized_view_refused_without_a_request() {
+        // Materialized views are local-only. The table-level entry the
+        // bindings use must refuse a remote table before reading its schema,
+        // so the panicking handler is the assertion.
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+        let err = crate::MaterializedView::from_table(table)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
     }
 
     #[tokio::test]

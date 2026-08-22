@@ -8,6 +8,11 @@ import pytest
 from lancedb import DBConnection, Table, connect
 from lancedb.background_loop import LOOP
 from lancedb.permutation import Permutation, Permutations, permutation_builder
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
 
 
 def test_split_random_ratios(mem_db):
@@ -1214,3 +1219,57 @@ def test_remove_rowid_after_select(some_permutation: Permutation):
     perm_without_rowid = perm_with_rowid.remove_columns(["_rowid"])
     assert "_rowid" not in perm_without_rowid.column_names
     assert perm_without_rowid.column_names == ["id"]
+
+
+def test_permutation_is_stable_when_remote_scan_order_varies():
+    """Splits are assigned by scan position, and every rank builds its own
+    permutation, so two ranks seeing different scan orders must still agree."""
+    server = MockPermutationServer(num_rows=16, vary_scan_order=True)
+
+    def split_of_each_row(permutation_tbl):
+        # Sequential splits are assigned by position, so a reversed scan would put
+        # the last rows in split 0.  Compare the mapping rather than the table order,
+        # which the split-id sort does not pin down.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        return dict(zip(rows["row_id"], rows["split_id"]))
+
+    with mock_remote_table(server) as table:
+        first = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+        second = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+
+    assert server.scan_calls == 2, "both builds must have scanned"
+    assert first == second
+    assert first[0] == 0 and first[server.num_rows - 1] == 1, first
+
+
+def test_permutation_over_remote_table():
+    """The permutation API accepts a remote table, addressing rows by `_rowid` just
+    as `take_row_ids` does.  Also pins the request shapes sent to the server.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        permutation_tbl = permutation_builder(table).split_sequential(fixed=2).execute()
+        assert permutation_tbl.count_rows() == server.num_rows
+
+        permutation = Permutation.from_tables(table, permutation_tbl, 0)
+        assert permutation.num_rows == server.num_rows // 2
+
+        # Compare against the permutation's own order; the split-id sort is not stable.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        split0 = [
+            row_id
+            for row_id, split in zip(rows["row_id"], rows["split_id"])
+            if not split
+        ]
+        # The mock table's `id` equals its `_rowid`.
+        assert permutation.take_offsets([2, 0]) == [
+            {"id": split0[2]},
+            {"id": split0[0]},
+        ]
+
+    assert_server_safe_row_id_requests(server)

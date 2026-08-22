@@ -37,6 +37,11 @@ from unittest.mock import patch
 import lancedb
 import pyarrow as pa
 import pytest
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
 
 torch = pytest.importorskip("torch")
 streaming = pytest.importorskip("lancedb.streaming")
@@ -2118,3 +2123,27 @@ def test_doc_example_checkpoint(lance_table):
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
     )
+
+
+# ---------------------------------------------------------------------------
+# Remote tables (LanceDB Cloud / Enterprise)
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_dataset_over_remote_table():
+    """StreamingDataset reads a remote table, with server-safe requests.
+
+    Builds a permutation over a remote table, then fetches batches from it by row id.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, shuffle_seed=SHUFFLE_SEED)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+    assert len(server.scans) == 1, "the permutation is built with one row-id scan"
+    assert server.takes, "rows must be fetched with row-id takes"
+    assert_server_safe_row_id_requests(server)

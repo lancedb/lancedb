@@ -119,7 +119,7 @@ def update_cargo_toml(line_updater):
     lance_line = ""
     is_parsing_lance_line = False
     for line in lines:
-        if line.startswith("lance"):
+        if re.match(r"^lance(?:\s|[-_])", line):
             # Check if this is a single-line or multi-line entry
             # Single-line entries either:
             # 1. End with } (complete inline table)

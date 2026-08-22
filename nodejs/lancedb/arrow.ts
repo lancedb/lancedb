@@ -48,7 +48,11 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
-import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  EmbeddingFunctionConfig,
+  getRegistry,
+  parseEmbeddingMetadata,
+} from "./embedding/registry";
 import {
   sanitizeField,
   sanitizeSchema,
@@ -933,7 +937,7 @@ async function applyEmbeddingsFromMetadata(
 
   for (const functionEntry of functions.values()) {
     const sourceColumn = columns[functionEntry.sourceColumn];
-    const destColumn = functionEntry.vectorColumn ?? "vector";
+    const destColumn = functionEntry.vectorColumn;
     if (sourceColumn === undefined) {
       throw new Error(
         `Cannot apply embedding function because the source column '${functionEntry.sourceColumn}' was not present in the data`,
@@ -1385,11 +1389,10 @@ function validateSchemaEmbeddings(
 
         // Check schema metadata for embedding functions
         if (schema.metadata.has("embedding_functions")) {
-          const embeddings = JSON.parse(
+          const entries = parseEmbeddingMetadata(
             schema.metadata.get("embedding_functions")!,
           );
-          // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-          if (embeddings.find((f: any) => f["vectorColumn"] === field.name)) {
+          if (entries.some((f) => f.vectorColumn === field.name)) {
             hasEmbeddingFunction = true;
           }
         }

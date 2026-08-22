@@ -20,6 +20,7 @@ import re
 import sys
 import textwrap
 import types
+import uuid
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import (
@@ -265,6 +266,64 @@ class FunctionVersion(_RemoteValue):
     required_secrets: tuple[str, ...] = ()
     created_at: str
 
+    def __call__(self, **inputs: Any) -> FunctionApplication:
+        """Bind this exact version to named table columns.
+
+        Every input must be a direct [lancedb.col][lancedb.expr.col]
+        reference. The returned application is immutable and retains a
+        named-struct output as one sibling group, so every row's sibling values
+        come from one logical Function evaluation. Map result fields to table
+        columns with
+        [FunctionApplication.rename][lancedb.functions.FunctionApplication.rename],
+        then pass the application to
+        [Table.add_columns][lancedb.table.Table.add_columns].
+
+        Examples
+        --------
+        >>> from lancedb import col
+        >>> application = function(  # doctest: +SKIP
+        ...     title=col("title"),
+        ...     body=col("body"),
+        ... ).rename(columns={
+        ...     "normalized_text": "search_text",
+        ...     "token_count": "search_token_count",
+        ... })
+        >>> table.add_columns(application)  # doctest: +SKIP
+        """
+        from lancedb.expr import Expr
+
+        parameters = tuple(parameter.name for parameter in self.signature.inputs)
+        missing = [parameter for parameter in parameters if parameter not in inputs]
+        unknown = sorted(set(inputs) - set(parameters))
+        if missing or unknown:
+            details = []
+            if missing:
+                details.append(f"missing inputs: {missing!r}")
+            if unknown:
+                details.append(f"unknown inputs: {unknown!r}")
+            raise TypeError("invalid Function inputs (" + "; ".join(details) + ")")
+
+        bindings = []
+        for parameter in parameters:
+            value = inputs[parameter]
+            if not isinstance(value, Expr) or value._column_path is None:
+                raise TypeError(
+                    f"Function input {parameter!r} must be a direct col(...) reference"
+                )
+            bindings.append(
+                ApplicationInput(
+                    parameter=parameter,
+                    kind="column",
+                    value={"path": value._column_path},
+                )
+            )
+        return FunctionApplication(
+            function=FunctionVersionRef(name=self.name, version=self.version),
+            inputs=tuple(bindings),
+            output=self.signature.output,
+            group_id=f"fg_{uuid.uuid4().hex}",
+        )
+
 
 class FunctionRegistrationRequest(_RemoteValue):
     """Stable remote registration envelope produced by :func:`udf`.
@@ -304,7 +363,14 @@ class ApplicationInput(_OpenRemoteValue):
 
 
 class FunctionApplication(_OpenRemoteValue):
-    """Immutable pre-declaration application of an exact Function version."""
+    """Immutable pre-declaration application of an exact Function version.
+
+    A named-struct output remains one grouped application through table
+    declaration and execution.
+    [FunctionApplication.rename][lancedb.functions.FunctionApplication.rename]
+    records the result-field to table-column mapping without splitting sibling
+    outputs into separate UDF calls.
+    """
 
     function: FunctionVersionRef
     inputs: tuple[ApplicationInput, ...]

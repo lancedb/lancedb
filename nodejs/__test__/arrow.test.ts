@@ -173,6 +173,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     }
 
     describe("The function makeArrowTable", function () {
+      it("accepts snake_case embedding metadata like camelCase", function () {
+        const spellings = [
+          // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+          { source_column: "text", vector_column: "vector" },
+          { sourceColumn: "text", vectorColumn: "vector" },
+        ];
+        for (const columns of spellings) {
+          const schema = new Schema(
+            [
+              new Field("text", new Utf8(), false),
+              new Field(
+                "vector",
+                new FixedSizeList(3, new Field("item", new Float32(), true)),
+                false,
+              ),
+            ],
+            new Map([
+              [
+                "embedding_functions",
+                JSON.stringify([{ name: "mock", model: {}, ...columns }]),
+              ],
+            ]),
+          );
+          // The vector field is non-nullable and absent from the data; only a
+          // recognized embedding config makes that acceptable.
+          const table = makeArrowTable([{ text: "hello" }], { schema });
+          expect(table.numRows).toBe(1);
+        }
+      });
+
       it("will use data types from a provided schema instead of inference", async function () {
         const schema = new Schema([
           new Field("a", new Int32(), false),
