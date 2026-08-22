@@ -1931,6 +1931,197 @@ def test_shuffle_seed_none_generates_stable_seed(lance_table):
     assert first == second, "Same resolved seed must produce the same ordering"
 
 
+# Sequence packing tests
+
+
+def _create_token_table(tmp_path, documents):
+    db = lancedb.connect(tmp_path)
+    tokens = pa.array(documents, type=pa.list_(pa.int64()))
+    return db.create_table("tokens", pa.table({"tokens": tokens}))
+
+
+def _packed_dataset(table, pack_sequences, *, blocks_per_epoch, pad_id=0, **kwargs):
+    return StreamingDataset(
+        table,
+        shuffle=False,
+        columns=["tokens"],
+        pack_sequences=pack_sequences,
+        eos_id=9,
+        pad_id=pad_id,
+        blocks_per_epoch=blocks_per_epoch,
+        **kwargs,
+    )
+
+
+def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2], [3, 4], [5]])
+    dataset = _packed_dataset(table, 6, blocks_per_epoch=2)
+
+    blocks = list(dataset)
+
+    assert len(blocks) == 2
+    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 3, 4, 9]
+    assert blocks[0]["doc_ids"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert blocks[1]["input_ids"].tolist() == [5, 9, 0, 0, 0, 0]
+    assert blocks[1]["doc_ids"].tolist() == [0, 0, 0, 0, 0, 0]
+    assert blocks[0]["input_ids"].dtype == torch.int64
+    assert blocks[0]["doc_ids"].dtype == torch.int64
+
+
+def test_pack_sequences_pads_lagging_splits(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    dataset = _packed_dataset(table, 5, blocks_per_epoch=6, num_splits=2)
+    input_ids = [block["input_ids"].tolist() for block in dataset]
+    # Split 0 has four real tokens including EOS markers, while split 1 has
+    # eleven. Packing must emit three complete two-split cycles.
+    assert input_ids == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+        [0, 0, 0, 0, 0],
+        [15, 16, 17, 9, 20],
+        [0, 0, 0, 0, 0],
+        [9, 0, 0, 0, 0],
+    ]
+
+    per_rank = []
+    for rank in range(2):
+        rank_dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch=6,
+            num_splits=2,
+            world_size=2,
+            rank=rank,
+        )
+        per_rank.append([block["input_ids"].tolist() for block in rank_dataset])
+
+    assert [len(blocks) for blocks in per_rank] == [3, 3]
+    sharded = [block for cycle in zip(*per_rank) for block in cycle]
+    assert sharded == input_ids
+
+
+def test_pack_sequences_auto_estimates_filtered_token_column(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "tokens",
+        pa.table(
+            {
+                "tokens": pa.array([[1] * 4, [2] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        ),
+    )
+    table.add(
+        pa.table(
+            {
+                "tokens": pa.array([[3] * 4, [4] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        )
+    )
+
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
+        dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch="auto",
+            num_splits=2,
+            filter="keep",
+        )
+
+    # Two kept documents contain 8 tokens plus 2 EOS tokens: two blocks.
+    assert dataset.state_dict()["blocks_per_epoch"] == 2
+
+
+def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    kwargs = dict(pack_sequences=5, blocks_per_epoch=6, num_splits=2)
+    reference = list(_packed_dataset(table, **kwargs))
+
+    datasets = [
+        _packed_dataset(table, world_size=2, rank=rank, **kwargs) for rank in range(2)
+    ]
+    iterators = [iter(dataset) for dataset in datasets]
+    first_cycle = [next(iterator) for iterator in iterators]
+    checkpoint = StreamingDataset.merge_state_dicts(
+        [dataset.state_dict() for dataset in datasets]
+    )
+    for iterator in iterators:
+        iterator.close()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    actual_remaining = list(resumed)
+
+    assert [block["input_ids"].tolist() for block in first_cycle] == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+    ]
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert [block["input_ids"].tolist() for block in actual_remaining] == [
+        block["input_ids"].tolist() for block in reference[2:]
+    ]
+    assert [block["doc_ids"].tolist() for block in actual_remaining] == [
+        block["doc_ids"].tolist() for block in reference[2:]
+    ]
+
+
+def test_pack_sequences_validates_configuration_and_tokens(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+
+    with pytest.raises(ValueError, match="pad_id is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+        )
+
+    with pytest.raises(ValueError, match="blocks_per_epoch is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+            pad_id=0,
+        )
+
+    with pytest.raises(ValueError, match="must be divisible"):
+        _packed_dataset(table, 4, blocks_per_epoch=3, num_splits=2)
+
+    with pytest.raises(ValueError, match="positive integer or 'auto'"):
+        _packed_dataset(table, 4, blocks_per_epoch="estimate")
+
+    checkpoint = _packed_dataset(table, 4, blocks_per_epoch=1).state_dict()
+    resumed = _packed_dataset(table, 4, blocks_per_epoch=1, pad_id=8)
+    with pytest.raises(ValueError, match="pad_id mismatch"):
+        resumed.load_state_dict(checkpoint)
+
+    float_db = lancedb.connect(tmp_path / "float")
+    float_table = float_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([[1.5, 2.5]], type=pa.list_(pa.float64()))}),
+    )
+    with pytest.raises(ValueError, match="token column with integer values"):
+        _packed_dataset(float_table, 4, blocks_per_epoch=1)
+
+    null_db = lancedb.connect(tmp_path / "null")
+    null_table = null_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([None], type=pa.list_(pa.int64()))}),
+    )
+    with pytest.raises(ValueError, match="does not support null token lists"):
+        list(_packed_dataset(null_table, 4, blocks_per_epoch=1))
+
+
 # ---------------------------------------------------------------------------
 # Doc examples — each test mirrors the code snippet in index.mdx so that
 # broken doc examples are caught before they ship.
