@@ -3657,6 +3657,7 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
+        let num_deleted_rows = Some(ds.count_deleted_rows().await?);
         // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
         // would open every data file to read its column metadata, which costs one
         // IO per fragment and reports 0 for legacy v1 storage.
@@ -3721,6 +3722,7 @@ impl BaseTable for NativeTable {
         let stats = TableStatistics {
             total_bytes,
             num_rows,
+            num_deleted_rows,
             num_indices,
             fragment_stats: frag_stats,
         };
@@ -3756,6 +3758,20 @@ pub struct TableStatistics {
 
     /// The number of rows in the table
     pub num_rows: usize,
+
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// Deleted rows are only marked in deletion files and still occupy space on
+    /// disk until the table is compacted, so a large value here is a good
+    /// indication that [`Table::optimize`] should be called.
+    ///
+    /// These rows are not included in [`Self::num_rows`]. Fragments in which
+    /// every row was deleted are dropped outright rather than kept with a
+    /// deletion file, so their rows are not counted here either.
+    ///
+    /// `None` means the backend did not report a deletion count.
+    #[serde(default)]
+    pub num_deleted_rows: Option<usize>,
 
     /// The number of indices in the table
     pub num_indices: usize,
@@ -5521,6 +5537,7 @@ mod tests {
             res,
             TableStatistics {
                 num_rows: 250,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
                 total_bytes: 8925,
                 fragment_stats: FragmentStatistics {
@@ -5544,6 +5561,7 @@ mod tests {
             res,
             TableStatistics {
                 num_rows: 0,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
                 total_bytes: 0,
                 fragment_stats: FragmentStatistics {
@@ -5753,5 +5771,61 @@ mod tests {
             read_iops,
             stats.fragment_stats.num_fragments
         );
+    }
+
+    #[tokio::test]
+    pub async fn test_stats_num_deleted_rows() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_stats_deletions", batch(vec![0, 1]))
+            .execute()
+            .await
+            .unwrap();
+        // A second fragment, holding only rows that the delete below removes.
+        table.add(batch(vec![1])).execute().await.unwrap();
+        table.add(batch(vec![1, 2, 3])).execute().await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.fragment_stats.num_fragments, 3);
+
+        table.delete("id = 1").await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        // 6 rows are inserted over 3 fragments
+        // 3 rows with id = 1 are deleted (one in each fragment), and that empties the 2nd
+        // fragment, which is dropped outright rather than kept with a deletion
+        // file, so only the row marked in the surviving fragment are counted.
+        assert_eq!(res.num_deleted_rows, Some(2));
+        assert_eq!(res.num_rows, 3);
+        assert_eq!(res.fragment_stats.num_fragments, 2);
+        // The marked row is are physically there, so it counts towards the
+        // 3rd fragment length even though it is excluded from num_rows.
+        assert_eq!(res.fragment_stats.lengths.max, 3);
+
+        // Compaction materializes the deletions.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.num_rows, 3);
     }
 }
