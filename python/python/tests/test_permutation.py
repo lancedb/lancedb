@@ -56,6 +56,31 @@ def test_execute_does_not_reenter_background_loop(tmp_path, monkeypatch):
     assert permutation_tbl._conn.read_consistency_interval is None
 
 
+def test_pickled_permutation_reads_pinned_version(tmp_path):
+    """An unpickled copy must still read the pinned version, which also covers the
+    version surviving the ``to_arrow()`` round trip in ``__getstate__``."""
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"idx": range(20)}))
+    permutation_tbl = permutation_builder(tbl).execute()
+    perm = Permutation.from_tables(tbl, permutation_tbl)
+
+    payload = pickle.dumps(perm)
+
+    # Compact so the stored row addresses no longer describe these rows at latest.
+    tbl.delete("true")
+    tbl.optimize()
+    assert tbl.count_rows() == 0
+
+    # Unpickle after the mutation: __setstate__ reopens at latest, so this only
+    # passes if the recorded version is applied on reopen.
+    restored = pickle.loads(payload)
+    assert len(restored) == 20
+    rows = restored.__getitems__(list(range(20)))
+    assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
 def test_split_random_counts(mem_db):
     """Test random splitting with absolute counts."""
     tbl = mem_db.create_table(

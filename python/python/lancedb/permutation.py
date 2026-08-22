@@ -391,6 +391,15 @@ def _table_to_pickle_state(table: Table) -> dict[str, Any]:
     }
 
 
+def _drop_base_version(permutation_data: pa.Table) -> pa.Table:
+    """Strip the recorded base version so the reader leaves the base table unpinned."""
+    metadata = dict(permutation_data.schema.metadata or {})
+    if metadata.pop(b"base_version", None) is None:
+        return permutation_data
+    metadata.pop(b"base_branch", None)
+    return permutation_data.replace_schema_metadata(metadata)
+
+
 def _table_from_pickle_state(state: dict[str, Any]) -> Table:
     from . import connect
 
@@ -679,11 +688,15 @@ class Permutation:
         from . import connect
 
         connection_factory = state["connection_factory"]
+        rebuilt_base = False
         if connection_factory is not None:
             base_table = connection_factory(state["base_table_name"])
         elif "base_table_state" in state:
-            base_table = _table_from_pickle_state(state["base_table_state"])
+            base_state = state["base_table_state"]
+            rebuilt_base = base_state["kind"] == "memory"
+            base_table = _table_from_pickle_state(base_state)
         elif "base_table_data" in state:
+            rebuilt_base = True
             # In-memory base table inlined into the pickle; rebuild the same
             # way we rebuild the in-memory permutation table.
             mem_db = connect("memory://")
@@ -701,11 +714,14 @@ class Permutation:
             )
 
         permutation_table: Optional[Table] = None
-        if state["permutation_data"] is not None:
+        permutation_data = state["permutation_data"]
+        if permutation_data is not None:
+            if rebuilt_base:
+                # The base table was materialized from Arrow, so it is a fresh
+                # single-version dataset and the recorded pin cannot resolve on it.
+                permutation_data = _drop_base_version(permutation_data)
             mem_db = connect("memory://")
-            permutation_table = mem_db.create_table(
-                "permutation", state["permutation_data"]
-            )
+            permutation_table = mem_db.create_table("permutation", permutation_data)
 
         self.base_table = base_table
         self.permutation_table = permutation_table
