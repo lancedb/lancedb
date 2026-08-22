@@ -1894,11 +1894,12 @@ impl TakeQuery {
         }
     }
 
-    fn wrap_offsets_explanation(
+    fn wrap_offsets_report(
         lookup: &str,
         occurrence_count: usize,
         output_offset: usize,
         output_limit: Option<usize>,
+        node_suffix: &str,
     ) -> String {
         fn indent(plan: &str, spaces: usize) -> String {
             let indentation = " ".repeat(spaces);
@@ -1909,7 +1910,7 @@ impl TakeQuery {
         }
 
         let restored = format!(
-            "TakeRestoreExec: occurrences={occurrence_count}\n  CoalescePartitionsExec\n{}",
+            "TakeRestoreExec: occurrences={occurrence_count}{node_suffix}\n  CoalescePartitionsExec{node_suffix}\n{}",
             indent(lookup, 4)
         );
 
@@ -1918,7 +1919,7 @@ impl TakeQuery {
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "None".to_string());
             format!(
-                "GlobalLimitExec: skip={output_offset}, fetch={fetch}\n{}",
+                "GlobalLimitExec: skip={output_offset}, fetch={fetch}{node_suffix}\n{}",
                 indent(&restored, 2)
             )
         } else {
@@ -2043,11 +2044,12 @@ impl ExecutableQuery for TakeQuery {
                 .parent
                 .explain_plan(&AnyQuery::Query(request), verbose)
                 .await?;
-            return Ok(Self::wrap_offsets_explanation(
+            return Ok(Self::wrap_offsets_report(
                 &lookup,
                 offsets.len(),
                 output_offset,
                 output_limit,
+                "",
             ));
         }
 
@@ -2056,7 +2058,23 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
-        if self.offsets.is_some() {
+        if let Some(offsets) = &self.offsets {
+            if self.parent.analyze_plan_is_remote() {
+                let (request, _, _, output_offset, output_limit) =
+                    self.prepare_offsets_lookup().await?;
+                let backend_analysis = self
+                    .parent
+                    .analyze_plan(&AnyQuery::Query(request), options)
+                    .await?;
+                return Ok(Self::wrap_offsets_report(
+                    &backend_analysis,
+                    offsets.len(),
+                    output_offset,
+                    output_limit,
+                    ", metrics=[unavailable: client-side operator]",
+                ));
+            }
+
             let plan = self.create_plan(options).await?;
             execute_plan(plan.clone(), Default::default())?
                 .try_collect::<Vec<_>>()

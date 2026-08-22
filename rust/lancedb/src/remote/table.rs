@@ -1711,6 +1711,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    fn analyze_plan_is_remote(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -5047,6 +5050,42 @@ mod tests {
         assert!(explained.contains("TakeRestoreExec"));
         assert!(explained.contains("CoalescePartitionsExec"));
         assert!(explained.contains("RemoteLookupExec"));
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_analyze_plan_preserves_remote_metrics() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
+            assert_eq!(
+                request
+                    .url()
+                    .query_pairs()
+                    .find(|(key, _)| key == "distributed_metrics"),
+                Some(("distributed_metrics".into(), "per_worker".into()))
+            );
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""Remote analyzed plan: worker metrics""#)
+                .unwrap()
+        });
+
+        let analyzed = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(crate::query::Select::columns(&["id"]))
+            .limit(3)
+            .analyze_plan_with_options(QueryExecutionOptions {
+                analyze_plan_distributed_metrics: AnalyzePlanDistributedMetrics::PerWorker,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(analyzed.contains("GlobalLimitExec"));
+        assert!(analyzed.contains("TakeRestoreExec"));
+        assert!(analyzed.contains("metrics=[unavailable: client-side operator]"));
+        assert!(analyzed.contains("Remote analyzed plan: worker metrics"));
     }
 
     #[tokio::test]

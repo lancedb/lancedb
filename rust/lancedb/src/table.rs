@@ -586,6 +586,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String>;
+    /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
+    ///
+    /// Client-side query wrappers use this to preserve backend metrics and
+    /// distributed-analysis options instead of replacing them with a local plan.
+    #[doc(hidden)]
+    fn analyze_plan_is_remote(&self) -> bool {
+        false
+    }
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
