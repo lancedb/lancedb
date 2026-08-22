@@ -178,6 +178,15 @@ def connect(
     ...     },
     ... )
 
+    Azure managed identity authentication requires only the storage account name.
+    LanceDB acquires and refreshes managed identity tokens automatically. For a
+    user-assigned identity, also set ``azure_storage_client_id``:
+
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "az://my-container/lancedb",
+    ...     storage_options={"account_name": "my-storage-account"},
+    ... )
+
     For tests and temporary data, use an in-memory database:
 
     >>> db = lancedb.connect("memory://")
@@ -471,6 +480,11 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # Azure managed identity tokens are acquired and refreshed automatically
+    ...     db = await lancedb.connect_async(
+    ...         "az://my-container/lancedb",
+    ...         storage_options={"account_name": "my-storage-account"},
+    ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud

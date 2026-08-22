@@ -102,6 +102,10 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
         az_blob_fs = adlfs.AzureBlobFileSystem(
             account_name=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
             account_key=os.environ.get("AZURE_STORAGE_ACCOUNT_KEY"),
+            # Without an explicit key, authenticate with DefaultAzureCredential
+            # instead of attempting anonymous access.  In particular, this enables
+            # managed identity authentication on Azure hosts.
+            anon=False,
         )
 
         fs = pa_fs.PyFileSystem(pa_fs.FSSpecHandler(az_blob_fs))

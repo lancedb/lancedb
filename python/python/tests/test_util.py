@@ -26,7 +26,14 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
+from lancedb import util
+from lancedb.util import (
+    flatten_columns,
+    fs_from_uri,
+    get_uri_scheme,
+    join_uri,
+    value_to_sql,
+)
 from utils import exception_output
 
 
@@ -76,6 +83,33 @@ def test_normalize_uri():
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
         assert parsed_scheme == expected_scheme
+
+
+def test_fs_from_uri_azure_uses_default_credential(monkeypatch):
+    azure_options = {}
+    filesystem = object()
+
+    class MockAdlfs:
+        @staticmethod
+        def AzureBlobFileSystem(**kwargs):
+            azure_options.update(kwargs)
+            return object()
+
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "account")
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_KEY", raising=False)
+    monkeypatch.setattr(util, "adlfs", MockAdlfs)
+    monkeypatch.setattr(util.pa_fs, "FSSpecHandler", lambda _: object())
+    monkeypatch.setattr(util.pa_fs, "PyFileSystem", lambda _: filesystem)
+
+    actual_filesystem, path = fs_from_uri("az://container/database")
+
+    assert actual_filesystem is filesystem
+    assert path == "container/database"
+    assert azure_options == {
+        "account_name": "account",
+        "account_key": None,
+        "anon": False,
+    }
 
 
 def test_join_uri_remote():
