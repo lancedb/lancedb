@@ -462,6 +462,30 @@ def test_add(mem_db: DBConnection):
     _add(table, schema)
 
 
+def test_add_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+    target = mem_db.create_table("target", schema=source.schema)
+
+    def batches():
+        for _ in range(5):
+            yield source.search().limit(10).to_arrow()
+
+    target.add(batches())
+
+    assert target.count_rows() == 50
+
+
+def test_create_table_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+
+    def batches():
+        yield source.search().limit(10).to_arrow()
+
+    target = mem_db.create_table("target", data=batches())
+
+    assert target.count_rows() == 10
+
+
 def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
     """Regression test for https://github.com/lancedb/lancedb/issues/2512."""
     schema = pa.schema([pa.field("x", pa.int64())])
