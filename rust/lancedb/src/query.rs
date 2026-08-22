@@ -1350,8 +1350,10 @@ impl VectorQuery {
 
     /// Set the speed / accuracy tradeoff for approximate vector search.
     ///
-    /// This setting is currently only used by RQ-quantized indexes, such as
-    /// IVF_RQ. Other index types ignore this setting.
+    /// This setting is currently used by RQ-quantized indexes (such as IVF_RQ)
+    /// and by prefiltered search on HNSW sub-indexes, where
+    /// [`ApproxMode::Fast`] enables the ACORN traversal. Other index types
+    /// ignore this setting.
     pub fn approx_mode(mut self, approx_mode: ApproxMode) -> Self {
         self.request.approx_mode = Some(approx_mode);
         self

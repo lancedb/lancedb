@@ -695,6 +695,12 @@ class Query(pydantic.BaseModel):
         The size of the nearest neighbor list maintained during HNSW search
 
         This will only be set on vector search.
+    approx_mode : Optional[str]
+        The speed / accuracy tradeoff to use for approximate vector search
+
+        One of "fast", "normal" or "accurate".
+
+        This will only be set on vector search.
     full_text_query : Optional[Union[str, dict]]
         The full text search query
 
@@ -786,6 +792,9 @@ class Query(pydantic.BaseModel):
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
 
+    # speed / accuracy tradeoff for approximate vector search
+    approx_mode: Optional[str] = None
+
     # Bypass the vector index and use a brute force search
     bypass_vector_index: Optional[bool] = None
 
@@ -811,6 +820,7 @@ class Query(pydantic.BaseModel):
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
+        query.approx_mode = req.approx_mode
         query.refine_factor = req.refine_factor
         query.bypass_vector_index = req.bypass_vector_index
         query.postfilter = req.postfilter
@@ -974,6 +984,7 @@ class LanceQueryBuilder(ABC):
         self._vector = None
         self._text = None
         self._ef = None
+        self._approx_mode = None
         self._bypass_vector_index = None
         self._order_by = None
 
@@ -1738,6 +1749,28 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._ef = ef
         return self
 
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceVectorQueryBuilder:
+        """Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
+        return self
+
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
         """Set the refine factor to use, increasing the number of vectors sampled.
 
@@ -1817,6 +1850,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
+            approx_mode=self._approx_mode,
             bypass_vector_index=self._bypass_vector_index,
             order_by=self._order_by,
         )
@@ -2495,6 +2529,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._ef = ef
         return self
 
+    def approx_mode(
+        self, approx_mode: Literal["fast", "normal", "accurate"]
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search.
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and
+        prefiltered search on HNSW indexes, where "fast" enables the ACORN
+        traversal. Other index types ignore this setting.
+
+        Parameters
+        ----------
+        approx_mode: "fast" or "normal" or "accurate"
+            The tradeoff to use. By default "normal" is used.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._approx_mode = approx_mode
+        return self
+
     def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
@@ -2704,6 +2761,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
             self._vector_query.ef(self._ef)
+        if self._approx_mode:
+            self._vector_query.approx_mode(self._approx_mode)
         if self._bypass_vector_index:
             self._vector_query.bypass_vector_index()
         if self._lower_bound is not None or self._upper_bound is not None:
@@ -3652,6 +3711,21 @@ class AsyncVectorQueryBase:
         data and the recall that you need to achieve.
         """
         self._inner.ef(ef)
+        return self
+
+    def approx_mode(self, approx_mode: Literal["fast", "normal", "accurate"]) -> Self:
+        """
+        Set the speed / accuracy tradeoff to use for approximate search
+
+        This currently affects RQ-quantized indexes, such as IVF_RQ, and prefiltered
+        search on HNSW indexes, where "fast" enables the ACORN traversal.  Other index
+        types ignore this setting.
+
+        "fast" favors lower latency and may reduce recall, "normal" (the default) uses
+        the index's default balance, and "accurate" favors higher recall and may
+        increase latency.
+        """
+        self._inner.approx_mode(approx_mode)
         return self
 
     def refine_factor(self, refine_factor: int) -> Self:
