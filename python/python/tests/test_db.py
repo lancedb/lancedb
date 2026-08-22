@@ -89,6 +89,61 @@ def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeyp
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
 
+def test_connect_preserves_file_uri_authority(monkeypatch):
+    uri = "file://server/share/database"
+    received = []
+
+    async def fake_connect(passed_uri, *_args):
+        received.append(passed_uri)
+        return SimpleNamespace(uri=passed_uri)
+
+    monkeypatch.setattr("lancedb.db.lancedb_connect", fake_connect)
+    db = lancedb.connect(uri)
+
+    assert received == [uri]
+    assert db.uri == uri
+
+
+@pytest.mark.asyncio
+async def test_connect_async_preserves_file_uri_authority(monkeypatch):
+    uri = "file://server/share/database"
+    received = []
+
+    async def fake_connect(passed_uri, *_args):
+        received.append(passed_uri)
+        return SimpleNamespace(uri=passed_uri)
+
+    monkeypatch.setattr(lancedb, "lancedb_connect", fake_connect)
+    db = await lancedb.connect_async(uri)
+
+    assert received == [uri]
+    assert db.uri == uri
+
+
+def test_connect_file_uri_lifecycle(tmp_path):
+    uri = (tmp_path / "sync").as_uri()
+    db = lancedb.connect(uri)
+
+    db.create_table("test", data=[{"id": 1}])
+    assert db.list_tables().tables == ["test"]
+    assert db.open_table("test").count_rows() == 1
+    db.drop_table("test")
+    assert db.list_tables().tables == []
+
+
+@pytest.mark.asyncio
+async def test_connect_async_file_uri_lifecycle(tmp_path):
+    uri = (tmp_path / "async").as_uri()
+    db = await lancedb.connect_async(uri)
+
+    await db.create_table("test", data=[{"id": 1}])
+    assert (await db.list_tables()).tables == ["test"]
+    table = await db.open_table("test")
+    assert await table.count_rows() == 1
+    await db.drop_table("test")
+    assert (await db.list_tables()).tables == []
+
+
 def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkeypatch):
     from lancedb.background_loop import LOOP
     from lancedb.db import LanceDBConnection
