@@ -22,6 +22,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypedDict,
     Union,
     overload,
 )
@@ -217,6 +218,88 @@ IndexConfigType = Union[
     Fm,
     FTS,
 ]
+
+
+class CompactionOptions(TypedDict, total=False):
+    """Options that control file compaction during table optimization.
+
+    Unspecified options use Lance's defaults.
+
+    Compaction planning is row based. Lowering ``target_rows_per_fragment``
+    based on the expected row size can bound later compaction passes once
+    oversized fragments have been rewritten. It does not split an existing
+    fragment, so the first pass over an oversized fragment is not subject to
+    that bound. ``max_bytes_per_file`` limits output file size, not compaction
+    memory. Source budgets keep whole planned tasks; if the first task exceeds
+    a budget, that run performs no compaction work.
+
+    Examples
+    --------
+    Derive a steady-state row target from the expected row size:
+
+    >>> desired_fragment_bytes = 750 * 1024 * 1024
+    >>> average_row_bytes = 1_500_000
+    >>> options: CompactionOptions = {
+    ...     "target_rows_per_fragment": max(
+    ...         1, desired_fragment_bytes // average_row_bytes
+    ...     ),
+    ... }
+    >>> await table.optimize(compaction_options=options)  # doctest: +SKIP
+    """
+
+    target_rows_per_fragment: int
+    """Target rows per fragment; existing oversized fragments are not split."""
+
+    max_rows_per_group: int
+    """Maximum number of rows per row group (default: 1,024)."""
+
+    max_bytes_per_file: Optional[int]
+    """Maximum output data-file size; this does not bound compaction memory."""
+
+    materialize_deletions: bool
+    """Whether to rewrite fragments containing deleted rows (default: True)."""
+
+    materialize_deletions_threshold: float
+    """Minimum deleted-row fraction that makes a fragment eligible (default: 0.1)."""
+
+    num_threads: Optional[int]
+    """Number of compaction tasks to run in parallel."""
+
+    batch_size: Optional[int]
+    """Number of rows per input scan batch."""
+
+    io_buffer_size: Optional[int]
+    """Maximum number of bytes queued in the input scan I/O buffer."""
+
+    defer_index_remap: bool
+    """Whether to defer index remapping during compaction (default: False)."""
+
+    index_remap_mode: Literal["direct", "compact"]
+    """How to construct the old-to-new row-address mapping."""
+
+    compaction_mode: Optional[
+        Literal["reencode", "try_binary_copy", "force_binary_copy"]
+    ]
+    """Whether compaction re-encodes data or uses binary copying."""
+
+    binary_copy_read_batch_bytes: Optional[int]
+    """Number of bytes read per batch during binary-copy compaction."""
+
+    max_source_fragments: Optional[int]
+    """Maximum number of source fragments compacted in one run."""
+
+    max_source_rows: Optional[int]
+    """Maximum live source rows per run, applied to whole planned tasks."""
+
+    max_source_bytes: Optional[int]
+    """Maximum source bytes per run, applied to whole planned tasks."""
+
+    excluded_fragment_ids: List[int]
+    """Fragment IDs to leave unchanged and use as planning boundaries."""
+
+    max_overlays_per_fragment: Optional[int]
+    """Maximum overlays before a fragment is fully compacted."""
+
 
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
@@ -1857,6 +1940,7 @@ class Table(ABC):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -1889,6 +1973,11 @@ class Table(ABC):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -3973,6 +4062,7 @@ class LanceTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -4005,6 +4095,11 @@ class LanceTable(Table):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -4019,6 +4114,7 @@ class LanceTable(Table):
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
                 retrain=retrain,
+                compaction_options=compaction_options,
             )
         )
 
@@ -6394,6 +6490,7 @@ class AsyncTable:
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain=False,
+        compaction_options: Optional[CompactionOptions] = None,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -6426,6 +6523,11 @@ class AsyncTable:
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -6452,6 +6554,7 @@ class AsyncTable:
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
+            compaction_options=compaction_options,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:
