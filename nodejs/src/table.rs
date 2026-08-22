@@ -382,6 +382,26 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn refresh_materialized_view(
+        &self,
+        full: Option<bool>,
+        source_version: Option<i64>,
+    ) -> napi::Result<RefreshMaterializedViewResult> {
+        let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
+            .await
+            .default_error()?;
+        let mut builder = view.refresh().full(full.unwrap_or(false));
+        if let Some(version) = source_version {
+            let version = u64::try_from(version).map_err(|_| {
+                napi::Error::from_reason("sourceVersion must be a non-negative integer")
+            })?;
+            builder = builder.source_version(version);
+        }
+        let result = builder.execute().await.default_error()?;
+        Ok(result.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn add_columns_with_schema(
         &self,
         schema_buf: Buffer,
@@ -1385,6 +1405,31 @@ pub struct AddColumnsResult {
 pub struct RefreshColumnResult {
     pub rows_filled: i64,
     pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshMaterializedViewResult {
+    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    pub mode: String,
+    pub rows_written: i64,
+    pub source_version: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match value.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+            lancedb::RefreshMode::Incremental => "incremental",
+            lancedb::RefreshMode::NoOp => "no_op",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: value.rows_written as i64,
+            source_version: value.source_version as i64,
+            version: value.version as i64,
+        }
+    }
 }
 
 impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {

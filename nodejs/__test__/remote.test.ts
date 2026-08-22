@@ -75,6 +75,25 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("refuses materialized views before issuing any request", async () => {
+    const paths: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        paths.push(req.url ?? "");
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        await expect(db.openMaterializedView("secret_table")).rejects.toThrow(
+          /only on local databases/,
+        );
+        await expect(db.listMaterializedViews()).rejects.toThrow(
+          /only on local databases/,
+        );
+        expect(paths).toEqual([]);
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
