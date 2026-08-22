@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import deprecation
+import os
+import threading
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -169,7 +171,7 @@ def _maybe_add_fts_error_note(
 
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
+    from .db import DBConnection, LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -2242,6 +2244,23 @@ class Table(ABC):
         """
 
 
+@dataclass
+class _LanceTableReopenState:
+    """Process-independent coordinates for reopening a native table."""
+
+    connection_state: Optional[str]
+    can_reopen_after_fork: bool
+    fork_reopen_error: Optional[str]
+    name: str
+    namespace_path: List[str]
+    storage_options: Optional[Dict[str, str]]
+    index_cache_size: Optional[int]
+    location: Optional[str]
+    managed_versioning: Optional[bool]
+    branch: Optional[str]
+    checkout_version: Optional[int]
+
+
 class LanceTable(Table):
     """
     A table in a LanceDB database.
@@ -2276,7 +2295,10 @@ class LanceTable(Table):
             namespace_path = []
         self._conn = connection
         self._namespace_path = namespace_path
+        self._storage_options = storage_options
+        self._index_cache_size = index_cache_size
         self._location = location  # Store location for use in _dataset_path
+        self._managed_versioning = managed_versioning
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         # When the connection built the namespace client natively (e.g. an
@@ -2301,9 +2323,206 @@ class LanceTable(Table):
                     managed_versioning=managed_versioning,
                 )
             )
+        self._initialize_reopen_state(name)
+
+    def _initialize_reopen_state(self, name: str) -> None:
+        """Capture the state needed to replace inherited native handles."""
+        self._name = name
+        self._pid = os.getpid()
+        self._native_state_guard = (self._pid, threading.RLock())
+
+        # A native table owns object-store clients and connection pools. Those
+        # handles must not be used after fork, so retain a process-independent
+        # connection description while it is still safe to inspect the parent
+        # connection. Connections without reconstructible metadata are not
+        # safe to reuse in a forked child, so retain a clear diagnostic rather
+        # than advertising them as reopenable based on JSON encoding alone.
+        try:
+            connection_uri: Optional[str] = self._conn.uri
+        except Exception:
+            connection_uri = None
+
+        fork_reopen_error: Optional[str] = None
+        try:
+            connection_state: Optional[str] = self._conn.serialize()
+            can_reopen_after_fork = connection_uri is not None and not (
+                connection_uri.startswith("memory://")
+            )
+        except Exception as error:
+            connection_state = None
+            can_reopen_after_fork = False
+            if connection_uri is not None and not connection_uri.startswith(
+                "memory://"
+            ):
+                fork_reopen_error = (
+                    f"Cannot reopen table {name!r} in a forked process: {error}"
+                )
+
+        self._reopen_state = _LanceTableReopenState(
+            connection_state=connection_state,
+            can_reopen_after_fork=can_reopen_after_fork,
+            fork_reopen_error=fork_reopen_error,
+            name=name,
+            namespace_path=list(self._namespace_path),
+            storage_options=(
+                dict(self._storage_options)
+                if self._storage_options is not None
+                else None
+            ),
+            index_cache_size=self._index_cache_size,
+            location=self._location,
+            managed_versioning=self._managed_versioning,
+            branch=self._table.current_branch(),
+            checkout_version=None,
+        )
+
+    @property
+    def _connection_state(self) -> Optional[str]:
+        """Serialized connection retained for worker reconstruction."""
+        return self._reopen_state.connection_state
+
+    @property
+    def _can_reopen_after_fork(self) -> bool:
+        return self._reopen_state.can_reopen_after_fork
+
+    @property
+    def _branch(self) -> Optional[str]:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            return state.branch
+        return getattr(self, "_legacy_branch", None)
+
+    @_branch.setter
+    def _branch(self, value: Optional[str]) -> None:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            state.branch = value
+        else:
+            self._legacy_branch = value
+
+    @property
+    def _checkout_version(self) -> Optional[int]:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            return state.checkout_version
+        return getattr(self, "_legacy_checkout_version", None)
+
+    @_checkout_version.setter
+    def _checkout_version(self, value: Optional[int]) -> None:
+        state = getattr(self, "_reopen_state", None)
+        if state is not None:
+            state.checkout_version = value
+        else:
+            self._legacy_checkout_version = value
+
+    def _native_state_lock(self):
+        """Return the per-process lock coordinating native mode and reopen state."""
+        pid = os.getpid()
+        guard = getattr(self, "_native_state_guard", None)
+        if guard is None:
+            candidate = (pid, threading.RLock())
+            guard = self.__dict__.setdefault("_native_state_guard", candidate)
+        elif guard[0] != pid:
+            # A lock inherited while another parent thread held it cannot be
+            # safely acquired in the child. Child state starts single-threaded,
+            # so replace it before coordinating the first reopen.
+            guard = (pid, threading.RLock())
+            self._native_state_guard = guard
+        return guard[1]
+
+    @classmethod
+    def _open_from_reopen_state(
+        cls,
+        connection: "DBConnection",
+        state: "_LanceTableReopenState",
+    ) -> "LanceTable":
+        """Open a table from its complete process-independent descriptor."""
+        async_connection = getattr(connection, "_conn", None)
+        if async_connection is None:
+            async_connection = connection._inner
+
+        namespace_client = getattr(connection, "_namespace_client", None)
+        async_table = LOOP.run(
+            async_connection.open_table(
+                state.name,
+                namespace_path=state.namespace_path,
+                storage_options=state.storage_options,
+                index_cache_size=state.index_cache_size,
+                location=state.location,
+                namespace_client=namespace_client,
+                managed_versioning=state.managed_versioning,
+            )
+        )
+        table = cls(
+            connection,
+            state.name,
+            namespace_path=state.namespace_path,
+            storage_options=state.storage_options,
+            index_cache_size=state.index_cache_size,
+            location=state.location,
+            namespace_client=namespace_client,
+            managed_versioning=state.managed_versioning,
+            pushdown_operations=getattr(
+                connection, "_namespace_client_pushdown_operations", None
+            ),
+            route_pushdown_to_rust=getattr(
+                connection, "_route_pushdown_to_rust", False
+            ),
+            _async=async_table,
+        )
+        if state.branch is not None:
+            table = table.branches.checkout(state.branch, state.checkout_version)
+        elif state.checkout_version is not None:
+            table.checkout(state.checkout_version)
+        return table
+
+    def _ensure_open(self) -> None:
+        """Reopen native table handles inherited from another process."""
+        with self._native_state_lock():
+            pid = os.getpid()
+            if getattr(self, "_pid", pid) == pid:
+                return
+
+            state = getattr(self, "_reopen_state", None)
+            fork_reopen_error = getattr(state, "fork_reopen_error", None)
+            if fork_reopen_error is not None:
+                raise RuntimeError(fork_reopen_error)
+            if (
+                state is None
+                or not state.can_reopen_after_fork
+                or state.connection_state is None
+            ):
+                # In-memory and opaque Rust-only connections cannot be recreated
+                # from connection metadata. Their local handles retain the prior
+                # best-effort fork behavior.
+                self._pid = pid
+                return
+
+            from lancedb import deserialize_conn
+
+            connection = deserialize_conn(state.connection_state, for_worker=True)
+            reopened = self._open_from_reopen_state(
+                connection,
+                state,
+            )
+
+            # Keep this Python object stable because user datasets commonly retain
+            # it across fork. Replace every process-bound component with the fresh
+            # child's equivalent.
+            self._conn = reopened._conn
+            self._table = reopened._table
+            self._namespace_client = reopened._namespace_client
+            self._pushdown_operations = reopened._pushdown_operations
+            self._route_pushdown_to_rust = reopened._route_pushdown_to_rust
+            self._reopen_state = reopened._reopen_state
+            self._pid = pid
 
     @property
     def name(self) -> str:
+        if hasattr(self, "_name"):
+            return self._name
+        # Preserve compatibility with lightweight / legacy instances that
+        # were constructed without running ``LanceTable.__init__``.
         return self._table.name
 
     @property
@@ -2520,18 +2739,75 @@ class LanceTable(Table):
     def _wrap_branch_handle(
         self, async_table: "AsyncTable", version: Optional[int] = None
     ) -> "LanceTable":
-        # version is unused locally: the pin already lives on async_table and a
-        # local handle is not reopened via a serialized connection.
-        return LanceTable(
+        table = LanceTable(
             self._conn,
             async_table.name,
             namespace_path=self._namespace_path,
+            storage_options=self._storage_options,
+            index_cache_size=self._index_cache_size,
             namespace_client=self._namespace_client,
             pushdown_operations=self._pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
             location=self._location,
+            managed_versioning=self._managed_versioning,
             _async=async_table,
         )
+        table._checkout_version = version
+        return table
+
+    def _resolve_checkout_version(self, version: Union[int, str]) -> int:
+        if isinstance(version, int):
+            return version
+        try:
+            return self.tags.get_version(version)
+        except RuntimeError as err:
+            # Native checkout historically exposes an unknown tag as ValueError.
+            # Preserve that contract while resolving tags before mutating the table.
+            if "Ref not found" in str(err) and "does not exist" in str(err):
+                raise ValueError(str(err)) from err
+            raise
+
+    async def _commit_native_state(
+        self,
+        transition,
+        version: Optional[int],
+        started: threading.Event,
+        finished: threading.Event,
+    ):
+        """Commit a native transition and its fork coordinate as one task."""
+        started.set()
+        try:
+            task = asyncio.ensure_future(transition)
+            try:
+                result = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # BackgroundEventLoop cancels its submitted task when the
+                # waiting caller is interrupted. Let an already-started native
+                # transition reach its authoritative terminal state before the
+                # per-table boundary is released.
+                result = await task
+                self._checkout_version = version
+                raise
+            self._checkout_version = version
+            return result
+        finally:
+            finished.set()
+
+    def _run_native_state_transition(self, transition, version: Optional[int]):
+        started = threading.Event()
+        finished = threading.Event()
+        try:
+            return LOOP.run(
+                self._commit_native_state(transition, version, started, finished)
+            )
+        except BaseException:
+            if started.is_set():
+                while not finished.is_set():
+                    try:
+                        finished.wait()
+                    except BaseException:  # noqa: PERF203
+                        continue
+            raise
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -2569,7 +2845,14 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        LOOP.run(self._table.checkout(version))
+        # Resolve tags before mutating the native handle.  This leaves the live
+        # handle and reopen descriptor aligned if tag lookup fails, and avoids a
+        # second fallible version lookup after checkout succeeds.
+        with self._native_state_lock():
+            resolved_version = self._resolve_checkout_version(version)
+            self._run_native_state_transition(
+                self._table.checkout(resolved_version), resolved_version
+            )
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -2577,7 +2860,8 @@ class LanceTable(Table):
         The table will be set back into standard mode, and will track the latest
         version of the table.
         """
-        LOOP.run(self._table.checkout_latest())
+        with self._native_state_lock():
+            self._run_native_state_transition(self._table.checkout_latest(), None)
 
     def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
@@ -2623,9 +2907,13 @@ class LanceTable(Table):
         >>> len(table.list_versions())
         4
         """
-        if version is not None:
-            LOOP.run(self._table.checkout(version))
-        LOOP.run(self._table.restore())
+        with self._native_state_lock():
+            if version is not None:
+                resolved_version = self._resolve_checkout_version(version)
+                self._run_native_state_transition(
+                    self._table.checkout(resolved_version), resolved_version
+                )
+            self._run_native_state_transition(self._table.restore(), None)
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -3743,7 +4031,9 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace_path = namespace_path
+        self._index_cache_size = None
         self._location = location
+        self._managed_versioning = None
         self._namespace_client = namespace_client
         self._pushdown_operations = pushdown_operations or set()
         self._route_pushdown_to_rust = route_pushdown_to_rust
@@ -3771,6 +4061,7 @@ class LanceTable(Table):
                 enable_v2_manifest_paths
             )
 
+        self._storage_options = storage_options
         self._table = LOOP.run(
             self._conn._conn.create_table(
                 name,
@@ -3787,6 +4078,7 @@ class LanceTable(Table):
                 namespace_client=namespace_client,
             )
         )
+        self._initialize_reopen_state(name)
         return self
 
     def delete(self, where: Union[str, Expr]) -> DeleteResult:

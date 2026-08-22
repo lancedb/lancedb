@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import asyncio
 import ctypes
 import gc
 import os
@@ -9,7 +10,7 @@ import sys
 import threading
 import warnings
 import weakref
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from time import sleep
 from typing import List
@@ -2165,6 +2166,260 @@ def test_restore(mem_db: DBConnection):
 
     with pytest.raises(ValueError):
         table.restore(0)
+
+
+def test_restore_tracks_checkout_when_restore_fails():
+    class FailingRestore:
+        def __init__(self):
+            self.live_version = None
+
+        async def checkout(self, version):
+            self.live_version = version
+
+        async def restore(self):
+            raise RuntimeError("injected restore failure")
+
+    inner = FailingRestore()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = None
+
+    with pytest.raises(RuntimeError, match="injected restore failure"):
+        table.restore(7)
+
+    assert table._checkout_version == inner.live_version
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_descriptor", "expected_restore_calls"),
+    [("checkout", 11, 0), ("restore", None, 1)],
+)
+def test_string_tag_resolves_before_checkout(
+    operation, expected_descriptor, expected_restore_calls
+):
+    class Tags:
+        async def get_version(self, tag):
+            assert tag == "tag-v1"
+            return 11
+
+    class NoPostCheckoutVersionLookup:
+        def __init__(self):
+            self.tags = Tags()
+            self.checkout_versions = []
+            self.restore_calls = 0
+
+        async def checkout(self, version):
+            self.checkout_versions.append(version)
+
+        async def version(self):
+            raise RuntimeError("post-checkout version lookup must not run")
+
+        async def restore(self):
+            self.restore_calls += 1
+
+    inner = NoPostCheckoutVersionLookup()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = 3
+
+    getattr(table, operation)("tag-v1")
+
+    assert inner.checkout_versions == [11]
+    assert table._checkout_version == expected_descriptor
+    assert inner.restore_calls == expected_restore_calls
+
+
+@pytest.mark.parametrize("operation", ["checkout", "restore"])
+def test_string_tag_resolution_failure_does_not_mutate_handle(operation):
+    class FailingTags:
+        async def get_version(self, tag):
+            assert tag == "missing-tag"
+            raise RuntimeError("injected tag lookup failure")
+
+    class UnchangedTable:
+        def __init__(self):
+            self.tags = FailingTags()
+            self.checkout_calls = 0
+            self.restore_calls = 0
+
+        async def checkout(self, version):
+            self.checkout_calls += 1
+
+        async def restore(self):
+            self.restore_calls += 1
+
+    inner = UnchangedTable()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = 3
+
+    with pytest.raises(RuntimeError, match="injected tag lookup failure"):
+        getattr(table, operation)("missing-tag")
+
+    assert table._checkout_version == 3
+    assert inner.checkout_calls == 0
+    assert inner.restore_calls == 0
+
+
+def test_native_state_transitions_are_serialized(monkeypatch):
+    from lancedb.background_loop import LOOP
+
+    class Inner:
+        def __init__(self):
+            self.live_version = None
+
+        async def checkout(self, version):
+            self.live_version = version
+
+    inner = Inner()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = None
+
+    first_native_done = threading.Event()
+    release_first_call = threading.Event()
+    second_call_started = threading.Event()
+    second_call_done = threading.Event()
+    errors = []
+    original_run = LOOP.run
+
+    def delayed_delivery(awaitable):
+        result = original_run(awaitable)
+        if threading.current_thread().name == "checkout-1":
+            first_native_done.set()
+            assert release_first_call.wait(5)
+        return result
+
+    monkeypatch.setattr(LOOP, "run", delayed_delivery)
+
+    def checkout(version):
+        if version == 2:
+            second_call_started.set()
+        try:
+            table.checkout(version)
+        except BaseException as err:
+            errors.append(err)
+        finally:
+            if version == 2:
+                second_call_done.set()
+
+    first = threading.Thread(target=checkout, args=(1,), name="checkout-1")
+    first.start()
+    assert first_native_done.wait(5)
+
+    second = threading.Thread(target=checkout, args=(2,), name="checkout-2")
+    second.start()
+    assert second_call_started.wait(5)
+    assert not second_call_done.wait(0.1)
+
+    release_first_call.set()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert inner.live_version == 2
+    assert table._checkout_version == 2
+
+
+@pytest.mark.parametrize(
+    ("operation", "args", "initial_version", "expected_version"),
+    [
+        ("checkout", (11,), 3, 11),
+        ("checkout_latest", (), 3, None),
+        ("restore", (), 11, None),
+    ],
+)
+def test_native_state_commits_before_success_delivery(
+    monkeypatch, operation, args, initial_version, expected_version
+):
+    from lancedb.background_loop import LOOP
+
+    class Inner:
+        def __init__(self, live_version):
+            self.live_version = live_version
+
+        async def checkout(self, version):
+            self.live_version = version
+
+        async def checkout_latest(self):
+            self.live_version = None
+
+        async def restore(self):
+            self.live_version = None
+
+    inner = Inner(initial_version)
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = initial_version
+
+    original_run = LOOP.run
+
+    def success_then_interrupt(awaitable):
+        original_run(awaitable)
+        raise KeyboardInterrupt("injected after native success")
+
+    monkeypatch.setattr(LOOP, "run", success_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt, match="injected after native success"):
+        getattr(table, operation)(*args)
+
+    assert inner.live_version == expected_version
+    assert table._checkout_version == expected_version
+
+
+def test_native_state_waits_for_cancelled_delivery(monkeypatch):
+    from lancedb.background_loop import LOOP
+
+    class Inner:
+        def __init__(self):
+            self.live_version = 3
+
+        async def checkout(self, version):
+            await asyncio.sleep(0.01)
+            self.live_version = version
+
+    inner = Inner()
+    table = LanceTable.__new__(LanceTable)
+    table._table = inner
+    table._checkout_version = 3
+
+    original_run = LOOP.run
+
+    def cancel_while_running(awaitable):
+        async def cancel_after_start():
+            task = asyncio.create_task(awaitable)
+            await asyncio.sleep(0)
+            task.cancel()
+            return await task
+
+        return original_run(cancel_after_start())
+
+    monkeypatch.setattr(LOOP, "run", cancel_while_running)
+
+    with pytest.raises(CancelledError):
+        table.checkout(11)
+
+    assert inner.live_version == 11
+    assert table._checkout_version == 11
+
+
+def test_reopen_preserves_explicit_table_location(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    location = str(tmp_path / "physical-table")
+    table = LanceTable.create(
+        db,
+        "items",
+        pa.table({"x": [1]}),
+        location=location,
+    )
+
+    table._pid = -1
+    table._ensure_open()
+
+    assert table.count_rows() == 1
+    assert table._location == location
 
 
 def test_restore_with_tags(mem_db: DBConnection):
