@@ -515,6 +515,137 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         );
       });
 
+      it("will allow matching inferred types across records", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: 2 }]),
+        ).not.toThrow();
+      });
+
+      it("will reject mismatched inferred types across records", function () {
+        expect(() => makeArrowTable([{ value: 1 }, { value: "two" }])).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Utf8 for field value at row 1. Consider providing an explicit schema.",
+        );
+      });
+
+      it("will ignore generated dictionary IDs when comparing inferred types", function () {
+        const table = makeArrowTable([{ str: "a" }, { str: "b" }], {
+          dictionaryEncodeStrings: true,
+        });
+
+        expect(table.getChild("str")?.toJSON()).toEqual(["a", "b"]);
+      });
+
+      it("will preserve null values without treating them as type mismatches", function () {
+        for (const records of [
+          [{ vector: [1, 2, 3] }, { vector: null }],
+          [{ vector: null }, { vector: [1, 2, 3] }],
+        ]) {
+          const table = makeArrowTable(records);
+
+          expect(table.numRows).toBe(2);
+          expect(table.getChild("vector")?.nullCount).toBe(1);
+        }
+      });
+
+      it("will preserve empty variable-size lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [] }],
+          [{ items: [] }, { items: [1] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+      });
+
+      it("will propagate deferred evidence through nested lists", function () {
+        for (const records of [
+          [{ items: [1] }, { items: [null] }],
+          [{ items: [null] }, { items: [1] }],
+          [{ items: [null, 1] }, { items: [2, null] }],
+        ]) {
+          const table = makeArrowTable(records);
+          expect(
+            table
+              .getChild("items")
+              ?.toJSON()
+              .map((value) => value.toJSON()),
+          ).toEqual(records.map((record) => record.items));
+        }
+
+        const nestedRecords = [{ items: [[1]] }, { items: [[null]] }];
+        const nestedTable = makeArrowTable(nestedRecords);
+        expect(
+          nestedTable
+            .getChild("items")
+            ?.toJSON()
+            .map((value) =>
+              value
+                .toJSON()
+                .map((nestedValue: { toJSON: () => unknown[] }) =>
+                  nestedValue.toJSON(),
+                ),
+            ),
+        ).toEqual(nestedRecords.map((record) => record.items));
+      });
+
+      it("will reject incompatible deferred evidence within a list", function () {
+        for (const items of [
+          [[], 1],
+          [1, []],
+          [[null], 1],
+          [1, [null]],
+        ]) {
+          expect(() => makeArrowTable([{ items }])).toThrow(
+            "Failed to infer data type for field items at row 0.",
+          );
+        }
+      });
+
+      it("will reject empty fixed-size lists", function () {
+        expect(() =>
+          makeArrowTable([{ vector: [1, 2, 3] }, { vector: [] }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type FixedSizeList[3]<Float32> but found List[0] for field vector at row 1.",
+        );
+      });
+
+      it("will reject inferred leaf and branch shape changes", function () {
+        expect(() =>
+          makeArrowTable([{ value: 1 }, { value: { nested: 2 } }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Float64 but found Struct for field value at row 1.",
+        );
+        expect(() =>
+          makeArrowTable([{ value: { nested: 1 } }, { value: 2 }]),
+        ).toThrow(
+          "Failed to infer schema for data. Previously inferred type Struct but found Float64 for field value at row 1.",
+        );
+      });
+
+      it("will allow null values around inferred struct values", function () {
+        for (const { records, nullIndex } of [
+          {
+            records: [{ value: null }, { value: { nested: 2 } }],
+            nullIndex: 0,
+          },
+          {
+            records: [{ value: { nested: 1 } }, { value: null }],
+            nullIndex: 1,
+          },
+        ]) {
+          const table = makeArrowTable(records);
+          const values = table.getChild("value");
+
+          expect(values?.nullCount).toBe(1);
+          expect(values?.get(nullIndex)).toBeNull();
+        }
+      });
+
       it("will allow a schema to be provided", async function () {
         await checkTableCreation(
           async (records, _, schema) =>
