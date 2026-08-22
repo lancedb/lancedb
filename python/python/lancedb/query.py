@@ -78,6 +78,10 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 
+# Number of rows a hybrid query returns when no limit was set on it. This
+# mirrors the default the Rust query builder applies to its sub-queries.
+DEFAULT_HYBRID_LIMIT = 10
+
 
 @runtime_checkable
 class _LanceScanner(Protocol):
@@ -3856,14 +3860,54 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
+    def _create_child_queries(
+        self,
+    ) -> Tuple["AsyncFTSQuery", "AsyncVectorQuery", int, int]:
+        """Build the sub-queries that make up this hybrid query.
+
+        Execution, `explain_plan` and `analyze_plan` all go through here so that
+        the plans that are reported are the plans that actually run.
+
+        Returns the two sub-queries along with the effective limit and offset of
+        the hybrid query itself.
+        """
+        fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
+        vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+
+        fts_req = fts_query._inner.to_query_request()
+        vec_req = vec_query._inner.to_query_request()
+
+        # Only one of the two sub-queries carries the limit when it was never
+        # set explicitly: nearest_to()/nearest_to_text() build the sibling query
+        # from scratch, and that is where the default gets filled in. Which one
+        # that is depends on the order the hybrid query was built in, so look at
+        # both rather than at a single side.
+        limit = fts_req.limit if fts_req.limit is not None else vec_req.limit
+        if limit is None:
+            limit = DEFAULT_HYBRID_LIMIT
+        offset = fts_req.offset or vec_req.offset or 0
+
+        fts_query.with_row_id()
+        vec_query.with_row_id()
+
+        # offset() pushes the offset down into both sub-queries, which would make
+        # each of them skip its own first `offset` rows. The window has to be
+        # taken out of the combined, reranked results instead, so fetch the
+        # skipped prefix here too and slice it off afterwards.
+        fts_query.limit(limit + offset)
+        vec_query.limit(limit + offset)
+        fts_query.offset(0)
+        vec_query.offset(0)
+
+        return fts_query, vec_query, limit, offset
+
     async def to_batches(
         self,
         *,
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
-        vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+        fts_query, vec_query, limit, offset = self._create_child_queries()
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
@@ -3882,9 +3926,6 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._blob_auto_row_id = blob_auto_row_id
         self._blob_paths = blob_paths
 
-        fts_query.with_row_id()
-        vec_query.with_row_id()
-
         fts_results, vector_results = await asyncio.gather(
             fts_query.to_arrow(timeout=timeout),
             vec_query.to_arrow(timeout=timeout),
@@ -3896,8 +3937,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             norm=self._norm,
             fts_query=fts_query.get_query(),
             reranker=self._reranker,
-            limit=self._inner.get_limit(),
+            limit=limit,
             with_row_ids=True,
+            offset=offset,
         )
         if (
             not self._user_requested_row_id()
@@ -3926,14 +3968,14 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         RRFReranker(K=60)
-            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance, _rowid@1 as _rowid]
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   FilterExec: _distance@2 IS NOT NULL
                     SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
                         LanceRead: uri=..., projection=[vector], ...
-            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   MatchQuery: column=text, query=[hello]
@@ -3948,8 +3990,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        vector_plan = await self._inner.to_vector_query().explain_plan(verbose)
-        fts_plan = await self._inner.to_fts_query().explain_plan(verbose)
+        fts_query, vec_query, _, _ = self._create_child_queries()
+        vector_plan = await vec_query.explain_plan(verbose)
+        fts_plan = await fts_query.explain_plan(verbose)
         # Indent sub-plans under the reranker
         indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
         indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
@@ -3976,14 +4019,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
+        fts_query, vec_query, _, _ = self._create_child_queries()
+
         results = ["Vector Search Query:"]
-        results.append(
-            await self._inner.to_vector_query().analyze_plan(distributed_metrics)
-        )
+        results.append(await vec_query.analyze_plan(distributed_metrics))
         results.append("FTS Search Query:")
-        results.append(
-            await self._inner.to_fts_query().analyze_plan(distributed_metrics)
-        )
+        results.append(await fts_query.analyze_plan(distributed_metrics))
 
         return "\n".join(results)
 
