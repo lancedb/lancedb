@@ -264,7 +264,7 @@ class DBConnection(EnforceOverrides):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -278,8 +278,9 @@ class DBConnection(EnforceOverrides):
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
-        limit: int, default 10
-            The size of the page to return.
+        limit: int, optional
+            The size of the page to return. If not present, all table names are
+            returned.
 
         Returns
         -------
@@ -1032,7 +1033,7 @@ class LanceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -1047,8 +1048,9 @@ class LanceDBConnection(DBConnection):
             The namespace to list tables in.
         page_token: str, optional
             The token to use for pagination.
-        limit: int, default 10
-            The maximum number of tables to return.
+        limit: int, optional
+            The maximum number of tables to return. If not present, all table
+            names are returned.
 
         Returns
         -------
