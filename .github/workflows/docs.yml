@@ -4,6 +4,17 @@ on:
   push:
     branches: ["main"]
 
+  # Validate the docs build on PRs that touch the docs or this workflow.
+  # These runs stop after the build; only pushes to main deploy.
+  #
+  # The Python API reference is generated from docstrings under python/python,
+  # so a cross-reference is just as likely to break there as under docs/.
+  pull_request:
+    paths:
+      - .github/workflows/docs.yml
+      - docs/**
+      - python/python/**
+
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
@@ -13,9 +24,9 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment
+# Allow one concurrent run per ref, so PR builds don't cancel a deployment of main
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: true
 
 env:
@@ -27,11 +38,7 @@ env:
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
 
 jobs:
-  # Single deploy job since we're just deploying
   build:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -66,13 +73,24 @@ jobs:
       - name: Build docs
         working-directory: docs
         run: |
-          PYTHONPATH=. mkdocs build
+          PYTHONPATH=. mkdocs build --strict
       - name: Setup Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: "docs/site"
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
