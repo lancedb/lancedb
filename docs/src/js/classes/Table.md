@@ -942,7 +942,7 @@ Get the schema of the table.
 abstract search(
    query,
    queryType?,
-   ftsColumns?): Query | VectorQuery
+   ftsColumns?): Query | VectorQuery | AutoQuery
 ```
 
 Create a search query to find the nearest neighbors
@@ -964,7 +964,7 @@ of the given query
 
 #### Returns
 
-[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md)
+[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md) \| [`AutoQuery`](AutoQuery.md)
 
 ***
 
