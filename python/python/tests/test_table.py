@@ -313,6 +313,51 @@ async def test_close(mem_db_async: AsyncConnection):
 
 
 @pytest.mark.asyncio
+async def test_async_context_manager(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("ctx_table", data=[{"id": 0}])
+    async with table:
+        assert table.is_open()
+    assert not table.is_open()
+
+
+@pytest.mark.asyncio
+async def test_async_context_manager_closes_on_error(mem_db_async: AsyncConnection):
+    """The table must be released even when the block raises, which is the
+    whole reason to reach for `async with` over a manual close."""
+    table = await mem_db_async.create_table("ctx_err_table", data=[{"id": 0}])
+    with pytest.raises(ValueError, match="boom"):
+        async with table:
+            raise ValueError("boom")
+    assert not table.is_open()
+
+
+def test_sync_close(mem_db):
+    """The sync table had no way to release its resources short of dropping
+    the object and waiting for the GC."""
+    table = mem_db.create_table("sync_close", data=[{"id": 0}])
+    assert table.is_open()
+    table.close()
+    assert not table.is_open()
+
+    with pytest.raises(Exception, match="is closed"):
+        table.count_rows()
+
+
+def test_sync_close_is_idempotent(mem_db):
+    """Error case: closing twice must be harmless, matching the async side."""
+    table = mem_db.create_table("sync_close_twice", data=[{"id": 0}])
+    table.close()
+    table.close()
+    assert not table.is_open()
+
+
+def test_sync_context_manager(mem_db):
+    with mem_db.create_table("sync_ctx", data=[{"id": 0}]) as table:
+        assert table.is_open()
+    assert not table.is_open()
+
+
+@pytest.mark.asyncio
 async def test_update_async(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table("some_table", data=[{"id": 0}])
     assert await table.count_rows("id == 0") == 1

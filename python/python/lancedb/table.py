@@ -2306,6 +2306,25 @@ class LanceTable(Table):
     def name(self) -> str:
         return self._table.name
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def is_open(self) -> bool:
+        """Return True if the table is open."""
+        return self._table.is_open()
+
+    def close(self) -> None:
+        """Close the table and free any resources associated with it.
+
+        It is safe to call this method multiple times.
+
+        Any attempt to use the table after it has been closed will raise an
+        error."""
+        self._table.close()
+
     @property
     def namespace(self) -> List[str]:
         """Return the namespace path of the table."""
@@ -4766,6 +4785,12 @@ class AsyncTable:
         return self
 
     def __exit__(self, *_):
+        self.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
         self.close()
 
     def is_open(self) -> bool:

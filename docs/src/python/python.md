@@ -338,3 +338,14 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true
+
+## Runtime lifecycle (advanced)
+
+Using LanceDB creates a Tokio runtime, a background event loop thread and an
+embedding thread pool that are held for the entire life of the process.
+Outside of `fork()` — which does not exist on Windows — nothing recycles
+them. Long-lived hosts that use LanceDB in bursts (test suites, notebook
+kernels, agent runtimes, services that re-index periodically) can release
+them explicitly. Not needed for typical usage.
+
+::: lancedb.background_loop.reset_background_loop
