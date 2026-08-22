@@ -5024,6 +5024,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_take_offsets_explain_plan_does_not_execute_query() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/explain_plan/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""RemoteLookupExec""#)
+                .unwrap()
+        });
+
+        let explained = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(crate::query::Select::columns(&["id"]))
+            .limit(3)
+            .explain_plan(false)
+            .await
+            .unwrap();
+
+        assert!(explained.contains("GlobalLimitExec"));
+        assert!(explained.contains("TakeRestoreExec"));
+        assert!(explained.contains("CoalescePartitionsExec"));
+        assert!(explained.contains("RemoteLookupExec"));
+    }
+
+    #[tokio::test]
     async fn test_query_structured_fts() {
         let table =
             Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {

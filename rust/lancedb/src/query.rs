@@ -30,7 +30,7 @@ use half::f16;
 pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
-use lance_datafusion::exec::execute_plan;
+use lance_datafusion::exec::{execute_plan, format_plan as format_analyzed_plan};
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
@@ -1848,23 +1848,33 @@ impl TakeQuery {
         Ok((request, ordering_column, drop_ordering_column))
     }
 
-    async fn create_offsets_plan(
+    async fn prepare_offsets_lookup(
         &self,
-        offsets: &[u64],
-        options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
         let (mut request, ordering_column, drop_ordering_column) =
             self.request_with_row_offset().await?;
         // The lookup operates on distinct physical rows. Pagination is a logical
         // operation over occurrences and must be applied only after restoration.
         let output_offset = request.offset.take().unwrap_or_default();
         let output_limit = request.limit.take();
-        let query = AnyQuery::Query(request);
-        let lookup = self
-            .parent
-            .clone()
-            .create_plan(&query, options.without_output_batch_length_limit())
-            .await?;
+
+        Ok((
+            request,
+            ordering_column,
+            drop_ordering_column,
+            output_offset,
+            output_limit,
+        ))
+    }
+
+    fn wrap_offsets_plan(
+        lookup: Arc<dyn ExecutionPlan>,
+        offsets: &[u64],
+        ordering_column: String,
+        drop_ordering_column: bool,
+        output_offset: usize,
+        output_limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let lookup = Arc::new(CoalescePartitionsExec::new(lookup));
         let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
             lookup,
@@ -1882,6 +1892,62 @@ impl TakeQuery {
         } else {
             Ok(restored)
         }
+    }
+
+    fn wrap_offsets_explanation(
+        lookup: &str,
+        occurrence_count: usize,
+        output_offset: usize,
+        output_limit: Option<usize>,
+    ) -> String {
+        fn indent(plan: &str, spaces: usize) -> String {
+            let indentation = " ".repeat(spaces);
+            plan.lines()
+                .map(|line| format!("{indentation}{line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let restored = format!(
+            "TakeRestoreExec: occurrences={occurrence_count}\n  CoalescePartitionsExec\n{}",
+            indent(lookup, 4)
+        );
+
+        if output_offset > 0 || output_limit.is_some() {
+            let fetch = output_limit
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "None".to_string());
+            format!(
+                "GlobalLimitExec: skip={output_offset}, fetch={fetch}\n{}",
+                indent(&restored, 2)
+            )
+        } else {
+            restored
+        }
+    }
+
+    async fn create_offsets_plan(
+        &self,
+        offsets: &[u64],
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
+            self.prepare_offsets_lookup().await?;
+        let query = AnyQuery::Query(request);
+        let lookup = self
+            .parent
+            .clone()
+            .create_plan(&query, options.without_output_batch_length_limit())
+            .await?;
+
+        Self::wrap_offsets_plan(
+            lookup,
+            offsets,
+            ordering_column,
+            drop_ordering_column,
+            output_offset,
+            output_limit,
+        )
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -1967,11 +2033,37 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        if let Some(offsets) = &self.offsets {
+            let (request, _, _, output_offset, output_limit) =
+                self.prepare_offsets_lookup().await?;
+            // Ask the backend to explain only the distinct-row lookup. This keeps
+            // remote explanation non-executing while still showing the client-side
+            // operators that create_plan and execution place above that lookup.
+            let lookup = self
+                .parent
+                .explain_plan(&AnyQuery::Query(request), verbose)
+                .await?;
+            return Ok(Self::wrap_offsets_explanation(
+                &lookup,
+                offsets.len(),
+                output_offset,
+                output_limit,
+            ));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.explain_plan(&query, verbose).await
     }
 
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        if self.offsets.is_some() {
+            let plan = self.create_plan(options).await?;
+            execute_plan(plan.clone(), Default::default())?
+                .try_collect::<Vec<_>>()
+                .await?;
+            return Ok(format_analyzed_plan(plan));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.analyze_plan(&query, options).await
     }
@@ -3101,6 +3193,26 @@ mod tests {
                 .values(),
             &[5, 1, 5, 17]
         );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_plan_introspection_shows_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let take = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(3);
+
+        let explained = take.explain_plan(false).await.unwrap();
+        assert!(explained.contains("GlobalLimitExec"));
+        assert!(explained.contains("TakeRestoreExec"));
+        assert!(explained.contains("CoalescePartitionsExec"));
+
+        let analyzed = take.analyze_plan().await.unwrap();
+        assert!(analyzed.contains("GlobalLimitExec"));
+        assert!(analyzed.contains("TakeRestoreExec"));
+        assert!(analyzed.contains("CoalescePartitionsExec"));
     }
 
     #[tokio::test]
