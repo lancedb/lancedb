@@ -12,18 +12,6 @@ A query that returns a subset of the rows in the table.
 
 - [`QueryBase`](QueryBase.md)&lt;`NativeTakeQuery`&gt;
 
-## Properties
-
-### inner
-
-```ts
-protected inner: TakeQuery | Promise<TakeQuery>;
-```
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`inner`](QueryBase.md#inner)
-
 ## Methods
 
 ### analyzePlan()

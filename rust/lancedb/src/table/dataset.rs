@@ -32,6 +32,10 @@ struct DatasetState {
     /// `Some(version)` = pinned to a specific version (time travel),
     /// `None` = tracking latest.
     pinned_version: Option<u64>,
+    /// Whether the pin is an internal query snapshot rather than user-visible
+    /// time travel. Query snapshots remain read-only but preserve MemWAL read
+    /// semantics.
+    query_snapshot: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +74,7 @@ impl DatasetConsistencyWrapper {
             state: Arc::new(Mutex::new(DatasetState {
                 dataset,
                 pinned_version: None,
+                query_snapshot: false,
             })),
             consistency,
             shard_writer: Arc::new(ShardWriterCache::default()),
@@ -91,6 +96,27 @@ impl DatasetConsistencyWrapper {
             .unwrap_or_else(|e| e.into_inner())
             .pinned_version = Some(version);
         wrapper
+    }
+
+    /// Create an independent read-only wrapper pinned to `dataset` while
+    /// retaining this wrapper's live MemWAL read context.
+    pub fn new_query_snapshot(&self, dataset: Arc<Dataset>) -> Self {
+        let version = dataset.version().version;
+        let query_snapshot = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            // Preserve user time travel so the MemWAL safety guard still sees
+            // it. Latest and already-internal snapshots remain internal pins.
+            state.query_snapshot || state.pinned_version.is_none()
+        };
+        Self {
+            state: Arc::new(Mutex::new(DatasetState {
+                dataset,
+                pinned_version: Some(version),
+                query_snapshot,
+            })),
+            consistency: ConsistencyMode::Lazy,
+            shard_writer: self.shard_writer.clone(),
+        }
     }
 
     /// The MemWAL `ShardWriter` cache co-located with this dataset.
@@ -169,6 +195,7 @@ impl DatasetConsistencyWrapper {
         let mut state = self.state.lock()?;
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = None;
+        state.query_snapshot = false;
         drop(state);
         if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
             bg_cache.invalidate();
@@ -202,10 +229,10 @@ impl DatasetConsistencyWrapper {
 
     /// Returns the version, if in time travel mode, or None otherwise.
     pub fn time_travel_version(&self) -> Option<u64> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pinned_version
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (!state.query_snapshot)
+            .then_some(state.pinned_version)
+            .flatten()
     }
 
     /// Convert into a wrapper in latest version mode.
@@ -225,6 +252,7 @@ impl DatasetConsistencyWrapper {
         if state.pinned_version.is_some() {
             state.dataset = Arc::new(new_dataset);
             state.pinned_version = None;
+            state.query_snapshot = false;
         }
         drop(state);
         if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
@@ -260,6 +288,7 @@ impl DatasetConsistencyWrapper {
         let mut state = self.state.lock()?;
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = Some(version_value);
+        state.query_snapshot = false;
         Ok(())
     }
 

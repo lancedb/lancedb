@@ -16,18 +16,6 @@ A builder for LanceDB queries.
 
 - `StandardQueryBase`&lt;`NativeQuery`&gt;
 
-## Properties
-
-### inner
-
-```ts
-protected inner: Query | Promise<Query>;
-```
-
-#### Inherited from
-
-`StandardQueryBase.inner`
-
 ## Methods
 
 ### analyzePlan()
