@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use napi::{bindgen_prelude::*, threadsafe_function::ThreadsafeFunction};
 use napi_derive::napi;
 
-use lancedb::ipc::batches_to_ipc_file;
+use lancedb::ipc::{batches_to_ipc_file, ipc_file_to_schema, schema_to_ipc_file};
 use lancedb::rerankers::Reranker as LanceDBReranker;
 use lancedb::{error::Error, ipc::ipc_file_to_batches};
 
@@ -21,28 +21,72 @@ type RerankHybridFn = ThreadsafeFunction<
     true,
 >;
 
+type RerankOutputSchemaFn = ThreadsafeFunction<
+    RerankOutputSchemaCallbackArgs,
+    Promise<Buffer>,
+    RerankOutputSchemaCallbackArgs,
+    Status,
+    false,
+    true,
+>;
+
 /// Reranker implementation that "wraps" a NodeJS Reranker implementation.
 /// This contains references to the callbacks that can be used to invoke the
 /// reranking methods on the NodeJS implementation and handles serializing the
 /// record batches to Arrow IPC buffers.
 pub struct Reranker {
     rerank_hybrid: RerankHybridFn,
+    output_schema: Option<RerankOutputSchemaFn>,
 }
 
 impl Reranker {
     pub fn new(
         rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+        output_schema: Option<Function<RerankOutputSchemaCallbackArgs, Promise<Buffer>>>,
     ) -> napi::Result<Self> {
         let rerank_hybrid = rerank_hybrid
             .build_threadsafe_function()
             .weak::<true>()
             .build()?;
-        Ok(Self { rerank_hybrid })
+        let output_schema = output_schema
+            .map(|output_schema| {
+                output_schema
+                    .build_threadsafe_function()
+                    .weak::<true>()
+                    .build()
+            })
+            .transpose()?;
+        Ok(Self {
+            rerank_hybrid,
+            output_schema,
+        })
     }
 }
 
 #[async_trait]
 impl lancedb::rerankers::Reranker for Reranker {
+    async fn output_schema(
+        &self,
+        input: &arrow_schema::SchemaRef,
+    ) -> lancedb::error::Result<arrow_schema::SchemaRef> {
+        let output_schema = self.output_schema.as_ref().ok_or(Error::NotSupported {
+            message: "vector rerankers must declare their output schema".to_string(),
+        })?;
+        let callback_args = RerankOutputSchemaCallbackArgs {
+            input_schema: Buffer::from(schema_to_ipc_file(input.as_ref())?),
+        };
+        let promised_buffer: Promise<Buffer> = output_schema
+            .call_async(callback_args)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("napi error status={}, reason={}", e.status, e.reason),
+            })?;
+        let buffer = promised_buffer.await.map_err(|e| Error::Runtime {
+            message: format!("napi error status={}, reason={}", e.status, e.reason),
+        })?;
+        ipc_file_to_schema(buffer.to_vec())
+    }
+
     async fn rerank_hybrid(
         &self,
         query: &str,
@@ -84,6 +128,11 @@ pub struct RerankHybridCallbackArgs {
     pub query: String,
     pub vec_results: Buffer,
     pub fts_results: Buffer,
+}
+
+#[napi(object)]
+pub struct RerankOutputSchemaCallbackArgs {
+    pub input_schema: Buffer,
 }
 
 fn buffer_to_record_batch(buffer: Buffer) -> Result<RecordBatch> {

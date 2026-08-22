@@ -79,6 +79,22 @@ describe("rerankers", function () {
     expect(result).toHaveLength(2);
   });
 
+  it("returns relevance scores when reranking a vector search", async function () {
+    const query = table
+      .vectorSearch([0.1, 0.1])
+      .limit(2)
+      .rerank(await RRFReranker.create());
+    const schema = await query.outputSchema();
+    const result = await query.toArray();
+
+    expect(schema.fields.map((field) => field.name)).toContain(
+      "_relevance_score",
+    );
+    expect(result).toHaveLength(2);
+    expect(result[0]._relevance_score).toBeCloseTo(1 / 60);
+    expect(result[1]._relevance_score).toBeCloseTo(1 / 61);
+  });
+
   it("does not keep process alive after rerank query", async function () {
     const script = `
 import * as lancedb from "./dist/index.js";
