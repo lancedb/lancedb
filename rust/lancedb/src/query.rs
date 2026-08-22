@@ -1,21 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
+use arrow_array::{
+    Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt64Array,
+    cast::AsArray,
+    make_array,
+    types::{Int64Type, UInt64Type},
+};
 use arrow_schema::{DataType, SchemaRef};
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_execution::TaskContext;
 use datafusion_expr::{Expr, col, lit};
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    coalesce_partitions::CoalescePartitionsExec,
+    execution_plan::{Boundedness, EmissionType},
+    limit::GlobalLimitExec,
+    stream::RecordBatchStreamAdapter,
+};
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
-use lance_datafusion::exec::execute_plan;
+use lance_datafusion::exec::{execute_plan, format_plan as format_analyzed_plan};
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
@@ -1515,6 +1530,218 @@ impl HasQuery for VectorQuery {
     }
 }
 
+fn restore_take_batch(
+    batch: RecordBatch,
+    offsets: &[u64],
+    ordering_column: &str,
+    drop_ordering_column: bool,
+) -> Result<RecordBatch> {
+    let actual_offsets = batch
+        .column_by_name(ordering_column)
+        .ok_or_else(|| Error::Schema {
+            message: format!(
+                "take query result did not include ordering column '{ordering_column}'"
+            ),
+        })?;
+    let actual_offsets = match actual_offsets.data_type() {
+        DataType::UInt64 => actual_offsets
+            .as_primitive::<UInt64Type>()
+            .values()
+            .to_vec(),
+        DataType::Int64 => actual_offsets
+            .as_primitive::<Int64Type>()
+            .values()
+            .iter()
+            .map(|offset| {
+                u64::try_from(*offset).map_err(|_| Error::Schema {
+                    message: format!(
+                        "take query ordering column '{ordering_column}' contained a negative offset"
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        data_type => {
+            return Err(Error::Schema {
+                message: format!(
+                    "take query ordering column '{ordering_column}' had unsupported type {data_type}"
+                ),
+            });
+        }
+    };
+
+    let ordering = actual_offsets
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, offset)| (offset, index as u64))
+        .collect::<HashMap<_, _>>();
+    // Missing offsets retain the filter-based behavior of returning no row. Every
+    // occurrence of an offset that was found is restored in the requested order.
+    let desired_order = offsets
+        .iter()
+        .filter_map(|offset| ordering.get(offset).copied())
+        .collect::<Vec<_>>();
+
+    let mut ordered_batch = if desired_order.len() == batch.num_rows()
+        && desired_order
+            .iter()
+            .enumerate()
+            .all(|(index, desired)| *desired == index as u64)
+    {
+        batch
+    } else {
+        arrow_select::take::take_record_batch(&batch, &UInt64Array::from(desired_order))?
+    };
+
+    if drop_ordering_column {
+        ordered_batch = ordered_batch.drop_column(ordering_column)?;
+    }
+
+    Ok(ordered_batch)
+}
+
+/// Restores the logical offset occurrence sequence above the physical lookup plan.
+///
+/// The lookup plan returns each matching row at most once. This operator collects
+/// those rows, expands duplicates, and emits one partition in the caller's offset
+/// order. Pagination must remain above this operator so it applies to occurrences.
+#[derive(Debug)]
+struct TakeRestoreExec {
+    input: Arc<dyn ExecutionPlan>,
+    offsets: Vec<u64>,
+    ordering_column: String,
+    drop_ordering_column: bool,
+    schema: SchemaRef,
+    properties: Arc<PlanProperties>,
+}
+
+impl TakeRestoreExec {
+    fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        offsets: Vec<u64>,
+        ordering_column: String,
+        drop_ordering_column: bool,
+    ) -> Result<Self> {
+        let schema = if drop_ordering_column {
+            RecordBatch::new_empty(input.schema())
+                .drop_column(&ordering_column)?
+                .schema()
+        } else {
+            input.schema()
+        };
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        ));
+
+        Ok(Self {
+            input,
+            offsets,
+            ordering_column,
+            drop_ordering_column,
+            schema,
+            properties,
+        })
+    }
+}
+
+impl DisplayAs for TakeRestoreExec {
+    fn fmt_as(
+        &self,
+        _display_type: DisplayFormatType,
+        formatter: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(
+            formatter,
+            "TakeRestoreExec: occurrences={}",
+            self.offsets.len()
+        )
+    }
+}
+
+impl ExecutionPlan for TakeRestoreExec {
+    fn name(&self) -> &str {
+        "TakeRestoreExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(DataFusionError::Internal(format!(
+                "TakeRestoreExec expected one child, got {}",
+                children.len()
+            )));
+        }
+        let child = children.into_iter().next().unwrap();
+        let plan = Self::try_new(
+            child,
+            self.offsets.clone(),
+            self.ordering_column.clone(),
+            self.drop_ordering_column,
+        )
+        .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        Ok(Arc::new(plan))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> DataFusionResult<datafusion_physical_plan::SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(DataFusionError::Internal(format!(
+                "TakeRestoreExec only supports partition 0, got {partition}"
+            )));
+        }
+
+        let input = self.input.execute(0, context)?;
+        let input_schema = input.schema();
+        let output_schema = self.schema.clone();
+        let offsets = self.offsets.clone();
+        let ordering_column = self.ordering_column.clone();
+        let drop_ordering_column = self.drop_ordering_column;
+        let stream = stream::once(async move {
+            let batches = input.try_collect::<Vec<_>>().await?;
+            let batch = if batches.is_empty() {
+                RecordBatch::new_empty(input_schema.clone())
+            } else {
+                concat_batches(&input_schema, &batches)?
+            };
+            restore_take_batch(batch, &offsets, &ordering_column, drop_ordering_column)
+                .map_err(|error| DataFusionError::External(Box::new(error)))
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            output_schema,
+            stream,
+        )))
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        false
+    }
+}
+
 /// A builder for LanceDB take queries.
 ///
 /// See [`crate::Table::query`] for more details on queries
@@ -1531,6 +1758,7 @@ impl HasQuery for VectorQuery {
 pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
+    offsets: Option<Vec<u64>>,
 }
 
 impl TakeQuery {
@@ -1538,7 +1766,13 @@ impl TakeQuery {
     ///
     /// See [`crate::Table::take_offsets`] for more details.
     pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
-        let in_list: Vec<Expr> = offsets.iter().map(|o| lit(*o)).collect();
+        let mut seen = HashSet::with_capacity(offsets.len());
+        let in_list: Vec<Expr> = offsets
+            .iter()
+            .copied()
+            .filter(|offset| seen.insert(*offset))
+            .map(lit)
+            .collect();
         Self {
             parent,
             request: QueryRequest {
@@ -1547,6 +1781,7 @@ impl TakeQuery {
                 )),
                 ..Default::default()
             },
+            offsets: Some(offsets),
         }
     }
 
@@ -1561,7 +1796,159 @@ impl TakeQuery {
                 filter: Some(QueryFilter::Datafusion(col(ROW_ID).in_list(in_list, false))),
                 ..Default::default()
             },
+            offsets: None,
         }
+    }
+
+    async fn request_with_row_offset(&self) -> Result<(QueryRequest, String, bool)> {
+        const ROW_OFFSET: &str = "_rowoffset";
+        const INTERNAL_ROW_OFFSET: &str = "__lancedb_take_row_offset";
+
+        let mut request = self.request.clone();
+        let (ordering_column, drop_ordering_column) = match &mut request.select {
+            Select::All => {
+                let mut columns = self
+                    .parent
+                    .schema()
+                    .await?
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect::<Vec<_>>();
+                columns.push(ROW_OFFSET.to_string());
+                request.select = Select::Columns(columns);
+                (ROW_OFFSET.to_string(), true)
+            }
+            Select::Columns(columns) => {
+                if columns.iter().any(|column| column == ROW_OFFSET) {
+                    (ROW_OFFSET.to_string(), false)
+                } else {
+                    columns.push(ROW_OFFSET.to_string());
+                    (ROW_OFFSET.to_string(), true)
+                }
+            }
+            Select::Dynamic(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), ROW_OFFSET.to_string()));
+                (ordering_column, true)
+            }
+            Select::Expr(columns) => {
+                let mut ordering_column = INTERNAL_ROW_OFFSET.to_string();
+                while columns.iter().any(|(name, _)| name == &ordering_column) {
+                    ordering_column.push('_');
+                }
+                columns.push((ordering_column.clone(), col(ROW_OFFSET)));
+                (ordering_column, true)
+            }
+        };
+
+        Ok((request, ordering_column, drop_ordering_column))
+    }
+
+    async fn prepare_offsets_lookup(
+        &self,
+    ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
+        let (mut request, ordering_column, drop_ordering_column) =
+            self.request_with_row_offset().await?;
+        // The lookup operates on distinct physical rows. Pagination is a logical
+        // operation over occurrences and must be applied only after restoration.
+        let output_offset = request.offset.take().unwrap_or_default();
+        let output_limit = request.limit.take();
+
+        Ok((
+            request,
+            ordering_column,
+            drop_ordering_column,
+            output_offset,
+            output_limit,
+        ))
+    }
+
+    fn wrap_offsets_plan(
+        lookup: Arc<dyn ExecutionPlan>,
+        offsets: &[u64],
+        ordering_column: String,
+        drop_ordering_column: bool,
+        output_offset: usize,
+        output_limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let lookup = Arc::new(CoalescePartitionsExec::new(lookup));
+        let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
+            lookup,
+            offsets.to_vec(),
+            ordering_column,
+            drop_ordering_column,
+        )?);
+
+        if output_offset > 0 || output_limit.is_some() {
+            Ok(Arc::new(GlobalLimitExec::new(
+                restored,
+                output_offset,
+                output_limit,
+            )))
+        } else {
+            Ok(restored)
+        }
+    }
+
+    fn wrap_offsets_report(
+        lookup: &str,
+        occurrence_count: usize,
+        output_offset: usize,
+        output_limit: Option<usize>,
+        node_suffix: &str,
+    ) -> String {
+        fn indent(plan: &str, spaces: usize) -> String {
+            let indentation = " ".repeat(spaces);
+            plan.lines()
+                .map(|line| format!("{indentation}{line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let restored = format!(
+            "TakeRestoreExec: occurrences={occurrence_count}{node_suffix}\n  CoalescePartitionsExec{node_suffix}\n{}",
+            indent(lookup, 4)
+        );
+
+        if output_offset > 0 || output_limit.is_some() {
+            let fetch = output_limit
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "None".to_string());
+            format!(
+                "GlobalLimitExec: skip={output_offset}, fetch={fetch}{node_suffix}\n{}",
+                indent(&restored, 2)
+            )
+        } else {
+            restored
+        }
+    }
+
+    async fn create_offsets_plan(
+        &self,
+        offsets: &[u64],
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
+            self.prepare_offsets_lookup().await?;
+        let query = AnyQuery::Query(request);
+        let lookup = self
+            .parent
+            .clone()
+            .create_plan(&query, options.without_output_batch_length_limit())
+            .await?;
+
+        Self::wrap_offsets_plan(
+            lookup,
+            offsets,
+            ordering_column,
+            drop_ordering_column,
+            output_offset,
+            output_limit,
+        )
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -1616,6 +2003,10 @@ impl HasQuery for TakeQuery {
 
 impl ExecutableQuery for TakeQuery {
     async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        if let Some(offsets) = &self.offsets {
+            return self.create_offsets_plan(offsets, options).await;
+        }
+
         let req = AnyQuery::Query(self.request.clone());
         self.parent.clone().create_plan(&req, options).await
     }
@@ -1624,6 +2015,18 @@ impl ExecutableQuery for TakeQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        if self.offsets.is_some() {
+            let plan = self.create_plan(options.clone()).await?;
+            let inner = execute_plan(plan, Default::default())?;
+            let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
+            let inner = if let Some(timeout) = options.timeout {
+                TimeoutStream::new_boxed(inner, timeout)
+            } else {
+                inner
+            };
+            return Ok(DatasetRecordBatchStream::new(inner).into());
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         Ok(SendableRecordBatchStream::from(
             self.parent.clone().query(&query, options).await?,
@@ -1631,11 +2034,54 @@ impl ExecutableQuery for TakeQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        if let Some(offsets) = &self.offsets {
+            let (request, _, _, output_offset, output_limit) =
+                self.prepare_offsets_lookup().await?;
+            // Ask the backend to explain only the distinct-row lookup. This keeps
+            // remote explanation non-executing while still showing the client-side
+            // operators that create_plan and execution place above that lookup.
+            let lookup = self
+                .parent
+                .explain_plan(&AnyQuery::Query(request), verbose)
+                .await?;
+            return Ok(Self::wrap_offsets_report(
+                &lookup,
+                offsets.len(),
+                output_offset,
+                output_limit,
+                "",
+            ));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.explain_plan(&query, verbose).await
     }
 
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        if let Some(offsets) = &self.offsets {
+            if self.parent.analyze_plan_is_remote() {
+                let (request, _, _, output_offset, output_limit) =
+                    self.prepare_offsets_lookup().await?;
+                let backend_analysis = self
+                    .parent
+                    .analyze_plan(&AnyQuery::Query(request), options)
+                    .await?;
+                return Ok(Self::wrap_offsets_report(
+                    &backend_analysis,
+                    offsets.len(),
+                    output_offset,
+                    output_limit,
+                    ", metrics=[unavailable: client-side operator]",
+                ));
+            }
+
+            let plan = self.create_plan(options).await?;
+            execute_plan(plan.clone(), Default::default())?
+                .try_collect::<Vec<_>>()
+                .await?;
+            return Ok(format_analyzed_plan(plan));
+        }
+
         let query = AnyQuery::Query(self.request.clone());
         self.parent.analyze_plan(&query, options).await
     }
@@ -2655,6 +3101,136 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 3);
         assert_eq!(results[0].num_columns(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_preserves_duplicate_order() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|batch| batch.num_columns() == 1));
+        let ids = results
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<Int32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![5, 1, 5, 17]);
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_applies_pagination_after_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let limited = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(3)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let limited = concat_batches(&limited[0].schema(), &limited).unwrap();
+        assert_eq!(
+            limited
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[0, 1, 0]
+        );
+
+        let offset = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .offset(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let offset = concat_batches(&offset[0].schema(), &offset).unwrap();
+        assert_eq!(
+            offset
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[1, 5, 17]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_create_plan_restores_occurrences() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let take = table
+            .take_offsets(vec![5, 1, 5, 17])
+            .select(Select::Columns(vec!["id".to_string()]));
+
+        let plan = take
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(plan.schema().fields().len(), 1);
+        assert_eq!(plan.schema().field(0).name(), "id");
+        let planned = execute_plan(plan, Default::default())
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let planned = concat_batches(&planned[0].schema(), &planned).unwrap();
+        assert_eq!(
+            planned
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[5, 1, 5, 17]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets_plan_introspection_shows_restoration() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let take = table
+            .take_offsets(vec![0, 1, 0, 2])
+            .select(Select::Columns(vec!["id".to_string()]))
+            .limit(3);
+
+        let explained = take.explain_plan(false).await.unwrap();
+        assert!(explained.contains("GlobalLimitExec"));
+        assert!(explained.contains("TakeRestoreExec"));
+        assert!(explained.contains("CoalescePartitionsExec"));
+
+        let analyzed = take.analyze_plan().await.unwrap();
+        assert!(analyzed.contains("GlobalLimitExec"));
+        assert!(analyzed.contains("TakeRestoreExec"));
+        assert!(analyzed.contains("CoalescePartitionsExec"));
     }
 
     #[tokio::test]

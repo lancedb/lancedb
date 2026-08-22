@@ -1891,6 +1891,14 @@ def test_take_queries(tmp_path):
         17,
     ]
 
+    # Duplicate offsets are occurrences, not set members, and preserve input order.
+    assert table.take_offsets([5, 2, 5, 17]).to_pandas()["idx"].to_list() == [
+        5,
+        2,
+        5,
+        17,
+    ]
+
     # Take by row id
     assert list(
         sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
