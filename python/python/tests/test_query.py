@@ -675,6 +675,21 @@ def test_distance_range(table: lancedb.table.Table):
     assert res["_distance"].to_pylist() == [min_dist, max_dist]
 
 
+@pytest.mark.parametrize("expression", ["1 - _distance", "1.0 - _distance"])
+def test_select_arithmetic_with_distance(table, expression):
+    result = (
+        table.search([10, 10])
+        .select({"similarity": expression, "_distance": "_distance"})
+        .distance_type("cosine")
+        .to_arrow()
+    )
+
+    assert result.schema.field("similarity").type == pa.float32()
+    assert result["similarity"].to_pylist() == pytest.approx(
+        [1 - distance for distance in result["_distance"].to_pylist()]
+    )
+
+
 @pytest.mark.asyncio
 async def test_distance_range_async(table_async: AsyncTable):
     q = [0, 0]
