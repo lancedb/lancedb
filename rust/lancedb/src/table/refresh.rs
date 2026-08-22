@@ -193,7 +193,7 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
 ///
 /// Lance's dialect delimits with backticks, so a double-quoted name would
 /// parse as a string literal rather than a column.
-fn quote_identifier(name: &str) -> String {
+pub(crate) fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 

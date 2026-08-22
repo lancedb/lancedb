@@ -789,6 +789,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -1057,6 +1064,11 @@ impl Table {
 
     pub fn database(&self) -> &Arc<dyn Database> {
         self.database.as_ref().unwrap()
+    }
+
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -2994,6 +3006,12 @@ impl NativeTable {
 impl BaseTable for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
     }
 
     fn name(&self) -> &str {

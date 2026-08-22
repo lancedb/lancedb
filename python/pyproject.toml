@@ -103,7 +103,7 @@ python-source = "python"
 module-name = "lancedb._lancedb"
 
 [build-system]
-requires = ["maturin>=1.4"]
+requires = ["maturin>=1.9.4"]
 build-backend = "maturin"
 
 [tool.ruff.lint]

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from lancedb import col
 import lancedb.functions as functions
 from lancedb.functions import (
     FunctionApplication,
@@ -118,6 +119,83 @@ def test_function_version_identity_is_immutable_and_exact():
     changed = dict(value)
     changed["version"] = "fv_changed"
     assert FunctionVersion(**changed) != version
+
+
+def test_function_version_binds_named_columns_as_one_immutable_group():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+
+    application = version(text=col("documents.body"))
+
+    assert application.function.name == version.name
+    assert application.function.version == version.version
+    assert application.output is version.signature.output
+    assert application.group_id.startswith("fg_")
+    assert [
+        (value.parameter, value.kind, value.value["path"])
+        for value in application.inputs
+    ] == [("text", "column", "documents.body")]
+    with pytest.raises((TypeError, ValueError)):
+        application.group_id = "fg_changed"
+
+
+def test_function_version_binding_validates_names_and_direct_columns():
+    version = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    )
+
+    with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
+        version()
+    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+        version(text=col("text"), body=col("body"))
+    with pytest.raises(TypeError, match="direct col"):
+        version(text=col("text").lower())
+
+
+def test_function_version_keeps_named_struct_outputs_in_one_application():
+    value = job_result("remote_function_job.json")
+    value["name"] = "text_features"
+    value["version"] = "fv_grouped"
+    value["signature"] = {
+        "inputs": [
+            {"name": "title", "arrow_type": "utf8", "nullable": True},
+            {"name": "body", "arrow_type": "utf8", "nullable": True},
+        ],
+        "output": {
+            "kind": "named_struct",
+            "fields": [
+                {
+                    "name": "normalized_text",
+                    "arrow_type": "utf8",
+                    "nullable": False,
+                },
+                {
+                    "name": "token_count",
+                    "arrow_type": "int64",
+                    "nullable": False,
+                },
+            ],
+        },
+    }
+    version = FunctionVersion(**value)
+
+    application = version(body=col("body"), title=col("title")).rename(
+        columns={
+            "normalized_text": "search_text",
+            "token_count": "search_token_count",
+        }
+    )
+
+    assert [value.parameter for value in application.inputs] == ["title", "body"]
+    assert [field.name for field in application.output.fields] == [
+        "normalized_text",
+        "token_count",
+    ]
+    assert dict(application.columns) == {
+        "normalized_text": "search_text",
+        "token_count": "search_token_count",
+    }
 
 
 def test_unknown_fields_and_discriminators_are_forward_decodable():
