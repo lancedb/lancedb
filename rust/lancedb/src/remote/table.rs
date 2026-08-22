@@ -473,6 +473,11 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    /// Seed the schema cache when the caller already has the Arrow schema.
+    pub(crate) fn seed_schema_ref(&self, schema: SchemaRef) {
+        self.schema_cache.seed(schema);
+    }
+
     /// Return a new handle scoped to `branch`, sharing the client but with fresh
     /// caches and version/freshness state (the branch tracks its own latest).
     /// Mirrors `NativeTable`'s handle-per-branch model.
@@ -1514,8 +1519,8 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         num_partitions: usize,
     ) -> Result<()> {
         debug_assert!(
-            output.rescannable,
-            "multipart inserts require rescannable input for retry support"
+            output.rescannable || num_partitions == 1,
+            "non-rescannable multipart inserts require a single partition"
         );
 
         let plan = Arc::new(
@@ -2153,7 +2158,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         crate::table::computed_columns::ensure_supported_function_metadata(table_schema.as_ref())?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
-        let num_partitions = if self.server_version.support_multipart_write() {
+        let (num_partitions, use_multipart) = if self.server_version.support_multipart_write() {
             // Peek at the first batch to estimate write partitions (same as
             // NativeTable) and, regardless of `write_parallelism`, to detect a
             // fully empty input. A multipart write creates its upload session
@@ -2163,10 +2168,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             // commit and e.g. `mode=overwrite` would be silently dropped. Route
             // empty input through the single-request path instead, which always
             // sends one schema-only request.
+            let unknown_size = add.data.num_rows().is_none();
             let mut peeked = PeekedScannable::new(add.data);
-            let n = match peeked.peek().await {
+            let first_batch = peeked.peek().await;
+            let n = match first_batch.as_ref() {
                 Some(first_batch) => match add.write_parallelism {
-                    Some(parallelism) if parallelism > 1 => parallelism,
+                    Some(parallelism) if parallelism > 1 && peeked.rescannable() => parallelism,
                     Some(_) => 1,
                     None => {
                         let max_partitions =
@@ -2181,10 +2188,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 },
                 None => 1,
             };
+            // Unknown-length readers cannot be sized up-front, so use a
+            // single-partition multipart upload. It remains streaming while
+            // allowing the request body to be split into bounded parts.
+            let use_multipart = first_batch.is_some() && (n > 1 || unknown_size);
             add.data = Box::new(peeked);
-            n
+            (n, use_multipart)
         } else {
-            1
+            (1, false)
         };
 
         let output = add.into_plan(&table_schema, &table_def)?;
@@ -2194,7 +2205,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         let _finish = FinishOnDrop(output.tracker.clone());
 
-        if num_partitions > 1 {
+        if use_multipart {
             self.add_multipart(output, num_partitions).await
         } else {
             self.add_single_partition(output).await
