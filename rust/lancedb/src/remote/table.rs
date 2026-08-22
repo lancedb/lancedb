@@ -1775,6 +1775,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        // A checked-out handle already names its snapshot. Otherwise resolve
+        // latest exactly once before creating the independent pinned handle.
+        let version = match self.current_version().await {
+            Some(version) => version,
+            None => self.describe().await?.version,
+        };
+
+        let snapshot = self.with_branch(self.branch.clone());
+        *snapshot.version.write().await = Some(version);
+        Ok(Some(Arc::new(snapshot)))
+    }
     async fn restore(&self) -> Result<()> {
         let mut request = self
             .client

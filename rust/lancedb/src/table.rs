@@ -789,6 +789,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
     /// Whether repeated identical scans return rows in the same order.
     ///
     /// Callers that assign meaning to a row's position must order the results
