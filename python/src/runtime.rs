@@ -168,9 +168,38 @@ struct ReaderGuard {
 
 impl ReaderGuard {
     fn enter() -> Self {
-        let slot = READER_EPOCH.load(Ordering::SeqCst) & 1;
-        ACTIVE_READERS[slot].fetch_add(1, Ordering::SeqCst);
-        Self { slot }
+        Self::enter_with(|| {})
+    }
+
+    /// [`ReaderGuard::enter`] with a seam between choosing a slot and
+    /// registering in it, so a test can drive the interleaving below
+    /// deterministically instead of racing for it.
+    ///
+    /// Registration has to be linearizable with respect to [`READER_EPOCH`].
+    /// Reading the epoch and incrementing the slot are two separate atomic
+    /// operations, so a retirement can land between them: it bumps the epoch
+    /// and drains the slot this reader picked, observing zero because the
+    /// increment has not happened yet. The reader then registers in a slot
+    /// nothing will ever drain again until the epoch wraps, and the *next*
+    /// retirement reclaims a generation this reader is still dereferencing.
+    ///
+    /// Re-reading the epoch after the increment closes that window: either it
+    /// is unchanged -- so the increment is visible to every drain that can
+    /// still see this generation -- or the slot is released and the choice is
+    /// made again. The comparison is on the whole epoch rather than its
+    /// parity, because two retirements return the parity to its original
+    /// value while leaving the registration just as stale.
+    fn enter_with(on_slot_chosen: impl Fn()) -> Self {
+        loop {
+            let epoch = READER_EPOCH.load(Ordering::SeqCst);
+            on_slot_chosen();
+            let slot = epoch & 1;
+            ACTIVE_READERS[slot].fetch_add(1, Ordering::SeqCst);
+            if READER_EPOCH.load(Ordering::SeqCst) == epoch {
+                return Self { slot };
+            }
+            ACTIVE_READERS[slot].fetch_sub(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -586,10 +615,17 @@ fn reset_runtime_impl() -> ResetOutcome {
 /// `RUNTIME` precedes the swap, and by program order R's load of
 /// `READER_EPOCH` precedes its load of `RUNTIME`. Chaining those gives
 /// `R.load(EPOCH)` before `swap` before `fetch_add(EPOCH)`, so R read the
-/// pre-bump epoch and therefore registered in the slot we are about to
-/// drain. R's `fetch_add` on that slot likewise precedes its load of
-/// `RUNTIME`, hence precedes the swap, hence precedes the bump and our
-/// first read of the slot — so the drain observes R and waits for it.
+/// pre-bump epoch.
+///
+/// Reading that epoch does not by itself place R in the slot being drained,
+/// because choosing a slot and registering in it are separate operations and
+/// the epoch can move between them. [`ReaderGuard::enter_with`] closes that
+/// window by re-reading the epoch after its increment and retrying if it
+/// moved, so a guard is only ever returned registered under an epoch that was
+/// still current once the increment was visible. Given that, R's `fetch_add`
+/// lands in the slot we are about to drain, and it precedes R's load of
+/// `RUNTIME`, hence the swap, hence the bump and our first read of the slot —
+/// so the drain observes R and waits for it.
 ///
 /// Reversing the order would break exactly this: a reader that read the
 /// post-bump epoch (registering in the *new* slot) could still load
@@ -867,6 +903,55 @@ mod tests {
         drop(stuck);
 
         assert_eq!(outcome, ResetOutcome::LeakedOnDrainTimeout);
+    }
+
+    /// Regression for a reader-admission race: choosing a slot and
+    /// registering in it are separate atomics, so a retirement can land
+    /// between them, drain the chosen slot while it still reads zero, and
+    /// leave the reader registered where no later drain looks -- at which
+    /// point the next retirement reclaims a generation that reader is still
+    /// using.
+    ///
+    /// Driven through the seam rather than by racing threads, so the
+    /// interleaving is exercised on every run instead of occasionally.
+    fn assert_admission_is_not_stranded(retirements: usize) {
+        let _installed = get_runtime();
+        let fired = AtomicBool::new(false);
+
+        let guard = ReaderGuard::enter_with(|| {
+            // First attempt only; a retry has to be able to finish.
+            if fired.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            for _ in 0..retirements {
+                reset_runtime_impl();
+                get_runtime();
+            }
+        });
+
+        assert_eq!(
+            guard.slot,
+            READER_EPOCH.load(Ordering::SeqCst) & 1,
+            "reader ended up in a slot no live drain watches"
+        );
+        assert!(
+            ACTIVE_READERS[guard.slot].load(Ordering::SeqCst) > 0,
+            "reader is not counted in the slot its guard claims"
+        );
+    }
+
+    #[test]
+    fn reader_admission_is_not_stranded_by_a_retirement() {
+        let _t = test_lock();
+        assert_admission_is_not_stranded(1);
+    }
+
+    #[test]
+    fn reader_admission_survives_epoch_wraparound() {
+        let _t = test_lock();
+        // Two retirements put the parity back where it started, which is what
+        // makes a stale registration silently wrong rather than obviously so.
+        assert_admission_is_not_stranded(2);
     }
 
     #[test]
