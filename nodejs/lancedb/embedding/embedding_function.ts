@@ -16,6 +16,7 @@ import {
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { getRegistry } from "./registry";
+import { retryWithExponentialBackoff } from "./retry";
 
 /**
  * Options for a given embedding function
@@ -221,6 +222,15 @@ export abstract class EmbeddingFunction<
     return undefined;
   }
 
+  /**
+   * Maximum number of retries for transient errors (e.g. rate limiting) when
+   * computing embeddings. Override to change the default, or return 0 to
+   * disable retries.
+   */
+  maxRetries(): number {
+    return 7;
+  }
+
   /** The datatype of the embeddings */
   abstract embeddingDataType(): Float;
 
@@ -238,6 +248,30 @@ export abstract class EmbeddingFunction<
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );
+  }
+
+  /**
+   * Compute the embeddings for the source column, retrying with exponential
+   * backoff on failure. See {@link maxRetries}.
+   */
+  computeSourceEmbeddingsWithRetry(
+    data: T[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]> {
+    return retryWithExponentialBackoff(
+      (data: T[]) => this.computeSourceEmbeddings(data),
+      { maxRetries: this.maxRetries() },
+    )(data);
+  }
+
+  /**
+   * Compute the embeddings for a single query, retrying with exponential
+   * backoff on failure. See {@link maxRetries}.
+   */
+  computeQueryEmbeddingsWithRetry(data: T): Promise<Awaited<IntoVector>> {
+    return retryWithExponentialBackoff(
+      (data: T) => this.computeQueryEmbeddings(data),
+      { maxRetries: this.maxRetries() },
+    )(data);
   }
 }
 

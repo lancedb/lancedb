@@ -535,4 +535,66 @@ describe("embedding functions", () => {
       [...parsed.values()].map(({ vectorColumn }) => vectorColumn).sort(),
     ).toEqual(["vector_a", "vector_b"]);
   });
+
+  describe("rate limit retries", () => {
+    class MockRateLimitedEmbeddingFunction extends EmbeddingFunction<string> {
+      callCount = 0;
+      #failTimes: number;
+      #maxRetries: number;
+
+      constructor(options: { failTimes?: number; maxRetries?: number } = {}) {
+        super();
+        this.#failTimes = options.failTimes ?? 0;
+        this.#maxRetries = options.maxRetries ?? 7;
+      }
+      override maxRetries(): number {
+        return this.#maxRetries;
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        this.callCount++;
+        if (this.callCount <= this.#failTimes) {
+          throw new Error("Rate limit exceeded. Please try again later.");
+        }
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+
+    it("retries a transient failure and succeeds", async () => {
+      const func = new MockRateLimitedEmbeddingFunction({
+        failTimes: 1,
+        maxRetries: 2,
+      });
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("test", [{ id: 1, text: "hello" }], {
+        embeddingFunction: { function: func, sourceColumn: "text" },
+      });
+      expect(await table.countRows()).toBe(1);
+      expect(func.callCount).toBe(2);
+    });
+
+    it("does not retry when maxRetries is 0", async () => {
+      const func = new MockRateLimitedEmbeddingFunction({
+        failTimes: 1,
+        maxRetries: 0,
+      });
+      const db = await connect(tmpDir.name);
+      await expect(
+        db.createTable("test", [{ id: 1, text: "hello" }], {
+          embeddingFunction: { function: func, sourceColumn: "text" },
+        }),
+      ).rejects.toThrow();
+      expect(func.callCount).toBe(1);
+    });
+  });
 });
