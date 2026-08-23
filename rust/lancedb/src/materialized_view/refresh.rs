@@ -1380,7 +1380,8 @@ mod tests {
             })
             .unwrap_or(0)
     }
-    use arrow_array::{Int32Array, record_batch};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, record_batch};
+    use arrow_schema::{DataType, Field as ArrowField};
     use futures::TryStreamExt;
     use lance::dataset::NewColumnTransform;
     use lance_file::version::LanceFileVersion;
@@ -1390,15 +1391,55 @@ mod tests {
     use crate::connection::Connection;
     use crate::index::Index;
     use crate::index::scalar::BTreeIndexBuilder;
+    use crate::index::vector::IvfFlatIndexBuilder;
     use crate::materialized_view::MaterializedView;
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::{CompactionOptions, OptimizeAction};
+    use lance_arrow::FixedSizeListArrayExt;
 
     async fn db_with_source(values: Vec<i32>) -> (Connection, Table) {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("x", Int32, values)).unwrap();
         let table = conn
             .create_table("src", batch)
+            .write_options(crate::materialized_view::tests::stable_row_ids())
+            .execute()
+            .await
+            .unwrap();
+        (conn, table)
+    }
+
+    /// A source of `rows` 4-d vectors. Hand-rolled rather than `record_batch!`
+    /// because the macro has no fixed-size-list form.
+    async fn db_with_vectors(rows: i32) -> (Connection, Table) {
+        const DIM: i32 = 4;
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from((0..rows * DIM).map(|v| v as f32).collect::<Vec<_>>()),
+            DIM,
+        )
+        .unwrap();
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, true),
+            ArrowField::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    DIM,
+                ),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..rows)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("src", vec![batch])
             .write_options(crate::materialized_view::tests::stable_row_ids())
             .execute()
             .await
@@ -2319,6 +2360,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// Vector is the index type a view is usually built for, and the one a
+    /// rebuild strains hardest: every fragment the index was trained over is
+    /// replaced. The definition has to survive, and search has to answer over
+    /// the rows that replaced them even before the index covers them again.
+    #[tokio::test]
+    async fn test_rebuild_retains_vector_index() {
+        let (conn, source) = db_with_vectors(256).await;
+        let view = conn
+            .create_materialized_view("vecs", "src")
+            .select([("id", "id"), ("vec", "vec")])
+            .execute()
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+
+        view.table()
+            .create_index(
+                &["vec"],
+                Index::IvfFlat(
+                    IvfFlatIndexBuilder::default()
+                        .num_partitions(1)
+                        .sample_rate(1)
+                        .max_iterations(1),
+                ),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let stats = view.table().index_stats("vec_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_unindexed_rows, 0);
+
+        // Rewriting a projected column is the classifier's rebuild trigger.
+        source
+            .update()
+            .column("id", "id + 1000")
+            .execute()
+            .await
+            .unwrap();
+        let result = view.refresh().execute().await.unwrap();
+        assert_eq!(result.mode, RefreshMode::Rebuild);
+
+        let indices = view.table().list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1, "the rebuild dropped the vector index");
+
+        // Every row is new, so the retained index covers none of them until
+        // it is rebuilt -- the definition is what survives, not the coverage.
+        let stats = view.table().index_stats("vec_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_unindexed_rows, 256);
+
+        // Search still answers correctly over the swapped-in rows.
+        let batches = view
+            .table()
+            .query()
+            .nearest_to(vec![0.0f32; 4])
+            .unwrap()
+            .limit(5)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
     }
 
     #[tokio::test]
