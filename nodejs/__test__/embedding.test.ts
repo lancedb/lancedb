@@ -596,5 +596,153 @@ describe("embedding functions", () => {
       ).rejects.toThrow();
       expect(func.callCount).toBe(1);
     });
+
+    describe("computeSourceEmbeddingsWithRetry / computeQueryEmbeddingsWithRetry", () => {
+      class ConfigurableRetryEmbeddingFunction extends EmbeddingFunction<string> {
+        sourceCallCount = 0;
+        queryCallCount = 0;
+        #failTimes: number;
+        #maxRetries: number;
+        #makeError: () => Error;
+        #isRetryableOverride?: (error: unknown) => boolean;
+
+        constructor(
+          options: {
+            failTimes?: number;
+            maxRetries?: number;
+            makeError?: () => Error;
+            isRetryable?: (error: unknown) => boolean;
+          } = {},
+        ) {
+          super();
+          this.#failTimes = options.failTimes ?? 0;
+          this.#maxRetries = options.maxRetries ?? 7;
+          this.#makeError =
+            options.makeError ?? (() => new Error("Rate limit exceeded"));
+          this.#isRetryableOverride = options.isRetryable;
+        }
+        override maxRetries(): number {
+          return this.#maxRetries;
+        }
+        override isRetryableError(error: unknown): boolean {
+          return this.#isRetryableOverride
+            ? this.#isRetryableOverride(error)
+            : super.isRetryableError(error);
+        }
+        ndims() {
+          return 3;
+        }
+        embeddingDataType(): Float {
+          return new Float32();
+        }
+        async computeSourceEmbeddings(data: string[]) {
+          this.sourceCallCount++;
+          if (this.sourceCallCount <= this.#failTimes) {
+            throw this.#makeError();
+          }
+          return Array.from({ length: data.length }).fill([
+            1, 2, 3,
+          ]) as number[][];
+        }
+        async computeQueryEmbeddings(_data: string) {
+          this.queryCallCount++;
+          if (this.queryCallCount <= this.#failTimes) {
+            throw this.#makeError();
+          }
+          return [1, 2, 3];
+        }
+      }
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      // Advance the fake clock far enough to flush every pending (and
+      // recursively re-scheduled) backoff timer, so the retry loop runs to
+      // completion without the test waiting on real delays.
+      async function flushRetries<T>(promise: Promise<T>): Promise<T> {
+        await jest.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+        return promise;
+      }
+
+      it("computeSourceEmbeddingsWithRetry retries a transient failure and succeeds", async () => {
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: 3,
+          maxRetries: 7,
+        });
+        await expect(
+          flushRetries(func.computeSourceEmbeddingsWithRetry(["hello"])),
+        ).resolves.toEqual([[1, 2, 3]]);
+        expect(func.sourceCallCount).toBe(4);
+      });
+
+      it("computeQueryEmbeddingsWithRetry retries a transient failure and succeeds", async () => {
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: 3,
+          maxRetries: 7,
+        });
+        await expect(
+          flushRetries(func.computeQueryEmbeddingsWithRetry("hello")),
+        ).resolves.toEqual([1, 2, 3]);
+        expect(func.queryCallCount).toBe(4);
+      });
+
+      it("does not retry an authentication error and preserves it", async () => {
+        class AuthenticationError extends Error {
+          constructor(message: string) {
+            super(message);
+            this.name = "AuthenticationError";
+          }
+        }
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: Number.POSITIVE_INFINITY,
+          maxRetries: 7,
+          makeError: () => new AuthenticationError("Invalid API key"),
+        });
+        await expect(
+          func.computeSourceEmbeddingsWithRetry(["hello"]),
+        ).rejects.toThrow(AuthenticationError);
+        expect(func.sourceCallCount).toBe(1);
+      });
+
+      it("does not retry a 401 status error and preserves it", async () => {
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: Number.POSITIVE_INFINITY,
+          maxRetries: 7,
+          makeError: () =>
+            Object.assign(new Error("Unauthorized"), { status: 401 }),
+        });
+        await expect(
+          func.computeQueryEmbeddingsWithRetry("hello"),
+        ).rejects.toMatchObject({ status: 401 });
+        expect(func.queryCallCount).toBe(1);
+      });
+
+      it("preserves the original error once retries are exhausted", async () => {
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: Number.POSITIVE_INFINITY,
+          maxRetries: 2,
+        });
+        await expect(
+          flushRetries(func.computeSourceEmbeddingsWithRetry(["hello"])),
+        ).rejects.toThrow("Rate limit exceeded");
+        expect(func.sourceCallCount).toBe(3);
+      });
+
+      it("allows overriding retry eligibility", async () => {
+        const func = new ConfigurableRetryEmbeddingFunction({
+          failTimes: Number.POSITIVE_INFINITY,
+          maxRetries: 7,
+          isRetryable: () => false,
+        });
+        await expect(
+          func.computeSourceEmbeddingsWithRetry(["hello"]),
+        ).rejects.toThrow("Rate limit exceeded");
+        expect(func.sourceCallCount).toBe(1);
+      });
+    });
   });
 });

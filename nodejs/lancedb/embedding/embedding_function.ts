@@ -16,7 +16,7 @@ import {
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { getRegistry } from "./registry";
-import { retryWithExponentialBackoff } from "./retry";
+import { isPermanentError, retryWithExponentialBackoff } from "./retry";
 
 /**
  * Options for a given embedding function
@@ -231,6 +231,16 @@ export abstract class EmbeddingFunction<
     return 7;
   }
 
+  /**
+   * Whether an error from `computeSourceEmbeddings`/`computeQueryEmbeddings`
+   * should be retried. Defaults to rejecting known permanent failures (e.g.
+   * an invalid API key) so those fail immediately instead of retrying for
+   * hours. See {@link isPermanentError}. Override to change this policy.
+   */
+  isRetryableError(error: unknown): boolean {
+    return !isPermanentError(error);
+  }
+
   /** The datatype of the embeddings */
   abstract embeddingDataType(): Float;
 
@@ -259,7 +269,10 @@ export abstract class EmbeddingFunction<
   ): Promise<number[][] | Float32Array[] | Float64Array[]> {
     return retryWithExponentialBackoff(
       (data: T[]) => this.computeSourceEmbeddings(data),
-      { maxRetries: this.maxRetries() },
+      {
+        maxRetries: this.maxRetries(),
+        isRetryable: (error) => this.isRetryableError(error),
+      },
     )(data);
   }
 
@@ -270,7 +283,10 @@ export abstract class EmbeddingFunction<
   computeQueryEmbeddingsWithRetry(data: T): Promise<Awaited<IntoVector>> {
     return retryWithExponentialBackoff(
       (data: T) => this.computeQueryEmbeddings(data),
-      { maxRetries: this.maxRetries() },
+      {
+        maxRetries: this.maxRetries(),
+        isRetryable: (error) => this.isRetryableError(error),
+      },
     )(data);
   }
 }
