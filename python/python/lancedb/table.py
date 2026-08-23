@@ -3060,7 +3060,7 @@ class LanceTable(Table):
             "prefix_only": False,
         }
 
-        def add(
+    def add(
         self,
         data: DATA,
         mode: AddMode = "append",
@@ -3095,15 +3095,22 @@ class LanceTable(Table):
             The number of vectors in the table.
         """
         progress, owns = _normalize_progress(progress)
-        
+
         # --- PYTORCH WINDOWS DEADLOCK FIX ---
-        # Sanitize the data and generate embeddings synchronously on the main thread
-        # before passing it to the BackgroundEventLoop daemon thread.
+        # Embedding computation must run on the main thread, not the
+        # BackgroundEventLoop daemon thread that self._table.add() below hands off
+        # to: on Windows, PyTorch does not allow a CUDA context created on one
+        # thread to be used from another. _sanitize_data() itself only builds a
+        # chain of lazy generators (see _append_vector_columns), so nothing is
+        # actually computed until the returned reader is iterated -- calling it
+        # alone is not enough. read_all() forces that iteration, and therefore
+        # the embedding calls, to happen here on the main thread.
         schema = self.schema
-        if on_bad_vectors != "error" or (
+        has_embedding_functions = (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
-        ):
-            data = _sanitize_data(
+        )
+        if on_bad_vectors != "error" or has_embedding_functions:
+            reader = _sanitize_data(
                 data,
                 schema,
                 metadata=schema.metadata,
@@ -3111,8 +3118,21 @@ class LanceTable(Table):
                 fill_value=fill_value,
                 allow_subschema=True,
             )
+            if has_embedding_functions:
+                try:
+                    data = reader.read_all()
+                except ValueError as e:
+                    # Previously this validation ran lazily while the Rust side
+                    # iterated the reader, which surfaces Python exceptions as
+                    # RuntimeError across the PyO3 boundary. Materializing eagerly
+                    # here (see above) means it now raises directly in Python, so
+                    # re-wrap to preserve the exception type callers already
+                    # depend on.
+                    raise RuntimeError(str(e)) from e
+            else:
+                data = reader
         # ------------------------------------
-        
+
         try:
             return LOOP.run(
                 self._table.add(

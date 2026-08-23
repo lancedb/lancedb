@@ -1857,6 +1857,52 @@ def test_on_bad_vectors_with_multiple_vectors_locks_dim_after_final_drop(
     assert data["vec2"].to_pylist() == [[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]
 
 
+def test_add_computes_embeddings_on_calling_thread(mem_db: DBConnection):
+    """Regression test for the Windows CUDA deadlock (#3559).
+
+    Table.add() hands the actual write off to the LanceDBBackgroundEventLoop
+    daemon thread. On Windows, PyTorch does not allow a CUDA context created on
+    one thread to be used from another, so if embedding computation is deferred
+    until that handoff, a GPU-backed embedding function deadlocks. Embeddings
+    must be computed on the thread that calls add() instead.
+    """
+    registry = EmbeddingFunctionRegistry.get_instance()
+    calling_thread_id = threading.get_ident()
+    recorded_thread_ids = []
+
+    @registry.register("thread-recording-test")
+    class ThreadRecordingEmbeddingFunction(MockTextEmbeddingFunction):
+        def generate_embeddings(self, texts):
+            recorded_thread_ids.append(threading.get_ident())
+            return super().generate_embeddings(texts)
+
+    func = ThreadRecordingEmbeddingFunction.create()
+    metadata = registry.get_table_metadata(
+        [
+            EmbeddingFunctionConfig(
+                source_column="text", vector_column="vector", function=func
+            )
+        ]
+    )
+    schema = pa.schema(
+        [
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 10)),
+        ],
+        metadata=metadata,
+    )
+    table = mem_db.create_table("test_add_embeds_on_calling_thread", schema=schema)
+
+    table.add(pa.table({"text": ["hello", "world"]}))
+
+    assert recorded_thread_ids, "embedding function was never called"
+    assert all(tid == calling_thread_id for tid in recorded_thread_ids), (
+        "embedding function ran on a background thread instead of the thread "
+        "that called add() -- this reproduces the Windows CUDA deadlock from #3559"
+    )
+    assert table.count_rows() == 2
+
+
 def test_on_bad_vectors_does_not_handle_non_vector_list_columns(mem_db: DBConnection):
     schema = pa.schema([pa.field("embedding_history", pa.list_(pa.float32()))])
     table = mem_db.create_table("test_non_vector_list_schema", schema=schema)
