@@ -25,6 +25,7 @@ from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
+from ..materialized_view import MaterializedView, SelectArg
 
 if TYPE_CHECKING:
     from .._lancedb import JobDescription, JobInfo
@@ -646,6 +647,32 @@ class RemoteDBConnection(DBConnection):
             self.db_name,
             connection_state=self.serialize,
             namespace_path=namespace_path,
+        )
+
+    @override
+    def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> MaterializedView:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
+        )
+
+    @override
+    def open_materialized_view(self, name: str) -> MaterializedView:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
+        )
+
+    @override
+    def list_materialized_views(self) -> List[str]:
+        raise NotImplementedError(
+            "materialized views are supported only on local databases"
         )
 
     @override

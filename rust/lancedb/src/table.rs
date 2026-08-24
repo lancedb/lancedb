@@ -66,8 +66,8 @@ use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
 pub mod checkpoint;
+pub mod cherry_pick;
 pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
@@ -87,9 +87,9 @@ pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
 pub use computed_columns::{
@@ -792,6 +792,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -828,14 +835,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -1060,6 +1067,11 @@ impl Table {
 
     pub fn database(&self) -> &Arc<dyn Database> {
         self.database.as_ref().unwrap()
+    }
+
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -2260,14 +2272,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -3003,6 +3011,12 @@ impl NativeTable {
 impl BaseTable for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
     }
 
     fn name(&self) -> &str {

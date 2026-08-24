@@ -21,11 +21,11 @@ use crate::remote::job::RemoteJob;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::BranchDiff;
+use crate::table::CherryPickResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
 use crate::table::LsmStats;
 use crate::table::LsmWriteSpec;
-use crate::table::MergeBranchResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
@@ -2031,7 +2031,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn diff_branch(&self, from_branch: &str) -> Result<BranchDiff> {
         if from_branch.trim().is_empty() {
             return Err(Error::InvalidInput {
-                message: "from_branch must be a non-empty string".into(),
+                message: "Branch name cannot be empty.".into(),
             });
         }
         let request = self
@@ -2058,20 +2058,23 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
-    async fn merge_branch(&self, from_branch: &str, dry_run: bool) -> Result<MergeBranchResult> {
+    async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
         if from_branch.trim().is_empty() {
             return Err(Error::InvalidInput {
-                message: "from_branch must be a non-empty string".into(),
+                message: "Branch name cannot be empty.".into(),
             });
         }
         let request = self
             .client
-            .post(&format!("/v1/table/{}/branches/merge/", self.identifier))
+            .post(&format!(
+                "/v1/table/{}/branches/cherry_pick/",
+                self.identifier
+            ))
             .json(&serde_json::json!({
                 "from_branch": from_branch,
                 "dry_run": dry_run,
             }));
-        // No retry. 409 rejected merge is final and carries a body.
+        // No retry. HTTP 409 is CherryPickStatus::Failed with a body, not a transport error.
         let (request_id, response) = self.send(request, false).await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
@@ -2080,11 +2083,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 source: format!("branch '{}' does not exist", from_branch).into(),
             });
         }
-        // 200 and 409 both carry MergeBranchResult.
+        // 200 and 409 both carry CherryPickResult.
         if status != StatusCode::OK && status != StatusCode::CONFLICT {
             let body = response.text().await.unwrap_or_default();
             return Err(Error::Http {
-                source: format!("unexpected status {status} from merge_branch: {body}").into(),
+                source: format!("unexpected status {status} from cherry_pick: {body}").into(),
                 request_id,
                 status_code: Some(status),
             });
@@ -2092,7 +2095,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         serde_json::from_str(&body).map_err(|err| Error::Http {
             source: format!(
-                "Failed to parse merge_branch response: {}, body: {}",
+                "Failed to parse cherry_pick response: {}, body: {}",
                 err, body
             )
             .into(),
@@ -4319,6 +4322,19 @@ mod tests {
 
     fn one_row_blob_ipc_stream(column: &str) -> Vec<u8> {
         write_ipc_stream_uncompressed(&one_row_blob_batch(column))
+    }
+
+    #[tokio::test]
+    async fn test_remote_scan_order_is_not_deterministic() {
+        // A distributed scan answers in no fixed order, so callers that assign meaning
+        // to row position have to sort for themselves.
+        let table = Table::new_with_handler("my_table", |_| {
+            http::Response::builder()
+                .status(200)
+                .body(Vec::new())
+                .unwrap()
+        });
+        assert!(!table.base_table().scan_order_is_deterministic());
     }
 
     #[tokio::test]
@@ -10418,6 +10434,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_materialized_view_refused_without_a_request() {
+        // Materialized views are local-only. The table-level entry the
+        // bindings use must refuse a remote table before reading its schema,
+        // so the panicking handler is the assertion.
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected request: {}", request.url().path())
+        });
+        let err = crate::MaterializedView::from_table(table)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
     async fn test_create_branch_empty_name_rejected_client_side() {
         use lance::dataset::refs::Ref;
         // The empty name is rejected before any request is sent.
@@ -10506,8 +10536,7 @@ mod tests {
             "changedColumns":[],
             "addedIndexes":[],
             "removedIndexes":[],
-            "mergeable":true,
-            "mergeBlockers":[]
+            "errors":[]
         }"#
     }
 
@@ -10525,15 +10554,18 @@ mod tests {
         });
         let diff = table.diff_branch("exp").await.unwrap();
         assert_eq!(diff.from_branch, "exp");
-        assert!(diff.mergeable);
+        assert!(diff.errors.is_empty());
         assert_eq!(diff.added_columns.len(), 1);
         assert_eq!(diff.added_columns[0].name, "tag");
     }
 
     #[tokio::test]
-    async fn test_merge_branch_dry_run() {
+    async fn test_cherry_pick_dry_run() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/branches/merge/");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/branches/cherry_pick/"
+            );
             let body = request_body_json(&request);
             assert_eq!(body["from_branch"], "exp");
             assert_eq!(body["dry_run"], true);
@@ -10543,27 +10575,29 @@ mod tests {
             );
             http::Response::builder().status(200).body(resp).unwrap()
         });
-        let result = table.merge_branch("exp", true).await.unwrap();
-        assert_eq!(result.status, crate::table::MergeBranchStatus::Ready);
+        let result = table.cherry_pick("exp", true).await.unwrap();
+        assert_eq!(result.status, crate::table::CherryPickStatus::Ready);
         assert_eq!(result.preview.promoted_columns, vec!["tag".to_string()]);
         assert!(result.main_version_after.is_none());
     }
 
     #[tokio::test]
-    async fn test_merge_branch_rejected_returns_ok_with_body() {
+    async fn test_cherry_pick_failed_returns_ok_with_body() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/branches/merge/");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/branches/cherry_pick/"
+            );
             let body = request_body_json(&request);
             assert_eq!(body["dry_run"], false);
             let mut diff: serde_json::Value =
                 serde_json::from_str(sample_branch_diff_json()).unwrap();
-            diff["mergeable"] = serde_json::json!(false);
-            diff["mergeBlockers"] = serde_json::json!([{
+            diff["errors"] = serde_json::json!([{
                 "code": "baseMoved",
                 "message": "main has advanced"
             }]);
             let resp = serde_json::json!({
-                "status": "rejected",
+                "status": "failed",
                 "diff": diff,
                 "preview": { "promotedColumns": [] }
             });
@@ -10572,24 +10606,23 @@ mod tests {
                 .body(resp.to_string())
                 .unwrap()
         });
-        let result = table.merge_branch("exp", false).await.unwrap();
-        assert_eq!(result.status, crate::table::MergeBranchStatus::Rejected);
-        assert!(!result.diff.mergeable);
-        assert_eq!(result.diff.merge_blockers.len(), 1);
+        let result = table.cherry_pick("exp", false).await.unwrap();
+        assert_eq!(result.status, crate::table::CherryPickStatus::Failed);
+        assert!(!result.diff.errors.is_empty());
+        assert_eq!(result.diff.errors.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_merge_branch_unknown_blocker_code_parses() {
+    async fn test_cherry_pick_unknown_error_code_parses() {
         let table = Table::new_with_handler("my_table", |_| {
             let mut diff: serde_json::Value =
                 serde_json::from_str(sample_branch_diff_json()).unwrap();
-            diff["mergeable"] = serde_json::json!(false);
-            diff["mergeBlockers"] = serde_json::json!([{
+            diff["errors"] = serde_json::json!([{
                 "code": "multipleCommits",
                 "message": "branch has more than one data commit"
             }]);
             let resp = serde_json::json!({
-                "status": "rejected",
+                "status": "failed",
                 "diff": diff,
                 "preview": { "operation": "append", "rowsAdded": 2 }
             });
@@ -10598,24 +10631,24 @@ mod tests {
                 .body(resp.to_string())
                 .unwrap()
         });
-        let result = table.merge_branch("exp", false).await.unwrap();
-        assert_eq!(result.status, crate::table::MergeBranchStatus::Rejected);
+        let result = table.cherry_pick("exp", false).await.unwrap();
+        assert_eq!(result.status, crate::table::CherryPickStatus::Failed);
         assert_eq!(
-            result.diff.merge_blockers[0].code,
-            crate::table::MergeBlockerCode::Unknown
+            result.diff.errors[0].code,
+            crate::table::CherryPickErrorCode::Unknown
         );
         assert!(result.preview.promoted_columns.is_empty());
     }
 
     #[tokio::test]
-    async fn test_merge_branch_unexpected_2xx_is_error() {
+    async fn test_cherry_pick_unexpected_2xx_is_error() {
         let table = Table::new_with_handler("my_table", |_| {
             http::Response::builder()
                 .status(204)
                 .body(String::new())
                 .unwrap()
         });
-        let err = table.merge_branch("exp", false).await.unwrap_err();
+        let err = table.cherry_pick("exp", false).await.unwrap_err();
         match err {
             Error::Http {
                 status_code: Some(code),

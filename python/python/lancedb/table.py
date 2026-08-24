@@ -6824,21 +6824,21 @@ class Branches:
         """Diff a branch against main."""
         return LOOP.run(self._table.branches.diff(from_branch))
 
-    def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    def cherry_pick(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
         Parameters
         ----------
         from_branch: str
-            Branch to merge from.
+            Branch to cherry-pick from.
         dry_run: bool, default False
-            When True, only preview. When False, attempt the merge.
+            When True, only preview. When False, attempt the cherry-pick.
 
         Notes
         -----
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return LOOP.run(self._table.branches.merge(from_branch, dry_run))
+        return LOOP.run(self._table.branches.cherry_pick(from_branch, dry_run))
 
     def _wrap(
         self, async_table: "AsyncTable", version: Optional[int] = None
@@ -6974,9 +6974,11 @@ class AsyncBranches:
         """Diff a branch against main."""
         return await self._table.branches.diff(from_branch)
 
-    async def merge(self, from_branch: str, dry_run: bool = False) -> Dict[str, Any]:
-        """Merge a branch into main, or dry-run.
+    async def cherry_pick(
+        self, from_branch: str, dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Cherry-pick a branch onto main, or dry-run.
 
-        A rejected merge returns ``status="rejected"`` instead of raising.
+        A failed cherry-pick returns ``status="failed"`` instead of raising.
         """
-        return await self._table.branches.merge(from_branch, dry_run)
+        return await self._table.branches.cherry_pick(from_branch, dry_run)

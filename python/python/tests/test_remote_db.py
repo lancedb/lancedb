@@ -242,8 +242,8 @@ def test_remote_table_branches_sync():
         table.branches.delete("exp")
 
 
-def test_remote_table_branch_merge_defaults_to_execute():
-    merge_bodies = []
+def test_remote_table_cherry_pick_defaults_to_execute():
+    cherry_pick_bodies = []
     diff = {
         "fromBranch": "exp",
         "parentVersion": 1,
@@ -265,8 +265,7 @@ def test_remote_table_branch_merge_defaults_to_execute():
         "changedColumns": [],
         "addedIndexes": [],
         "removedIndexes": [],
-        "mergeable": True,
-        "mergeBlockers": [],
+        "errors": [],
     }
 
     def handler(request):
@@ -276,11 +275,11 @@ def test_remote_table_branch_merge_defaults_to_execute():
         else:
             content_len = int(request.headers.get("Content-Length"))
             request_body = json.loads(request.rfile.read(content_len))
-            merge_bodies.append(request_body)
+            cherry_pick_bodies.append(request_body)
             dry_run = request_body["dry_run"]
             status = 200 if dry_run else 409
             body = {
-                "status": "ready" if dry_run else "rejected",
+                "status": "ready" if dry_run else "failed",
                 "diff": diff,
                 "preview": {"promotedColumns": []},
             }
@@ -292,10 +291,10 @@ def test_remote_table_branch_merge_defaults_to_execute():
 
     with mock_lancedb_connection(handler) as db:
         branches = db.open_table("test").branches
-        assert branches.merge("exp")["status"] == "rejected"
-        assert branches.merge("exp", dry_run=True)["status"] == "ready"
+        assert branches.cherry_pick("exp")["status"] == "failed"
+        assert branches.cherry_pick("exp", dry_run=True)["status"] == "ready"
 
-    assert merge_bodies == [
+    assert cherry_pick_bodies == [
         {"from_branch": "exp", "dry_run": False},
         {"from_branch": "exp", "dry_run": True},
     ]

@@ -224,7 +224,7 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
 ///
 /// Lance's dialect delimits with backticks, so a double-quoted name would
 /// parse as a string literal rather than a column.
-fn quote_identifier(name: &str) -> String {
+pub(crate) fn quote_identifier(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 
@@ -639,7 +639,7 @@ mod tests {
 
     /// A fragment spanning several scan batches exercises the streamed fill:
     /// the probe buffers only until the first gained value and the rest flows
-    /// through write_column a batch at a time.
+    /// through write_columns a batch at a time.
     #[tokio::test]
     async fn test_refresh_streams_a_multi_batch_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
