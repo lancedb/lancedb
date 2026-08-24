@@ -46,8 +46,8 @@ use lance_table::format::Fragment;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    MaterializedViewDefinition, REFRESHED_AT_MS_META_KEY, SOURCE_ROW_ID_COLUMN,
-    SOURCE_VERSION_META_KEY,
+    INCARNATION_META_KEY, MaterializedViewDefinition, REFRESHED_AT_MS_META_KEY,
+    SOURCE_ROW_ID_COLUMN, SOURCE_VERSION_META_KEY,
 };
 use crate::database::OpenTableRequest;
 use crate::table::{NativeTable, NativeTableExt, Table};
@@ -108,6 +108,7 @@ pub(crate) async fn execute_refresh(
     view: &Table,
     full: bool,
     pinned: Option<u64>,
+    expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
     let view_native = view.as_native().ok_or_else(|| Error::NotSupported {
         message: "materialized views are supported only on local tables".into(),
@@ -121,6 +122,8 @@ pub(crate) async fn execute_refresh(
     // reporting NoOp over a mutated view.
     view_native.dataset.reload().await?;
     let view_ds = view_native.dataset.get().await?.as_ref().clone();
+
+    ensure_incarnation(&view_ds, expected_incarnation, view.name()).await?;
 
     // The definition a handle cached at open may since have been replaced;
     // what refresh executes and what it stamps must be one generation.
@@ -240,6 +243,7 @@ pub(crate) async fn execute_refresh(
                 increment,
                 definition,
                 watermark,
+                expected_incarnation,
             )
             .await?;
             match reconciled {
@@ -253,6 +257,7 @@ pub(crate) async fn execute_refresh(
                         source_version,
                         source_ts,
                         definition,
+                        expected_incarnation,
                     )
                     .await
                 }
@@ -266,6 +271,7 @@ pub(crate) async fn execute_refresh(
                 source_version,
                 source_ts,
                 definition,
+                expected_incarnation,
             )
             .await
         }
@@ -595,6 +601,7 @@ async fn incremental(
     increment: Increment,
     definition: &MaterializedViewDefinition,
     watermark: Option<u64>,
+    expected_incarnation: Option<&str>,
 ) -> Result<Option<RefreshMaterializedViewResult>> {
     let new_fragments = increment.appended;
     let watermark_version = watermark.unwrap_or(0);
@@ -671,15 +678,35 @@ async fn incremental(
     };
     let nothing_to_add = (new_fragments.is_empty() && !updated_rows) || remaining == Some(0);
     if nothing_to_add && eviction.is_none() {
-        result.version =
-            stamp_watermark(view_native, view_ds.clone(), source_version, source_ts).await?;
+        result.version = stamp_watermark(
+            view_native,
+            view_ds.clone(),
+            source_version,
+            source_ts,
+            expected_incarnation,
+        )
+        .await?;
         return Ok(Some(result));
     }
     // Rows left but none arrive: the removals still have to be published.
     if nothing_to_add {
         let filter = refresh_filter(&empty_keys(view_ds)?)?;
-        let published = publish(view_ds, eviction, Vec::new(), Some(filter)).await?;
-        result.version = stamp_watermark(view_native, published, source_version, source_ts).await?;
+        let published = publish(
+            view_ds,
+            eviction,
+            Vec::new(),
+            Some(filter),
+            expected_incarnation,
+        )
+        .await?;
+        result.version = stamp_watermark(
+            view_native,
+            published,
+            source_version,
+            source_ts,
+            expected_incarnation,
+        )
+        .await?;
         return Ok(Some(result));
     }
 
@@ -737,12 +764,20 @@ async fn incremental(
                 eviction,
                 Vec::new(),
                 Some(refresh_filter(&empty_keys(view_ds)?)?),
+                expected_incarnation,
             )
             .await?
         } else {
             view_ds.clone()
         };
-        result.version = stamp_watermark(view_native, published, source_version, source_ts).await?;
+        result.version = stamp_watermark(
+            view_native,
+            published,
+            source_version,
+            source_ts,
+            expected_incarnation,
+        )
+        .await?;
         return Ok(Some(result));
     };
     let stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
@@ -775,9 +810,23 @@ async fn incremental(
         });
     };
     let filter = refresh_filter(&keys)?;
-    let appended = publish(view_ds, eviction, new_fragments, Some(filter)).await?;
+    let appended = publish(
+        view_ds,
+        eviction,
+        new_fragments,
+        Some(filter),
+        expected_incarnation,
+    )
+    .await?;
     result.rows_written = rows_written.load(Ordering::Relaxed);
-    result.version = stamp_watermark(view_native, appended, source_version, source_ts).await?;
+    result.version = stamp_watermark(
+        view_native,
+        appended,
+        source_version,
+        source_ts,
+        expected_incarnation,
+    )
+    .await?;
     Ok(Some(result))
 }
 
@@ -788,6 +837,7 @@ async fn rebuild(
     source_version: u64,
     source_ts: u128,
     definition: &MaterializedViewDefinition,
+    expected_incarnation: Option<&str>,
 ) -> Result<RefreshMaterializedViewResult> {
     let rows_written = Arc::new(AtomicU64::new(0));
     let schema = Arc::new(ArrowSchema::from(view_ds.schema()));
@@ -810,8 +860,16 @@ async fn rebuild(
     // carries no schema metadata, so it cannot erase a definition update
     // that raced in the way an overwrite (which adopts its stream's schema)
     // durably would -- and it must land on the planned generation or abort.
-    let replaced = replace_retaining_indices(view_ds.clone(), stream, keys).await?;
-    let version = stamp_watermark(view_native, replaced, source_version, source_ts).await?;
+    let replaced =
+        replace_retaining_indices(view_ds.clone(), stream, keys, expected_incarnation).await?;
+    let version = stamp_watermark(
+        view_native,
+        replaced,
+        source_version,
+        source_ts,
+        expected_incarnation,
+    )
+    .await?;
     Ok(RefreshMaterializedViewResult {
         mode: RefreshMode::Rebuild,
         rows_written: rows_written.load(Ordering::Relaxed),
@@ -828,11 +886,13 @@ async fn replace_retaining_indices(
     view_ds: Dataset,
     stream: SendableRecordBatchStream,
     keys: Arc<StdMutex<KeyExistenceFilterBuilder>>,
+    expected_incarnation: Option<&str>,
 ) -> Result<Dataset> {
     let ds = Arc::new(view_ds);
     let read_version = ds.version().version;
     #[cfg(test)]
     tests::hold_before_publish(ds.uri()).await;
+    ensure_incarnation(&ds, expected_incarnation, ds.uri()).await?;
     let removed_fragment_ids: Vec<u64> = ds.get_fragments().iter().map(|f| f.id() as u64).collect();
 
     let write_txn = InsertBuilder::new(WriteDestination::Dataset(ds.clone()))
@@ -886,6 +946,32 @@ async fn replace_retaining_indices(
 }
 
 /// Record that the view now reflects `source_version`, including the view
+/// Refuse to act on a view that is not `expected`'s incarnation, judged from
+/// the latest stored manifest. Not a commit condition; see
+/// `RefreshMaterializedViewBuilder::expect_incarnation`.
+async fn ensure_incarnation(view_ds: &Dataset, expected: Option<&str>, what: &str) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let mut latest = view_ds.clone();
+    latest.checkout_latest().await?;
+    match latest.schema().metadata.get(INCARNATION_META_KEY) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(Error::Runtime {
+            message: format!(
+                "materialized view '{what}' is not the incarnation this refresh was \
+                 requested for: it was dropped and recreated"
+            ),
+        }),
+        None => Err(Error::Runtime {
+            message: format!(
+                "materialized view '{what}' carries no incarnation token: its schema \
+                 metadata was replaced since the token was captured"
+            ),
+        }),
+    }
+}
+
 /// version this very commit produces. The version is predicted and then
 /// verified; on a mismatch another commit raced in between, and the stamp
 /// ABORTS rather than certify that commit as the refresh's own generation.
@@ -895,10 +981,21 @@ async fn stamp_watermark(
     mut dataset: Dataset,
     source_version: u64,
     source_ts: u128,
+    expected_incarnation: Option<&str>,
 ) -> Result<u64> {
+    ensure_incarnation(&dataset, expected_incarnation, dataset.uri()).await?;
     let predicted = dataset.version().version + 1;
+    // A view with no token (declared before tokens existed, or its metadata
+    // replaced wholesale) starts a new incarnation here.
+    let incarnation = dataset
+        .schema()
+        .metadata
+        .get(INCARNATION_META_KEY)
+        .cloned()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     dataset
         .update_schema_metadata([
+            (INCARNATION_META_KEY.to_string(), Some(incarnation)),
             (
                 SOURCE_VERSION_META_KEY.to_string(),
                 Some(source_version.to_string()),
@@ -1052,12 +1149,14 @@ async fn publish(
     eviction: Option<(Vec<Fragment>, Vec<u64>)>,
     new_fragments: Vec<Fragment>,
     keys: Option<KeyExistenceFilter>,
+    expected_incarnation: Option<&str>,
 ) -> Result<Dataset> {
     let planned = view_ds.version().version;
     #[cfg(test)]
     tests::hold_before_publish(view_ds.uri()).await;
     #[cfg(test)]
     tests::hold_until_peers_planned();
+    ensure_incarnation(view_ds, expected_incarnation, view_ds.uri()).await?;
     let (updated_fragments, removed_fragment_ids) = eviction.unwrap_or_default();
     let committed = CommitBuilder::new(WriteDestination::Dataset(Arc::new(view_ds.clone())))
         .execute(Transaction::new(
@@ -1830,7 +1929,9 @@ mod tests {
         );
         let staged = eviction.finish().await.unwrap();
         assert!(staged.is_some(), "four ids over a chunk of two stage twice");
-        publish(&view_ds, staged, Vec::new(), None).await.unwrap();
+        publish(&view_ds, staged, Vec::new(), None, None)
+            .await
+            .unwrap();
         native.dataset.reload().await.unwrap();
 
         assert_eq!(read(view.table(), "x").await, vec![5, 6]);
@@ -2486,6 +2587,144 @@ mod tests {
         assert_eq!(read(view.table(), "twice").await, vec![14]);
     }
 
+    /// A refresh bound to an incarnation refuses a view dropped and recreated
+    /// since, even under the same name and definition; the recreated view's
+    /// own token is accepted, and the token survives a refresh's stamp.
+    #[tokio::test]
+    async fn test_refresh_refuses_a_recreated_view_incarnation() {
+        let (conn, _, view) = refreshed_doubled(vec![1]).await;
+        let token = view.incarnation().unwrap().to_string();
+        view.refresh()
+            .expect_incarnation(&token)
+            .execute()
+            .await
+            .unwrap();
+        let reopened = conn.open_materialized_view("doubled").await.unwrap();
+        assert_eq!(reopened.incarnation(), Some(token.as_str()));
+
+        conn.drop_table("doubled", &[]).await.unwrap();
+        let recreated = doubled_view(&conn).await;
+        assert_ne!(recreated.incarnation(), Some(token.as_str()));
+
+        let err = recreated
+            .refresh()
+            .expect_incarnation(&token)
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("dropped and recreated"), "{err}");
+        assert_eq!(read(recreated.table(), "twice").await, Vec::<i32>::new());
+
+        recreated
+            .refresh()
+            .expect_incarnation(recreated.incarnation().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(read(recreated.table(), "twice").await, vec![2]);
+    }
+
+    /// A cloned declaration creates two physical tables; each gets its own
+    /// token.
+    #[tokio::test]
+    async fn test_cloned_declaration_mints_a_fresh_incarnation_per_create() {
+        let (conn, source) = db_with_source(vec![1]).await;
+        let prepared = crate::materialized_view::prepare_declaration(
+            &source,
+            &[("x".into(), "x".into()), ("twice".into(), "x * 2".into())],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let replacement = prepared.clone();
+        let first = prepared.create("cloned").await.unwrap();
+        let first_token = first.incarnation().unwrap().to_string();
+
+        conn.drop_table("cloned", &[]).await.unwrap();
+        let second = replacement.create("cloned").await.unwrap();
+        assert_ne!(second.incarnation(), Some(first_token.as_str()));
+    }
+
+    /// A recreation that lands after planning but before publication is
+    /// caught by the pre-commit read: the stale refresh fails and the
+    /// replacement stays empty under its own token.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_bound_refresh_cannot_publish_into_a_raced_recreation() {
+        let _serial = DRIFT_LOCK.lock().await;
+        let (conn, _) = db_with_source(vec![1]).await;
+        let view = doubled_view(&conn).await;
+        let token = view.incarnation().unwrap().to_string();
+        let uri = view
+            .table()
+            .as_native()
+            .unwrap()
+            .dataset
+            .get()
+            .await
+            .unwrap()
+            .uri()
+            .to_string();
+
+        *DRIFT_TARGET.lock().unwrap() = Some(uri);
+        let refreshing =
+            tokio::spawn(async move { view.refresh().expect_incarnation(token).execute().await });
+        tokio::time::timeout(std::time::Duration::from_secs(30), DRIFT_PLANNED.notified())
+            .await
+            .expect("refresh never reached publication");
+
+        conn.drop_table("doubled", &[]).await.unwrap();
+        let replacement = doubled_view(&conn).await;
+        let replacement_token = replacement.incarnation().unwrap().to_string();
+        DRIFT_RELEASED.notify_one();
+
+        let result = refreshing.await.unwrap();
+        assert!(result.is_err(), "the stale refresh unexpectedly succeeded");
+        let reopened = conn.open_materialized_view("doubled").await.unwrap();
+        assert_eq!(reopened.incarnation(), Some(replacement_token.as_str()));
+        assert_eq!(read(reopened.table(), "twice").await, Vec::<i32>::new());
+    }
+
+    /// Replacing the schema metadata wholesale drops the token. A refresh
+    /// bound to the old token is refused for that reason, not as a
+    /// recreation; an unbound refresh mints the view a fresh one.
+    #[tokio::test]
+    async fn test_a_view_whose_metadata_was_replaced_starts_a_new_incarnation() {
+        let (conn, _, view) = refreshed_doubled(vec![1]).await;
+        let token = view.incarnation().unwrap().to_string();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            crate::materialized_view::DEFINITION_META_KEY.to_string(),
+            crate::materialized_view::definition_to_metadata(view.definition()).unwrap(),
+        );
+        view.table()
+            .as_native()
+            .unwrap()
+            .replace_schema_metadata(metadata)
+            .await
+            .unwrap();
+        assert_eq!(
+            conn.open_materialized_view("doubled")
+                .await
+                .unwrap()
+                .incarnation(),
+            None
+        );
+
+        let err = view
+            .refresh()
+            .expect_incarnation(&token)
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no incarnation token"), "{err}");
+
+        view.refresh().execute().await.unwrap();
+        let reopened = conn.open_materialized_view("doubled").await.unwrap();
+        assert!(reopened.incarnation().is_some());
+        assert_ne!(reopened.incarnation(), Some(token.as_str()));
+    }
+
     /// In-process refreshes of one view serialize: the loser of the race
     /// observes the winner's watermark instead of appending the same rows.
     #[tokio::test(flavor = "multi_thread")]
@@ -2528,7 +2767,7 @@ mod tests {
         let stale = view_native.dataset.get().await.unwrap().as_ref().clone();
         view.table().delete("x = 1").await.unwrap();
 
-        let err = stamp_watermark(view_native, stale, 99, 99).await;
+        let err = stamp_watermark(view_native, stale, 99, 99, None).await;
         assert!(err.is_err());
 
         let result = view.refresh().execute().await.unwrap();
