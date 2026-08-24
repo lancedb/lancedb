@@ -5053,7 +5053,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_offsets_analyze_plan_preserves_remote_metrics() {
+    async fn test_take_offsets_analyze_plan_delegates_to_remote() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/analyze_plan/");
@@ -5082,10 +5082,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(analyzed.contains("GlobalLimitExec"));
-        assert!(analyzed.contains("TakeRestoreExec"));
-        assert!(analyzed.contains("metrics=[unavailable: client-side operator]"));
-        assert!(analyzed.contains("Remote analyzed plan: worker metrics"));
+        assert_eq!(analyzed, "Remote analyzed plan: worker metrics");
     }
 
     #[tokio::test]
