@@ -409,6 +409,15 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = ())]
+    pub fn repair(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let resp = inner.repair().await.infer_error()?;
+            Ok(resp.purged_tables)
+        })
+    }
+
     // Namespace management methods
 
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]

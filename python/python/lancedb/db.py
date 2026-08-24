@@ -650,6 +650,16 @@ class DBConnection(EnforceOverrides):
             namespace_path = []
         raise NotImplementedError
 
+    def repair(self) -> List[str]:
+        """Repair the database by purging corrupted or empty table stubs across all namespaces.
+
+        Returns
+        -------
+        List[str]
+            A list of table names that were repaired.
+        """
+        raise NotImplementedError
+
     @property
     def uri(self) -> str:
         return self._uri
@@ -1359,6 +1369,10 @@ class LanceDBConnection(DBConnection):
         if namespace_path is None:
             namespace_path = []
         LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
+
+    @override
+    def repair(self) -> List[str]:
+        return LOOP.run(self._conn.repair())
 
     @override
     def rename_table(
@@ -2213,6 +2227,16 @@ class AsyncConnection(object):
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
+
+    async def repair(self) -> List[str]:
+        """Repair the database by purging corrupted or empty table stubs across all namespaces.
+
+        Returns
+        -------
+        List[str]
+            A list of table names that were repaired.
+        """
+        return await self._inner.repair()
 
     def job(self, job_id: str) -> AsyncJob:
         """An [AsyncJob][lancedb.job.AsyncJob] handle for a server-side job
