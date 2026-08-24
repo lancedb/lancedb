@@ -3873,6 +3873,7 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
+            and query.take_offsets is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -5759,7 +5760,23 @@ class AsyncTable:
 
     def _sync_query_to_async(
         self, query: Query
-    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
+    ) -> (
+        AsyncHybridQuery
+        | AsyncFTSQuery
+        | AsyncVectorQuery
+        | AsyncQuery
+        | AsyncTakeQuery
+    ):
+        if query.take_offsets is not None:
+            take_query = self.take_offsets(query.take_offsets)
+            if query.columns:
+                take_query = take_query.select(query.columns)
+            if query.use_lsm is not None:
+                take_query = take_query.use_lsm(query.use_lsm)
+            if query.with_row_id:
+                take_query = take_query.with_row_id()
+            return take_query
+
         async_query = self.query()
         if query.limit is not None:
             async_query = async_query.limit(query.limit)
@@ -5824,6 +5841,7 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
+            and query.take_offsets is None
         ):
             from lancedb.namespace import _execute_server_side_query
 

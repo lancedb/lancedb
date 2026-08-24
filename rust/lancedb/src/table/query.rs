@@ -90,7 +90,7 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     // pushing these down would silently ignore the user's setting. For use_lsm that
     // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
     // so a pushed-down query would return stale base-only data with no error.
-    if query.base().use_lsm.is_some() {
+    if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
     matches!(
@@ -133,6 +133,13 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if let AnyQuery::Query(request) = query
+        && let Some(offsets) = &request.take_offsets
+    {
+        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
+            .await;
+    }
+
     let query = match query {
         AnyQuery::VectorQuery(query) => query.clone(),
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),

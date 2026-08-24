@@ -1899,6 +1899,13 @@ def test_take_queries(tmp_path):
         17,
     ]
 
+    # Converting a take builder to its serializable query representation must
+    # retain occurrence metadata and execute with the same multiplicity.
+    query = table.take_offsets([5, 2, 5, 17]).select(["idx"]).to_query_object()
+    assert query.take_offsets == [5, 2, 5, 17]
+    converted = table._execute_query(query).read_all()
+    assert sorted(converted["idx"].to_pylist()) == [2, 5, 5, 17]
+
     # Take by row id
     assert list(
         sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())

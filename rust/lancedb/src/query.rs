@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
@@ -18,13 +19,13 @@ use datafusion_execution::TaskContext;
 use datafusion_expr::{Expr, col, lit};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
     coalesce_partitions::CoalescePartitionsExec,
     execution_plan::{Boundedness, EmissionType},
     limit::GlobalLimitExec,
     stream::RecordBatchStreamAdapter,
 };
-use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
 /// Re-export Lance ColumnOrdering type for use in query ordering
 pub use lance::dataset::scanner::ColumnOrdering;
@@ -837,6 +838,14 @@ pub struct QueryRequest {
     /// Offset of the query.
     pub offset: Option<usize>,
 
+    /// Dataset offsets whose occurrence multiplicity must be restored after
+    /// executing the physical lookup represented by this request.
+    ///
+    /// This is client-side execution metadata used when a [`TakeQuery`] is
+    /// converted into a request. It is not sent to remote services.
+    #[doc(hidden)]
+    pub take_offsets: Option<Vec<u64>>,
+
     /// Apply filter to the returned rows.
     pub filter: Option<QueryFilter>,
 
@@ -905,6 +914,7 @@ impl Default for QueryRequest {
         Self {
             limit: None,
             offset: None,
+            take_offsets: None,
             filter: None,
             filter_error: None,
             full_text_search: None,
@@ -1530,9 +1540,18 @@ impl HasQuery for VectorQuery {
     }
 }
 
-fn restore_take_batch(
+fn take_occurrences(offsets: &[u64]) -> HashMap<u64, usize> {
+    let mut occurrences = HashMap::with_capacity(offsets.len());
+    for offset in offsets {
+        *occurrences.entry(*offset).or_insert(0) += 1;
+    }
+    occurrences
+}
+
+fn restore_take_batch_with_occurrences(
     batch: RecordBatch,
     offsets: &[u64],
+    occurrences: &HashMap<u64, usize>,
     ordering_column: &str,
     drop_ordering_column: bool,
     preserve_order: bool,
@@ -1585,15 +1604,11 @@ fn restore_take_batch(
                 .filter_map(|offset| ordering.get(offset).copied()),
         );
     } else {
-        let mut occurrences = HashMap::with_capacity(offsets.len());
-        for offset in offsets {
-            *occurrences.entry(*offset).or_insert(0) += 1;
-        }
         // Public take queries do not guarantee output order. Preserve the lookup's
         // existing order and only restore the multiplicity of each matching row.
         for (index, offset) in actual_offsets.iter().enumerate() {
-            if let Some(count) = occurrences.remove(offset) {
-                desired_order.extend(std::iter::repeat_n(index as u64, count));
+            if let Some(count) = occurrences.get(offset) {
+                desired_order.extend(std::iter::repeat_n(index as u64, *count));
             }
         }
     }
@@ -1616,16 +1631,36 @@ fn restore_take_batch(
     Ok(ordered_batch)
 }
 
+#[cfg(test)]
+fn restore_take_batch(
+    batch: RecordBatch,
+    offsets: &[u64],
+    ordering_column: &str,
+    drop_ordering_column: bool,
+    preserve_order: bool,
+) -> Result<RecordBatch> {
+    restore_take_batch_with_occurrences(
+        batch,
+        offsets,
+        &take_occurrences(offsets),
+        ordering_column,
+        drop_ordering_column,
+        preserve_order,
+    )
+}
+
 /// Restores the logical offset occurrence sequence above the physical lookup plan.
 ///
-/// The lookup plan returns each matching row at most once. This operator collects
-/// those rows, expands duplicates, and emits one partition. It preserves lookup order
-/// unless the caller explicitly requests offset order. Pagination must remain above
-/// this operator so it applies to occurrences.
+/// The lookup plan returns each matching row at most once. For ordinary unordered
+/// takes this operator expands each input batch incrementally and preserves the
+/// lookup's partitioning. The explicitly ordered reader path collects one coalesced
+/// input before restoring requested order. Pagination must remain above this operator
+/// so it applies to occurrences.
 #[derive(Debug)]
 struct TakeRestoreExec {
     input: Arc<dyn ExecutionPlan>,
     offsets: Vec<u64>,
+    occurrences: Arc<HashMap<u64, usize>>,
     ordering_column: String,
     drop_ordering_column: bool,
     preserve_order: bool,
@@ -1648,15 +1683,26 @@ impl TakeRestoreExec {
         } else {
             input.schema()
         };
+        let partition_count = if preserve_order {
+            1
+        } else {
+            input.output_partitioning().partition_count()
+        };
+        let emission_type = if preserve_order {
+            EmissionType::Final
+        } else {
+            EmissionType::Incremental
+        };
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(schema.clone()),
-            Partitioning::UnknownPartitioning(1),
-            EmissionType::Final,
+            Partitioning::UnknownPartitioning(partition_count),
+            emission_type,
             Boundedness::Bounded,
         ));
 
         Ok(Self {
             input,
+            occurrences: Arc::new(take_occurrences(&offsets)),
             offsets,
             ordering_column,
             drop_ordering_column,
@@ -1695,7 +1741,7 @@ impl ExecutionPlan for TakeRestoreExec {
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
-        vec![false]
+        vec![!self.preserve_order]
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
@@ -1729,35 +1775,55 @@ impl ExecutionPlan for TakeRestoreExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DataFusionResult<datafusion_physical_plan::SendableRecordBatchStream> {
-        if partition != 0 {
+        let partition_count = self.input.output_partitioning().partition_count();
+        if partition >= partition_count || (self.preserve_order && partition != 0) {
             return Err(DataFusionError::Internal(format!(
-                "TakeRestoreExec only supports partition 0, got {partition}"
+                "TakeRestoreExec cannot execute partition {partition}; input has {partition_count} partitions"
             )));
         }
 
-        let input = self.input.execute(0, context)?;
-        let input_schema = input.schema();
+        let input = self.input.execute(partition, context)?;
         let output_schema = self.schema.clone();
         let offsets = self.offsets.clone();
+        let occurrences = self.occurrences.clone();
         let ordering_column = self.ordering_column.clone();
         let drop_ordering_column = self.drop_ordering_column;
         let preserve_order = self.preserve_order;
-        let stream = stream::once(async move {
-            let batches = input.try_collect::<Vec<_>>().await?;
-            let batch = if batches.is_empty() {
-                RecordBatch::new_empty(input_schema.clone())
+        let stream: Pin<Box<dyn futures::Stream<Item = DataFusionResult<RecordBatch>> + Send>> =
+            if preserve_order {
+                let input_schema = input.schema();
+                Box::pin(stream::once(async move {
+                    let batches = input.try_collect::<Vec<_>>().await?;
+                    let batch = if batches.is_empty() {
+                        RecordBatch::new_empty(input_schema.clone())
+                    } else {
+                        concat_batches(&input_schema, &batches)?
+                    };
+                    restore_take_batch_with_occurrences(
+                        batch,
+                        &offsets,
+                        &occurrences,
+                        &ordering_column,
+                        drop_ordering_column,
+                        true,
+                    )
+                    .map_err(|error| DataFusionError::External(Box::new(error)))
+                }))
             } else {
-                concat_batches(&input_schema, &batches)?
+                Box::pin(input.map(move |batch| {
+                    batch.and_then(|batch| {
+                        restore_take_batch_with_occurrences(
+                            batch,
+                            &offsets,
+                            &occurrences,
+                            &ordering_column,
+                            drop_ordering_column,
+                            false,
+                        )
+                        .map_err(|error| DataFusionError::External(Box::new(error)))
+                    })
+                }))
             };
-            restore_take_batch(
-                batch,
-                &offsets,
-                &ordering_column,
-                drop_ordering_column,
-                preserve_order,
-            )
-            .map_err(|error| DataFusionError::External(Box::new(error)))
-        });
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             output_schema,
@@ -1808,6 +1874,7 @@ impl TakeQuery {
                 filter: Some(QueryFilter::Datafusion(
                     col("_rowoffset").in_list(in_list, false),
                 )),
+                take_offsets: Some(offsets.clone()),
                 ..Default::default()
             },
             offsets: Some(offsets),
@@ -1840,15 +1907,20 @@ impl TakeQuery {
         self
     }
 
-    async fn request_with_row_offset(&self) -> Result<(QueryRequest, String, bool)> {
+    async fn request_with_row_offset(
+        parent: &dyn BaseTable,
+        request: &QueryRequest,
+    ) -> Result<(QueryRequest, String, bool)> {
         const ROW_OFFSET: &str = "_rowoffset";
         const INTERNAL_ROW_OFFSET: &str = "__lancedb_take_row_offset";
 
-        let mut request = self.request.clone();
+        let mut request = request.clone();
+        // The physical lookup must not recursively restore occurrences. The
+        // wrapper above this request owns that logical operation.
+        request.take_offsets = None;
         let (ordering_column, drop_ordering_column) = match &mut request.select {
             Select::All => {
-                let mut columns = self
-                    .parent
+                let mut columns = parent
                     .schema()
                     .await?
                     .fields()
@@ -1889,10 +1961,11 @@ impl TakeQuery {
     }
 
     async fn prepare_offsets_lookup(
-        &self,
+        parent: &dyn BaseTable,
+        request: &QueryRequest,
     ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
         let (mut request, ordering_column, drop_ordering_column) =
-            self.request_with_row_offset().await?;
+            Self::request_with_row_offset(parent, request).await?;
         // The lookup operates on distinct physical rows. Pagination is a logical
         // operation over occurrences and must be applied only after restoration.
         let output_offset = request.offset.take().unwrap_or_default();
@@ -1916,7 +1989,11 @@ impl TakeQuery {
         output_limit: Option<usize>,
         preserve_order: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let lookup = Arc::new(CoalescePartitionsExec::new(lookup));
+        let lookup = if preserve_order {
+            Arc::new(CoalescePartitionsExec::new(lookup)) as Arc<dyn ExecutionPlan>
+        } else {
+            lookup
+        };
         let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
             lookup,
             offsets.to_vec(),
@@ -1941,6 +2018,7 @@ impl TakeQuery {
         occurrence_count: usize,
         output_offset: usize,
         output_limit: Option<usize>,
+        preserve_order: bool,
     ) -> String {
         fn indent(plan: &str, spaces: usize) -> String {
             let indentation = " ".repeat(spaces);
@@ -1950,10 +2028,17 @@ impl TakeQuery {
                 .join("\n")
         }
 
-        let restored = format!(
-            "TakeRestoreExec: occurrences={occurrence_count}\n  CoalescePartitionsExec\n{}",
-            indent(lookup, 4)
-        );
+        let restored = if preserve_order {
+            format!(
+                "TakeRestoreExec: occurrences={occurrence_count}\n  CoalescePartitionsExec\n{}",
+                indent(lookup, 4)
+            )
+        } else {
+            format!(
+                "TakeRestoreExec: occurrences={occurrence_count}\n{}",
+                indent(lookup, 2)
+            )
+        };
 
         if output_offset > 0 || output_limit.is_some() {
             let fetch = output_limit
@@ -1973,24 +2058,14 @@ impl TakeQuery {
         offsets: &[u64],
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
-            self.prepare_offsets_lookup().await?;
-        let query = AnyQuery::Query(request);
-        let lookup = self
-            .parent
-            .clone()
-            .create_plan(&query, options.without_output_batch_length_limit())
-            .await?;
-
-        Self::wrap_offsets_plan(
-            lookup,
+        create_take_offsets_plan(
+            self.parent.as_ref(),
+            &self.request,
             offsets,
-            ordering_column,
-            drop_ordering_column,
-            output_offset,
-            output_limit,
+            options,
             self.preserve_order,
         )
+        .await
     }
 
     /// Convert the `TakeQuery` into a `QueryRequest`.
@@ -2037,6 +2112,63 @@ impl TakeQuery {
     }
 }
 
+pub(crate) async fn create_take_offsets_plan(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+    offsets: &[u64],
+    options: QueryExecutionOptions,
+    preserve_order: bool,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let (request, ordering_column, drop_ordering_column, output_offset, output_limit) =
+        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let lookup_options = if preserve_order {
+        options.without_output_batch_length_limit()
+    } else {
+        options
+    };
+    let lookup = parent
+        .create_plan(&AnyQuery::Query(request), lookup_options)
+        .await?;
+
+    TakeQuery::wrap_offsets_plan(
+        lookup,
+        offsets,
+        ordering_column,
+        drop_ordering_column,
+        output_offset,
+        output_limit,
+        preserve_order,
+    )
+}
+
+pub(crate) async fn explain_take_offsets_plan(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+    offsets: &[u64],
+    verbose: bool,
+) -> Result<String> {
+    let (request, _, _, output_offset, output_limit) =
+        TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    let lookup = parent
+        .explain_plan(&AnyQuery::Query(request), verbose)
+        .await?;
+    Ok(TakeQuery::wrap_offsets_explanation(
+        &lookup,
+        offsets.len(),
+        output_offset,
+        output_limit,
+        false,
+    ))
+}
+
+pub(crate) async fn prepare_take_offsets_request(
+    parent: &dyn BaseTable,
+    request: &QueryRequest,
+) -> Result<QueryRequest> {
+    let (request, _, _, _, _) = TakeQuery::prepare_offsets_lookup(parent, request).await?;
+    Ok(request)
+}
+
 impl HasQuery for TakeQuery {
     fn mut_query(&mut self) -> &mut QueryRequest {
         &mut self.request
@@ -2078,7 +2210,7 @@ impl ExecutableQuery for TakeQuery {
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
         if let Some(offsets) = &self.offsets {
             let (request, _, _, output_offset, output_limit) =
-                self.prepare_offsets_lookup().await?;
+                Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
             // Ask the backend to explain only the distinct-row lookup. This keeps
             // remote explanation non-executing while still showing the client-side
             // operators that create_plan and execution place above that lookup.
@@ -2091,6 +2223,7 @@ impl ExecutableQuery for TakeQuery {
                 offsets.len(),
                 output_offset,
                 output_limit,
+                self.preserve_order,
             ));
         }
 
@@ -2101,7 +2234,8 @@ impl ExecutableQuery for TakeQuery {
     async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
         if self.offsets.is_some() {
             if self.parent.analyze_plan_is_remote() {
-                let (request, _, _, _, _) = self.prepare_offsets_lookup().await?;
+                let (request, _, _, _, _) =
+                    Self::prepare_offsets_lookup(self.parent.as_ref(), &self.request).await?;
                 // Remote analysis is owned by the service. The current wire
                 // request represents only the distinct-row lookup, so return
                 // the service report unchanged instead of fabricating metrics
@@ -2135,6 +2269,7 @@ mod tests {
         types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
+    use datafusion_physical_plan::display::DisplayableExecutionPlan;
     use futures::{StreamExt, TryStreamExt};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use rand::seq::IndexedRandom;
@@ -3175,6 +3310,47 @@ mod tests {
         assert_eq!(ids, vec![1, 5, 5, 17]);
     }
 
+    #[tokio::test]
+    async fn test_take_offsets_plan_is_incremental() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let plan = table
+            .take_offsets(vec![5, 1, 17])
+            .create_plan(QueryExecutionOptions {
+                max_batch_length: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(plan.properties().emission_type, EmissionType::Incremental);
+        let displayed = DisplayableExecutionPlan::new(plan.as_ref())
+            .indent(false)
+            .to_string();
+        assert!(displayed.contains("TakeRestoreExec"));
+        assert!(!displayed.contains("CoalescePartitionsExec"));
+    }
+
+    #[tokio::test]
+    async fn test_take_into_request_preserves_duplicate_multiplicity() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let request = table.take_offsets(vec![5, 5]).into_request();
+        assert_eq!(request.take_offsets, Some(vec![5, 5]));
+
+        let batches = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    }
+
     #[test]
     fn test_restore_take_batch_only_reorders_when_requested() {
         let batch = RecordBatch::try_from_iter([
@@ -3303,12 +3479,12 @@ mod tests {
         let explained = take.explain_plan(false).await.unwrap();
         assert!(explained.contains("GlobalLimitExec"));
         assert!(explained.contains("TakeRestoreExec"));
-        assert!(explained.contains("CoalescePartitionsExec"));
+        assert!(!explained.contains("CoalescePartitionsExec"));
 
         let analyzed = take.analyze_plan().await.unwrap();
         assert!(analyzed.contains("GlobalLimitExec"));
         assert!(analyzed.contains("TakeRestoreExec"));
-        assert!(analyzed.contains("CoalescePartitionsExec"));
+        assert!(!analyzed.contains("CoalescePartitionsExec"));
     }
 
     #[tokio::test]

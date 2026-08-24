@@ -39,7 +39,8 @@ use crate::table::{
 use crate::table::{AnyQuery, Filter, Predicate, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
-    resolve_arrow_field_path, supported_btree_data_type, supported_vector_data_type,
+    MaxBatchLengthStream, TimeoutStream, resolve_arrow_field_path, supported_btree_data_type,
+    supported_vector_data_type,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -2209,6 +2210,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            return crate::query::create_take_offsets_plan(self, request, offsets, options, false)
+                .await;
+        }
+
         let streams = self.execute_query(query, &options).await?;
         if streams.len() == 1 {
             let stream = streams.into_iter().next().unwrap();
@@ -2227,6 +2235,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            let plan = crate::query::create_take_offsets_plan(
+                self,
+                request,
+                offsets,
+                options.clone(),
+                false,
+            )
+            .await?;
+            let inner = execute_plan(plan, Default::default())?;
+            let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
+            let inner = if let Some(timeout) = options.timeout {
+                TimeoutStream::new_boxed(inner, timeout)
+            } else {
+                inner
+            };
+            return Ok(DatasetRecordBatchStream::new(inner));
+        }
+
         let streams = self.execute_query(query, &options).await?;
 
         if streams.len() == 1 {
@@ -2264,6 +2293,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
+        if let AnyQuery::Query(request) = query
+            && let Some(offsets) = &request.take_offsets
+        {
+            return crate::query::explain_take_offsets_plan(self, request, offsets, verbose).await;
+        }
+
         let base_request = self.post_read(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
@@ -2311,6 +2346,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String> {
+        let prepared_query = if let AnyQuery::Query(request) = query
+            && request.take_offsets.is_some()
+        {
+            Some(AnyQuery::Query(
+                crate::query::prepare_take_offsets_request(self, request).await?,
+            ))
+        } else {
+            None
+        };
+        let query = prepared_query.as_ref().unwrap_or(query);
+
         let mut request = self.post_read(&format!("/v1/table/{}/analyze_plan/", self.identifier));
 
         if options.analyze_plan_distributed_metrics != AnalyzePlanDistributedMetrics::Aggregate {
@@ -3263,7 +3309,7 @@ mod tests {
     use arrow_array::{BinaryArray, Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
-    use futures::{StreamExt, TryFutureExt, future::BoxFuture};
+    use futures::{StreamExt, TryFutureExt, TryStreamExt, future::BoxFuture};
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
@@ -5069,8 +5115,57 @@ mod tests {
 
         assert!(explained.contains("GlobalLimitExec"));
         assert!(explained.contains("TakeRestoreExec"));
-        assert!(explained.contains("CoalescePartitionsExec"));
+        assert!(!explained.contains("CoalescePartitionsExec"));
         assert!(explained.contains("RemoteLookupExec"));
+    }
+
+    #[tokio::test]
+    async fn test_converted_take_request_restores_remote_occurrences() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["columns"], json!(["id", "_rowoffset"]));
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("_rowoffset", DataType::UInt64, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![5])),
+                    Arc::new(arrow_array::UInt64Array::from(vec![5])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let request = table
+            .take_offsets(vec![5, 5])
+            .select(crate::query::Select::columns(&["id"]))
+            .into_request();
+        let batches = table
+            .base_table()
+            .query(&AnyQuery::Query(request), QueryExecutionOptions::default())
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.schema().fields().len() == 1)
+        );
     }
 
     #[tokio::test]

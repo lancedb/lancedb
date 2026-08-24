@@ -109,6 +109,7 @@ def _query_is_plain_scan(query: Query) -> bool:
     return (
         query.vector is None
         and query.full_text_query is None
+        and query.take_offsets is None
         and not query.postfilter
         and not query.order_by
     )
@@ -775,6 +776,10 @@ class Query(pydantic.BaseModel):
     # offset to start fetching results from
     offset: Optional[int] = None
 
+    # Dataset offsets whose duplicate occurrences must be restored after lookup.
+    # This is populated when a take query is converted to this serializable form.
+    take_offsets: Optional[List[int]] = None
+
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
@@ -796,6 +801,7 @@ class Query(pydantic.BaseModel):
         query = cls()
         query.limit = req.limit
         query.offset = req.offset
+        query.take_offsets = req.take_offsets
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
