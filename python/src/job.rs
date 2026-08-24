@@ -13,11 +13,64 @@ pub struct Job {
     inner: Arc<lancedb::Job>,
 }
 
+/// Python bridge for a typed remote Function registration job.
+///
+/// The public Python layer decodes the canonical JSON returned by `wait`
+/// into its immutable `FunctionVersion` model.
+#[pyclass]
+pub struct FunctionJob {
+    inner: Arc<lancedb::Job<lancedb::function::FunctionVersion>>,
+}
+
+impl FunctionJob {
+    pub(crate) fn new(inner: lancedb::Job<lancedb::function::FunctionVersion>) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
 impl Job {
     pub(crate) fn new(inner: lancedb::Job) -> Self {
         Self {
             inner: Arc::new(inner),
         }
+    }
+}
+
+#[pymethods]
+impl FunctionJob {
+    #[getter]
+    pub fn id(&self) -> Option<String> {
+        self.inner.id().map(str::to_string)
+    }
+
+    pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.status().await.infer_error() },
+        )
+    }
+
+    pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .wait()
+                .await
+                .infer_error()?
+                .to_canonical_json()
+                .infer_error()
+        })
+    }
+
+    pub fn cancel(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.cancel().await.infer_error()?;
+            Ok(())
+        })
     }
 }
 
@@ -40,7 +93,7 @@ impl Job {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner.wait().await.infer_error()?;
-            Ok(())
+            Ok(None::<()>)
         })
     }
 

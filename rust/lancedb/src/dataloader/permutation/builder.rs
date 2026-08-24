@@ -160,9 +160,10 @@ impl PermutationBuilder {
         self
     }
 
-    async fn sort_by_split_id(
+    async fn sort_by_column(
         &self,
         data: SendableRecordBatchStream,
+        column: &str,
     ) -> Result<SendableRecordBatchStream> {
         let memory_limit = std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT")
             .unwrap_or_else(|_| DEFAULT_MEMORY_LIMIT.to_string())
@@ -188,25 +189,26 @@ impl PermutationBuilder {
         let df = ctx
             .read_one_shot(data.into_df_stream())
             .map_err(|e| Error::Other {
-                message: format!("Failed to setup sort by split id: {}", e),
+                message: format!("Failed to setup sort by {}: {}", column, e),
                 source: Some(e.into()),
             })?;
         let df_stream = df
-            .sort_by(vec![col(SPLIT_ID_COLUMN)])
+            .sort_by(vec![col(column)])
             .map_err(|e| Error::Other {
-                message: format!("Failed to plan sort by split id: {}", e),
+                message: format!("Failed to plan sort by {}: {}", column, e),
                 source: Some(e.into()),
             })?
             .execute_stream()
             .await
             .map_err(|e| Error::Other {
-                message: format!("Failed to sort by split id: {}", e),
+                message: format!("Failed to sort by {}: {}", column, e),
                 source: Some(e.into()),
             })?;
 
+        let column = column.to_string();
         let schema = df_stream.schema();
-        let stream = df_stream.map_err(|e| Error::Other {
-            message: format!("Failed to execute sort by split id: {}", e),
+        let stream = df_stream.map_err(move |e| Error::Other {
+            message: format!("Failed to execute sort by {}: {}", column, e),
             source: Some(e.into()),
         });
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
@@ -238,7 +240,25 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
-        // First pass, apply filter and load row ids
+        // Unflushed rows have no row id, so a permutation cannot address them.
+        match self.base_table.base_table().get_lsm_write_spec().await {
+            Ok(Some(_)) => {
+                return Err(Error::NotSupported {
+                    message: "the data loader does not support tables with an LSM write \
+                              spec: rows that have not been flushed to the base table \
+                              have no row id, so a permutation cannot reference them"
+                        .to_string(),
+                });
+            }
+            Ok(None) => {}
+            // No LSM write path means no spec.
+            Err(Error::NotSupported { .. }) => {}
+            Err(err) => return Err(err),
+        }
+
+        // First pass, apply filter and load row ids.  `Shuffler` permutes positions, so
+        // every rank must scan the rows in the same order to build the same permutation.
+        // TODO: pin the version resolved here; remote does not implement Lazy.
         let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
@@ -263,6 +283,12 @@ impl PermutationBuilder {
 
         // Apply splits
         let rows = rows.execute().await?;
+        // Splits are assigned by position, so the scan has to arrive in a fixed order.
+        let rows = if self.base_table.base_table().scan_order_is_deterministic() {
+            rows
+        } else {
+            self.sort_by_column(rows, ROW_ID).await?
+        };
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested
@@ -284,7 +310,7 @@ impl PermutationBuilder {
         needs_sort |= !matches!(self.config.shuffle_strategy, ShuffleStrategy::None);
 
         let sorted = if needs_sort {
-            self.sort_by_split_id(shuffled).await?
+            self.sort_by_column(shuffled, SPLIT_ID_COLUMN).await?
         } else {
             shuffled
         };
@@ -368,6 +394,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_native_scan_order_is_deterministic() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(10), BatchCount::from(1));
+        let table = db.create_table("t", data).execute().await.unwrap();
+
+        // Native tables skip the canonicalizing sort; remote does not.
+        assert!(table.base_table().scan_order_is_deterministic());
+    }
+
+    #[tokio::test]
     async fn test_permutation_builder() {
         let temp_dir = tempfile::tempdir().unwrap();
 
@@ -414,6 +456,50 @@ mod tests {
                 .await
                 .unwrap(),
             283
+        );
+    }
+
+    /// Rows that have not been flushed to the base table have no row id, so a
+    /// permutation cannot reference them.  Reading the base table alone would drop
+    /// them from training without saying so, so the table is refused instead.
+    #[tokio::test]
+    async fn test_permutation_rejects_lsm_write_spec() {
+        use crate::table::LsmWriteSpec;
+        use arrow_array::{Int32Array, RecordBatchIterator};
+        use arrow_schema::{DataType, Field, Schema};
+
+        // MemWAL needs a real dataset directory and a non-nullable primary key.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("idx", DataType::Int32, false)]));
+        let batch = arrow_array::RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let table = db.create_table("tbl", reader).execute().await.unwrap();
+
+        // Without a spec the build succeeds.
+        PermutationBuilder::new(table.clone())
+            .build()
+            .await
+            .unwrap();
+
+        table.set_unenforced_primary_key(["idx"]).await.unwrap();
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let err = PermutationBuilder::new(table).build().await.unwrap_err();
+        assert!(
+            err.to_string().contains("LSM write spec"),
+            "expected the pre-check to refuse the table, got: {err}"
         );
     }
 }

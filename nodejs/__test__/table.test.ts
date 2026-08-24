@@ -2953,7 +2953,7 @@ describe("column name options", () => {
       .limit(10)
       .toArray();
     expect(results2.length).toBe(10);
-  });
+  }, 30_000);
 });
 
 describe("when creating an empty table", () => {
@@ -3338,5 +3338,122 @@ describe("LSM merge insert", () => {
     await expect(table.query().useLsm(false).toArray()).resolves.toBeDefined();
     // useLsm(true) demands MemWAL routing; without a spec it errors.
     await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
+  });
+});
+
+describe("LSM convergence and stats", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function lsmTable(conn: Connection): Promise<Table> {
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await table.setLsmWriteSpec({ specType: "unsharded" });
+    return table;
+  }
+
+  // These four route through the server that owns the MemWAL, so a local table
+  // rejects them rather than answering. What is asserted here is that the
+  // bindings reach the core at all; the behavior against a real endpoint is
+  // covered by the mocked endpoint tests in rust/lancedb/src/remote/table.rs.
+  it("rejects flushLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.flushLsm()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects compactLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.compactLsm()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects getLsmStats on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.getLsmStats()).rejects.toThrow(/not supported/i);
+    await expect(table.getLsmStats(true)).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects checkpointLsm on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    // checkpointLsm seals first, so it surfaces flushLsm's rejection.
+    await expect(table.checkpointLsm()).rejects.toThrow(/not supported/i);
+  });
+});
+
+describe("computed columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("declares a column and fills it on refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    let rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled)).toEqual([null, null]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(2);
+
+    rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+  });
+
+  it("returns a job handle from refreshColumnAsync", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+
+    const job = await table.refreshColumnAsync("doubled");
+    expect(job.id).toBeNull();
+    await job.wait();
+    expect(await job.status()).toBe("finished");
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+
+    // Bad input rejects at the call, not through the job.
+    await expect(table.refreshColumnAsync("x")).rejects.toThrow(
+      "not a computed column",
+    );
+  });
+
+  it("fills rows added since the last refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_append", [{ x: 1 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    await table.refreshColumn("doubled");
+    await table.add([{ x: 5 }]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(1);
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
   });
 });

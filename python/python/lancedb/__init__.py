@@ -12,6 +12,7 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import LsmWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -21,6 +22,21 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector, BlobType
 from .job import AsyncJob, Job
+from .functions import (
+    FunctionArtifactRequest as FunctionArtifactRequest,
+    FunctionApplication as FunctionApplication,
+    FunctionBinding as FunctionBinding,
+    FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionVersion as FunctionVersion,
+    PythonRuntimeSpec as PythonRuntimeSpec,
+    UdfDefinition as UdfDefinition,
+    udf as udf,
+)
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
+)
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -495,6 +511,9 @@ async def connect_async(
 
 
 __all__ = [
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
     "connect",
     "connect_async",
     "tokenize",
@@ -518,6 +537,7 @@ __all__ = [
     "Job",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "LsmWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

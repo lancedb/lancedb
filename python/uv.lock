@@ -2003,7 +2003,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=16" },
     { name = "pyarrow", marker = "extra == 'tests'", specifier = "<25" },
     { name = "pyarrow-stubs", marker = "extra == 'tests'", specifier = ">=16.0" },
-    { name = "pydantic", specifier = ">=1.10" },
+    { name = "pydantic", specifier = ">=2.7.4,<3" },
     { name = "pylance", marker = "extra == 'pylance'", specifier = ">=5.0.0b5" },
     { name = "pylance", marker = "extra == 'tests'", specifier = "==9.0.0rc1" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.350" },

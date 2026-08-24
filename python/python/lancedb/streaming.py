@@ -66,7 +66,7 @@ class StreamingDataset(IterableDataset):
 
     Internally ``__iter__`` runs a two-stage pipeline:
 
-    - **Stage 1 (I/O)**: one thread pool with ``num_splits * prefetch_batches``
+    - **Stage 1 (I/O)**: one thread pool with ``num_splits * io_queue_depth``
       workers fetches raw ``RecordBatch`` objects from LanceDB in parallel
       across all splits and places them in a per-split raw-batch queue.
     - **Stage 2 (transform)**: a second thread pool with
@@ -109,11 +109,11 @@ class StreamingDataset(IterableDataset):
         call.  Larger values amortise per-request overhead (critical on object
         storage) at the cost of higher memory usage per split buffer.  Defaults
         to ``DEFAULT_READ_BATCH_SIZE`` (64).
-    prefetch_batches:
+    io_queue_depth:
         Number of I/O batches to keep in flight per split.  Higher values
         overlap storage latency with transform and training compute at the cost
-        of more memory and threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
-        (4).
+        of more memory and threads.  Must be greater than zero.  Defaults to
+        ``DEFAULT_PREFETCH_BATCHES`` (4).
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -213,6 +213,16 @@ class StreamingDataset(IterableDataset):
         Prefer the ``filter`` parameter when bad rows can be expressed as a
         SQL predicate (e.g. ``"col IS NOT NULL"``) — filtering happens before
         splits are built, so every guarantee is fully preserved.
+    transform_queue_depth:
+        Number of transform-result batches to buffer per split in the
+        post-transform queue before backpressure is applied to the transform
+        stage.  When the combined count of in-flight transform futures and
+        already-buffered rows for a split reaches
+        ``transform_queue_depth * read_batch_size``, no new transforms are
+        submitted for that split until the consumer catches up.  Useful for
+        capping peak memory when the consumer (e.g. a GPU training step) is
+        slower than the transform stage.  Must be greater than zero.
+        ``None`` (the default) imposes no limit.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -232,7 +242,7 @@ class StreamingDataset(IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         read_batch_size: int = DEFAULT_READ_BATCH_SIZE,
-        prefetch_batches: int = DEFAULT_PREFETCH_BATCHES,
+        io_queue_depth: int = DEFAULT_PREFETCH_BATCHES,
         columns: Optional[list[str]] = None,
         shuffle_clump_size: Optional[int] = None,
         filter: Optional[str] = None,
@@ -243,10 +253,19 @@ class StreamingDataset(IterableDataset):
         pad_id: Optional[int] = None,
         blocks_per_epoch: Optional[Union[int, Literal["auto"]]] = None,
         on_transform_error: Union[str, Callable[[Exception], bool]] = "raise",
+        transform_queue_depth: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
+        # Deprecated; use io_queue_depth instead.
+        prefetch_batches: Optional[int] = None,
     ):
         super().__init__()
+        if prefetch_batches is not None:
+            logger.warning(
+                "prefetch_batches is deprecated and will be removed in a future "
+                "version; use io_queue_depth instead"
+            )
+            io_queue_depth = prefetch_batches
         if num_splits is None:
             num_splits = world_size
         if shuffle_seed is None:
@@ -256,6 +275,8 @@ class StreamingDataset(IterableDataset):
                 f"num_splits ({num_splits}) must be divisible by "
                 f"world_size ({world_size})"
             )
+        if io_queue_depth <= 0:
+            raise ValueError("io_queue_depth must be greater than 0")
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
         if pack_sequences is not None:
@@ -314,6 +335,8 @@ class StreamingDataset(IterableDataset):
                 "on_transform_error must be 'raise', 'skip', 'warn', or a "
                 f"callable, got {on_transform_error!r}"
             )
+        if transform_queue_depth is not None and transform_queue_depth <= 0:
+            raise ValueError("transform_queue_depth must be greater than 0")
 
         self._table = table
         self._num_splits = num_splits
@@ -323,7 +346,7 @@ class StreamingDataset(IterableDataset):
         self._rank = rank
         self._world_size = world_size
         self._read_batch_size = read_batch_size
-        self._prefetch_batches = prefetch_batches
+        self._io_queue_depth = io_queue_depth
         self._columns = columns
         self._shuffle_clump_size = shuffle_clump_size
         self._filter = filter
@@ -334,6 +357,7 @@ class StreamingDataset(IterableDataset):
         self._pad_id = pad_id
         self._blocks_per_epoch = blocks_per_epoch
         self._on_transform_error = on_transform_error
+        self._transform_queue_depth = transform_queue_depth
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
 
@@ -539,7 +563,7 @@ class StreamingDataset(IterableDataset):
         pos_consumed = list(initial_positions)
 
         batch_size = self._read_batch_size
-        max_prefetch = self._prefetch_batches
+        io_queue_depth = self._io_queue_depth
         transform_workers = (
             self._transform_parallelism
             if self._transform_parallelism is not None
@@ -550,7 +574,7 @@ class StreamingDataset(IterableDataset):
             # Packing consumes raw token lists, one per document.
             def arrow_tokens(batch: pa.RecordBatch) -> list[list[int]]:
                 token_column = batch.column(0)
-                if token_column.null_count or token_column.values.null_count:
+                if token_column.null_count or token_column.flatten().null_count:
                     raise ValueError(
                         "pack_sequences does not support null token lists or values"
                     )
@@ -563,6 +587,13 @@ class StreamingDataset(IterableDataset):
                 if self._transform is not None
                 else Transforms.arrow2python
             )
+        # None means no limit; otherwise cap rows per split to
+        # transform_queue_depth batches worth (including in-flight transforms).
+        max_cooked_rows = (
+            self._transform_queue_depth * batch_size
+            if self._transform_queue_depth is not None
+            else None
+        )
 
         # Per-split pipeline state.  Batches are paired with the absolute
         # permutation position of their first row so that skipped rows can be
@@ -598,7 +629,9 @@ class StreamingDataset(IterableDataset):
             io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
 
         def _fill_io(i: int) -> None:
-            while len(io_pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
+            while (
+                len(io_pending[i]) < io_queue_depth and fetch_head[i] < split_sizes[i]
+            ):
                 _submit_io(i)
 
         def _drain_io(i: int) -> None:
@@ -676,7 +709,19 @@ class StreamingDataset(IterableDataset):
 
         def _try_submit_tx(i: int) -> None:
             """Submit transforms for raw_batches[i] up to available capacity."""
-            while raw_batches[i] and tx_semaphore.acquire(blocking=False):
+            while raw_batches[i]:
+                # Backpressure: only submit a new transform when there is room
+                # for a full batch in the post-transform queue.  Checking for
+                # a full batch prevents submitting a transform that would
+                # overflow the limit mid-batch (e.g. 990 rows queued with a
+                # capacity of 1000 and a batch_size of 128 must wait until
+                # 128 rows have been consumed, not just 1).
+                if max_cooked_rows is not None:
+                    in_pipeline = len(cooked[i]) + len(tx_pending[i]) * batch_size
+                    if in_pipeline + batch_size > max_cooked_rows:
+                        break
+                if not tx_semaphore.acquire(blocking=False):
+                    break
                 abs_start, batch = raw_batches[i].popleft()
                 tx_pending[i].append(tx_pool.submit(_tx_call_guarded, abs_start, batch))
 
@@ -796,7 +841,7 @@ class StreamingDataset(IterableDataset):
 
         # ── Main loop ─────────────────────────────────────────────────────────
 
-        with ThreadPoolExecutor(max_workers=n * max_prefetch) as io_pool:
+        with ThreadPoolExecutor(max_workers=n * io_queue_depth) as io_pool:
             with ThreadPoolExecutor(max_workers=transform_workers) as tx_pool:
                 self._raw_batches_ref = raw_batches
                 self._cooked_ref = cooked

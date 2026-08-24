@@ -52,6 +52,62 @@ listing a storage directory.
 
 ::: lancedb.table.Branches
 
+::: lancedb.LsmWriteSpec
+
+## Functions and Jobs
+
+::: lancedb.functions.FunctionArtifact
+
+::: lancedb.functions.FunctionParameter
+
+::: lancedb.functions.FunctionResultField
+
+::: lancedb.functions.FunctionOutput
+
+::: lancedb.functions.FunctionSignature
+
+::: lancedb.functions.PythonEnvironmentSpec
+
+::: lancedb.functions.udf
+
+::: lancedb.functions.UdfDefinition
+
+::: lancedb.functions.FunctionRegistrationRequest
+
+::: lancedb.functions.FunctionArtifactRequest
+
+::: lancedb.functions.FunctionArtifactContent
+
+::: lancedb.functions.PythonAdapterSpec
+
+::: lancedb.functions.FunctionVersion
+
+::: lancedb.functions.PythonRuntimeSpec
+
+::: lancedb.functions.FunctionVersionRef
+
+::: lancedb.functions.ApplicationInput
+
+::: lancedb.functions.FunctionApplication
+
+::: lancedb.functions.InputBinding
+
+::: lancedb.functions.OutputMapping
+
+::: lancedb.functions.FunctionBinding
+
+::: lancedb.functions.RefreshColumnResult
+
+::: lancedb.job.Job
+
+::: lancedb.job.AsyncJob
+
+## Materialized Views (Synchronous)
+
+::: lancedb.materialized_view.MaterializedView
+
+::: lancedb.materialized_view.MaterializedViewDefinition
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -151,8 +207,9 @@ The same option is available on `lancedb.tokenize(...)` and the deprecated
 ```python
 import lancedb
 
-tokens = list(lancedb.tokenize("acme makes searchable data",
-                               custom_stop_words=["acme"]))
+tokens = list(
+    lancedb.tokenize("acme makes searchable data", custom_stop_words=["acme"])
+)
 ```
 
 ::: lancedb.tokenize
@@ -243,6 +300,10 @@ Table hold your actual data as a collection of records / rows.
 ::: lancedb.table.AsyncTags
 
 ::: lancedb.table.AsyncBranches
+
+## Materialized Views (Asynchronous)
+
+::: lancedb.materialized_view.AsyncMaterializedView
 
 ## Indices (Asynchronous)
 

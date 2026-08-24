@@ -16,6 +16,12 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  MaterializedView,
+  MaterializedViewSelect,
+  normalizeSelect,
+  validateNonNegativeInteger,
+} from "./materialized_view";
 import { Connection as LanceDbConnection } from "./native";
 import type {
   CreateNamespaceResponse,
@@ -247,6 +253,41 @@ export abstract class Connection {
    * @param {string[]} namespacePath - The namespace path of the table (defaults to root namespace)
    * @param {Partial<OpenTableOptions>} options - Additional options
    */
+  /**
+   * Define a materialized view named `name` over the table `source`.
+   *
+   * The view is created empty, with the query recorded in its schema
+   * metadata; `view.refresh()` computes the rows. The view is a normal
+   * table: it can be queried, indexed and searched, and it appears in
+   * `tableNames`. The source table must have stable row ids (create it with
+   * the `newTableEnableStableRowIds` storage option); they keep the view's
+   * provenance valid across source compactions and cannot be enabled after
+   * a table exists. Local databases only.
+   */
+  abstract createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+    },
+  ): Promise<MaterializedView>;
+
+  /**
+   * Open the materialized view named `name`.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract openMaterializedView(name: string): Promise<MaterializedView>;
+
+  /**
+   * The names of the materialized views in this database.
+   *
+   * Found by reading every table's schema, so this costs an open per table.
+   */
+  abstract listMaterializedViews(): Promise<string[]>;
+
   abstract openTable(
     name: string,
     namespacePath?: string[],
@@ -326,6 +367,14 @@ export abstract class Connection {
    * @param {string[]} namespacePath The namespace path of the table (defaults to root namespace).
    */
   abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping a table and return its cleanup job.
+   *
+   * The table may become unavailable before its data files are removed. Wait
+   * on the returned job to know when cleanup has finished.
+   */
+  abstract dropTableAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * Drop all tables in the database.
@@ -523,6 +572,35 @@ export class LocalConnection extends Connection {
     );
   }
 
+  async createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+    },
+  ): Promise<MaterializedView> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    const innerTable = await this.inner.createMaterializedView(
+      name,
+      source,
+      normalizeSelect(options?.select),
+      options?.where,
+      options?.limit,
+    );
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  async openMaterializedView(name: string): Promise<MaterializedView> {
+    const innerTable = await this.inner.openMaterializedView(name);
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  async listMaterializedViews(): Promise<string[]> {
+    return await this.inner.listMaterializedViews();
+  }
+
   async openTable(
     name: string,
     namespacePath?: string[],
@@ -703,6 +781,10 @@ export class LocalConnection extends Connection {
 
   async dropTable(name: string, namespacePath?: string[]): Promise<void> {
     return this.inner.dropTable(name, namespacePath ?? []);
+  }
+
+  async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return this.inner.dropTableAsync(name, namespacePath ?? []);
   }
 
   async dropAllTables(namespacePath?: string[]): Promise<void> {
