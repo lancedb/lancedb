@@ -1680,6 +1680,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_tables_walks_page_boundaries() {
+        let tc = new_test_connection().await.unwrap();
+        if tc.is_remote {
+            // What resumes a page is the server's to decide, and asserting it here would be
+            // asserting the server's contract rather than this one.
+            return;
+        }
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let mut names = Vec::with_capacity(5);
+        for _ in 0..5 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
+        }
+        names.sort();
+
+        // Walking in pages has to reach every table exactly once, with nothing lost at a
+        // page boundary.
+        let mut seen = Vec::with_capacity(names.len());
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    id: Some(Vec::new()),
+                    limit: Some(2),
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token.filter(|token| !token.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, names);
+    }
+
+    #[tokio::test]
     async fn test_open_table() {
         let tc = new_test_connection().await.unwrap();
         let db = tc.connection;
