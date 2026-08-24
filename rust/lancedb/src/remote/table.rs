@@ -2864,7 +2864,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
 
-    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.check_mutable().await?;
         let mut body = serde_json::json!({ "column": column });
         self.apply_branch_body(&mut body);
@@ -2885,7 +2888,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
-        Ok(Job::new(Box::new(FreshnessJob {
+        Ok(Job::new_typed(Box::new(FreshnessJob {
             inner: RemoteJob::new(self.client.clone(), response.job_id),
             freshness: self.freshness.clone(),
             version: self.version.clone(),
@@ -3279,6 +3282,21 @@ mod tests {
             QueryExecutionOptions,
         },
     };
+
+    fn refresh_done(job_id: &str) -> String {
+        json!({
+            "job_id": job_id,
+            "job_state": "DONE",
+            "result": {
+                "rows_assigned": 12,
+                "rows_failed": 0,
+                "rows_remaining": 0,
+                "source_version": 7,
+                "published_version": 8,
+            }
+        })
+        .to_string()
+    }
 
     #[tokio::test]
     async fn test_not_found() {
@@ -6892,7 +6910,7 @@ mod tests {
                     .unwrap(),
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"job_id": "j-7", "job_state": "DONE"}"#.to_string())
+                    .body(refresh_done("j-7"))
                     .unwrap(),
                 "/v1/table/my_table/count_rows/" => {
                     saw.store(
@@ -6908,7 +6926,9 @@ mod tests {
             });
 
         let job = table.refresh_column_async("doubled").await.unwrap();
-        job.wait().await.unwrap();
+        let result = job.wait().await.unwrap();
+        assert_eq!(result.rows_assigned, 12);
+        assert_eq!(result.published_version, Some(8));
         table.count_rows(None).await.unwrap();
         assert!(
             saw_min_timestamp.load(std::sync::atomic::Ordering::SeqCst),
@@ -6930,7 +6950,7 @@ mod tests {
                     .unwrap(),
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"job_id": "j-8", "job_state": "DONE"}"#.to_string())
+                    .body(refresh_done("j-8"))
                     .unwrap(),
                 "/v1/table/my_table/describe/" => {
                     let schema = Schema::new(vec![Field::new("x", DataType::Int32, true)]);
@@ -6976,7 +6996,7 @@ mod tests {
                     .unwrap(),
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"job_id": "j-9", "job_state": "DONE"}"#.to_string())
+                    .body(refresh_done("j-9"))
                     .unwrap(),
                 "/v1/table/my_table/tags/version/" => http::Response::builder()
                     .status(200)
@@ -7040,7 +7060,7 @@ mod tests {
                 }
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"job_id": "j-10", "job_state": "DONE"}"#.to_string())
+                    .body(refresh_done("j-10"))
                     .unwrap(),
                 "/v1/table/my_table/describe/" => {
                     let schema = Schema::new(vec![Field::new("x", DataType::Int32, true)]);
@@ -7113,7 +7133,7 @@ mod tests {
                 }
                 "/v1/jobs/describe" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"job_id": "j-11", "job_state": "DONE"}"#.to_string())
+                    .body(refresh_done("j-11"))
                     .unwrap(),
                 "/v1/table/my_table/count_rows/" => {
                     *saw.lock().unwrap() = request
