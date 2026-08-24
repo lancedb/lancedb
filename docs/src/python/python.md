@@ -261,6 +261,8 @@ instead of being materialized with the rest of the row.
 
 ::: lancedb.streaming.StreamingDataset
 
+::: lancedb.streaming.StreamingDataLoader
+
 ::: lancedb.permutation.permutation_builder
 
 ::: lancedb.permutation.PermutationBuilder
