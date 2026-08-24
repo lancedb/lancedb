@@ -1287,30 +1287,21 @@ def test_direct_iteration_surfaces_prefetch_failure_before_committing_row(
     assert checkpoint["positions_consumed_per_split"] == [1]
 
 
-def test_streaming_dataloader_drop_last_restores_discarded_tail(tmp_path):
+@pytest.mark.parametrize("workers", [0, 1, 2])
+def test_streaming_dataloader_rejects_drop_last(tmp_path, workers):
     db = lancedb.connect(tmp_path)
     table = db.create_table("drop_last", pa.table({"id": [0, 1, 2]}))
-    results = []
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    worker_options = {"multiprocessing_context": "spawn"} if workers else {}
 
-    for workers in (0, 1):
-        dataset = StreamingDataset(table, num_splits=1, shuffle=False)
-        worker_options = {"multiprocessing_context": "spawn"} if workers else {}
-        loader = StreamingDataLoader(
+    with pytest.raises(ValueError, match="drop_last=True"):
+        StreamingDataLoader(
             dataset,
             batch_size=2,
             num_workers=workers,
             drop_last=True,
             **worker_options,
         )
-        batches = [batch["id"].tolist() for batch in loader]
-        results.append(
-            (workers, batches, dataset.state_dict()["samples_consumed_per_split"])
-        )
-
-    assert results == [
-        (0, [[0, 1]], [2]),
-        (1, [[0, 1]], [2]),
-    ]
 
 
 def test_streaming_dataloader_owns_one_iterator_until_teardown(tmp_path):
@@ -1347,6 +1338,137 @@ def test_streaming_dataloader_owns_one_iterator_until_teardown(tmp_path):
         third._shutdown_workers()
 
 
+def test_zero_worker_shutdown_closes_inner_iterator_before_release(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("zero_worker_shutdown", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+    first._shutdown_workers()
+
+    assert dataset._consumer_iterator_active is False
+    assert dataset._raw_batches_ref is None
+    second = iter(loader)
+    try:
+        with pytest.raises(StopIteration):
+            next(first)
+        assert next(second)["id"].tolist() == [2, 3]
+    finally:
+        second._shutdown_workers()
+
+
+def test_direct_and_loader_admission_share_one_atomic_lease(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("direct_loader_lease", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    entered = threading.Event()
+    release = threading.Event()
+    direct_result = []
+    direct_error = []
+    contender = []
+    real_resolve = dataset._resolve_my_splits
+
+    def controlled_resolve():
+        if threading.current_thread().name == "direct-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_resolve()
+
+    def advance_direct(iterator):
+        try:
+            direct_result.append(next(iterator)["id"])
+        except BaseException as exc:
+            direct_error.append(exc)
+
+    monkeypatch.setattr(dataset, "_resolve_my_splits", controlled_resolve)
+    direct = iter(dataset)
+    thread = threading.Thread(
+        target=advance_direct, args=(direct,), name="direct-start"
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    try:
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            contender.append(iter(loader))
+    finally:
+        release.set()
+        thread.join(timeout=5)
+        if contender:
+            contender[0]._shutdown_workers()
+        direct.close()
+
+    assert not thread.is_alive()
+    assert direct_error == []
+    assert direct_result == [0]
+
+
+def test_loader_acquires_before_snapshot_and_cleans_interrupted_acquire(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("lease_snapshot", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+
+    entered = threading.Event()
+    release = threading.Event()
+    pending = []
+    pending_errors = []
+    observed_snapshots = []
+    real_acquire = dataset._acquire_consumer_iterator
+    real_snapshot = dataset._checkpoint_snapshot
+
+    def controlled_acquire():
+        if threading.current_thread().name == "stale-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_acquire()
+
+    def recording_snapshot():
+        state = real_snapshot()
+        if threading.current_thread().name == "stale-start":
+            observed_snapshots.append(state["samples_consumed_per_split"])
+        return state
+
+    def create_pending_iterator():
+        try:
+            pending.append(iter(loader))
+        except BaseException as exc:
+            pending_errors.append(exc)
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", controlled_acquire)
+    monkeypatch.setattr(dataset, "_checkpoint_snapshot", recording_snapshot)
+    thread = threading.Thread(target=create_pending_iterator, name="stale-start")
+    thread.start()
+    assert entered.wait(timeout=5)
+    assert next(first)["id"].tolist() == [2, 3]
+    with pytest.raises(StopIteration):
+        next(first)
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert pending_errors == []
+    assert observed_snapshots == [[4]]
+    assert len(pending) == 1
+    assert list(pending[0]) == []
+    assert dataset.state_dict()["samples_consumed_per_split"] == [4]
+
+    def interrupted_acquire():
+        real_acquire()
+        raise KeyboardInterrupt("after acquire")
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", interrupted_acquire)
+    with pytest.raises(KeyboardInterrupt, match="after acquire"):
+        iter(loader)
+    assert dataset._consumer_iterator_active is False
+
+
 def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
     class CustomizedDataset(StreamingDataset):
         def __iter__(self):
@@ -1374,12 +1496,18 @@ def test_interleaved_adapters_do_not_authorize_plain_iteration(tmp_path):
     dataset_b = StreamingDataset(table_b, num_splits=1, shuffle=False)
     initial_state = dataset_a.state_dict()
 
-    iterator_a = iter(streaming._StreamingDatasetAdapter(dataset_a))
-    iterator_b = iter(streaming._StreamingDatasetAdapter(dataset_b))
-    assert next(iterator_a).data["id"] == 0
-    assert next(iterator_b).data["id"] == 10
-    assert [sample.data["id"] for sample in iterator_a] == [1]
-    assert [sample.data["id"] for sample in iterator_b] == [11]
+    owner_a = dataset_a._acquire_consumer_iterator()
+    owner_b = dataset_b._acquire_consumer_iterator()
+    try:
+        iterator_a = iter(streaming._StreamingDatasetAdapter(dataset_a))
+        iterator_b = iter(streaming._StreamingDatasetAdapter(dataset_b))
+        assert next(iterator_a).data["id"] == 0
+        assert next(iterator_b).data["id"] == 10
+        assert [sample.data["id"] for sample in iterator_a] == [1]
+        assert [sample.data["id"] for sample in iterator_b] == [11]
+    finally:
+        dataset_a._release_consumer_iterator(owner_a)
+        dataset_b._release_consumer_iterator(owner_b)
 
     dataset_a.load_state_dict(initial_state)
     with patch(

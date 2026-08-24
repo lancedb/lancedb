@@ -114,43 +114,27 @@ class _ConsumerCommitIterator:
         iterator,
         dataset: "StreamingDataset",
         *,
-        initial_state: dict,
+        owner_token: int,
         require_uniform: bool,
-        restore_on_exhaustion: bool,
     ):
         self._iterator = iterator
         self._dataset = dataset
+        self._owner_token = owner_token
         self._require_uniform = require_uniform
-        self._restore_on_exhaustion = restore_on_exhaustion
         self._released = False
-        self._last_delivered_state = initial_state
-        self._last_delivered_requires_uniform = (
-            dataset._consumer_checkpoint_requires_uniform
-        )
+        self._terminal = False
 
     def __iter__(self):
         return self
 
     def __next__(self):
+        if self._terminal:
+            raise StopIteration
         try:
             batch = next(self._iterator)
         except StopIteration:
-            try:
-                if self._restore_on_exhaustion:
-                    # A single-process DataLoader advances the parent dataset
-                    # while assembling a batch.  Restore the last delivered
-                    # state when drop_last discards an incomplete tail.
-                    self._dataset.load_state_dict(self._last_delivered_state)
-                    self._dataset._consumer_checkpoint_requires_uniform = (
-                        self._last_delivered_requires_uniform
-                    )
-            except BaseException as exc:
-                self._dataset._invalidate_checkpoint(
-                    f"discarded DataLoader tail state could not be restored: {exc}"
-                )
-                raise
-            finally:
-                self._release()
+            self._terminal = True
+            self._release()
             raise
         except BaseException as exc:
             self._dataset._invalidate_checkpoint(
@@ -165,10 +149,6 @@ class _ConsumerCommitIterator:
             self._dataset._commit_worker_state(
                 batch.state, require_uniform=self._require_uniform
             )
-            self._last_delivered_state = self._dataset._checkpoint_snapshot()
-            self._last_delivered_requires_uniform = (
-                self._dataset._consumer_checkpoint_requires_uniform
-            )
             return batch.data
         except BaseException as exc:
             self._dataset._invalidate_checkpoint(
@@ -182,22 +162,39 @@ class _ConsumerCommitIterator:
         self._released = True
         dataset = self.__dict__.get("_dataset")
         if dataset is not None:
-            dataset._release_consumer_iterator()
+            dataset._release_consumer_iterator(self._owner_token)
 
     def _shutdown_workers(self):
+        if self.__dict__.get("_released", True):
+            return None
+        self._terminal = True
         iterator = self.__dict__.get("_iterator")
         shutdown = getattr(iterator, "_shutdown_workers", None)
         try:
             if shutdown is not None:
-                return shutdown()
-        finally:
+                shutdown()
+            else:
+                fetcher = getattr(iterator, "_dataset_fetcher", None)
+                dataset_iterator = getattr(fetcher, "dataset_iter", None)
+                close = getattr(dataset_iterator, "close", None)
+                if close is None:
+                    raise RuntimeError(
+                        "StreamingDataLoader could not close its inner iterator"
+                    )
+                close()
+        except BaseException as exc:
+            self._dataset._invalidate_checkpoint(
+                f"a DataLoader iterator could not be shut down safely: {exc}"
+            )
+            raise
+        else:
             self._release()
 
     def __del__(self):
         try:
             self._shutdown_workers()
         except BaseException:
-            self._release()
+            pass
 
     def __getattr__(self, name):
         return getattr(self._iterator, name)
@@ -546,6 +543,9 @@ class StreamingDataset(IterableDataset):
         self._consumer_checkpoint_requires_uniform = False
         self._consumer_iterator_lock = threading.Lock()
         self._consumer_iterator_active = False
+        self._consumer_iterator_generation = 0
+        self._consumer_iterator_owner: Optional[int] = None
+        self._consumer_iterator_owner_thread: Optional[int] = None
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -693,9 +693,32 @@ class StreamingDataset(IterableDataset):
     def _iter(
         self, *, consumer_checkpoint_transport: bool = False
     ) -> Iterator[dict[str, Any]]:
-        if self._raw_batches_ref is not None or (
-            self._consumer_iterator_active and not consumer_checkpoint_transport
-        ):
+        owner_token = None
+        previous_owner = self._consumer_iterator_owner
+        if consumer_checkpoint_transport:
+            if not self._consumer_iterator_active:
+                raise RuntimeError(
+                    "StreamingDataLoader worker transport requires an active "
+                    "parent iterator reservation"
+                )
+        else:
+            try:
+                owner_token = self._acquire_consumer_iterator()
+            except BaseException:
+                self._release_consumer_iterator_after_failed_acquire(previous_owner)
+                raise
+        try:
+            yield from self._iter_owned(
+                consumer_checkpoint_transport=consumer_checkpoint_transport
+            )
+        finally:
+            if owner_token is not None:
+                self._release_consumer_iterator(owner_token)
+
+    def _iter_owned(
+        self, *, consumer_checkpoint_transport: bool
+    ) -> Iterator[dict[str, Any]]:
+        if self._raw_batches_ref is not None:
             raise RuntimeError(
                 "StreamingDataset does not support concurrent iteration. "
                 "Only one active iterator per dataset instance is allowed."
@@ -1396,7 +1419,7 @@ class StreamingDataset(IterableDataset):
         if self._checkpoint_invalid_reason is None:
             self._checkpoint_invalid_reason = reason
 
-    def _acquire_consumer_iterator(self) -> None:
+    def _acquire_consumer_iterator(self) -> int:
         """Reserve this parent dataset for one checkpoint-aware iterator."""
         with self._consumer_iterator_lock:
             if self._consumer_iterator_active or self._raw_batches_ref is not None:
@@ -1404,11 +1427,32 @@ class StreamingDataset(IterableDataset):
                     "StreamingDataset does not support concurrent iteration. "
                     "Only one active iterator per dataset instance is allowed."
                 )
+            self._consumer_iterator_generation += 1
+            owner_token = self._consumer_iterator_generation
             self._consumer_iterator_active = True
+            self._consumer_iterator_owner = owner_token
+            self._consumer_iterator_owner_thread = threading.get_ident()
+            return owner_token
 
-    def _release_consumer_iterator(self) -> None:
+    def _release_consumer_iterator(self, owner_token: int) -> None:
         with self._consumer_iterator_lock:
-            self._consumer_iterator_active = False
+            if self._consumer_iterator_owner == owner_token:
+                self._consumer_iterator_active = False
+                self._consumer_iterator_owner = None
+                self._consumer_iterator_owner_thread = None
+
+    def _release_consumer_iterator_after_failed_acquire(
+        self, previous_owner: Optional[int]
+    ) -> None:
+        """Clean up when an interrupted acquire set a lease but did not return it."""
+        with self._consumer_iterator_lock:
+            if (
+                self._consumer_iterator_owner != previous_owner
+                and self._consumer_iterator_owner_thread == threading.get_ident()
+            ):
+                self._consumer_iterator_active = False
+                self._consumer_iterator_owner = None
+                self._consumer_iterator_owner_thread = None
 
     def _commit_worker_state(self, state: dict, *, require_uniform: bool) -> None:
         """Merge one trainer-consumed worker batch into parent state."""
@@ -1700,8 +1744,9 @@ class StreamingDataLoader(DataLoader):
     fresh dataset before continuing.
     Only one active iterator may own a dataset at a time, including when worker
     processes are used. Exhausting or explicitly shutting down the iterator
-    releases that ownership. With ``drop_last=True``, an incomplete discarded
-    tail is rolled back to the last batch returned to the trainer.
+    releases that ownership. ``drop_last=True`` is not supported because worker
+    replicas discard incomplete tails independently, which cannot produce a
+    topology-independent checkpoint.
 
     Parameters are the same as ``torch.utils.data.DataLoader`` except that
     ``dataset`` must be a
@@ -1739,42 +1784,50 @@ class StreamingDataLoader(DataLoader):
             )
         self._streaming_dataset = dataset
         super().__init__(_StreamingDatasetAdapter(dataset), *args, **kwargs)
+        if self.drop_last:
+            raise ValueError(
+                "StreamingDataLoader does not support drop_last=True because "
+                "discarded worker tails cannot be checkpointed "
+                "topology-independently"
+            )
         self.collate_fn = _CheckpointCollate(self.collate_fn)
 
     def __iter__(self):
-        state = self._streaming_dataset._checkpoint_snapshot()
-        packed = self._streaming_dataset._pack_sequences is not None
-        if packed:
-            blocks = state["blocks_emitted_per_split"]
-            rank_blocks = [
-                blocks[split] for split in self._streaming_dataset._rank_splits
-            ]
-            if len(set(rank_blocks)) > 1:
-                raise RuntimeError(
-                    "StreamingDataLoader cannot start from a partial packed "
-                    "logical step; resume from a checkpoint whose splits assigned "
-                    "to this rank have equal emitted-block counts"
-                )
-        elif self.num_workers > 1:
-            samples = state["samples_consumed_per_split"]
-            rank_samples = [
-                samples[split] for split in self._streaming_dataset._rank_splits
-            ]
-            if len(set(rank_samples)) > 1:
-                raise RuntimeError(
-                    "StreamingDataLoader cannot start multiple workers from a "
-                    "partial logical step; resume from a checkpoint whose splits "
-                    "assigned to this rank have equal consumed-sample counts"
-                )
-        self._streaming_dataset._acquire_consumer_iterator()
+        dataset = self._streaming_dataset
+        previous_owner = dataset._consumer_iterator_owner
+        owner_token = None
         try:
+            owner_token = dataset._acquire_consumer_iterator()
+            state = dataset._checkpoint_snapshot()
+            packed = dataset._pack_sequences is not None
+            if packed:
+                blocks = state["blocks_emitted_per_split"]
+                rank_blocks = [blocks[split] for split in dataset._rank_splits]
+                if len(set(rank_blocks)) > 1:
+                    raise RuntimeError(
+                        "StreamingDataLoader cannot start from a partial packed "
+                        "logical step; resume from a checkpoint whose splits "
+                        "assigned to this rank have equal emitted-block counts"
+                    )
+            elif self.num_workers > 1:
+                samples = state["samples_consumed_per_split"]
+                rank_samples = [samples[split] for split in dataset._rank_splits]
+                if len(set(rank_samples)) > 1:
+                    raise RuntimeError(
+                        "StreamingDataLoader cannot start multiple workers from a "
+                        "partial logical step; resume from a checkpoint whose "
+                        "splits assigned to this rank have equal consumed-sample "
+                        "counts"
+                    )
             return _ConsumerCommitIterator(
                 super().__iter__(),
-                self._streaming_dataset,
-                initial_state=state,
+                dataset,
+                owner_token=owner_token,
                 require_uniform=self.num_workers > 1 or packed,
-                restore_on_exhaustion=self.drop_last,
             )
         except BaseException:
-            self._streaming_dataset._release_consumer_iterator()
+            if owner_token is not None:
+                dataset._release_consumer_iterator(owner_token)
+            else:
+                dataset._release_consumer_iterator_after_failed_acquire(previous_owner)
             raise
