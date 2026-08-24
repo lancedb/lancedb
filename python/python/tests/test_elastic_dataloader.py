@@ -1469,6 +1469,34 @@ def test_loader_acquires_before_snapshot_and_cleans_interrupted_acquire(
     assert dataset._consumer_iterator_active is False
 
 
+def test_consumer_iterator_lease_publication_is_atomic(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("atomic_lease", pa.table({"id": [0, 1]}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=1, num_workers=0)
+    real_get_ident = streaming.threading.get_ident
+    calls = 0
+
+    def interrupt_during_publication():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt("during lease mutation")
+        return real_get_ident()
+
+    monkeypatch.setattr(streaming.threading, "get_ident", interrupt_during_publication)
+    with pytest.raises(KeyboardInterrupt, match="during lease mutation"):
+        iter(loader)
+    monkeypatch.setattr(streaming.threading, "get_ident", real_get_ident)
+
+    assert dataset._consumer_iterator_active is False
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [0]
+    finally:
+        iterator._shutdown_workers()
+
+
 def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
     class CustomizedDataset(StreamingDataset):
         def __iter__(self):

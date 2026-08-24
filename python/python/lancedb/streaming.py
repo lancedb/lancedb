@@ -66,6 +66,11 @@ class _WorkerBatch(NamedTuple):
     state: dict
 
 
+class _ConsumerIteratorLease(NamedTuple):
+    owner_token: int
+    owner_thread: int
+
+
 class _CheckpointCollate:
     """Attach the worker's post-fetch state to a collated batch."""
 
@@ -542,10 +547,8 @@ class StreamingDataset(IterableDataset):
         self._checkpoint_invalid_reason: Optional[str] = None
         self._consumer_checkpoint_requires_uniform = False
         self._consumer_iterator_lock = threading.Lock()
-        self._consumer_iterator_active = False
         self._consumer_iterator_generation = 0
-        self._consumer_iterator_owner: Optional[int] = None
-        self._consumer_iterator_owner_thread: Optional[int] = None
+        self._consumer_iterator_lease: Optional[_ConsumerIteratorLease] = None
 
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
@@ -694,7 +697,7 @@ class StreamingDataset(IterableDataset):
         self, *, consumer_checkpoint_transport: bool = False
     ) -> Iterator[dict[str, Any]]:
         owner_token = None
-        previous_owner = self._consumer_iterator_owner
+        previous_lease = self._consumer_iterator_lease
         if consumer_checkpoint_transport:
             if not self._consumer_iterator_active:
                 raise RuntimeError(
@@ -705,7 +708,7 @@ class StreamingDataset(IterableDataset):
             try:
                 owner_token = self._acquire_consumer_iterator()
             except BaseException:
-                self._release_consumer_iterator_after_failed_acquire(previous_owner)
+                self._release_consumer_iterator_after_failed_acquire(previous_lease)
                 raise
         try:
             yield from self._iter_owned(
@@ -1419,6 +1422,20 @@ class StreamingDataset(IterableDataset):
         if self._checkpoint_invalid_reason is None:
             self._checkpoint_invalid_reason = reason
 
+    @property
+    def _consumer_iterator_active(self) -> bool:
+        return self._consumer_iterator_lease is not None
+
+    @property
+    def _consumer_iterator_owner(self) -> Optional[int]:
+        lease = self._consumer_iterator_lease
+        return lease.owner_token if lease is not None else None
+
+    @property
+    def _consumer_iterator_owner_thread(self) -> Optional[int]:
+        lease = self._consumer_iterator_lease
+        return lease.owner_thread if lease is not None else None
+
     def _acquire_consumer_iterator(self) -> int:
         """Reserve this parent dataset for one checkpoint-aware iterator."""
         with self._consumer_iterator_lock:
@@ -1427,32 +1444,32 @@ class StreamingDataset(IterableDataset):
                     "StreamingDataset does not support concurrent iteration. "
                     "Only one active iterator per dataset instance is allowed."
                 )
-            self._consumer_iterator_generation += 1
-            owner_token = self._consumer_iterator_generation
-            self._consumer_iterator_active = True
-            self._consumer_iterator_owner = owner_token
-            self._consumer_iterator_owner_thread = threading.get_ident()
+            owner_thread = threading.get_ident()
+            owner_token = self._consumer_iterator_generation + 1
+            lease = _ConsumerIteratorLease(owner_token, owner_thread)
+            self._consumer_iterator_generation = owner_token
+            self._consumer_iterator_lease = lease
             return owner_token
 
     def _release_consumer_iterator(self, owner_token: int) -> None:
         with self._consumer_iterator_lock:
-            if self._consumer_iterator_owner == owner_token:
-                self._consumer_iterator_active = False
-                self._consumer_iterator_owner = None
-                self._consumer_iterator_owner_thread = None
+            lease = self._consumer_iterator_lease
+            if lease is not None and lease.owner_token == owner_token:
+                self._consumer_iterator_lease = None
 
     def _release_consumer_iterator_after_failed_acquire(
-        self, previous_owner: Optional[int]
+        self, previous_lease: Optional[_ConsumerIteratorLease]
     ) -> None:
         """Clean up when an interrupted acquire set a lease but did not return it."""
+        owner_thread = threading.current_thread().ident
         with self._consumer_iterator_lock:
+            lease = self._consumer_iterator_lease
             if (
-                self._consumer_iterator_owner != previous_owner
-                and self._consumer_iterator_owner_thread == threading.get_ident()
+                lease is not None
+                and lease is not previous_lease
+                and lease.owner_thread == owner_thread
             ):
-                self._consumer_iterator_active = False
-                self._consumer_iterator_owner = None
-                self._consumer_iterator_owner_thread = None
+                self._consumer_iterator_lease = None
 
     def _commit_worker_state(self, state: dict, *, require_uniform: bool) -> None:
         """Merge one trainer-consumed worker batch into parent state."""
@@ -1794,7 +1811,7 @@ class StreamingDataLoader(DataLoader):
 
     def __iter__(self):
         dataset = self._streaming_dataset
-        previous_owner = dataset._consumer_iterator_owner
+        previous_lease = dataset._consumer_iterator_lease
         owner_token = None
         try:
             owner_token = dataset._acquire_consumer_iterator()
@@ -1829,5 +1846,5 @@ class StreamingDataLoader(DataLoader):
             if owner_token is not None:
                 dataset._release_consumer_iterator(owner_token)
             else:
-                dataset._release_consumer_iterator_after_failed_acquire(previous_owner)
+                dataset._release_consumer_iterator_after_failed_acquire(previous_lease)
             raise
