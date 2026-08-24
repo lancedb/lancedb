@@ -104,6 +104,13 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
                 .into(),
         });
     }
+    if crate::materialized_view::materialized_view_kind(&dataset.schema().metadata)?.is_some() {
+        return Err(Error::NotSupported {
+            message: "an LSM write spec cannot be installed on a materialized view: \
+                      rows in un-compacted tiers are invisible to refresh"
+                .into(),
+        });
+    }
     let mut builder = dataset.initialize_mem_wal();
     let writer_config_defaults = match spec {
         LsmWriteSpec::Bucket {

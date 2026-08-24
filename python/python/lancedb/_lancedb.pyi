@@ -197,6 +197,15 @@ class Connection(object):
         cur_namespace_path: Optional[List[str]] = None,
         new_namespace_path: Optional[List[str]] = None,
     ) -> None: ...
+    async def create_materialized_view(
+        self,
+        name: str,
+        source: str,
+        projections: Optional[List[Tuple[str, str]]] = None,
+        filter: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Table: ...
+    async def list_materialized_views(self) -> List[str]: ...
     async def drop_table(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -355,6 +364,9 @@ class Table:
     ) -> AddColumnsResult: ...
     async def refresh_column(self, column: str) -> RefreshColumnResult: ...
     async def refresh_column_async(self, column: str) -> Job: ...
+    async def refresh_materialized_view(
+        self, full: bool = False, source_version: Optional[int] = None
+    ) -> RefreshMaterializedViewResult: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
     async def alter_columns(
         self, columns: list[dict[str, Any]]
@@ -420,7 +432,7 @@ class Branches:
     async def checkout(self, name: str, version: Optional[int] = None) -> Table: ...
     async def delete(self, name: str) -> None: ...
     async def diff(self, from_branch: str) -> Dict[str, Any]: ...
-    async def merge(
+    async def cherry_pick(
         self, from_branch: str, dry_run: bool = False
     ) -> Dict[str, Any]: ...
 
@@ -702,6 +714,12 @@ class AddColumnsResult:
 
 class RefreshColumnResult:
     rows_filled: int
+    version: int
+
+class RefreshMaterializedViewResult:
+    mode: str
+    rows_written: int
+    source_version: int
     version: int
 
 class AlterColumnsResult:
