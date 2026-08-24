@@ -2822,6 +2822,72 @@ async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
     assert rows == [{"id": "c", "j": '{"k":3}'}]
 
 
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.parametrize("input_kind", ["arrow", "pylist"])
+@pytest.mark.parametrize("mode", ["append", None])
+@pytest.mark.asyncio
+async def test_add_coerces_string_json(
+    mem_db_async: AsyncConnection, input_kind: str, mode: str | None
+):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    table = await mem_db_async.create_table(f"json_add_{input_kind}", schema=schema)
+
+    if input_kind == "arrow":
+        data = pa.table({"id": ["a"], "j": ['{"k": 4}']})
+    else:
+        data = [{"id": "a", "j": '{"k": 4}'}]
+
+    await table.add(data, mode=mode)
+
+    rows = await table.query().where("json_extract(j, '$.k') = '4'").to_list()
+    assert rows == [{"id": "a", "j": '{"k":4}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_coerces_null_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+    table = await mem_db_async.create_table("json_add_null", schema=schema)
+
+    await table.add([{"id": "a", "j": None}])
+
+    rows = await table.query().where("j IS NULL").to_list()
+    assert rows == [{"id": "a", "j": None}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_coerces_string_json(mem_db_async: AsyncConnection):
+    json_type = pa.json_()
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", json_type)])
+
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array(['{"k": 1}', None], type=json_type.storage_type),
+    )
+    initial = pa.Table.from_arrays(
+        [pa.array(["a", "b"]), json_values],
+        schema=schema,
+    )
+
+    table = await mem_db_async.create_table("json_merge_string", schema=schema)
+    await table.add(initial)
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(pa.table({"id": ["a"], "j": ['{"k": 5}']}))
+    )
+
+    rows = await table.query().where("json_extract(j, '$.k') = '5'").to_list()
+    assert rows == [{"id": "a", "j": '{"k":5}'}]
+
+    null_rows = await table.query().where("j IS NULL").to_list()
+    assert null_rows == [{"id": "b", "j": None}]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
