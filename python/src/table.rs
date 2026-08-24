@@ -1619,7 +1619,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let job = inner.refresh_column_async(column).await.infer_error()?;
-            Ok(crate::job::Job::new(job))
+            Ok(crate::job::Job::new_typed(job))
         })
     }
 

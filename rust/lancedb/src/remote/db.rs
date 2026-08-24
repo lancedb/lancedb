@@ -513,7 +513,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn get_function(&self, name: &str, version: &str) -> Result<FunctionVersion> {
         let req = self
             .client
-            .post("/v1/functions/get")
+            .post("/v1/functions/describe")
             .json(&serde_json::json!({
                 "name": name,
                 "version": version,
@@ -2520,7 +2520,7 @@ mod tests {
         );
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/functions/get");
+            assert_eq!(request.url().path(), "/v1/functions/describe");
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
             assert_eq!(
