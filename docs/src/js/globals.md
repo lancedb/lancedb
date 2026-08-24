@@ -100,6 +100,8 @@
 - [JobInfo](interfaces/JobInfo.md)
 - [ListNamespacesOptions](interfaces/ListNamespacesOptions.md)
 - [ListNamespacesResponse](interfaces/ListNamespacesResponse.md)
+- [ListTablesOptions](interfaces/ListTablesOptions.md)
+- [ListTablesResponse](interfaces/ListTablesResponse.md)
 - [LsmStats](interfaces/LsmStats.md)
 - [LsmWriteSpec](interfaces/LsmWriteSpec.md)
 - [MaterializedViewDefinition](interfaces/MaterializedViewDefinition.md)
