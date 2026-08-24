@@ -187,7 +187,7 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/functions/get":
+            elif self.path == "/v1/functions/describe":
                 assert body == {
                     "name": "normalize_score",
                     "version": "fv_exact",

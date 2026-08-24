@@ -211,7 +211,9 @@ pub use function::FunctionVersion;
 pub use job::Job;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
-pub use materialized_view::{MaterializedView, MaterializedViewDefinition};
+pub use materialized_view::{
+    MaterializedView, MaterializedViewDefinition, RefreshMaterializedViewResult, RefreshMode,
+};
 /// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
 /// the `metrics` feature to publish LanceDB's internal metrics; install any
 /// `metrics`-compatible recorder to collect them. See also [`metrics_otel`] for

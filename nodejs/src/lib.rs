@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+// The materialized-view refresh future deepens the type graph past the
+// default trait-recursion depth; same raise as the core crate applies.
+#![recursion_limit = "256"]
+
 use std::collections::HashMap;
 
 use env_logger::Env;
