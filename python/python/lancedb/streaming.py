@@ -19,17 +19,23 @@ above.
 """
 
 import ctypes
+import heapq
 import logging
 import os
 import random
 import threading
 import time
+import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from multiprocessing import RawArray
-from typing import Any, Callable, Iterator, Optional, Union
+from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
 
-from torch.utils.data import IterableDataset, get_worker_info
+import pyarrow as pa
+import pyarrow.compute as pc
+import torch
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from .permutation import (
     Permutation,
@@ -50,6 +56,155 @@ DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
 
 
+class _WorkerSample(NamedTuple):
+    data: Any
+    dataset: "StreamingDataset"
+
+
+class _WorkerBatch(NamedTuple):
+    data: Any
+    state: dict
+
+
+class _ConsumerIteratorLease(NamedTuple):
+    owner_token: int
+    owner_thread: int
+
+
+class _CheckpointCollate:
+    """Attach the worker's post-fetch state to a collated batch."""
+
+    def __init__(self, collate_fn: Callable):
+        self._collate_fn = collate_fn
+
+    def __call__(self, samples):
+        try:
+            if isinstance(samples, list):
+                if not samples:
+                    return _WorkerBatch(self._collate_fn(samples), {})
+                worker_samples = samples
+                data = self._collate_fn([sample.data for sample in worker_samples])
+                dataset = worker_samples[-1].dataset
+            else:
+                data = self._collate_fn(samples.data)
+                dataset = samples.dataset
+        except StopIteration as exc:
+            raise RuntimeError(
+                "collate_fn raised StopIteration before returning a batch"
+            ) from exc
+        return _WorkerBatch(data, dataset._checkpoint_snapshot())
+
+
+class _StreamingDatasetAdapter(IterableDataset):
+    """Yield private sample wrappers for :class:`StreamingDataLoader`."""
+
+    def __init__(self, dataset: "StreamingDataset"):
+        super().__init__()
+        self.dataset = dataset
+
+    def __iter__(self):
+        for sample in self.dataset._iter(consumer_checkpoint_transport=True):
+            yield _WorkerSample(sample, self.dataset)
+
+    def __getattr__(self, name):
+        dataset = self.__dict__.get("dataset")
+        if dataset is None:
+            raise AttributeError(name)
+        return getattr(dataset, name)
+
+
+class _ConsumerCommitIterator:
+    def __init__(
+        self,
+        iterator,
+        dataset: "StreamingDataset",
+        *,
+        owner_token: int,
+        require_uniform: bool,
+    ):
+        self._iterator = iterator
+        self._dataset = dataset
+        self._owner_token = owner_token
+        self._require_uniform = require_uniform
+        self._released = False
+        self._terminal = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._terminal:
+            raise StopIteration
+        try:
+            batch = next(self._iterator)
+        except StopIteration:
+            self._terminal = True
+            self._release()
+            raise
+        except BaseException as exc:
+            self._dataset._invalidate_checkpoint(
+                f"a DataLoader batch failed before it was returned: {exc}"
+            )
+            raise
+        try:
+            if not isinstance(batch, _WorkerBatch):
+                raise RuntimeError(
+                    "StreamingDataLoader did not receive worker checkpoint metadata"
+                )
+            self._dataset._commit_worker_state(
+                batch.state, require_uniform=self._require_uniform
+            )
+            return batch.data
+        except BaseException as exc:
+            self._dataset._invalidate_checkpoint(
+                f"a DataLoader batch failed before it was returned: {exc}"
+            )
+            raise
+
+    def _release(self) -> None:
+        if self.__dict__.get("_released", True):
+            return
+        self._released = True
+        dataset = self.__dict__.get("_dataset")
+        if dataset is not None:
+            dataset._release_consumer_iterator(self._owner_token)
+
+    def _shutdown_workers(self):
+        if self.__dict__.get("_released", True):
+            return None
+        self._terminal = True
+        iterator = self.__dict__.get("_iterator")
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        try:
+            if shutdown is not None:
+                shutdown()
+            else:
+                fetcher = getattr(iterator, "_dataset_fetcher", None)
+                dataset_iterator = getattr(fetcher, "dataset_iter", None)
+                close = getattr(dataset_iterator, "close", None)
+                if close is None:
+                    raise RuntimeError(
+                        "StreamingDataLoader could not close its inner iterator"
+                    )
+                close()
+        except BaseException as exc:
+            self._dataset._invalidate_checkpoint(
+                f"a DataLoader iterator could not be shut down safely: {exc}"
+            )
+            raise
+        else:
+            self._release()
+
+    def __del__(self):
+        try:
+            self._shutdown_workers()
+        except BaseException:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._iterator, name)
+
+
 class StreamingDataset(IterableDataset):
     """An elastic, resumable PyTorch IterableDataset backed by a LanceDB table.
 
@@ -61,7 +216,7 @@ class StreamingDataset(IterableDataset):
 
     Internally ``__iter__`` runs a two-stage pipeline:
 
-    - **Stage 1 (I/O)**: one thread pool with ``num_splits * prefetch_batches``
+    - **Stage 1 (I/O)**: one thread pool with ``num_splits * io_queue_depth``
       workers fetches raw ``RecordBatch`` objects from LanceDB in parallel
       across all splits and places them in a per-split raw-batch queue.
     - **Stage 2 (transform)**: a second thread pool with
@@ -104,11 +259,11 @@ class StreamingDataset(IterableDataset):
         call.  Larger values amortise per-request overhead (critical on object
         storage) at the cost of higher memory usage per split buffer.  Defaults
         to ``DEFAULT_READ_BATCH_SIZE`` (64).
-    prefetch_batches:
+    io_queue_depth:
         Number of I/O batches to keep in flight per split.  Higher values
         overlap storage latency with transform and training compute at the cost
-        of more memory and threads.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
-        (4).
+        of more memory and threads.  Must be greater than zero.  Defaults to
+        ``DEFAULT_PREFETCH_BATCHES`` (4).
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -132,6 +287,39 @@ class StreamingDataset(IterableDataset):
         Maximum number of transforms to run concurrently.  Must be greater
         than zero.  When ``None`` (the default), uses ``os.cpu_count()`` or 1
         when the CPU count is unavailable.
+    pack_sequences:
+        Sequence-packing mode: token lists from consecutive documents are
+        joined with ``eos_id`` and sliced into blocks of this many tokens.
+        Each item is then a dict of two ``(pack_sequences,)`` LongTensors —
+        ``input_ids`` and ``doc_ids`` (per-position document index within
+        the block, for block-diagonal masks or position-id resets).
+        * Packing happens independently per owned split and preserves per-split
+        resume state.
+        * When a split cannot fill a real block for a cycle but an owned sibling
+        still can, or when only a short tail remains at epoch end, the short buffer
+        is padded to ``pack_sequences`` with ``pad_id`` so every local cycle emits
+        one block per owned split.
+        * ``eos_id``, ``pad_id``, and ``columns`` naming a single integer-list
+        column are required; incompatible with ``transform``.
+    eos_id:
+        Separator token id between packed documents.  Required with
+        ``pack_sequences``, ignored otherwise.
+    pad_id:
+        Padding token id used to complete blocks when a split runs out of
+        real tokens mid-cycle or at epoch end.  Required with
+        ``pack_sequences``, ignored otherwise. It must be reserved for padding:
+        padding positions retain the preceding document's ``doc_id`` (or zero
+        in an all-padding block), so callers must mask them separately using
+        ``input_ids == pad_id``.
+    blocks_per_epoch:
+        Total number of packed blocks emitted globally per epoch. Required with
+        ``pack_sequences``. An integer must be divisible by ``num_splits``.
+        Every logical split emits exactly ``blocks_per_epoch / num_splits``
+        blocks: exhausted splits emit padding, while tokens beyond the budget
+        are left out of the epoch. This fixed per-split budget keeps packed
+        iteration and checkpoints independent of rank topology.
+        Pass ``"auto"`` to estimate a corpus-level budget from a bounded sample
+        of token lists. The estimate may be inaccurate.
     on_transform_error:
         What to do when the transform raises an exception:
 
@@ -175,6 +363,16 @@ class StreamingDataset(IterableDataset):
         Prefer the ``filter`` parameter when bad rows can be expressed as a
         SQL predicate (e.g. ``"col IS NOT NULL"``) — filtering happens before
         splits are built, so every guarantee is fully preserved.
+    transform_queue_depth:
+        Number of transform-result batches to buffer per split in the
+        post-transform queue before backpressure is applied to the transform
+        stage.  When the combined count of in-flight transform futures and
+        already-buffered rows for a split reaches
+        ``transform_queue_depth * read_batch_size``, no new transforms are
+        submitted for that split until the consumer catches up.  Useful for
+        capping peak memory when the consumer (e.g. a GPU training step) is
+        slower than the transform stage.  Must be greater than zero.
+        ``None`` (the default) imposes no limit.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -194,17 +392,30 @@ class StreamingDataset(IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         read_batch_size: int = DEFAULT_READ_BATCH_SIZE,
-        prefetch_batches: int = DEFAULT_PREFETCH_BATCHES,
+        io_queue_depth: int = DEFAULT_PREFETCH_BATCHES,
         columns: Optional[list[str]] = None,
         shuffle_clump_size: Optional[int] = None,
         filter: Optional[str] = None,
         transform: Optional[Callable] = None,
         transform_parallelism: Optional[int] = None,
+        pack_sequences: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        pad_id: Optional[int] = None,
+        blocks_per_epoch: Optional[Union[int, Literal["auto"]]] = None,
         on_transform_error: Union[str, Callable[[Exception], bool]] = "raise",
+        transform_queue_depth: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
+        # Deprecated; use io_queue_depth instead.
+        prefetch_batches: Optional[int] = None,
     ):
         super().__init__()
+        if prefetch_batches is not None:
+            logger.warning(
+                "prefetch_batches is deprecated and will be removed in a future "
+                "version; use io_queue_depth instead"
+            )
+            io_queue_depth = prefetch_batches
         if num_splits is None:
             num_splits = world_size
         if shuffle_seed is None:
@@ -214,8 +425,59 @@ class StreamingDataset(IterableDataset):
                 f"num_splits ({num_splits}) must be divisible by "
                 f"world_size ({world_size})"
             )
+        if io_queue_depth <= 0:
+            raise ValueError("io_queue_depth must be greater than 0")
         if transform_parallelism is not None and transform_parallelism <= 0:
             raise ValueError("transform_parallelism must be greater than 0")
+        if pack_sequences is not None:
+            if pack_sequences <= 0:
+                raise ValueError("pack_sequences must be greater than 0")
+            if eos_id is None:
+                raise ValueError("eos_id is required when pack_sequences is set")
+            if pad_id is None:
+                raise ValueError("pad_id is required when pack_sequences is set")
+            if blocks_per_epoch is None:
+                raise ValueError(
+                    "blocks_per_epoch is required when pack_sequences is set"
+                )
+            if blocks_per_epoch != "auto":
+                if not isinstance(blocks_per_epoch, int) or isinstance(
+                    blocks_per_epoch, bool
+                ):
+                    raise ValueError(
+                        "blocks_per_epoch must be a positive integer or 'auto'"
+                    )
+                if blocks_per_epoch <= 0:
+                    raise ValueError("blocks_per_epoch must be greater than 0")
+                if blocks_per_epoch % num_splits != 0:
+                    raise ValueError(
+                        f"blocks_per_epoch ({blocks_per_epoch}) must be divisible by "
+                        f"num_splits ({num_splits})"
+                    )
+            if transform is not None:
+                raise ValueError("transform cannot be combined with pack_sequences")
+            if columns is None or len(columns) != 1:
+                raise ValueError(
+                    "pack_sequences requires columns to name exactly one "
+                    "list-typed column of token ids"
+                )
+            field = table.schema.field(columns[0])
+            if not (
+                pa.types.is_list(field.type)
+                or pa.types.is_large_list(field.type)
+                or pa.types.is_fixed_size_list(field.type)
+            ):
+                raise ValueError(
+                    f"pack_sequences requires a list-typed token column; "
+                    f"{columns[0]} has type {field.type}"
+                )
+            if not pa.types.is_integer(field.type.value_type):
+                raise ValueError(
+                    "pack_sequences requires a token column with integer values; "
+                    f"{columns[0]} has value type {field.type.value_type}"
+                )
+        elif blocks_per_epoch is not None:
+            raise ValueError("blocks_per_epoch requires pack_sequences")
         if on_transform_error not in ("raise", "skip", "warn") and not callable(
             on_transform_error
         ):
@@ -223,6 +485,8 @@ class StreamingDataset(IterableDataset):
                 "on_transform_error must be 'raise', 'skip', 'warn', or a "
                 f"callable, got {on_transform_error!r}"
             )
+        if transform_queue_depth is not None and transform_queue_depth <= 0:
+            raise ValueError("transform_queue_depth must be greater than 0")
 
         self._table = table
         self._num_splits = num_splits
@@ -232,15 +496,25 @@ class StreamingDataset(IterableDataset):
         self._rank = rank
         self._world_size = world_size
         self._read_batch_size = read_batch_size
-        self._prefetch_batches = prefetch_batches
+        self._io_queue_depth = io_queue_depth
         self._columns = columns
         self._shuffle_clump_size = shuffle_clump_size
         self._filter = filter
         self._transform = transform
         self._transform_parallelism = transform_parallelism
+        self._pack_sequences = pack_sequences
+        self._eos_id = eos_id
+        self._pad_id = pad_id
+        self._blocks_per_epoch = blocks_per_epoch
         self._on_transform_error = on_transform_error
+        self._transform_queue_depth = transform_queue_depth
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
+
+        # Packing resume state: permutation positions and partial-block buffers.
+        self._pack_consumed: list[int] = [0] * num_splits
+        self._pack_buffers: dict[int, dict[str, list[int]]] = {}
+        self._pack_blocks_emitted: list[int] = [0] * num_splits
 
         # Live references to pipeline state, set only while __iter__ is running
         # in the same process.  Used by the observability properties when the
@@ -260,6 +534,22 @@ class StreamingDataset(IterableDataset):
         #          rows_skipped]
         self._worker_stats: RawArray = RawArray(ctypes.c_int64, 8)
 
+        # A standard multi-process DataLoader cannot report which prefetched
+        # batches were actually returned to its consumer.  Workers set this
+        # shared flag so state_dict() can reject a stale parent checkpoint
+        # unless StreamingDataLoader installed the consumer-commit transport.
+        self._untracked_worker_iteration: RawArray = RawArray(ctypes.c_int64, 1)
+
+        # Parent-side checkpoint lifecycle.  A failed DataLoader task creates
+        # a permanent hole in that iterator's delivery stream, while a
+        # multi-worker checkpoint is safe to restore only after all splits
+        # reach the same logical step boundary.
+        self._checkpoint_invalid_reason: Optional[str] = None
+        self._consumer_checkpoint_requires_uniform = False
+        self._consumer_iterator_lock = threading.Lock()
+        self._consumer_iterator_generation = 0
+        self._consumer_iterator_lease: Optional[_ConsumerIteratorLease] = None
+
         # Cumulative bytes of Arrow buffer data fetched across all iterations.
         self._bytes_loaded: int = 0
         # Cumulative seconds spent in LanceDB I/O and in transform functions.
@@ -272,6 +562,10 @@ class StreamingDataset(IterableDataset):
         # step boundaries all splits have consumed this many samples, so a
         # single scalar captures the topology-independent checkpoint state.
         self._resume_offset: int = 0
+        # Exact yielded-sample counts for splits this process has advanced.
+        # Missing entries use _resume_offset, which remains the lower-bound
+        # checkpoint inherited from an earlier uniform/global state.
+        self._resume_samples: dict[int, int] = {}
         # Permutation position each split has consumed through, keyed by
         # global split index.  Equal to _resume_offset for every split unless
         # on_transform_error skipped rows, in which case skipped positions
@@ -291,11 +585,79 @@ class StreamingDataset(IterableDataset):
         else:
             self._perm_table = builder.split_sequential(fixed=num_splits).execute()
 
+        if self._blocks_per_epoch == "auto":
+            self._blocks_per_epoch = self._estimate_blocks_per_epoch()
+
         # Contiguous block of global split indices assigned to this rank.
         splits_per_rank = num_splits // world_size
         rank_start = rank * splits_per_rank
         self._rank_splits: list[int] = list(
             range(rank_start, rank_start + splits_per_rank)
+        )
+
+    def _estimate_blocks_per_epoch(self) -> int:
+        """Estimate a fixed packed-block budget from a bounded token sample."""
+        # TODO: Replace this fallback with Lance's dedicated exact token-count
+        # estimation API once it is available.
+        if self._pack_sequences is None or not self._columns:
+            raise RuntimeError(
+                "packing must be configured before estimating its budget"
+            )
+
+        pack_len = self._pack_sequences
+        token_column = self._columns[0]
+        sample_cap_per_split = max(1, 100_000 // self._num_splits)
+        sampled_tokens = 0
+        total_sampled = 0
+        total_rows = 0
+        rng = random.Random(self._shuffle_seed)
+
+        warnings.warn(
+            "blocks_per_epoch='auto' uses an approximate token-count sample; "
+            "pass an explicit value for exact epoch sizing",
+        )
+
+        for split in range(self._num_splits):
+            permutation = Permutation.from_tables(
+                self._table, self._perm_table, split=split
+            )
+            permutation = permutation.select_columns([token_column])
+            permutation = permutation.with_transform(Transforms.arrow2arrow)
+            split_rows = permutation.num_rows
+            if split_rows == 0:
+                raise ValueError(
+                    "blocks_per_epoch='auto' cannot estimate an empty dataset"
+                )
+
+            # Sample roughly 1% from each logical split, with at least one row
+            # per split and a global target cap of 100,000 rows.
+            sample_rows = min(
+                split_rows,
+                max(1, min((split_rows + 99) // 100, sample_cap_per_split)),
+            )
+            sample_offsets = sorted(rng.sample(range(split_rows), sample_rows))
+            sample_batch_size = max(1, self._read_batch_size)
+            for start in range(0, sample_rows, sample_batch_size):
+                batch = permutation.__getitems__(
+                    sample_offsets[start : start + sample_batch_size]
+                )
+                lengths = pc.list_value_length(batch.column(0))
+                if lengths.null_count:
+                    raise ValueError("pack_sequences does not support null token lists")
+                sampled_tokens += int(pc.sum(lengths).as_py())
+
+            total_sampled += sample_rows
+            total_rows += split_rows
+
+        # Pool the samples into one global average. Each document contributes
+        # one EOS token.
+        estimated_tokens = (
+            (sampled_tokens + total_sampled) * total_rows // total_sampled
+        )
+        blocks = estimated_tokens // pack_len
+        return max(
+            self._num_splits,
+            blocks - blocks % self._num_splits,
         )
 
     def _resolve_my_splits(self) -> list[int]:
@@ -329,11 +691,45 @@ class StreamingDataset(IterableDataset):
         return self._rank_splits[start : start + splits_per_worker]
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
+        return self._iter()
+
+    def _iter(
+        self, *, consumer_checkpoint_transport: bool = False
+    ) -> Iterator[dict[str, Any]]:
+        owner_token = None
+        previous_lease = self._consumer_iterator_lease
+        if consumer_checkpoint_transport:
+            if not self._consumer_iterator_active:
+                raise RuntimeError(
+                    "StreamingDataLoader worker transport requires an active "
+                    "parent iterator reservation"
+                )
+        else:
+            try:
+                owner_token = self._acquire_consumer_iterator()
+            except BaseException:
+                self._release_consumer_iterator_after_failed_acquire(previous_lease)
+                raise
+        try:
+            yield from self._iter_owned(
+                consumer_checkpoint_transport=consumer_checkpoint_transport
+            )
+        finally:
+            if owner_token is not None:
+                self._release_consumer_iterator(owner_token)
+
+    def _iter_owned(
+        self, *, consumer_checkpoint_transport: bool
+    ) -> Iterator[dict[str, Any]]:
         if self._raw_batches_ref is not None:
             raise RuntimeError(
                 "StreamingDataset does not support concurrent iteration. "
                 "Only one active iterator per dataset instance is allowed."
             )
+        real_worker = get_worker_info() is not None
+        if real_worker and not consumer_checkpoint_transport:
+            self._untracked_worker_iteration[0] = 1
+
         my_splits = self._resolve_my_splits()
         if not my_splits:
             return
@@ -341,6 +737,7 @@ class StreamingDataset(IterableDataset):
         # Set identity transform on each Permutation so __getitems__ returns
         # the raw RecordBatch.  Stage 2 applies the real transform.
         permutations: list[Permutation] = []
+        initial_samples: list[int] = []
         initial_positions: list[int] = []
         for split_idx in my_splits:
             perm = Permutation.from_tables(
@@ -348,16 +745,23 @@ class StreamingDataset(IterableDataset):
             )
             if self._columns is not None:
                 perm = perm.select_columns(self._columns)
-            perm = perm.with_transform(lambda batch: batch)
-            start_pos = self._resume_positions.get(split_idx, self._resume_offset)
+            perm = perm.with_transform(Transforms.arrow2arrow)
+            sample_count = self._resume_samples.get(split_idx, self._resume_offset)
+            # Both modes resume from absolute permutation positions. Packing
+            # stores them separately because it also checkpoints partial blocks.
+            start_pos = (
+                self._pack_consumed[split_idx]
+                if self._pack_sequences is not None
+                else self._resume_positions.get(split_idx, sample_count)
+            )
             if start_pos > 0:
                 perm = perm.with_skip(start_pos)
+            initial_samples.append(sample_count)
             initial_positions.append(start_pos)
             permutations.append(perm)
 
         n = len(permutations)
         split_sizes = [perm.num_rows for perm in permutations]
-        initial_offset = self._resume_offset
         local_consumed = [0] * n
         # Permutation position each split has consumed through (absolute,
         # i.e. counted from the start of the unskipped split).  Runs ahead of
@@ -365,14 +769,36 @@ class StreamingDataset(IterableDataset):
         pos_consumed = list(initial_positions)
 
         batch_size = self._read_batch_size
-        max_prefetch = self._prefetch_batches
+        io_queue_depth = self._io_queue_depth
         transform_workers = (
             self._transform_parallelism
             if self._transform_parallelism is not None
             else (os.cpu_count() or 1)
         )
-        final_transform = (
-            self._transform if self._transform is not None else Transforms.arrow2python
+        final_transform: Callable[[pa.RecordBatch], Any]
+        if self._pack_sequences is not None:
+            # Packing consumes raw token lists, one per document.
+            def arrow_tokens(batch: pa.RecordBatch) -> list[list[int]]:
+                token_column = batch.column(0)
+                if token_column.null_count or token_column.flatten().null_count:
+                    raise ValueError(
+                        "pack_sequences does not support null token lists or values"
+                    )
+                return cast(list[list[int]], token_column.to_pylist())
+
+            final_transform = arrow_tokens
+        else:
+            final_transform = (
+                self._transform
+                if self._transform is not None
+                else Transforms.arrow2python
+            )
+        # None means no limit; otherwise cap rows per split to
+        # transform_queue_depth batches worth (including in-flight transforms).
+        max_cooked_rows = (
+            self._transform_queue_depth * batch_size
+            if self._transform_queue_depth is not None
+            else None
         )
 
         # Per-split pipeline state.  Batches are paired with the absolute
@@ -409,7 +835,9 @@ class StreamingDataset(IterableDataset):
             io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
 
         def _fill_io(i: int) -> None:
-            while len(io_pending[i]) < max_prefetch and fetch_head[i] < split_sizes[i]:
+            while (
+                len(io_pending[i]) < io_queue_depth and fetch_head[i] < split_sizes[i]
+            ):
                 _submit_io(i)
 
         def _drain_io(i: int) -> None:
@@ -487,7 +915,19 @@ class StreamingDataset(IterableDataset):
 
         def _try_submit_tx(i: int) -> None:
             """Submit transforms for raw_batches[i] up to available capacity."""
-            while raw_batches[i] and tx_semaphore.acquire(blocking=False):
+            while raw_batches[i]:
+                # Backpressure: only submit a new transform when there is room
+                # for a full batch in the post-transform queue.  Checking for
+                # a full batch prevents submitting a transform that would
+                # overflow the limit mid-batch (e.g. 990 rows queued with a
+                # capacity of 1000 and a batch_size of 128 must wait until
+                # 128 rows have been consumed, not just 1).
+                if max_cooked_rows is not None:
+                    in_pipeline = len(cooked[i]) + len(tx_pending[i]) * batch_size
+                    if in_pipeline + batch_size > max_cooked_rows:
+                        break
+                if not tx_semaphore.acquire(blocking=False):
+                    break
                 abs_start, batch = raw_batches[i].popleft()
                 tx_pending[i].append(tx_pool.submit(_tx_call_guarded, abs_start, batch))
 
@@ -529,18 +969,173 @@ class StreamingDataset(IterableDataset):
                 else:
                     break  # split exhausted
 
+        def _update_stats(*, idle: bool = False) -> None:
+            """Refresh pipeline statistics visible to the parent process."""
+            ws = self._worker_stats
+            ws[0] = sum(split_sizes[j] - fetch_head[j] for j in range(n))
+            ws[1] = (
+                0
+                if idle
+                else sum(batch.num_rows for q in raw_batches for _, batch in q)
+            )
+            ws[2] = 0 if idle else sum(len(q) for q in cooked)
+            ws[3] = sum(local_consumed)
+            ws[4] = self._bytes_loaded
+            ws[5] = int(self._fetch_time * 1_000_000)
+            ws[6] = int(self._transform_time * 1_000_000)
+            ws[7] = self._rows_skipped
+
+        # Sequence-packing helpers
+        pack_len = cast(int, self._pack_sequences)
+        eos_id = cast(int, self._eos_id)
+        pad_id = cast(int, self._pad_id)
+        blocks_per_split = (
+            cast(int, self._blocks_per_epoch) // self._num_splits
+            if self._pack_sequences is not None
+            else 0
+        )
+        pack_consumed = list(self._pack_consumed)
+        pack_buffers = deepcopy(self._pack_buffers)
+        pack_blocks_emitted = list(self._pack_blocks_emitted)
+
+        def _pack_buffer(i: int) -> dict[str, list[int]]:
+            return pack_buffers.setdefault(my_splits[i], {"tokens": [], "starts": []})
+
+        def _fill_block(i: int) -> None:
+            """Fill split i's buffer to one block or exhaust the split."""
+            buf = _pack_buffer(i)
+            while len(buf["tokens"]) < pack_len:
+                _ensure_cooked(i)
+                if not cooked[i]:
+                    return
+                buf["starts"].append(len(buf["tokens"]))
+                pos, tokens = cooked[i].popleft()
+                buf["tokens"].extend(tokens)
+                buf["tokens"].append(eos_id)
+                pack_consumed[my_splits[i]] = pos + 1
+                local_consumed[i] += 1
+                _advance(i)
+
+        def _emit_block(i: int) -> dict[str, Any]:
+            buf = _pack_buffer(i)
+            tokens, starts = buf["tokens"], buf["starts"]
+            # doc_ids label document segments within the block; 0 also covers
+            # the continuation of a document begun in a prior block.
+            doc_ids = torch.zeros(pack_len, dtype=torch.int64)
+            doc_starts = [s for s in starts if 0 < s < pack_len]
+            doc_ids[doc_starts] = 1
+            doc_ids.cumsum_(dim=0)  # cumulative sum marks document boundaries
+            block = {
+                "input_ids": torch.tensor(tokens[:pack_len], dtype=torch.int64),
+                "doc_ids": doc_ids,
+            }
+            del tokens[:pack_len]
+            # Shift start boundaries for the next call.
+            buf["starts"] = [s - pack_len for s in starts if s >= pack_len]
+            return block
+
+        def _commit_pack_state() -> None:
+            self._pack_consumed = list(pack_consumed)
+            self._pack_buffers = {
+                split: {
+                    "tokens": list(buffer["tokens"]),
+                    "starts": list(buffer["starts"]),
+                }
+                for split, buffer in pack_buffers.items()
+            }
+            self._pack_blocks_emitted = list(pack_blocks_emitted)
+
         # ── Main loop ─────────────────────────────────────────────────────────
 
-        with ThreadPoolExecutor(max_workers=n * max_prefetch) as io_pool:
+        with ThreadPoolExecutor(max_workers=n * io_queue_depth) as io_pool:
             with ThreadPoolExecutor(max_workers=transform_workers) as tx_pool:
                 self._raw_batches_ref = raw_batches
                 self._cooked_ref = cooked
                 self._fetch_head_ref = fetch_head
                 self._split_sizes_ref = split_sizes
                 self._local_consumed_ref = local_consumed
+
                 try:
                     for i in range(n):
                         _fill_io(i)
+
+                    def _yield_row(i: int):
+                        pos, row = cooked[i].popleft()
+                        # Surface any completed prefetched failure before the
+                        # current row becomes durable checkpoint progress.
+                        _advance(i)
+                        local_consumed[i] += 1
+                        pos_consumed[i] = pos + 1
+                        split_idx = my_splits[i]
+                        self._resume_samples[split_idx] = (
+                            initial_samples[i] + local_consumed[i]
+                        )
+                        self._resume_positions[split_idx] = pos_consumed[i]
+                        return row
+
+                    def _update_progress_stats() -> None:
+                        if not real_worker:
+                            self._resume_offset = min(
+                                initial_samples[j] + local_consumed[j] for j in range(n)
+                            )
+                        _update_stats()
+
+                    if self._pack_sequences is not None:
+                        first_count = pack_blocks_emitted[my_splits[0]]
+                        if any(
+                            pack_blocks_emitted[split] != first_count
+                            for split in my_splits[1:]
+                        ):
+                            raise ValueError(
+                                "Packed checkpoint is not aligned across the splits "
+                                "owned by this iterator; merge every rank "
+                                "state with merge_state_dicts before resuming on a "
+                                "different topology"
+                            )
+
+                        while pack_blocks_emitted[my_splits[0]] < blocks_per_split:
+                            # Each logical split gets one block per cycle. Exhausted
+                            # splits are padded through the fixed global budget.
+                            for i in range(n):
+                                _fill_block(i)
+
+                            for i in range(n):
+                                tokens = _pack_buffer(i)["tokens"]
+                                if len(tokens) < pack_len:
+                                    tokens.extend([pad_id] * (pack_len - len(tokens)))
+                                block = _emit_block(i)
+                                pack_blocks_emitted[my_splits[i]] += 1
+                                # Checkpoint state must advance before yielding so
+                                # StreamingDataLoader can attach the exact state to
+                                # the batch it transports to the parent process.
+                                _commit_pack_state()
+                                if i == n - 1:
+                                    _update_stats()
+                                yield block
+                        return
+
+                    # A checkpoint taken between round-robin split turns has
+                    # non-uniform counts.  Resume lagging splits first so the
+                    # exact canonical sequence continues without replaying
+                    # already-consumed rows.
+                    if len(set(initial_samples)) > 1:
+                        catch_up_to = max(initial_samples)
+                        pending = [
+                            (initial_samples[i], my_splits[i], i)
+                            for i in range(n)
+                            if initial_samples[i] < catch_up_to
+                        ]
+                        heapq.heapify(pending)
+                        while pending:
+                            consumed, _, i = heapq.heappop(pending)
+                            _ensure_cooked(i)
+                            if not cooked[i]:
+                                return
+                            row = _yield_row(i)
+                            if consumed + 1 < catch_up_to:
+                                heapq.heappush(pending, (consumed + 1, my_splits[i], i))
+                            _update_progress_stats()
+                            yield row
 
                     while True:
                         # A cycle only runs if every split can still produce a
@@ -562,34 +1157,14 @@ class StreamingDataset(IterableDataset):
                             break
 
                         for i in range(n):
-                            pos, row = cooked[i].popleft()
-                            local_consumed[i] += 1
-                            pos_consumed[i] = pos + 1
-                            _advance(i)
+                            row = _yield_row(i)
 
                             # After the last split in each cycle: update the
                             # global offset and refresh the shared-memory stats
                             # so the main process can observe pipeline depth
                             # even when __iter__ runs in a worker process.
                             if i == n - 1:
-                                self._resume_offset = initial_offset + local_consumed[i]
-                                for j, split_idx in enumerate(my_splits):
-                                    self._resume_positions[split_idx] = pos_consumed[j]
-                                ws = self._worker_stats
-                                ws[0] = sum(
-                                    split_sizes[j] - fetch_head[j] for j in range(n)
-                                )
-                                ws[1] = sum(
-                                    batch.num_rows
-                                    for q in raw_batches
-                                    for _, batch in q
-                                )
-                                ws[2] = sum(len(q) for q in cooked)
-                                ws[3] = sum(local_consumed)
-                                ws[4] = self._bytes_loaded
-                                ws[5] = int(self._fetch_time * 1_000_000)
-                                ws[6] = int(self._transform_time * 1_000_000)
-                                ws[7] = self._rows_skipped
+                                _update_progress_stats()
 
                             yield row
                 finally:
@@ -597,15 +1172,7 @@ class StreamingDataset(IterableDataset):
                     # when iteration ends mid-cycle (e.g. a split whose rows
                     # were all skipped before completing a single cycle), so
                     # counters like rows_skipped would otherwise be stale.
-                    ws = self._worker_stats
-                    ws[0] = sum(split_sizes[j] - fetch_head[j] for j in range(n))
-                    ws[1] = 0  # queue-depth properties document 0 when idle
-                    ws[2] = 0
-                    ws[3] = sum(local_consumed)
-                    ws[4] = self._bytes_loaded
-                    ws[5] = int(self._fetch_time * 1_000_000)
-                    ws[6] = int(self._transform_time * 1_000_000)
-                    ws[7] = self._rows_skipped
+                    _update_stats(idle=True)
                     self._raw_batches_ref = None
                     self._cooked_ref = None
                     self._fetch_head_ref = None
@@ -744,6 +1311,7 @@ class StreamingDataset(IterableDataset):
             "_local_consumed_ref",
         ):
             state[key] = None
+        state["_consumer_iterator_lock"] = None
         return state
 
     def __setstate__(self, state):
@@ -754,6 +1322,7 @@ class StreamingDataset(IterableDataset):
         table_state = state.pop("_table")
         perm_name, perm_data = state.pop("_perm_table")
         self.__dict__.update(state)
+        self._consumer_iterator_lock = threading.Lock()
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:
@@ -763,39 +1332,219 @@ class StreamingDataset(IterableDataset):
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
 
-        The returned dict is topology-independent: at global step boundaries
-        every split has been consumed the same number of times (by the
-        round-robin design), so the per-split count is a single uniform value
-        that is identical across all ranks and DataLoader workers.
+        When using DataLoader workers, construct a
+        [StreamingDataLoader][lancedb.streaming.StreamingDataLoader].  It
+        commits worker state only when a prefetched batch is returned to the
+        trainer.  A standard multi-process ``DataLoader`` cannot expose that
+        boundary, so calling this method after one has started raises
+        ``RuntimeError`` instead of returning stale producer state.
 
-        ``positions_consumed_per_split`` records how far into each split's
-        permutation iteration has advanced.  It only differs from
-        ``samples_consumed_per_split`` when ``on_transform_error`` skipped
-        rows, in which case entries are exact for the splits this instance
-        iterated and a lower bound (the sample count) for splits owned by
-        other ranks or workers.  Combine the state dicts from all ranks with
+        In row mode, the returned dict is topology-independent at global step
+        boundaries. ``positions_consumed_per_split`` records how far each
+        split's permutation has advanced, which can differ from the sample
+        count when ``on_transform_error`` skips rows. ``StreamingDataLoader``
+        combines worker state in its parent process. Combine state dicts from
+        every rank with
         [merge_state_dicts][lancedb.streaming.StreamingDataset.merge_state_dicts]
-        to recover the exact value for every split before resuming on a
-        different topology.
+        before resuming on a different topology.
+
+        Packed state includes partial token buffers and emitted block counts
+        for every logical split. When packing is sharded, merge every rank
+        state with ``merge_state_dicts`` before loading it.
         """
+        if self._untracked_worker_iteration[0] and get_worker_info() is None:
+            raise RuntimeError(
+                "StreamingDataset cannot checkpoint a standard DataLoader with "
+                "num_workers > 0 because prefetched worker progress is not "
+                "consumer-committed. Use StreamingDataLoader instead."
+            )
+        if self._checkpoint_invalid_reason is not None:
+            raise RuntimeError(
+                "StreamingDataset checkpointing is invalid because "
+                f"{self._checkpoint_invalid_reason}. Load the last valid "
+                "checkpoint into a fresh dataset before continuing."
+            )
+        state = self._checkpoint_snapshot()
+        if self._pack_sequences is not None:
+            rank_blocks = [
+                state["blocks_emitted_per_split"][split] for split in self._rank_splits
+            ]
+            if len(set(rank_blocks)) > 1:
+                raise RuntimeError(
+                    "Packed StreamingDataset checkpointing is only safe at a "
+                    "complete logical step boundary, when every split assigned "
+                    "to this rank has emitted the same block count. Consume more "
+                    "batches before calling state_dict()."
+                )
+        elif self._consumer_checkpoint_requires_uniform:
+            samples = state["samples_consumed_per_split"]
+            rank_samples = [samples[split] for split in self._rank_splits]
+            if len(set(rank_samples)) > 1:
+                raise RuntimeError(
+                    "StreamingDataLoader checkpointing with multiple workers is "
+                    "only safe at a complete logical step boundary, when every "
+                    "split assigned to this rank has the same consumed-sample "
+                    "count. Consume more batches before calling state_dict()."
+                )
+        return state
+
+    def _checkpoint_snapshot(self) -> dict:
+        if self._pack_sequences is not None:
+            return {
+                "shuffle_seed": self._shuffle_seed,
+                "num_splits": self._num_splits,
+                "epoch": self._epoch,
+                "pack_sequences": self._pack_sequences,
+                "eos_id": self._eos_id,
+                "pad_id": self._pad_id,
+                "blocks_per_epoch": self._blocks_per_epoch,
+                "samples_consumed_per_split": list(self._pack_consumed),
+                "blocks_emitted_per_split": list(self._pack_blocks_emitted),
+                "pack_buffers": deepcopy(self._pack_buffers),
+            }
+        samples = [
+            self._resume_samples.get(split, self._resume_offset)
+            for split in range(self._num_splits)
+        ]
         positions = [
-            self._resume_positions.get(split, self._resume_offset)
+            self._resume_positions.get(split, samples[split])
             for split in range(self._num_splits)
         ]
         return {
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
             "epoch": self._epoch,
-            "samples_consumed_per_split": [self._resume_offset] * self._num_splits,
+            "samples_consumed_per_split": samples,
             "positions_consumed_per_split": positions,
         }
+
+    def _invalidate_checkpoint(self, reason: str) -> None:
+        if self._checkpoint_invalid_reason is None:
+            self._checkpoint_invalid_reason = reason
+
+    @property
+    def _consumer_iterator_active(self) -> bool:
+        return self._consumer_iterator_lease is not None
+
+    @property
+    def _consumer_iterator_owner(self) -> Optional[int]:
+        lease = self._consumer_iterator_lease
+        return lease.owner_token if lease is not None else None
+
+    @property
+    def _consumer_iterator_owner_thread(self) -> Optional[int]:
+        lease = self._consumer_iterator_lease
+        return lease.owner_thread if lease is not None else None
+
+    def _acquire_consumer_iterator(self) -> int:
+        """Reserve this parent dataset for one checkpoint-aware iterator."""
+        with self._consumer_iterator_lock:
+            if self._consumer_iterator_active or self._raw_batches_ref is not None:
+                raise RuntimeError(
+                    "StreamingDataset does not support concurrent iteration. "
+                    "Only one active iterator per dataset instance is allowed."
+                )
+            owner_thread = threading.get_ident()
+            owner_token = self._consumer_iterator_generation + 1
+            lease = _ConsumerIteratorLease(owner_token, owner_thread)
+            self._consumer_iterator_generation = owner_token
+            self._consumer_iterator_lease = lease
+            return owner_token
+
+    def _release_consumer_iterator(self, owner_token: int) -> None:
+        with self._consumer_iterator_lock:
+            lease = self._consumer_iterator_lease
+            if lease is not None and lease.owner_token == owner_token:
+                self._consumer_iterator_lease = None
+
+    def _release_consumer_iterator_after_failed_acquire(
+        self, previous_lease: Optional[_ConsumerIteratorLease]
+    ) -> None:
+        """Clean up when an interrupted acquire set a lease but did not return it."""
+        owner_thread = threading.current_thread().ident
+        with self._consumer_iterator_lock:
+            lease = self._consumer_iterator_lease
+            if (
+                lease is not None
+                and lease is not previous_lease
+                and lease.owner_thread == owner_thread
+            ):
+                self._consumer_iterator_lease = None
+
+    def _commit_worker_state(self, state: dict, *, require_uniform: bool) -> None:
+        """Merge one trainer-consumed worker batch into parent state."""
+        for key, expected in (
+            ("shuffle_seed", self._shuffle_seed),
+            ("num_splits", self._num_splits),
+            ("epoch", self._epoch),
+        ):
+            if state.get(key) != expected:
+                raise ValueError(
+                    f"{key} mismatch in worker checkpoint: "
+                    f"{state.get(key)} != {expected}"
+                )
+        packed = "pack_buffers" in state
+        if packed != (self._pack_sequences is not None):
+            raise ValueError("worker checkpoint mode does not match the dataset")
+        if packed:
+            for key in ("pack_sequences", "eos_id", "pad_id", "blocks_per_epoch"):
+                expected = getattr(self, f"_{key}")
+                if state.get(key) != expected:
+                    raise ValueError(
+                        f"{key} mismatch in worker checkpoint: "
+                        f"{state.get(key)} != {expected}"
+                    )
+            samples = state["samples_consumed_per_split"]
+            emitted = state["blocks_emitted_per_split"]
+            if len(samples) != self._num_splits or len(emitted) != self._num_splits:
+                raise ValueError(
+                    "packed worker checkpoint must contain one entry per split"
+                )
+            buffers = state["pack_buffers"]
+            for split, (count, blocks) in enumerate(zip(samples, emitted)):
+                incoming = (int(blocks), int(count))
+                current = (
+                    self._pack_blocks_emitted[split],
+                    self._pack_consumed[split],
+                )
+                if incoming > current:
+                    self._pack_blocks_emitted[split] = incoming[0]
+                    self._pack_consumed[split] = incoming[1]
+                    buffer = buffers.get(split, buffers.get(str(split)))
+                    if buffer is None:
+                        self._pack_buffers.pop(split, None)
+                    else:
+                        self._pack_buffers[split] = {
+                            "tokens": list(buffer["tokens"]),
+                            "starts": list(buffer["starts"]),
+                        }
+            self._consumer_checkpoint_requires_uniform |= require_uniform
+            return
+
+        samples = state["samples_consumed_per_split"]
+        positions = state.get("positions_consumed_per_split", samples)
+        for split, count in enumerate(samples):
+            current = self._resume_samples.get(split, self._resume_offset)
+            self._resume_samples[split] = max(current, int(count))
+        for split, position in enumerate(positions):
+            current = self._resume_positions.get(
+                split, self._resume_samples.get(split, self._resume_offset)
+            )
+            self._resume_positions[split] = max(current, int(position))
+        self._resume_offset = min(
+            self._resume_samples.get(split, self._resume_offset)
+            for split in range(self._num_splits)
+        )
+        self._consumer_checkpoint_requires_uniform |= require_uniform
 
     def load_state_dict(self, state: dict) -> None:
         """Resume from a previously snapshotted state.
 
         Raises ``ValueError`` if ``num_splits`` or ``shuffle_seed`` differ
         from the checkpoint, since a different split structure or shuffle order
-        makes mid-epoch resumption meaningless.
+        makes mid-epoch resumption meaningless.  Packed checkpoints
+        pin ``pack_sequences``, ``eos_id``, ``pad_id``,
+        ``blocks_per_epoch``, and ``epoch``.
         """
         if state["num_splits"] != self._num_splits:
             raise ValueError(
@@ -807,15 +1556,44 @@ class StreamingDataset(IterableDataset):
                 f"shuffle_seed mismatch: checkpoint has {state['shuffle_seed']}, "
                 f"current dataset has {self._shuffle_seed}"
             )
+        self._consumer_checkpoint_requires_uniform = False
+
+        if "pack_buffers" in state or self._pack_sequences is not None:
+            for key in (
+                "pack_sequences",
+                "eos_id",
+                "pad_id",
+                "blocks_per_epoch",
+                "epoch",
+            ):
+                ours = getattr(self, f"_{key}")
+                if state.get(key) != ours:
+                    raise ValueError(
+                        f"{key} mismatch: checkpoint has {state.get(key)}, "
+                        f"current dataset has {ours}"
+                    )
+            self._pack_consumed = [int(c) for c in state["samples_consumed_per_split"]]
+            self._pack_blocks_emitted = [
+                int(c) for c in state["blocks_emitted_per_split"]
+            ]
+            self._pack_buffers = {
+                int(g): {"tokens": list(b["tokens"]), "starts": list(b["starts"])}
+                for g, b in state["pack_buffers"].items()
+            }
+            return
+
         consumed = state["samples_consumed_per_split"]
-        # All entries are equal at step boundaries; use the first.
         if isinstance(consumed, list):
-            self._resume_offset = consumed[0] if consumed else 0
+            self._resume_offset = min(consumed) if consumed else 0
+            self._resume_samples = {
+                split: int(count) for split, count in enumerate(consumed)
+            }
         else:
             self._resume_offset = int(consumed)
+            self._resume_samples = {}
         # Older checkpoints predate positions_consumed_per_split; without
         # skipped rows positions equal sample counts, so falling back to
-        # _resume_offset (the .get default in __iter__) is exact.
+        # the per-split sample count (the .get default in __iter__) is exact.
         positions = state.get("positions_consumed_per_split")
         if positions is None:
             self._resume_positions = {}
@@ -828,25 +1606,23 @@ class StreamingDataset(IterableDataset):
     def merge_state_dicts(states: list[dict]) -> dict:
         """Merge state dicts saved by different ranks into one exact state.
 
-        Only needed when ``on_transform_error`` skips rows in multi-rank
-        training: each rank then knows the exact permutation position only for
-        its own splits, and records a lower bound for the rest.  Because
-        exactly one rank owns each split, the elementwise maximum across all
-        ranks' ``positions_consumed_per_split`` recovers the exact position of
-        every split.  Without skipped rows every rank's state is already
-        identical and merging is a no-op.
+        In row mode, each rank records exact consumer-committed progress for
+        its own splits and lower bounds for the rest, so elementwise maxima
+        recover both sample counts and permutation positions. In packed mode,
+        the state that emitted the most blocks for each logical split supplies
+        that split's permutation position and partial token buffer. Packed
+        states must cover every rank at the same global step.
 
-        Raises ``ValueError`` if the states are empty or were not produced by
-        the same run (mismatched seed, split count, epoch, or sample counts).
+        Raises ``ValueError`` if the states are empty, were not produced by
+        the same run, or do not represent the same global step.
 
         The merge is always all-to-all and topology-agnostic: collect the
-        ``state_dict()`` from every rank of the *previous* run into one list,
-        merge that whole list, and hand the identical merged result to every
-        rank of the *next* run — regardless of whether the rank count grew,
-        shrank, or stayed the same. There is no pairwise or subset merging
-        step, because each split's exact position is only known to whichever
-        rank owned that split, and the elementwise maximum needs every rank's
-        contribution to be correct.
+        ``state_dict()`` from every rank of the *previous* run into
+        one list, merge that whole list, and hand the identical merged result
+        to every rank of the *next* run — regardless of whether the
+        topology grew, shrank, or stayed the same. There is no pairwise or
+        subset merging step, because each split's exact state is only known to
+        whichever iterator owned that split.
 
         For example, checkpointing 8 ranks and resuming on 4 (the same
         pattern applies when growing, e.g. 4 ranks resuming on 8)::
@@ -879,23 +1655,79 @@ class StreamingDataset(IterableDataset):
         if not states:
             raise ValueError("merge_state_dicts requires at least one state dict")
         first = states[0]
+        packed = "pack_buffers" in first
+        config_keys = ["shuffle_seed", "num_splits", "epoch"]
+        if packed:
+            config_keys.extend(
+                ["pack_sequences", "eos_id", "pad_id", "blocks_per_epoch"]
+            )
+
         for state in states[1:]:
-            for key in ("shuffle_seed", "num_splits", "epoch"):
+            if ("pack_buffers" in state) != packed:
+                raise ValueError("cannot merge packed and unpacked state dicts")
+            for key in config_keys:
                 if state[key] != first[key]:
                     raise ValueError(
                         f"{key} mismatch across state dicts: "
                         f"{state[key]} != {first[key]}"
                     )
-            if (
-                state["samples_consumed_per_split"]
-                != first["samples_consumed_per_split"]
-            ):
-                raise ValueError(
-                    "samples_consumed_per_split mismatch across state dicts; "
-                    "state_dict() must be called at the same global step "
-                    "boundary on every rank"
+
+        if packed:
+            num_splits = first["num_splits"]
+            for state in states:
+                for key in (
+                    "samples_consumed_per_split",
+                    "blocks_emitted_per_split",
+                ):
+                    if len(state[key]) != num_splits:
+                        raise ValueError(
+                            f"{key} must contain one entry per logical split"
+                        )
+
+            merged_consumed = []
+            merged_emitted = []
+            merged_buffers = {}
+            for split in range(num_splits):
+                owner = states[0]
+                owner_progress = (
+                    owner["blocks_emitted_per_split"][split],
+                    owner["samples_consumed_per_split"][split],
                 )
+                for state in states[1:]:
+                    progress = (
+                        state["blocks_emitted_per_split"][split],
+                        state["samples_consumed_per_split"][split],
+                    )
+                    if progress > owner_progress:
+                        owner = state
+                        owner_progress = progress
+                merged_consumed.append(owner["samples_consumed_per_split"][split])
+                merged_emitted.append(owner["blocks_emitted_per_split"][split])
+                buffer = owner["pack_buffers"].get(
+                    split, owner["pack_buffers"].get(str(split))
+                )
+                if buffer is not None:
+                    merged_buffers[split] = deepcopy(buffer)
+
+            if len(set(merged_emitted)) > 1:
+                raise ValueError(
+                    "packed state dicts were not captured at the same global "
+                    "step or do not cover every rank"
+                )
+
+            merged = dict(first)
+            merged["samples_consumed_per_split"] = merged_consumed
+            merged["blocks_emitted_per_split"] = merged_emitted
+            merged["pack_buffers"] = merged_buffers
+            return merged
+
         merged = dict(first)
+        merged["samples_consumed_per_split"] = [
+            max(per_split)
+            for per_split in zip(
+                *(state["samples_consumed_per_split"] for state in states)
+            )
+        ]
         all_positions = [
             state.get(
                 "positions_consumed_per_split", state["samples_consumed_per_split"]
@@ -906,3 +1738,113 @@ class StreamingDataset(IterableDataset):
             max(per_split) for per_split in zip(*all_positions)
         ]
         return merged
+
+
+class StreamingDataLoader(DataLoader):
+    """A PyTorch DataLoader with consumer-committed dataset checkpoints.
+
+    PyTorch workers prefetch batches ahead of the trainer, so worker-local
+    producer progress is not a safe checkpoint.  This loader carries a state
+    snapshot alongside every internal batch and applies it to the parent
+    [StreamingDataset][lancedb.streaming.StreamingDataset] only when that batch
+    is returned by ``next()``.
+    The trainer receives the same collated batch it would receive from a
+    standard ``torch.utils.data.DataLoader``.
+
+    With more than one worker, row-mode ``state_dict()`` is available only at
+    complete logical step boundaries, when every split assigned to the rank has
+    the same consumed-sample count. Packed checkpoints require equal emitted-block
+    counts across the rank's splits for any worker count. ``persistent_workers=True``
+    is not supported because prefetched worker copies cannot be restored from
+    parent-committed state. If batch collation raises, checkpointing remains
+    invalid for that dataset instance; restore the last valid checkpoint into a
+    fresh dataset before continuing.
+    Only one active iterator may own a dataset at a time, including when worker
+    processes are used. Exhausting or explicitly shutting down the iterator
+    releases that ownership. ``drop_last=True`` is not supported because worker
+    replicas discard incomplete tails independently, which cannot produce a
+    topology-independent checkpoint.
+
+    Parameters are the same as ``torch.utils.data.DataLoader`` except that
+    ``dataset`` must be a
+    [StreamingDataset][lancedb.streaming.StreamingDataset].
+    Subclasses that override ``StreamingDataset.__iter__`` are not supported
+    because the custom iterator cannot provide the exact per-yield checkpoint
+    snapshots required by this loader.
+
+    Examples
+    --------
+    >>> # dataset = StreamingDataset(table, num_splits=2)
+    >>> # loader = StreamingDataLoader(dataset, batch_size=8, num_workers=2)
+    >>> # batch = next(iter(loader))
+    >>> # checkpoint = dataset.state_dict()
+    """
+
+    def __init__(self, dataset: StreamingDataset, *args, **kwargs):
+        if not isinstance(dataset, StreamingDataset):
+            raise TypeError("StreamingDataLoader requires a StreamingDataset")
+        if type(dataset).__iter__ is not StreamingDataset.__iter__:
+            raise TypeError(
+                "StreamingDataLoader does not support StreamingDataset subclasses "
+                "that override __iter__ because they cannot provide exact "
+                "per-yield checkpoint state"
+            )
+        if kwargs.get("in_order", True) is False:
+            raise ValueError(
+                "StreamingDataLoader requires in_order=True for deterministic "
+                "consumer checkpoints"
+            )
+        if kwargs.get("persistent_workers", False):
+            raise ValueError(
+                "StreamingDataLoader does not support persistent_workers=True "
+                "because worker prefetch state cannot be reset from a checkpoint"
+            )
+        self._streaming_dataset = dataset
+        super().__init__(_StreamingDatasetAdapter(dataset), *args, **kwargs)
+        if self.drop_last:
+            raise ValueError(
+                "StreamingDataLoader does not support drop_last=True because "
+                "discarded worker tails cannot be checkpointed "
+                "topology-independently"
+            )
+        self.collate_fn = _CheckpointCollate(self.collate_fn)
+
+    def __iter__(self):
+        dataset = self._streaming_dataset
+        previous_lease = dataset._consumer_iterator_lease
+        owner_token = None
+        try:
+            owner_token = dataset._acquire_consumer_iterator()
+            state = dataset._checkpoint_snapshot()
+            packed = dataset._pack_sequences is not None
+            if packed:
+                blocks = state["blocks_emitted_per_split"]
+                rank_blocks = [blocks[split] for split in dataset._rank_splits]
+                if len(set(rank_blocks)) > 1:
+                    raise RuntimeError(
+                        "StreamingDataLoader cannot start from a partial packed "
+                        "logical step; resume from a checkpoint whose splits "
+                        "assigned to this rank have equal emitted-block counts"
+                    )
+            elif self.num_workers > 1:
+                samples = state["samples_consumed_per_split"]
+                rank_samples = [samples[split] for split in dataset._rank_splits]
+                if len(set(rank_samples)) > 1:
+                    raise RuntimeError(
+                        "StreamingDataLoader cannot start multiple workers from a "
+                        "partial logical step; resume from a checkpoint whose "
+                        "splits assigned to this rank have equal consumed-sample "
+                        "counts"
+                    )
+            return _ConsumerCommitIterator(
+                super().__iter__(),
+                dataset,
+                owner_token=owner_token,
+                require_uniform=self.num_workers > 1 or packed,
+            )
+        except BaseException:
+            if owner_token is not None:
+                dataset._release_consumer_iterator(owner_token)
+            else:
+                dataset._release_consumer_iterator_after_failed_acquire(previous_lease)
+            raise

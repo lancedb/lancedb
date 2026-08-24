@@ -66,8 +66,8 @@ use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
 pub mod checkpoint;
+pub mod cherry_pick;
 pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
@@ -87,9 +87,9 @@ pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
 pub use computed_columns::{
@@ -771,7 +771,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
     /// Fill a computed column's unfilled rows, returning a [`Job`] tracking
     /// the operation.
-    async fn refresh_column_async(&self, _column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
             message: "computed columns are supported only on local tables".into(),
         })
@@ -840,14 +843,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -1072,6 +1075,11 @@ impl Table {
 
     pub fn database(&self) -> &Arc<dyn Database> {
         self.database.as_ref().unwrap()
+    }
+
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -1711,7 +1719,9 @@ impl Table {
     /// operation instead of blocking until it completes.
     ///
     /// The job may already be complete when returned, and callers must not
-    /// assume the column is filled until [`Job::wait`] returns. Invalid input
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
     /// -- an unknown column, or one that is not computed -- is reported by
     /// this call rather than by the job. On local tables the job runs as an
     /// in-process task; on LanceDB Cloud and Enterprise it is the server's
@@ -1722,11 +1732,15 @@ impl Table {
     /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let job = table.refresh_column_async("doubled").await?;
     /// println!("refresh running: {:?}", job.status().await?);
-    /// job.wait().await?;
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn refresh_column_async(&self, column: impl AsRef<str>) -> Result<Job> {
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         self.inner.refresh_column_async(column.as_ref()).await
     }
 
@@ -2266,14 +2280,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -3432,7 +3442,10 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn refresh_column_async(&self, column: &str) -> Result<Job> {
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
         refresh::execute_refresh_column_async(self, column).await
     }
 

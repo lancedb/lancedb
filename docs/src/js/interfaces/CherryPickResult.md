@@ -2,11 +2,11 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / MergeBranchResult
+[@lancedb/lancedb](../globals.md) / CherryPickResult
 
-# Interface: MergeBranchResult
+# Interface: CherryPickResult
 
-Result of previewing or attempting a branch merge.
+Result of previewing or attempting a cherry-pick.
 
 ## Properties
 
@@ -29,7 +29,7 @@ optional mainVersionAfter: number;
 ### preview
 
 ```ts
-preview: MergePreview;
+preview: CherryPickPreview;
 ```
 
 ***
@@ -38,9 +38,9 @@ preview: MergePreview;
 
 ```ts
 status:
+  | "failed"
   | "unknown"
-  | "rejected"
   | "ready"
   | "notImplemented"
-  | "merged";
+  | "cherryPicked";
 ```
