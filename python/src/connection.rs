@@ -609,7 +609,7 @@ impl Connection {
                 .create_function_async(request)
                 .await
                 .infer_error()
-                .map(crate::job::TypedJob::new)
+                .map(crate::job::Job::new_typed)
         })
     }
 

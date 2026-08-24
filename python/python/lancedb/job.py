@@ -124,7 +124,7 @@ class Job(Generic[T]):
 
 
 def _typed_job(
-    inner: "_lancedb.TypedJob", result_decoder: Callable[[str], T]
+    inner: "_lancedb.Job", result_decoder: Callable[[str], T]
 ) -> AsyncJob[T]:
     """Bind an internal JSON-producing job to its public result model."""
     return AsyncJob(inner, result_decoder)

@@ -11,40 +11,32 @@ use crate::error::PythonErrorExt;
 
 #[pyclass]
 pub struct Job {
-    inner: Arc<lancedb::Job>,
+    inner: Arc<lancedb::Job<std::result::Result<Option<String>, String>>>,
 }
 
-/// Type-erased Python bridge for any JSON-serializable Rust [`lancedb::Job`]
-/// result.
-#[pyclass]
-pub struct TypedJob {
-    inner: Arc<lancedb::Job<std::result::Result<String, String>>>,
-}
+impl Job {
+    pub(crate) fn new(inner: lancedb::Job) -> Self {
+        Self {
+            inner: Arc::new(inner.map(|()| Ok(None))),
+        }
+    }
 
-impl TypedJob {
-    pub(crate) fn new<T>(inner: lancedb::Job<T>) -> Self
+    pub(crate) fn new_typed<T>(inner: lancedb::Job<T>) -> Self
     where
         T: Clone + Serialize + Send + Sync + 'static,
     {
         Self {
             inner: Arc::new(inner.map(|result| {
                 serde_json::to_string(&result)
+                    .map(Some)
                     .map_err(|error| format!("failed to serialize typed job result: {error}"))
             })),
         }
     }
 }
 
-impl Job {
-    pub(crate) fn new(inner: lancedb::Job) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-}
-
 #[pymethods]
-impl TypedJob {
+impl Job {
     #[getter]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
@@ -65,38 +57,6 @@ impl TypedJob {
             result
                 .map_err(|message| lancedb::Error::Runtime { message })
                 .infer_error()
-        })
-    }
-
-    pub fn cancel(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(self_.py(), async move {
-            inner.cancel().await.infer_error()?;
-            Ok(())
-        })
-    }
-}
-
-#[pymethods]
-impl Job {
-    #[getter]
-    pub fn id(&self) -> Option<String> {
-        self.inner.id().map(str::to_string)
-    }
-
-    pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.status().await.infer_error() },
-        )
-    }
-
-    pub fn wait(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
-        future_into_py(self_.py(), async move {
-            inner.wait().await.infer_error()?;
-            Ok(None::<()>)
         })
     }
 
