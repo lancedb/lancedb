@@ -584,6 +584,70 @@ Child namespace names and
 
 ***
 
+### listTables()
+
+#### listTables(options)
+
+```ts
+abstract listTables(options?): Promise<ListTablesResponse>
+```
+
+List a page of the tables in this database.
+
+To retrieve the tables after the page, pass the `pageToken` the response
+carries back in. A page can be shorter than `limit` without being the last
+one, so walk until a response carries no page token:
+
+```ts
+const names = [];
+let pageToken = undefined;
+do {
+  const page = await conn.listTables({ pageToken, limit: 100 });
+  names.push(...page.tables);
+  pageToken = page.pageToken;
+} while (pageToken);
+```
+
+##### Parameters
+
+* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
+    Pagination options
+    (`pageToken`, `limit`).
+
+##### Returns
+
+`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+
+A page of table names and an
+  optional token for the tables after it.
+
+#### listTables(namespacePath, options)
+
+```ts
+abstract listTables(namespacePath?, options?): Promise<ListTablesResponse>
+```
+
+List a page of the tables in this database.
+
+##### Parameters
+
+* **namespacePath?**: `string`[]
+    The namespace path to list tables from
+    (defaults to root namespace)
+
+* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
+    Pagination options
+    (`pageToken`, `limit`).
+
+##### Returns
+
+`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+
+A page of table names and an
+  optional token for the tables after it.
+
+***
+
 ### openMaterializedView()
 
 ```ts
@@ -660,7 +724,7 @@ a "not supported" error.
 
 ***
 
-### tableNames()
+### ~~tableNames()~~
 
 #### tableNames(options)
 
@@ -681,6 +745,10 @@ Tables will be returned in lexicographical order.
 ##### Returns
 
 `Promise`&lt;`string`[]&gt;
+
+##### Deprecated
+
+Use [Connection.listTables](Connection.md#listtables) instead.
 
 #### tableNames(namespacePath, options)
 
@@ -704,3 +772,7 @@ Tables will be returned in lexicographical order.
 ##### Returns
 
 `Promise`&lt;`string`[]&gt;
+
+##### Deprecated
+
+Use [Connection.listTables](Connection.md#listtables) instead.
