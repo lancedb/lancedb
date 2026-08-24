@@ -476,6 +476,7 @@ impl PermutationReader {
             let table = Table::from(self.base_table.clone());
             let batches = table
                 .take_offsets(offsets.to_vec())
+                .preserve_order()
                 .select(selection.clone())
                 .execute()
                 .await?

@@ -1535,6 +1535,7 @@ fn restore_take_batch(
     offsets: &[u64],
     ordering_column: &str,
     drop_ordering_column: bool,
+    preserve_order: bool,
 ) -> Result<RecordBatch> {
     let actual_offsets = batch
         .column_by_name(ordering_column)
@@ -1569,18 +1570,33 @@ fn restore_take_batch(
         }
     };
 
-    let ordering = actual_offsets
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, offset)| (offset, index as u64))
-        .collect::<HashMap<_, _>>();
-    // Missing offsets retain the filter-based behavior of returning no row. Every
-    // occurrence of an offset that was found is restored in the requested order.
-    let desired_order = offsets
-        .iter()
-        .filter_map(|offset| ordering.get(offset).copied())
-        .collect::<Vec<_>>();
+    let mut desired_order = Vec::with_capacity(offsets.len());
+    if preserve_order {
+        let ordering = actual_offsets
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, offset)| (offset, index as u64))
+            .collect::<HashMap<_, _>>();
+        // Missing offsets retain the filter-based behavior of returning no row.
+        desired_order.extend(
+            offsets
+                .iter()
+                .filter_map(|offset| ordering.get(offset).copied()),
+        );
+    } else {
+        let mut occurrences = HashMap::with_capacity(offsets.len());
+        for offset in offsets {
+            *occurrences.entry(*offset).or_insert(0) += 1;
+        }
+        // Public take queries do not guarantee output order. Preserve the lookup's
+        // existing order and only restore the multiplicity of each matching row.
+        for (index, offset) in actual_offsets.iter().enumerate() {
+            if let Some(count) = occurrences.remove(offset) {
+                desired_order.extend(std::iter::repeat_n(index as u64, count));
+            }
+        }
+    }
 
     let mut ordered_batch = if desired_order.len() == batch.num_rows()
         && desired_order
@@ -1603,14 +1619,16 @@ fn restore_take_batch(
 /// Restores the logical offset occurrence sequence above the physical lookup plan.
 ///
 /// The lookup plan returns each matching row at most once. This operator collects
-/// those rows, expands duplicates, and emits one partition in the caller's offset
-/// order. Pagination must remain above this operator so it applies to occurrences.
+/// those rows, expands duplicates, and emits one partition. It preserves lookup order
+/// unless the caller explicitly requests offset order. Pagination must remain above
+/// this operator so it applies to occurrences.
 #[derive(Debug)]
 struct TakeRestoreExec {
     input: Arc<dyn ExecutionPlan>,
     offsets: Vec<u64>,
     ordering_column: String,
     drop_ordering_column: bool,
+    preserve_order: bool,
     schema: SchemaRef,
     properties: Arc<PlanProperties>,
 }
@@ -1621,6 +1639,7 @@ impl TakeRestoreExec {
         offsets: Vec<u64>,
         ordering_column: String,
         drop_ordering_column: bool,
+        preserve_order: bool,
     ) -> Result<Self> {
         let schema = if drop_ordering_column {
             RecordBatch::new_empty(input.schema())
@@ -1641,6 +1660,7 @@ impl TakeRestoreExec {
             offsets,
             ordering_column,
             drop_ordering_column,
+            preserve_order,
             schema,
             properties,
         })
@@ -1698,6 +1718,7 @@ impl ExecutionPlan for TakeRestoreExec {
             self.offsets.clone(),
             self.ordering_column.clone(),
             self.drop_ordering_column,
+            self.preserve_order,
         )
         .map_err(|error| DataFusionError::External(Box::new(error)))?;
         Ok(Arc::new(plan))
@@ -1720,6 +1741,7 @@ impl ExecutionPlan for TakeRestoreExec {
         let offsets = self.offsets.clone();
         let ordering_column = self.ordering_column.clone();
         let drop_ordering_column = self.drop_ordering_column;
+        let preserve_order = self.preserve_order;
         let stream = stream::once(async move {
             let batches = input.try_collect::<Vec<_>>().await?;
             let batch = if batches.is_empty() {
@@ -1727,8 +1749,14 @@ impl ExecutionPlan for TakeRestoreExec {
             } else {
                 concat_batches(&input_schema, &batches)?
             };
-            restore_take_batch(batch, &offsets, &ordering_column, drop_ordering_column)
-                .map_err(|error| DataFusionError::External(Box::new(error)))
+            restore_take_batch(
+                batch,
+                &offsets,
+                &ordering_column,
+                drop_ordering_column,
+                preserve_order,
+            )
+            .map_err(|error| DataFusionError::External(Box::new(error)))
         });
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -1759,6 +1787,7 @@ pub struct TakeQuery {
     parent: Arc<dyn BaseTable>,
     request: QueryRequest,
     offsets: Option<Vec<u64>>,
+    preserve_order: bool,
 }
 
 impl TakeQuery {
@@ -1782,6 +1811,7 @@ impl TakeQuery {
                 ..Default::default()
             },
             offsets: Some(offsets),
+            preserve_order: false,
         }
     }
 
@@ -1797,7 +1827,17 @@ impl TakeQuery {
                 ..Default::default()
             },
             offsets: None,
+            preserve_order: false,
         }
+    }
+
+    /// Preserve the requested offset order when restoring duplicate occurrences.
+    ///
+    /// This is reserved for readers whose API explicitly guarantees ordering.
+    pub(crate) fn preserve_order(mut self) -> Self {
+        debug_assert!(self.offsets.is_some());
+        self.preserve_order = true;
+        self
     }
 
     async fn request_with_row_offset(&self) -> Result<(QueryRequest, String, bool)> {
@@ -1874,6 +1914,7 @@ impl TakeQuery {
         drop_ordering_column: bool,
         output_offset: usize,
         output_limit: Option<usize>,
+        preserve_order: bool,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let lookup = Arc::new(CoalescePartitionsExec::new(lookup));
         let restored: Arc<dyn ExecutionPlan> = Arc::new(TakeRestoreExec::try_new(
@@ -1881,6 +1922,7 @@ impl TakeQuery {
             offsets.to_vec(),
             ordering_column,
             drop_ordering_column,
+            preserve_order,
         )?);
 
         if output_offset > 0 || output_limit.is_some() {
@@ -1947,6 +1989,7 @@ impl TakeQuery {
             drop_ordering_column,
             output_offset,
             output_limit,
+            self.preserve_order,
         )
     }
 
@@ -3098,7 +3141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_offsets_preserves_duplicate_order() {
+    async fn test_take_offsets_preserves_duplicate_multiplicity() {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
@@ -3117,7 +3160,7 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|batch| batch.num_columns() == 1));
-        let ids = results
+        let mut ids = results
             .iter()
             .flat_map(|batch| {
                 batch
@@ -3128,7 +3171,44 @@ mod tests {
                     .to_vec()
             })
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec![5, 1, 5, 17]);
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 5, 5, 17]);
+    }
+
+    #[test]
+    fn test_restore_take_batch_only_reorders_when_requested() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "id",
+                Arc::new(Int32Array::from(vec![17, 5, 1])) as Arc<dyn Array>,
+            ),
+            (
+                "_rowoffset",
+                Arc::new(UInt64Array::from(vec![17, 5, 1])) as Arc<dyn Array>,
+            ),
+        ])
+        .unwrap();
+
+        let restored =
+            restore_take_batch(batch.clone(), &[5, 1, 5, 17], "_rowoffset", true, false).unwrap();
+        assert_eq!(
+            restored
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[17, 5, 5, 1]
+        );
+
+        let ordered = restore_take_batch(batch, &[5, 1, 5, 17], "_rowoffset", true, true).unwrap();
+        assert_eq!(
+            ordered
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<Int32Type>()
+                .values(),
+            &[5, 1, 5, 17]
+        );
     }
 
     #[tokio::test]
@@ -3147,13 +3227,15 @@ mod tests {
             .await
             .unwrap();
         let limited = concat_batches(&limited[0].schema(), &limited).unwrap();
-        assert_eq!(
+        assert_eq!(limited.num_rows(), 3);
+        assert!(
             limited
                 .column_by_name("id")
                 .unwrap()
                 .as_primitive::<Int32Type>()
-                .values(),
-            &[0, 1, 0]
+                .values()
+                .iter()
+                .all(|id| [0, 1, 2].contains(id))
         );
 
         let offset = table
@@ -3167,13 +3249,15 @@ mod tests {
             .await
             .unwrap();
         let offset = concat_batches(&offset[0].schema(), &offset).unwrap();
-        assert_eq!(
+        assert_eq!(offset.num_rows(), 3);
+        assert!(
             offset
                 .column_by_name("id")
                 .unwrap()
                 .as_primitive::<Int32Type>()
-                .values(),
-            &[1, 5, 17]
+                .values()
+                .iter()
+                .all(|id| [1, 5, 17].contains(id))
         );
     }
 
@@ -3197,14 +3281,14 @@ mod tests {
             .await
             .unwrap();
         let planned = concat_batches(&planned[0].schema(), &planned).unwrap();
-        assert_eq!(
-            planned
-                .column_by_name("id")
-                .unwrap()
-                .as_primitive::<Int32Type>()
-                .values(),
-            &[5, 1, 5, 17]
-        );
+        let mut ids = planned
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 5, 5, 17]);
     }
 
     #[tokio::test]

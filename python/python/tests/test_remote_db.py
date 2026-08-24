@@ -510,8 +510,8 @@ def test_remote_permutation_is_picklable():
         table = db.open_table("test")
         assert table.take_offsets([0, 2, 0, 4]).to_list() == [
             {"a": 0},
-            {"a": 2},
             {"a": 0},
+            {"a": 2},
             {"a": 4},
         ]
 
