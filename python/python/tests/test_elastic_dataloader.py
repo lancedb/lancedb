@@ -32,6 +32,7 @@ Parameters used throughout:
 
 import dataclasses
 import logging
+import threading
 from unittest.mock import patch
 
 import lancedb
@@ -1242,6 +1243,108 @@ def test_parent_commit_base_exception_invalidates_consumer_checkpoint(tmp_path):
     assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
     with pytest.raises(RuntimeError, match="failed before it was returned"):
         dataset.state_dict()
+
+
+def test_direct_iteration_surfaces_prefetch_failure_before_committing_row(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("prefetch_failure", pa.table({"id": list(range(4))}))
+    release = threading.Event()
+    failed = threading.Event()
+    real_getitems = streaming.Permutation.__getitems__
+
+    def controlled_getitems(permutation, indices):
+        if indices and indices[0] >= 2:
+            assert release.wait(timeout=5)
+            failed.set()
+            raise RuntimeError("later prefetched I/O failed")
+        return real_getitems(permutation, indices)
+
+    class SignalDict(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            release.set()
+            assert failed.wait(timeout=5)
+
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", controlled_getitems)
+    dataset = StreamingDataset(
+        table,
+        num_splits=1,
+        shuffle=False,
+        read_batch_size=2,
+        io_queue_depth=2,
+    )
+    dataset._resume_positions = SignalDict()
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 0
+    with pytest.raises(RuntimeError, match="later prefetched I/O failed"):
+        next(iterator)
+
+    checkpoint = dataset.state_dict()
+    assert checkpoint["samples_consumed_per_split"] == [1]
+    assert checkpoint["positions_consumed_per_split"] == [1]
+
+
+def test_streaming_dataloader_drop_last_restores_discarded_tail(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("drop_last", pa.table({"id": [0, 1, 2]}))
+    results = []
+
+    for workers in (0, 1):
+        dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+        worker_options = {"multiprocessing_context": "spawn"} if workers else {}
+        loader = StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=workers,
+            drop_last=True,
+            **worker_options,
+        )
+        batches = [batch["id"].tolist() for batch in loader]
+        results.append(
+            (workers, batches, dataset.state_dict()["samples_consumed_per_split"])
+        )
+
+    assert results == [
+        (0, [[0, 1]], [2]),
+        (1, [[0, 1]], [2]),
+    ]
+
+
+def test_streaming_dataloader_owns_one_iterator_until_teardown(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("iterator_owner", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
+
+    first = iter(loader)
+    try:
+        assert next(first)["id"].tolist() == [0, 1]
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            iter(loader)
+    finally:
+        first._shutdown_workers()
+
+    second = iter(loader)
+    try:
+        assert [batch["id"].tolist() for batch in second] == [[2, 3]]
+    except BaseException:
+        second._shutdown_workers()
+        raise
+
+    # Natural exhaustion releases ownership too.
+    third = iter(loader)
+    try:
+        assert list(third) == []
+    finally:
+        third._shutdown_workers()
 
 
 def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
