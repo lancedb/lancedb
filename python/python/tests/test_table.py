@@ -4032,3 +4032,20 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert await job.wait() is None
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_coerce_json_field_preserves_large_string_storage():
+    from lancedb.table import _coerce_json_field
+
+    source = pa.field("j", pa.large_string())
+    target = pa.field(
+        "j",
+        pa.large_binary(),
+        metadata={b"ARROW:extension:name": b"lance.json"},
+    )
+
+    coerced = _coerce_json_field(source, target)
+
+    assert coerced is not None
+    assert coerced.type.storage_type == pa.large_string()

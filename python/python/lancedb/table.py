@@ -465,9 +465,14 @@ def _coerce_json_field(field: pa.Field, target_field: pa.Field) -> Optional[pa.F
         or (hasattr(pa.types, "is_string_view") and pa.types.is_string_view(field.type))
     )
     if is_string_like or pa.types.is_null(field.type):
+        json_type = (
+            pa.json_(pa.large_string())
+            if pa.types.is_large_string(field.type)
+            else pa.json_()
+        )
         return pa.field(
             field.name,
-            pa.json_(),
+            json_type,
             nullable=field.nullable,
             metadata=field.metadata,
         )
